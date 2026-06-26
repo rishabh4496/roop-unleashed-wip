@@ -504,8 +504,19 @@ def preview(payload: dict = Body(...)):
     if current_frame is None:
         return JSONResponse(status_code=404, content={"message": "no frame"})
 
+    faces_list = []
+    try:
+        from roop.face_util import get_all_faces
+        faces = get_all_faces(current_frame)
+        if faces:
+            for f in faces:
+                bbox = f["bbox"].astype(int).tolist()
+                faces_list.append(bbox)
+    except Exception:
+        pass
+
     if not fake or len(roop_globals.INPUT_FACESETS) < 1:
-        return {"image": _bgr_to_dataurl(current_frame)}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list}
 
     try:
         from roop.core import live_swap, get_processing_plugins
@@ -542,11 +553,11 @@ def preview(payload: dict = Body(...)):
 
         swapped = live_swap(current_frame, options)
         if swapped is None:
-            return {"image": _bgr_to_dataurl(current_frame)}
-        return {"image": _bgr_to_dataurl(swapped)}
+            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list}
+        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list}
     except Exception:
         traceback.print_exc()
-        return {"image": _bgr_to_dataurl(current_frame), "error": "swap failed"}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "error": "swap failed"}
 
 
 # ── Run the swap ─────────────────────────────────────────────────────────────

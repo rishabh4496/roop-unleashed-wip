@@ -20,10 +20,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [selTargetFace, setSelTargetFace] = useState(0);
   const [frame, setFrame] = useState(1);
   const [maxFrames, setMaxFrames] = useState(1);
+  const [previewSrc, setPreviewSrc] = useState('');
+  const [previewFaces, setPreviewFaces] = useState([]);
+  const [uploadingSrc, setUploadingSrc] = useState(false);
+  const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
+  const [splitView, setSplitView] = useState(false);
   const pollRef = useRef(null);
   const startTimeRef = useRef(null);
   const previewBusyRef = useRef(false);   // a /api/preview call is in flight
@@ -74,6 +79,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     const ctrl = new AbortController();
     const killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
     try {
+      const t0 = performance.now();
       const res = await postJSON('/api/preview', {
         index: idx, frame: fr, fake_preview: fake,
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
@@ -85,6 +91,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         swap_model: p.swap_model,
       }, { signal: ctrl.signal });
+      if (res.faces) setPreviewFaces(res.faces);
       setPreviewSrc(res.image || '');
     } catch (e) {
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
@@ -323,7 +330,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-3">
             {compare && previewSrc && rawUrl ? (
-              <ImageSlider beforeSrc={rawUrl} afterSrc={previewSrc} />
+              <InteractivePreview 
+                beforeSrc={rawUrl} 
+                afterSrc={previewSrc} 
+                faces={previewFaces}
+                splitView={splitView}
+              />
             ) : (
               <div className={`relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center transition-all duration-300 ${previewing ? 'preview-glow' : ''}`}>
                 {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
@@ -345,7 +357,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               </div>
             )}
             <div className="flex items-center flex-wrap gap-3">
-              <Toggle label="🔍 Before / After" checked={compare} onChange={setCompare} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
+              {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
             </div>
@@ -504,8 +517,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                 <span>{Math.round(prog * 100)}%</span>
               </span>
             </div>
-            <div className="h-2 rounded-full bg-black/40 overflow-hidden">
-              <div className="h-full bg-[#E94560] transition-all" style={{ width: `${(progress.progress || 0) * 100}%` }} />
+            <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
+              <div className={`absolute top-0 bottom-0 left-0 bg-[#E94560] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_rgba(233,69,96,0.6)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
             </div>
             {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
           </div>
@@ -527,16 +540,28 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
       onDragOver={(e) => { e.preventDefault(); if (!busy) setDrag(true); }}
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
-      className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer'}`}
+      className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer group'}`}
     >
-      <div className={`px-4 py-6 rounded-lg border-2 border-dashed text-center transition-colors ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : drag ? 'border-[#E94560] bg-[#E94560]/[0.1]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
+      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : drag ? 'border-[#E94560] bg-[#E94560]/[0.1] scale-[0.98]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
         {busy ? (
-          <span className="inline-flex items-center gap-2 text-sm text-white/80">
+          <span className="inline-flex items-center gap-2 text-sm font-medium text-white/80">
             <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
             Uploading & analysing…
           </span>
         ) : (
-          <span className="text-sm text-white/60">📁 {drag ? 'Drop to upload' : label}{!drag && hint ? <span className="block text-xs text-white/30 mt-0.5">{hint}</span> : null}</span>
+          <div className="flex flex-col items-center justify-center gap-3 pointer-events-none">
+            <div className={`p-3.5 rounded-full bg-black/20 ${drag ? 'scale-110 text-[#E94560] shadow-[0_0_15px_rgba(233,69,96,0.3)]' : 'text-white/40 group-hover:text-white/70 group-hover:bg-white/5'} transition-all duration-300`}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+            </div>
+            <div>
+              <span className={`text-sm font-semibold tracking-wide ${drag ? 'text-[#E94560]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
+              {!drag && hint && <span className="block text-xs text-white/40 mt-1">{hint}</span>}
+            </div>
+          </div>
         )}
       </div>
       <input type="file" accept={accept} multiple={multiple}
@@ -575,12 +600,19 @@ function FloatingEmojis() {
   );
 }
 
-function ImageSlider({ beforeSrc, afterSrc }) {
+function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
-  const [isDragging, setIsDragging] = useState(false);
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
+  
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
 
-  const handleMove = (clientX) => {
+  const [imgDim, setImgDim] = useState(null);
+
+  const handleSliderMove = (clientX) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
@@ -588,68 +620,127 @@ function ImageSlider({ beforeSrc, afterSrc }) {
     setSliderPosition(percent);
   };
 
-  const handleMouseMove = (e) => {
-    if (!isDragging) return;
-    handleMove(e.clientX);
-  };
-  const handleTouchMove = (e) => {
-    if (!isDragging) return;
-    handleMove(e.touches[0].clientX);
-  };
-
   useEffect(() => {
-    const stopDragging = () => setIsDragging(false);
-    window.addEventListener('mouseup', stopDragging);
-    window.addEventListener('touchend', stopDragging);
+    const handleMouseUp = () => { setIsDraggingSlider(false); setIsPanning(false); };
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchend', handleMouseUp);
     return () => {
-      window.removeEventListener('mouseup', stopDragging);
-      window.removeEventListener('touchend', stopDragging);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchend', handleMouseUp);
     };
   }, []);
 
-  return (
-    <div 
-      ref={containerRef}
-      className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 select-none cursor-ew-resize group shadow-lg"
-      onMouseDown={(e) => { setIsDragging(true); handleMove(e.clientX); }}
-      onTouchStart={(e) => { setIsDragging(true); handleMove(e.touches[0].clientX); }}
-      onMouseMove={handleMouseMove}
-      onTouchMove={handleTouchMove}
-    >
-      {/* Before Image */}
-      <img src={beforeSrc} alt="Before" className="absolute inset-0 w-full h-full object-contain pointer-events-none" draggable={false} />
-      <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-semibold tracking-wider text-white/80 uppercase shadow z-10">Before</span>
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const zoomSpeed = 0.15;
+    const newZoom = Math.min(Math.max(1, zoom + (e.deltaY < 0 ? zoomSpeed : -zoomSpeed)), 5);
+    if (newZoom === 1) setPan({ x: 0, y: 0 });
+    setZoom(newZoom);
+  };
 
-      {/* After Image (clipped) */}
-      <div 
-        className="absolute inset-0 overflow-hidden pointer-events-none" 
-        style={{ clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` }}
-      >
-        <img src={afterSrc} alt="After" className="absolute inset-0 w-full h-full object-contain" draggable={false} />
+  const handlePointerDown = (e) => {
+    if (zoom > 1 && !isDraggingSlider) {
+      setIsPanning(true);
+      setStartPan({ x: (e.clientX || e.touches?.[0]?.clientX) - pan.x, y: (e.clientY || e.touches?.[0]?.clientY) - pan.y });
+    }
+  };
+
+  const handlePointerMove = (e) => {
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    if (isDraggingSlider) {
+      handleSliderMove(cx);
+    } else if (isPanning && zoom > 1) {
+      setPan({ x: cx - startPan.x, y: cy - startPan.y });
+    }
+  };
+
+  const renderFaces = () => {
+    if (!faces.length || !imgDim) return null;
+    return faces.map((bbox, i) => {
+      const [sx, sy, ex, ey] = bbox;
+      const left = (sx / imgDim.w) * 100;
+      const top = (sy / imgDim.h) * 100;
+      const width = ((ex - sx) / imgDim.w) * 100;
+      const height = ((ey - sy) / imgDim.h) * 100;
+      return (
+        <div key={i} className="absolute border-2 border-[#E94560] shadow-[0_0_10px_rgba(233,69,96,0.5)] z-20 pointer-events-none"
+             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}>
+          <span className="absolute -top-6 left-0 bg-[#E94560] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
+            Person {i}
+          </span>
+        </div>
+      );
+    });
+  };
+
+  const transformStyle = { transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`, transformOrigin: 'center' };
+  const aspectStyle = { aspectRatio: imgDim ? `${imgDim.w}/${imgDim.h}` : '1', maxHeight: '100%', maxWidth: '100%', display: 'flex' };
+
+  if (splitView) {
+    return (
+      <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 group shadow-lg"
+           onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} style={{ touchAction: 'none' }}>
+        <div className="flex w-full h-full transition-transform duration-75" style={transformStyle}>
+          <div className="flex-1 relative border-r border-white/20 flex items-center justify-center overflow-hidden bg-black/50">
+            <div className="relative" style={aspectStyle}>
+              <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none" 
+                   onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} />
+              <div className="absolute inset-0 pointer-events-none">{renderFaces()}</div>
+            </div>
+            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold text-white/80 uppercase">Before</span>
+          </div>
+          <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black/50">
+            <div className="relative" style={aspectStyle}>
+              <img src={afterSrc} alt="After" className="w-full h-full object-contain pointer-events-none" />
+            </div>
+            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
+          </div>
+        </div>
+        {zoom > 1 && (
+          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="absolute bottom-4 right-4 bg-black/80 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/20 transition-colors z-50 shadow-xl border border-white/10 pointer-events-auto">Reset Zoom</button>
+        )}
       </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 select-none group shadow-lg"
+         ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} style={{ touchAction: 'none' }}>
       
-      {/* Target indicator for 'After' */}
-      <span 
-        className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-semibold tracking-wider text-white uppercase shadow z-10 transition-opacity duration-300"
-        style={{ opacity: sliderPosition > 85 ? 0 : 1 }}
-      >
-        After
-      </span>
+      <div className="absolute inset-0 transition-transform duration-75 flex items-center justify-center" style={transformStyle}>
+        
+        {/* Before Image & Bounding Boxes Wrapper */}
+        <div className="relative z-10" style={aspectStyle}>
+          <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none" 
+               onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
+          <div className="absolute inset-0 pointer-events-none">{renderFaces()}</div>
+          
+          {/* After Image Overlay with Clip-path */}
+          <div className="absolute inset-0 pointer-events-none z-20" 
+               style={{ clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` }}>
+            <img src={afterSrc} alt="After" className="w-full h-full object-contain" draggable={false} />
+          </div>
+        </div>
+
+      </div>
+
+      <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>
+      <span className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
+            style={{ opacity: sliderPosition > 85 ? 0 : 1 }}>After</span>
 
       {/* Slider Line & Handle */}
-      <div 
-        className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-20 pointer-events-none"
-        style={{ left: `${sliderPosition}%` }}
-      >
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
+      <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+             onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
         </div>
       </div>
+
+      {zoom > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); setZoom(1); setPan({x:0, y:0}); }} className="absolute bottom-4 right-4 bg-black/80 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/20 transition-colors z-50 shadow-xl border border-white/10 pointer-events-auto cursor-pointer">Reset Zoom</button>
+      )}
     </div>
   );
 }

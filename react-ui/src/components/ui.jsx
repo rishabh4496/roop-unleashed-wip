@@ -17,7 +17,14 @@ export const Field = ({ label, info, children }) => (
   <label className="block">
     <div className="flex items-baseline justify-between mb-1.5">
       <span className="text-sm text-white/80">{label}</span>
-      {info && <span className="text-xs text-white/35">{info}</span>}
+      {info && (
+        <div className="relative group inline-flex items-center">
+          <span className="text-[10px] text-white/30 hover:text-white/70 cursor-help transition-colors ml-2 bg-white/5 rounded-full w-4 h-4 flex items-center justify-center font-bold">?</span>
+          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-2.5 rounded-lg bg-black/90 backdrop-blur border border-white/10 shadow-xl text-xs text-white/80 whitespace-normal leading-relaxed pointer-events-none text-right">
+            {info}
+          </div>
+        </div>
+      )}
     </div>
     {children}
   </label>
@@ -53,19 +60,23 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
 );
 
 export const Toggle = ({ label, info, checked, onChange }) => (
-  <button
-    type="button"
-    onClick={() => onChange(!checked)}
-    className="flex items-center justify-between w-full text-left group"
-  >
-    <span>
-      <span className="text-sm text-white/80 block">{label}</span>
-      {info && <span className="text-xs text-white/35">{info}</span>}
-    </span>
-    <span className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ml-3 ${checked ? 'bg-[#E94560]' : 'bg-white/15'}`}>
+  <label className="flex items-center justify-between w-full text-left cursor-pointer group/toggle">
+    <div className="flex items-center gap-2">
+      <span className="text-sm text-white/80">{label}</span>
+      {info && (
+        <div className="relative group inline-flex items-center">
+          <span className="text-[10px] text-white/30 hover:text-white/70 cursor-help transition-colors bg-white/5 rounded-full w-4 h-4 flex items-center justify-center font-bold">?</span>
+          <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-2.5 rounded-lg bg-black/90 backdrop-blur border border-white/10 shadow-xl text-xs text-white/80 whitespace-normal leading-relaxed pointer-events-none text-left">
+            {info}
+          </div>
+        </div>
+      )}
+    </div>
+    <div className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ml-3 ${checked ? 'bg-[#E94560]' : 'bg-white/15'}`}>
       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-4' : ''}`} />
-    </span>
-  </button>
+    </div>
+    <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+  </label>
 );
 
 export const TextInput = ({ label, info, value, onChange, placeholder, type = 'text' }) => (
@@ -93,7 +104,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`rounded-lg font-semibold transition-all active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
     </button>
@@ -175,8 +186,11 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
 
 export const Toast = ({ toast }) =>
   !toast ? null : (
-    <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-xl text-sm font-medium animate-[fadein_.2s] bg-[#16213E] border border-white/10">
-      <span className={toast.type === 'error' ? 'text-red-400' : toast.type === 'info' ? 'text-blue-300' : 'text-green-400'}>
+    <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl animate-slide-up bg-[#16213E]/95 backdrop-blur-md border border-white/10 flex items-center gap-3 min-w-[250px]">
+      {toast.type === 'error' && <span className="text-lg">❌</span>}
+      {toast.type === 'info' && <span className="text-lg">ℹ️</span>}
+      {(!toast.type || toast.type === 'success') && <span className="text-lg">✅</span>}
+      <span className={`text-sm font-medium ${toast.type === 'error' ? 'text-red-400' : toast.type === 'info' ? 'text-blue-300' : 'text-green-400'}`}>
         {toast.message}
       </span>
     </div>

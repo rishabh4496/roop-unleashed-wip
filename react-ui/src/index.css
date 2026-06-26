@@ -40,3 +40,33 @@
 .preview-glow {
   animation: pulse-glow 3s infinite;
 }
+
+@keyframes progress-stripes {
+  0% { background-position: 1rem 0; }
+  100% { background-position: 0 0; }
+}
+
+.progress-bar-animated {
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-size: 1rem 1rem;
+  animation: progress-stripes 1s linear infinite;
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes tooltip-fade {
+  from { opacity: 0; transform: translateY(4px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.group-hover\:animate-tooltip:hover .tooltip-content {
+  display: block;
+  animation: tooltip-fade 0.15s ease-out forwards;
+}
