@@ -20,10 +20,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [selTargetFace, setSelTargetFace] = useState(0);
   const [frame, setFrame] = useState(1);
   const [maxFrames, setMaxFrames] = useState(1);
-  const [fakePreview, setFakePreview] = useState(false);
-  const [previewSrc, setPreviewSrc] = useState('');
-  const [uploadingSrc, setUploadingSrc] = useState(false);
-  const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
@@ -59,7 +55,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     
     const idx = opts.index ?? selTarget;
     const fr = opts.frame ?? frame;
-    const fake = opts.fake ?? fakePreview;
+    const fake = true;
 
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
     // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
@@ -134,11 +130,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
   });
   useEffect(() => {
-    if (!fakePreview || targets.length === 0 || progress.processing) return;
+    if (targets.length === 0 || progress.processing) return;
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fakePreview, previewKey, sourceFaces.length, targetFaces.length]);
+  }, [previewKey, sourceFaces.length, targetFaces.length]);
 
   // ── source / target file handling ──
   const onAddSource = async (files) => {
@@ -223,6 +219,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       const res = await postJSON('/api/target/set_frame', { which, frame });
       if (res.targets) setTargets(res.targets);
       notify(`Set ${which} frame = ${frame}`);
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  const setFrameMarkerVal = async (which, val) => {
+    if (!val || isNaN(val)) return;
+    try {
+      const res = await postJSON('/api/target/set_frame', { which, frame: val });
+      if (res.targets) setTargets(res.targets);
+      notify(`Set ${which} frame = ${val}`);
     } catch (e) { notify(e.message, 'error'); }
   };
 
@@ -340,7 +345,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               </div>
             )}
             <div className="flex items-center flex-wrap gap-3">
-              <Toggle label="Face-swap preview" checked={fakePreview} onChange={(v) => { setFakePreview(v); refreshPreview({ fake: v }); }} />
               <Toggle label="🔍 Before / After" checked={compare} onChange={setCompare} />
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
@@ -354,19 +358,39 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                 <div className="flex flex-wrap items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
                   <Button size="sm" variant="secondary" onClick={() => refreshPreview()} className="!py-1.5 flex-1 sm:flex-none justify-center">Show frame</Button>
                   <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} className="!py-1.5 flex-1 sm:flex-none justify-center">
-                    <span className="opacity-60 mr-1">⬅ Start:</span> <span className="font-mono text-[#E94560]">{targets[selTarget]?.start_frame ?? 1}</span>
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} className="!py-1.5 flex-1 sm:flex-none justify-center">
-                    <span className="opacity-60 mr-1">End:</span> <span className="font-mono text-[#E94560]">{targets[selTarget]?.end_frame ?? maxFrames}</span> ➡
-                  </Button>
+                  
+                  <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
+                    <span className="text-xs opacity-60">Start:</span>
+                    <input type="number" 
+                      className="bg-transparent w-16 text-right font-mono text-[#E94560] outline-none text-sm"
+                      key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
+                      defaultValue={targets[selTarget]?.start_frame ?? 1}
+                      onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                    />
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} title="Set to current slider frame" className="!py-1.5 !px-2">⬅ Set</Button>
+                  
+                  <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
+                  
+                  <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
+                    <span className="text-xs opacity-60">End:</span>
+                    <input type="number" 
+                      className="bg-transparent w-16 text-right font-mono text-[#E94560] outline-none text-sm"
+                      key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
+                      defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
+                      onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                    />
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} title="Set to current slider frame" className="!py-1.5 !px-2">Set ➡</Button>
                 </div>
               </>
             )}
           </div>
           <div>
             <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-              groups={targetGroups}
+              groups={targetGroups} vertical={true}
               onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
               empty="Use 'face from frame'" />
             {targetFaces.length > 0 && (

@@ -103,7 +103,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 // Gallery of face thumbnails with selection + move/remove controls.
 const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
 
-export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups }) => {
+export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false }) => {
   const personCount = groups && groups.length ? new Set(groups).size : 0;
   return (
     <div>
@@ -120,29 +120,49 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           {empty || 'None yet'}
         </div>
       ) : (
-        <div className="grid grid-cols-4 gap-2">
+        <div className={vertical ? "flex flex-col gap-2" : "grid grid-cols-4 gap-2"}>
           {faces.map((src, i) => {
             const person = groups && i < groups.length ? groups[i] : null;
             const color = person != null ? PERSON_COLORS[person % PERSON_COLORS.length] : null;
             return (
               <div
                 key={i}
-                className={`group relative aspect-square rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${selected === i ? 'scale-105' : 'hover:border-white/30'}`}
+                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
                 style={{ borderColor: selected === i ? (color || '#E94560') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
               >
-                <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
-                {person != null && (
-                  <span className="absolute bottom-0.5 left-0.5 px-1 rounded text-[9px] font-semibold leading-tight text-white"
-                    style={{ backgroundColor: color }}>P{person + 1}</span>
-                )}
-                {onRemove && (
-                  <button
-                    type="button"
-                    title="Remove this face"
-                    onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                    className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[#E94560] transition-opacity flex items-center justify-center"
-                  >✕</button>
+                {vertical ? (
+                  <>
+                    <img src={src} alt={`face ${i}`} className="w-10 h-10 rounded object-cover shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-white/90">
+                        {person != null ? `Person ${person + 1}` : `Face ${i + 1}`}
+                      </div>
+                    </div>
+                    {onRemove && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onRemove(i); }}
+                        className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[#E94560] hover:text-white transition-colors flex items-center justify-center"
+                      >✕</button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
+                    {person != null && (
+                      <span className="absolute bottom-0.5 left-0.5 px-1 rounded text-[9px] font-semibold leading-tight text-white"
+                        style={{ backgroundColor: color }}>P{person + 1}</span>
+                    )}
+                    {onRemove && (
+                      <button
+                        type="button"
+                        title="Remove this face"
+                        onClick={(e) => { e.stopPropagation(); onRemove(i); }}
+                        className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[#E94560] transition-opacity flex items-center justify-center"
+                      >✕</button>
+                    )}
+                  </>
                 )}
               </div>
             );
