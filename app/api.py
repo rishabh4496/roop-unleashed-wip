@@ -57,7 +57,10 @@ no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _save_upload(file: UploadFile) -> str:
-    path = os.path.join(API_TEMP, file.filename)
+    # Recreate the upload dir every time — the Gradio "clean temp" action and
+    # prepare_environment() can delete the whole temp/ tree out from under us.
+    os.makedirs(API_TEMP, exist_ok=True)
+    path = os.path.join(API_TEMP, os.path.basename(file.filename))
     with open(path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     return path
