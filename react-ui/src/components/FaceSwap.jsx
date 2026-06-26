@@ -18,7 +18,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
+  const [previewing, setPreviewing] = useState(false);
   const pollRef = useRef(null);
+  const previewBusyRef = useRef(false);   // a /api/preview call is in flight
+  const previewPendingRef = useRef(null); // latest queued request while busy (coalesced)
 
   // p = the swap parameters, seeded from CFG (settings) and patched locally.
   const p = settings || {};
@@ -34,10 +37,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   }, []);
 
   const refreshPreview = async (opts = {}) => {
+    if (targets.length === 0) { setPreviewSrc(''); return; }
+    // Single-flight: the backend's live_swap shares one (non-thread-safe)
+    // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
+    // TensorRT/CUDA. So never run two at once — queue the latest request and
+    // run it once the current one finishes.
+    if (previewBusyRef.current) { previewPendingRef.current = opts; return; }
+    previewBusyRef.current = true;
+    setPreviewing(true);
     const idx = opts.index ?? selTarget;
     const fr = opts.frame ?? frame;
     const fake = opts.fake ?? fakePreview;
-    if (targets.length === 0) { setPreviewSrc(''); return; }
     try {
       const res = await postJSON('/api/preview', {
         index: idx, frame: fr, fake_preview: fake,
@@ -52,11 +62,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       });
       setPreviewSrc(res.image || '');
     } catch (e) { notify(e.message, 'error'); }
+    finally {
+      previewBusyRef.current = false;
+      setPreviewing(false);
+      if (previewPendingRef.current) {
+        const next = previewPendingRef.current;
+        previewPendingRef.current = null;
+        refreshPreview(next);
+      }
+    }
   };
 
   // Auto-refresh preview when the selected target or frame changes.
   useEffect(() => {
-    if (targets.length === 0) return;
+    if (targets.length === 0 || progress.processing) return;
     const t = setTimeout(() => refreshPreview(), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,7 +91,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
   });
   useEffect(() => {
-    if (!fakePreview || targets.length === 0) return;
+    if (!fakePreview || targets.length === 0 || progress.processing) return;
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -214,9 +233,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       <Section title="Preview">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-3">
-            <div className="aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+            <div className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
               {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
                 : <span className="text-white/30 text-sm">Select a target to preview</span>}
+              {previewing && (
+                <div className="absolute top-2 right-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80">
+                  <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+                  Rendering…
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <Toggle label="Face-swap preview" checked={fakePreview} onChange={(v) => { setFakePreview(v); refreshPreview({ fake: v }); }} />
