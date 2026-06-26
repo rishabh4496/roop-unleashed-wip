@@ -8,7 +8,8 @@ module.exports = {
     let installed = info.exists("app/env")
     let running = {
       install: info.running("install.js"),
-      start: info.running("start.js"),
+      start_react: info.running("start_react.js"),
+      start_legacy: info.running("start_legacy.js"),
       update: info.running("update.js"),
       reset: info.running("reset.js"),
       link: info.running("link.js"),
@@ -22,25 +23,46 @@ module.exports = {
         href: "install.js",
       }]
     } else if (installed) {
-      if (running.start) {
-        let local = info.local("start.js")
+      if (running.start_react) {
+        let local = info.local("start_react.js")
         if (local && local.url) {
           return [{
             default: true,
             icon: "fa-solid fa-rocket",
-            text: "Open Web UI",
+            text: "Open React UI",
             href: local.url,
           }, {
             icon: 'fa-solid fa-terminal',
             text: "Terminal",
-            href: "start.js",
+            href: "start_react.js",
           }]
         } else {
           return [{
             default: true,
             icon: 'fa-solid fa-terminal',
             text: "Terminal",
-            href: "start.js",
+            href: "start_react.js",
+          }]
+        }
+      } else if (running.start_legacy) {
+        let local = info.local("start_legacy.js")
+        if (local && local.url) {
+          return [{
+            default: true,
+            icon: "fa-solid fa-rocket",
+            text: "Open Legacy UI",
+            href: local.url,
+          }, {
+            icon: 'fa-solid fa-terminal',
+            text: "Terminal",
+            href: "start_legacy.js",
+          }]
+        } else {
+          return [{
+            default: true,
+            icon: 'fa-solid fa-terminal',
+            text: "Terminal",
+            href: "start_legacy.js",
           }]
         }
       } else if (running.update) {
@@ -74,9 +96,13 @@ module.exports = {
       } else {
         return [{
           default: true,
+          icon: "fa-solid fa-rocket",
+          text: "Start React UI",
+          href: "start_react.js",
+        }, {
           icon: "fa-solid fa-power-off",
-          text: "Start",
-          href: "start.js",
+          text: "Start Legacy UI",
+          href: "start_legacy.js",
         }, {
           icon: "fa-solid fa-plug",
           text: "Update",
