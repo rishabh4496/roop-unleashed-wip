@@ -7,10 +7,13 @@ module.exports = {
       "params": {
         "venv": "{{args && args.venv ? args.venv : null}}",
         "path": "{{args && args.path ? args.path : '.'}}",
+        "env": {
+          "PYTHONHTTPSVERIFY": "0"
+        },
         "message": [
            "python -m pip install torch==2.7.0 torchvision==0.22.0 {{args && args.xformers ? 'xformers' : ''}} --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps",
            "python -m pip install onnxruntime-gpu==1.19.0",
-           "python -m pip install tensorrt-cu12==10.4.0"
+           "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt==10.4.0"
         ]
       },
       "next": null
@@ -74,10 +77,13 @@ module.exports = {
       "params": {
         "venv": "{{args && args.venv ? args.venv : null}}",
         "path": "{{args && args.path ? args.path : '.'}}",
+        "env": {
+          "PYTHONHTTPSVERIFY": "0"
+        },
         "message": [
           "python -m pip install torch==2.7.0 torchvision==0.22.0 {{args && args.xformers ? 'xformers' : ''}} --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps",
           "python -m pip install onnxruntime-gpu==1.19.0",
-          "python -m pip install tensorrt-cu12==10.4.0"
+          "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt==10.4.0"
         ]
       },
       "next": null

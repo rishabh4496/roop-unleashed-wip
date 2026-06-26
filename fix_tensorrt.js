@@ -11,8 +11,11 @@ module.exports = {
       params: {
         venv: "env",
         path: "app",
+        env: {
+          "PYTHONHTTPSVERIFY": "0"
+        },
         message: [
-          "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-cu12==10.4.0"
+          "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt==10.4.0"
         ]
       }
     },
