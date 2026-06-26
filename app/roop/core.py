@@ -15,6 +15,9 @@ import torch
 
 try:
     import tensorrt  # registers TensorRT DLL paths on Windows so onnxruntime can find them
+    trt_libs_path = os.path.join(os.path.dirname(os.path.dirname(tensorrt.__file__)), 'tensorrt_libs')
+    if os.path.exists(trt_libs_path):
+        os.environ['PATH'] = trt_libs_path + os.pathsep + os.environ.get('PATH', '')
 except ImportError:
     pass
 

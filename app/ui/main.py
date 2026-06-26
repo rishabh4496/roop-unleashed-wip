@@ -50,6 +50,10 @@ def run():
         _trt_ok = False
         try:
             import tensorrt  # noqa: F401 – presence means DLLs are registered
+            import os
+            trt_libs_path = os.path.join(os.path.dirname(os.path.dirname(tensorrt.__file__)), 'tensorrt_libs')
+            if os.path.exists(trt_libs_path):
+                os.environ['PATH'] = trt_libs_path + os.pathsep + os.environ.get('PATH', '')
             _trt_ok = True
         except ImportError:
             pass
