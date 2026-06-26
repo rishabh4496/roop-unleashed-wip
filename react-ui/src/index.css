@@ -20,3 +20,23 @@
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes float-up {
+  0% { transform: translateY(20px) scale(0.5); opacity: 0; }
+  20% { opacity: 1; transform: translateY(0px) scale(1.2); }
+  80% { opacity: 1; transform: translateY(-40px) scale(1); }
+  100% { transform: translateY(-60px) scale(0.8); opacity: 0; }
+}
+
+.emoji-float {
+  animation: float-up 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 15px rgba(233, 69, 96, 0.2); border-color: rgba(255, 255, 255, 0.1); }
+  50% { box-shadow: 0 0 25px rgba(233, 69, 96, 0.5); border-color: rgba(233, 69, 96, 0.4); }
+}
+
+.preview-glow {
+  animation: pulse-glow 3s infinite;
+}

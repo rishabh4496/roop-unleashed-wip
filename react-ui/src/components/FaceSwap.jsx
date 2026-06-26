@@ -308,29 +308,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       <Section title="Preview">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-3">
-            {compare && previewSrc ? (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="relative aspect-square rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
-                  <span className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-full bg-black/60 text-[10px] text-white/70">Before</span>
-                  {rawUrl ? <img src={rawUrl} alt="original" className="max-w-full max-h-full object-contain" /> : null}
-                </div>
-                <div className="relative aspect-square rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
-                  <span className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-full bg-[#E94560]/80 text-[10px] text-white">After</span>
-                  <img src={previewSrc} alt="swapped" className="max-w-full max-h-full object-contain" />
-                </div>
-              </div>
+            {compare && previewSrc && rawUrl ? (
+              <ImageSlider beforeSrc={rawUrl} afterSrc={previewSrc} />
             ) : (
-              <div className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+              <div className={`relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center transition-all duration-300 ${previewing ? 'preview-glow' : ''}`}>
                 {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
                   : <span className="text-white/30 text-sm">Select a target to preview</span>}
+                {previewing && <FloatingEmojis />}
                 {previewing && (
-                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
-                    <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80 tabular-nums">
+                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-20">
+                    <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80 tabular-nums border border-white/10 shadow-lg">
                       <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
                       Rendering… {previewSecs}s
                     </div>
                     {previewSecs >= 12 && (
-                      <div className="px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur text-[10px] text-white/50 max-w-[220px] text-right">
+                      <div className="px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur text-[10px] text-white/50 max-w-[220px] text-right border border-white/10 shadow-lg">
                         First run of a model downloads it &amp; builds the engine — this can take a few minutes.
                       </div>
                     )}
@@ -511,5 +503,113 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
         onChange={(e) => { if (e.target.files.length) onFiles(e.target.files); e.target.value = ''; }}
         disabled={busy} className="hidden" />
     </label>
+  );
+}
+
+function FloatingEmojis() {
+  const emojis = ['✨', '🪄', '🎭', '🔄', '🌟', '🚀', '🔮'];
+  const [activeEmojis, setActiveEmojis] = useState([]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const e = emojis[Math.floor(Math.random() * emojis.length)];
+      const id = Date.now();
+      const left = Math.random() * 80 + 10;
+      setActiveEmojis((prev) => [...prev, { id, emoji: e, left }]);
+      
+      setTimeout(() => {
+        setActiveEmojis((prev) => prev.filter(item => item.id !== id));
+      }, 2000);
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
+      {activeEmojis.map(({ id, emoji, left }) => (
+        <div key={id} className="absolute bottom-4 text-2xl emoji-float" style={{ left: `${left}%` }}>
+          {emoji}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ImageSlider({ beforeSrc, afterSrc }) {
+  const [sliderPosition, setSliderPosition] = useState(50);
+  const containerRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleMove = (clientX) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+    const percent = Math.max(0, Math.min((x / rect.width) * 100, 100));
+    setSliderPosition(percent);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    handleMove(e.clientX);
+  };
+  const handleTouchMove = (e) => {
+    if (!isDragging) return;
+    handleMove(e.touches[0].clientX);
+  };
+
+  useEffect(() => {
+    const stopDragging = () => setIsDragging(false);
+    window.addEventListener('mouseup', stopDragging);
+    window.addEventListener('touchend', stopDragging);
+    return () => {
+      window.removeEventListener('mouseup', stopDragging);
+      window.removeEventListener('touchend', stopDragging);
+    };
+  }, []);
+
+  return (
+    <div 
+      ref={containerRef}
+      className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 select-none cursor-ew-resize group shadow-lg"
+      onMouseDown={(e) => { setIsDragging(true); handleMove(e.clientX); }}
+      onTouchStart={(e) => { setIsDragging(true); handleMove(e.touches[0].clientX); }}
+      onMouseMove={handleMouseMove}
+      onTouchMove={handleTouchMove}
+    >
+      {/* Before Image */}
+      <img src={beforeSrc} alt="Before" className="absolute inset-0 w-full h-full object-contain pointer-events-none" draggable={false} />
+      <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-semibold tracking-wider text-white/80 uppercase shadow z-10">Before</span>
+
+      {/* After Image (clipped) */}
+      <div 
+        className="absolute inset-0 overflow-hidden pointer-events-none" 
+        style={{ clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` }}
+      >
+        <img src={afterSrc} alt="After" className="absolute inset-0 w-full h-full object-contain" draggable={false} />
+      </div>
+      
+      {/* Target indicator for 'After' */}
+      <span 
+        className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-semibold tracking-wider text-white uppercase shadow z-10 transition-opacity duration-300"
+        style={{ opacity: sliderPosition > 85 ? 0 : 1 }}
+      >
+        After
+      </span>
+
+      {/* Slider Line & Handle */}
+      <div 
+        className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-20 pointer-events-none"
+        style={{ left: `${sliderPosition}%` }}
+      >
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </div>
+      </div>
+    </div>
   );
 }
