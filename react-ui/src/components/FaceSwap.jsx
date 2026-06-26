@@ -25,6 +25,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [previewing, setPreviewing] = useState(false);
+  const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
   const pollRef = useRef(null);
   const startTimeRef = useRef(null);
@@ -56,6 +57,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     const idx = opts.index ?? selTarget;
     const fr = opts.frame ?? frame;
     const fake = opts.fake ?? fakePreview;
+    // Safety net: the first run of a new model downloads it and builds a
+    // TensorRT/CUDA engine (minutes). Abort after 15 min so a genuine hang can
+    // never wedge the single-flight guard permanently.
+    const ctrl = new AbortController();
+    const killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
     try {
       const res = await postJSON('/api/preview', {
         index: idx, frame: fr, fake_preview: fake,
@@ -67,10 +73,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         swap_model: p.swap_model,
-      });
+      }, { signal: ctrl.signal });
       setPreviewSrc(res.image || '');
-    } catch (e) { notify(e.message, 'error'); }
+    } catch (e) {
+      notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
+    }
     finally {
+      clearTimeout(killer);
       previewBusyRef.current = false;
       setPreviewing(false);
       if (previewPendingRef.current) {
@@ -80,6 +89,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       }
     }
   };
+
+  // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
+  // working, not hung.
+  useEffect(() => {
+    if (!previewing) { setPreviewSecs(0); return; }
+    const started = Date.now();
+    setPreviewSecs(0);
+    const id = setInterval(() => setPreviewSecs(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [previewing]);
 
   // Auto-refresh preview when the selected target or frame changes.
   useEffect(() => {
@@ -281,9 +300,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                 {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
                   : <span className="text-white/30 text-sm">Select a target to preview</span>}
                 {previewing && (
-                  <div className="absolute top-2 right-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80">
-                    <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
-                    Rendering…
+                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                    <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80 tabular-nums">
+                      <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+                      Rendering… {previewSecs}s
+                    </div>
+                    {previewSecs >= 12 && (
+                      <div className="px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur text-[10px] text-white/50 max-w-[220px] text-right">
+                        First run of a model downloads it &amp; builds the engine — this can take a few minutes.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

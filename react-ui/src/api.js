@@ -13,11 +13,12 @@ async function handle(res) {
 
 export const getJSON = (path) => fetch(`${API}${path}`).then(handle);
 
-export const postJSON = (path, body) =>
+export const postJSON = (path, body, opts = {}) =>
   fetch(`${API}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
+    signal: opts.signal,
   }).then(handle);
 
 export const postFiles = (path, files, fields) => {
