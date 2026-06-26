@@ -340,18 +340,16 @@ class ProcessMgr():
             temp_frame = cv2.imdecode(np.fromfile(f, dtype=np.uint8), cv2.IMREAD_COLOR)
             if temp_frame is not None:
                 try:
-                    # Acquire the GPU lock before any GPU-bound work.
-                    # Serialise GPU work only for TensorRT (its execution context
-                    # is not thread-safe); CUDA/CPU run() is thread-safe so threads
-                    # proceed concurrently (see _gpu_guard).
-                    with _gpu_guard():
-                        if self.options.frame_processing:
+                    if self.options.frame_processing:
+                        with _gpu_guard():
                             frame = temp_frame
                             for p in self.processors:
                                 frame = p.Run(frame)
                             resimg = frame
-                        else:
-                            resimg = self.process_frame(temp_frame)
+                    else:
+                        # process_frame serialises only its GPU primitives (under
+                        # TensorRT); CPU work overlaps across threads.
+                        resimg = self.process_frame(temp_frame)
                 except RuntimeError as exc:
                     # Catch per-frame GPU failures (CUDA error 999, OOM, etc.) so a
                     # single bad frame does not abort the entire batch.  Write the
@@ -408,14 +406,16 @@ class ProcessMgr():
                 return
             else:
                 try:
-                    with _gpu_guard():
-                        if self.options.frame_processing:
+                    if self.options.frame_processing:
+                        with _gpu_guard():
                             out = frame
                             for p in self.processors:
                                 out = p.Run(out)
                             resimg = out
-                        else:
-                            resimg = self.process_frame(frame)
+                    else:
+                        # process_frame serialises only its GPU primitives (under
+                        # TensorRT), so CPU work overlaps across threads.
+                        resimg = self.process_frame(frame)
                 except RuntimeError as exc:
                     err_str = str(exc)
                     if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
@@ -618,7 +618,8 @@ class ProcessMgr():
         do_kps_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
 
         if self.options.swap_mode == "first":
-            face = get_first_face(frame)
+            with _gpu_guard():                      # face detection is GPU work
+                face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
             if do_kps_stab:
@@ -628,7 +629,8 @@ class ProcessMgr():
             del face
 
         else:
-            faces = get_all_faces(frame)
+            with _gpu_guard():                      # face detection is GPU work
+                faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
             if do_kps_stab:
@@ -791,7 +793,8 @@ class ProcessMgr():
                     rotcutframe = rotate_anticlockwise(rotcutframe)
                 elif rotation_action == "rotate_clockwise":
                     rotcutframe = rotate_clockwise(rotcutframe)
-                rotface = get_first_face(rotcutframe)
+                with _gpu_guard():                  # autorotate re-detection is GPU work
+                    rotface = get_first_face(rotcutframe)
                 if rotface is None:
                     rotation_action = None
                 else:
@@ -893,7 +896,8 @@ class ProcessMgr():
                     except Exception:
                         pass
 
-                    posed_face = _gff(posed_crop)
+                    with _gpu_guard():           # re-detection on the posed crop is GPU work
+                        posed_face = _gff(posed_crop)
                     if (posed_face is not None
                             and hasattr(posed_face, 'normed_embedding')
                             and posed_face.normed_embedding is not None):
@@ -942,9 +946,10 @@ class ProcessMgr():
                 subsample_frames = self.implode_pixel_boost(aligned_for_swap, model_output_size, subsample_total)
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
-                        sliced_frame = self.prepare_crop_frame(sliced_frame, p)
-                        sliced_frame = p.Run(inputface, target_face, sliced_frame)
-                        sliced_frame = self.normalize_swap_frame(sliced_frame, p)
+                        sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
+                        with _gpu_guard():                                        # GPU inference
+                            sliced_frame = p.Run(inputface, target_face, sliced_frame)
+                        sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
                     swap_result_frames.append(sliced_frame)
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
@@ -957,9 +962,11 @@ class ProcessMgr():
                     except Exception as e:
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
-                fake_frame = self.process_mask(p, aligned_img, fake_frame)
+                with _gpu_guard():                   # mask model inference is GPU work
+                    fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
-                enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
+                with _gpu_guard():                   # enhancer inference is GPU work
+                    enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
         # enhanced_frame is registered to the canonical face template, so a
