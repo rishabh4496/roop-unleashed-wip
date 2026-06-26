@@ -1,5 +1,14 @@
+import os
 import yaml
 
+# Ensure TensorRT DLLs are found by ONNX Runtime across all multiprocessing child processes
+try:
+    import tensorrt
+    trt_libs_path = os.path.join(os.path.dirname(os.path.dirname(tensorrt.__file__)), 'tensorrt_libs')
+    if os.path.exists(trt_libs_path):
+        os.environ['PATH'] = trt_libs_path + os.pathsep + os.environ.get('PATH', '')
+except Exception:
+    pass
 class Settings:
     def __init__(self, config_file):
         self.config_file = config_file
