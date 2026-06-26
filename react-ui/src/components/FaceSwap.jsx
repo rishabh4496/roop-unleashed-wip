@@ -15,6 +15,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [maxFrames, setMaxFrames] = useState(1);
   const [fakePreview, setFakePreview] = useState(false);
   const [previewSrc, setPreviewSrc] = useState('');
+  const [uploadingSrc, setUploadingSrc] = useState(false);
+  const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const pollRef = useRef(null);
 
@@ -52,21 +54,52 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     } catch (e) { notify(e.message, 'error'); }
   };
 
+  // Auto-refresh preview when the selected target or frame changes.
+  useEffect(() => {
+    if (targets.length === 0) return;
+    const t = setTimeout(() => refreshPreview(), 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selTarget, frame]);
+
+  // While face-swap preview is on, auto-refresh when the swapped result would
+  // change: new source faces, target faces, or any swap/mask parameter.
+  const previewKey = JSON.stringify({
+    e: p.selected_enhancer, d: p.face_detection_mode, fd: p.max_face_distance,
+    br: p.blend_ratio, me: p.mask_engine, ct: p.mask_clip_text, nfa: p.no_face_action,
+    vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
+    rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
+    r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
+  });
+  useEffect(() => {
+    if (!fakePreview || targets.length === 0) return;
+    const t = setTimeout(() => refreshPreview(), 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fakePreview, previewKey, sourceFaces.length, targetFaces.length]);
+
   // ── source / target file handling ──
   const onAddSource = async (e) => {
     if (!e.target.files.length) return;
+    const before = sourceFaces.length;
+    const fileEl = e.target;
+    setUploadingSrc(true);
     try {
-      const res = await postFiles('/api/source/add', e.target.files);
+      const res = await postFiles('/api/source/add', fileEl.files);
       setSourceFaces(res.source_faces);
-      notify(`Loaded ${res.faceset_count} source faceset(s)`);
+      const added = res.source_faces.length - before;
+      if (added > 0) notify(`Loaded ${added} face(s) — ${res.faceset_count} faceset(s) total`);
+      else notify('No face detected in the uploaded file(s)', 'error');
     } catch (err) { notify(err.message, 'error'); }
-    e.target.value = '';
+    finally { setUploadingSrc(false); fileEl.value = ''; }
   };
 
   const onAddTarget = async (e) => {
     if (!e.target.files.length) return;
+    const fileEl = e.target;
+    setUploadingTgt(true);
     try {
-      const res = await postFiles('/api/target/add', e.target.files);
+      const res = await postFiles('/api/target/add', fileEl.files);
       setTargets(res.targets);
       setSelTarget(res.selected_target_index || 0);
       const mf = res.targets[res.selected_target_index || 0]?.frames || 1;
@@ -74,7 +107,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       refreshPreview({ index: res.selected_target_index || 0, frame: 1 });
       notify(`Added ${res.targets.length} target(s)`);
     } catch (err) { notify(err.message, 'error'); }
-    e.target.value = '';
+    finally { setUploadingTgt(false); fileEl.value = ''; }
   };
 
   const selectTarget = async (i) => {
@@ -146,7 +179,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       {/* uploads */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Section title="Source images / facesets">
-          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onChange={onAddSource} />
+          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onChange={onAddSource} busy={uploadingSrc} />
           <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} empty="Upload a face image" />
           {sourceFaces.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -159,7 +192,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         </Section>
 
         <Section title="Target file(s)">
-          <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onChange={onAddTarget} />
+          <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onChange={onAddTarget} busy={uploadingTgt} />
           {targets.length === 0 ? (
             <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
           ) : (
@@ -300,13 +333,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   );
 }
 
-function FileDrop({ label, accept, multiple, onChange }) {
+function FileDrop({ label, accept, multiple, onChange, busy }) {
   return (
-    <label className="block cursor-pointer">
-      <div className="px-4 py-6 rounded-lg border-2 border-dashed border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02] transition-colors text-center">
-        <span className="text-sm text-white/60">📁 {label}</span>
+    <label className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer'}`}>
+      <div className={`px-4 py-6 rounded-lg border-2 border-dashed text-center transition-colors ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
+        {busy ? (
+          <span className="inline-flex items-center gap-2 text-sm text-white/80">
+            <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+            Uploading & analysing…
+          </span>
+        ) : (
+          <span className="text-sm text-white/60">📁 {label}</span>
+        )}
       </div>
-      <input type="file" accept={accept} multiple={multiple} onChange={onChange} className="hidden" />
+      <input type="file" accept={accept} multiple={multiple} onChange={onChange} disabled={busy} className="hidden" />
     </label>
   );
 }
