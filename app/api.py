@@ -187,6 +187,7 @@ def get_state():
             "name": os.path.basename(entry.filename),
             "startframe": entry.startframe,
             "endframe": entry.endframe,
+            "frames": entry.endframe if entry.endframe else 1,
         })
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],

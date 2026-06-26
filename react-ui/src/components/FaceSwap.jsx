@@ -41,7 +41,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     getJSON('/api/state').then((st) => {
       setSourceFaces(st.source_faces || []);
       setTargetFaces(st.target_faces || []);
-      setTargets(st.targets || []);
+      const tg = st.targets || [];
+      setTargets(tg);
+      if (tg.length > 0) {
+        const sel = st.selected_target_index || 0;
+        setSelTarget(sel);
+        setMaxFrames(tg[sel]?.frames || 1);
+        setFrame(1);
+      }
     }).catch(() => {});
   }, []);
 
@@ -100,13 +107,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     return () => clearInterval(id);
   }, [previewing]);
 
-  // Auto-refresh preview when the selected target or frame changes.
+  // Auto-refresh preview when the target list, selected target, or frame
+  // changes (targets.length covers initial rehydrate after a page refresh).
   useEffect(() => {
     if (targets.length === 0 || progress.processing) return;
     const t = setTimeout(() => refreshPreview(), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selTarget, frame]);
+  }, [selTarget, frame, targets.length]);
 
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
