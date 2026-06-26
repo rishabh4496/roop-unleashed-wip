@@ -7,8 +7,9 @@ module.exports = {
       when: "{{!exists('app')}}",
       method: "shell.run",
       params: {
+        shell: "{{which('bash')}}",
         message: [
-          "git clone --filter=blob:none --sparse https://github.com/Adutchguy/roop-unleashed-wip.git _app_tmp && git -C _app_tmp sparse-checkout set app && mv _app_tmp/app app && rm -rf _app_tmp"
+          "git clone --filter=blob:none --sparse https://github.com/rishabh4496/roop-unleashed-wip.git _app_tmp && git -C _app_tmp sparse-checkout set app && mv _app_tmp/app app && rm -rf _app_tmp"
         ]
       }
     },
