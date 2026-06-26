@@ -1,14 +1,46 @@
 import os
 import yaml
 
-# Ensure TensorRT DLLs are found by ONNX Runtime across all multiprocessing child processes
-try:
-    import tensorrt
-    trt_libs_path = os.path.join(os.path.dirname(os.path.dirname(tensorrt.__file__)), 'tensorrt_libs')
-    if os.path.exists(trt_libs_path):
-        os.environ['PATH'] = trt_libs_path + os.pathsep + os.environ.get('PATH', '')
-except Exception:
-    pass
+# --- Make the TensorRT execution provider actually loadable on Windows ---
+# onnxruntime advertises 'TensorrtExecutionProvider' as available even when its
+# native runtime DLLs cannot be loaded. Loading onnxruntime_providers_tensorrt.dll
+# requires BOTH of these to be resolvable at import time:
+#   1) nvinfer_*.dll        -> shipped in the `tensorrt_libs` package folder
+#   2) the CUDA/cuDNN runtime DLLs -> shipped inside torch's `lib` folder
+# If either is missing, ORT fails with "LoadLibrary failed with error 126" and
+# silently falls back to the CUDA provider (losing TensorRT acceleration).
+#
+# Since Python 3.8, Windows ignores PATH for dependent-DLL resolution and only
+# searches directories registered via os.add_dll_directory(); the CUDA runtime
+# additionally has to be *loaded* into the process, which importing torch does.
+# settings is imported very early in every process (including spawned video
+# workers), so doing this here fixes the silent CUDA fallback everywhere.
+def _enable_tensorrt_runtime():
+    dll_dirs = []
+    try:
+        import tensorrt
+        trt_libs = os.path.join(os.path.dirname(os.path.dirname(tensorrt.__file__)), 'tensorrt_libs')
+        if os.path.isdir(trt_libs):
+            dll_dirs.append(trt_libs)
+    except Exception:
+        pass
+    try:
+        # Importing torch loads the CUDA/cuDNN runtime DLLs the TRT EP depends on.
+        import torch
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), 'lib')
+        if os.path.isdir(torch_lib):
+            dll_dirs.append(torch_lib)
+    except Exception:
+        pass
+    for d in dll_dirs:
+        try:
+            if hasattr(os, 'add_dll_directory'):
+                os.add_dll_directory(d)
+        except Exception:
+            pass
+        os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+
+_enable_tensorrt_runtime()
 class Settings:
     def __init__(self, config_file):
         self.config_file = config_file
