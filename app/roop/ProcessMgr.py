@@ -97,8 +97,9 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
-        # One Euro keypoint stabilizer (video only); active flag is set per-run.
-        self.kps_stabilizer = None
+        # One Euro stabilizers (video only); active flag is set per-run.
+        self.kps_stabilizer = None    # smooths face keypoints (anti-wobble)
+        self.enh_stabilizer = None    # smooths enhancer output (anti-flicker)
         self._stab_active = False
         self._stab_t = 0
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
@@ -123,15 +124,21 @@ class ProcessMgr():
         self.options = options
         devicename = get_device()
 
-        # Build the One Euro keypoint stabilizer when requested. It only takes
-        # effect in the sequential video path (run_batch_inmem sets _stab_active).
+        # Build the One Euro stabilizers when requested. They only take effect in
+        # the sequential video path (run_batch_inmem sets _stab_active).
         if getattr(options, 'stabilize_face', False):
             from roop.one_euro import KpsStabilizer
             self.kps_stabilizer = KpsStabilizer(
-                min_cutoff=getattr(options, 'stabilize_min_cutoff', 1.0),
-                beta=getattr(options, 'stabilize_beta', 0.05))
+                min_cutoff=getattr(options, 'stabilize_min_cutoff', 0.05),
+                beta=getattr(options, 'stabilize_beta', 0.02))
         else:
             self.kps_stabilizer = None
+        if getattr(options, 'stabilize_enhancer', False):
+            from roop.one_euro import EnhancerStabilizer
+            self.enh_stabilizer = EnhancerStabilizer(
+                strength=getattr(options, 'stabilize_enhancer_strength', 0.5))
+        else:
+            self.enh_stabilizer = None
         self._stab_active = False
         self._stab_t = 0
 
@@ -426,16 +433,19 @@ class ProcessMgr():
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
-        # One Euro keypoint smoothing needs frames in order; the multithreaded
-        # reader strides frames across threads out-of-order, so force a single
-        # thread for the whole clip when stabilization is on (quality > speed).
-        if self.kps_stabilizer is not None:
+        # Temporal smoothing (keypoints and/or enhancer) needs frames in order;
+        # the multithreaded reader strides frames out-of-order, so force a single
+        # thread for the whole clip when any stabilizer is on (quality > speed).
+        if self.kps_stabilizer is not None or self.enh_stabilizer is not None:
             if threads != 1:
-                print("[Stabilize] Forcing single thread for temporal keypoint smoothing.")
+                print("[Stabilize] Forcing single thread for temporal smoothing.")
             threads = 1
             self._stab_active = True
             self._stab_t = 0
-            self.kps_stabilizer.reset()
+            if self.kps_stabilizer is not None:
+                self.kps_stabilizer.reset()
+            if self.enh_stabilizer is not None:
+                self.enh_stabilizer.reset()
 
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
@@ -583,15 +593,16 @@ class ProcessMgr():
     def swap_faces(self, frame, temp_frame, stabilize=False):
         num_faces_found = 0
 
-        do_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
-        if do_stab:
-            self._stab_t += 1   # one tick per frame (single-threaded in this path)
+        # Tick once per frame if any stabilizer is active (single-threaded path).
+        if stabilize and self._stab_active and (self.kps_stabilizer is not None or self.enh_stabilizer is not None):
+            self._stab_t += 1
+        do_kps_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
 
         if self.options.swap_mode == "first":
             face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
-            if do_stab:
+            if do_kps_stab:
                 self._apply_stab(face)
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
@@ -601,7 +612,7 @@ class ProcessMgr():
             faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
-            if do_stab:
+            if do_kps_stab:
                 for f in faces:
                     self._apply_stab(f)
 
@@ -915,6 +926,15 @@ class ProcessMgr():
                 fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
                 enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
+
+        # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
+        # enhanced_frame is registered to the canonical face template, so a
+        # motion-adaptive blend across frames removes enhancer texture shimmer
+        # without ghosting on movement. Skipped when autorotate rebound the face
+        # (rotated crop space is inconsistent frame-to-frame).
+        if (self._stab_active and self.enh_stabilizer is not None
+                and enhanced_frame is not None and rotation_action is None):
+            enhanced_frame = self.enh_stabilizer.apply(enhanced_frame, target_face.kps, self._stab_t)
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]

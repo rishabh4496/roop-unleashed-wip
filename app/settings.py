@@ -81,6 +81,8 @@ class Settings:
         self.stabilize_face = self.default_get(data, 'stabilize_face', False)
         self.stabilize_min_cutoff = self.default_get(data, 'stabilize_min_cutoff', 0.05)
         self.stabilize_beta = self.default_get(data, 'stabilize_beta', 0.02)
+        self.stabilize_enhancer = self.default_get(data, 'stabilize_enhancer', False)
+        self.stabilize_enhancer_strength = self.default_get(data, 'stabilize_enhancer_strength', 0.5)
 
 
 
@@ -148,6 +150,8 @@ class Settings:
             'stabilize_face': self.stabilize_face,
             'stabilize_min_cutoff': self.stabilize_min_cutoff,
             'stabilize_beta': self.stabilize_beta,
+            'stabilize_enhancer': self.stabilize_enhancer,
+            'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

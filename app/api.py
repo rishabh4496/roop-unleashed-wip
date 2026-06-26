@@ -558,7 +558,9 @@ def _run_swap(payload):
             swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
             stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
             stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
-            stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)))
+            stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
+            stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
+            stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)))
 
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"

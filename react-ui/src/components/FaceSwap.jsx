@@ -398,6 +398,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               <Slider label="Reactivity (beta)" info="higher = less lag on fast motion" min={0} max={0.2} step={0.01} value={num(p.stabilize_beta, 0.02)} onChange={(v) => set('stabilize_beta', v)} />
             </>
           )}
+          <Toggle label="✨ Reduce enhancer flicker (video)" info="temporally blends the enhanced face to kill GFPGAN/GPEN shimmer (uses In-Memory method; single-thread)" checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          {p.stabilize_enhancer && (
+            <Slider label="Flicker reduction strength" info="higher = smoother (more ghosting risk on motion)" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
+          )}
         </Section>
         <Section title="Options">
           <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
