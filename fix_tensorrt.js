@@ -11,6 +11,9 @@ module.exports = {
       params: {
         venv: "env",
         path: "app",
+        env: {
+          "PYTHONHTTPSVERIFY": "0"
+        },
         message: [
           "python -m pip install tensorrt-cu12"
         ]
