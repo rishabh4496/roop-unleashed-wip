@@ -90,116 +90,122 @@ def run():
     :root, .dark {
         color-scheme: dark !important;
 
-        --color-accent:                            #50a070;
-        --color-accent-soft:                       rgba(80,160,112,0.15);
-        --border-color-accent:                     #50a070;
-        --border-color-primary:                    #383838;
+        --color-accent:                            #E94560;
+        --color-accent-soft:                       rgba(233,69,96,0.15);
+        --border-color-accent:                     #E94560;
+        --border-color-primary:                    rgba(255, 255, 255, 0.2);
 
-        --link-text-color:                         #50a070;
-        --link-text-color-hover:                   #6dba8a;
-        --link-text-color-active:                  #6dba8a;
-        --link-text-color-visited:                 #3d8059;
+        --link-text-color:                         #E94560;
+        --link-text-color-hover:                   #FF6B8B;
+        --link-text-color-active:                  #FF6B8B;
+        --link-text-color-visited:                 #D63447;
 
-        --body-background-fill:                    #0d0d0d;
-        --background-fill-primary:                 #1c1c1c;
-        --background-fill-secondary:               #242424;
+        --body-background-fill:                    transparent;
+        --background-fill-primary:                 rgba(255, 255, 255, 0.05);
+        --background-fill-secondary:               rgba(255, 255, 255, 0.02);
 
-        --block-background-fill:                   #1c1c1c;
-        --block-border-color:                      #383838;
+        --block-background-fill:                   rgba(255, 255, 255, 0.1);
+        --block-border-color:                      rgba(255, 255, 255, 0.2);
         --block-border-width:                      1px;
-        --block-label-background-fill:             #151515;
-        --block-label-text-color:                  #999999;
-        --block-title-text-color:                  #eeeeee;
-        --block-info-text-color:                   #999999;
-        --block-radius:                            8px;
+        --block-label-background-fill:             transparent;
+        --block-label-text-color:                  #dddddd;
+        --block-title-text-color:                  #ffffff;
+        --block-info-text-color:                   #bbbbbb;
+        --block-radius:                            12px;
 
-        --panel-background-fill:                   #242424;
-        --panel-border-color:                      #383838;
+        --panel-background-fill:                   rgba(255, 255, 255, 0.05);
+        --panel-border-color:                      rgba(255, 255, 255, 0.2);
 
-        --input-background-fill:                   #2c2c2c;
-        --input-background-fill-focus:             #323232;
-        --input-border-color:                      #383838;
-        --input-border-color-focus:                #50a070;
-        --input-border-color-hover:                #484848;
+        --input-background-fill:                   rgba(255, 255, 255, 0.1);
+        --input-background-fill-focus:             rgba(255, 255, 255, 0.2);
+        --input-border-color:                      rgba(255, 255, 255, 0.3);
+        --input-border-color-focus:                #E94560;
+        --input-border-color-hover:                rgba(255, 255, 255, 0.4);
         --input-shadow:                            none;
-        --input-shadow-focus:                      0 0 0 3px rgba(80,160,112,0.22);
-        --input-placeholder-color:                 #555555;
-        --input-text-color:                        #eeeeee;
-        --input-radius:                            6px;
+        --input-shadow-focus:                      0 0 0 3px rgba(233,69,96,0.3);
+        --input-placeholder-color:                 #dddddd;
+        --input-text-color:                        #ffffff;
+        --input-radius:                            8px;
 
-        --button-primary-background-fill:          #3d8059;
-        --button-primary-background-fill-hover:    #2e6645;
-        --button-primary-text-color:               #f0f0f0;
-        --button-primary-border-color:             #3d8059;
-        --button-primary-border-color-hover:       #2e6645;
-        --button-primary-shadow:                   0 1px 4px rgba(0,0,0,0.4);
-        --button-primary-shadow-hover:             0 4px 14px rgba(61,128,89,0.4);
+        --button-primary-background-fill:          #E94560;
+        --button-primary-background-fill-hover:    #D63447;
+        --button-primary-text-color:               #ffffff;
+        --button-primary-border-color:             #E94560;
+        --button-primary-border-color-hover:       #D63447;
+        --button-primary-shadow:                   0 4px 15px rgba(233,69,96,0.4);
+        --button-primary-shadow-hover:             0 6px 20px rgba(233,69,96,0.6);
 
-        --button-secondary-background-fill:        #242424;
-        --button-secondary-background-fill-hover:  #2c2c2c;
-        --button-secondary-text-color:             #bbbbbb;
-        --button-secondary-border-color:           #383838;
-        --button-secondary-border-color-hover:     #484848;
+        --button-secondary-background-fill:        rgba(255, 255, 255, 0.1);
+        --button-secondary-background-fill-hover:  rgba(255, 255, 255, 0.2);
+        --button-secondary-text-color:             #ffffff;
+        --button-secondary-border-color:           rgba(255, 255, 255, 0.3);
+        --button-secondary-border-color-hover:     rgba(255, 255, 255, 0.5);
 
-        --button-cancel-background-fill:           #7a2020;
-        --button-cancel-background-fill-hover:     #9a2a2a;
-        --button-cancel-text-color:                #f0f0f0;
-        --button-cancel-border-color:              #7a2020;
+        --button-cancel-background-fill:           rgba(255, 255, 255, 0.1);
+        --button-cancel-background-fill-hover:     #D63447;
+        --button-cancel-text-color:                #ffffff;
+        --button-cancel-border-color:              rgba(255, 255, 255, 0.3);
 
-        --checkbox-background-color:               #2c2c2c;
-        --checkbox-background-color-focus:         #323232;
-        --checkbox-background-color-selected:      #3d8059;
-        --checkbox-background-color-hover:         #323232;
-        --checkbox-border-color:                   #484848;
-        --checkbox-border-color-focus:             #50a070;
-        --checkbox-border-color-selected:          #50a070;
-        --checkbox-border-color-hover:             #50a070;
+        --checkbox-background-color:               rgba(255, 255, 255, 0.1);
+        --checkbox-background-color-focus:         rgba(255, 255, 255, 0.2);
+        --checkbox-background-color-selected:      #E94560;
+        --checkbox-background-color-hover:         rgba(255, 255, 255, 0.2);
+        --checkbox-border-color:                   rgba(255, 255, 255, 0.3);
+        --checkbox-border-color-focus:             #E94560;
+        --checkbox-border-color-selected:          #E94560;
+        --checkbox-border-color-hover:             rgba(255, 255, 255, 0.5);
         --checkbox-label-background-fill:          transparent;
-        --checkbox-label-background-fill-hover:    rgba(80,160,112,0.07);
-        --checkbox-label-background-fill-selected: rgba(80,160,112,0.12);
-        --checkbox-label-text-color:               #eeeeee;
+        --checkbox-label-background-fill-hover:    rgba(255, 255, 255, 0.05);
+        --checkbox-label-background-fill-selected: rgba(233,69,96,0.1);
+        --checkbox-label-text-color:               #ffffff;
 
-        --slider-color:                            #50a070;
+        --slider-color:                            #E94560;
 
-        --table-odd-background-fill:               #181818;
-        --table-even-background-fill:              #202020;
-        --table-row-focus:                         rgba(80,160,112,0.08);
+        --table-odd-background-fill:               rgba(255, 255, 255, 0.02);
+        --table-even-background-fill:              rgba(255, 255, 255, 0.05);
+        --table-row-focus:                         rgba(233,69,96,0.1);
 
-        --shadow-drop:                             0 2px 8px rgba(0,0,0,0.55);
-        --shadow-drop-lg:                          0 6px 24px rgba(0,0,0,0.65);
-        --shadow-inset:                            inset 0 1px 3px rgba(0,0,0,0.45);
+        --shadow-drop:                             0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        --shadow-drop-lg:                          0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        --shadow-inset:                            inset 0 1px 3px rgba(255, 255, 255, 0.1);
 
-        --neutral-50:  #f5f5f5;
-        --neutral-100: #eeeeee;
-        --neutral-200: #bbbbbb;
-        --neutral-300: #999999;
-        --neutral-400: #666666;
-        --neutral-500: #484848;
-        --neutral-600: #383838;
-        --neutral-700: #2c2c2c;
-        --neutral-800: #242424;
-        --neutral-900: #1c1c1c;
-        --neutral-950: #0d0d0d;
+        --neutral-50:  rgba(255, 255, 255, 0.9);
+        --neutral-100: rgba(255, 255, 255, 0.8);
+        --neutral-200: rgba(255, 255, 255, 0.7);
+        --neutral-300: rgba(255, 255, 255, 0.6);
+        --neutral-400: rgba(255, 255, 255, 0.5);
+        --neutral-500: rgba(255, 255, 255, 0.4);
+        --neutral-600: rgba(255, 255, 255, 0.3);
+        --neutral-700: rgba(255, 255, 255, 0.2);
+        --neutral-800: rgba(255, 255, 255, 0.1);
+        --neutral-900: rgba(255, 255, 255, 0.05);
+        --neutral-950: transparent;
     }
 
     /* ── Page & container ── */
-    html, body { background: #0d0d0d !important; color: #eeeeee !important; }
+    html, body {
+        background: linear-gradient(135deg, #1A1A2E, #16213E, #0F3460, #E94560) !important;
+        background-attachment: fixed !important;
+        color: #eeeeee !important; 
+    }
     .gradio-container, .gradio-container.dark {
-        background: #0d0d0d !important;
+        background: transparent !important;
         color: #eeeeee !important;
         max-width: 100% !important;
     }
 
     /* ── Blocks / cards ── */
     .block, .panel, fieldset, .form {
-        background: #1c1c1c !important;
-        border: 1px solid #383838 !important;
-        border-radius: 8px !important;
-        color: #eeeeee !important;
+        background: rgba(255, 255, 255, 0.1) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
+        border-radius: 12px !important;
+        color: #ffffff !important;
         transition: border-color 0.15s ease !important;
     }
-    .block:hover { border-color: #484848 !important; }
-    .gap, .contain, .tabs { background: #151515 !important; border: none !important; }
+    .block:hover { border-color: rgba(255, 255, 255, 0.4) !important; }
+    .gap, .contain, .tabs { background: transparent !important; border: none !important; }
 
     /* ── Labels & text ── */
     .block-label, .block > .label-wrap > span,
@@ -332,7 +338,7 @@ def run():
     }
 
     /* ── Gallery ── */
-    .gallery, .gallery-container, .grid-container { background: #181818 !important; }
+    .gallery, .gallery-container, .grid-container { background: transparent !important; }
     .gallery-item, .thumbnail-item {
         border: 1px solid #383838 !important;
         border-radius: 6px !important;
@@ -354,8 +360,8 @@ def run():
 
     /* ── Tab bar ── */
     .tab-nav {
-        background: #111111 !important;
-        border-bottom: 1px solid #272727 !important;
+        background: transparent !important;
+        border-bottom: 1px solid rgba(255,255,255,0.2) !important;
         padding: 0 4px !important;
     }
     .tab-nav button {

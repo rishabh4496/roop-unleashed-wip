@@ -1,20 +1,17 @@
 module.exports = {
-  requires: {
-    bundle: "ai",
-  },
   daemon: true,
   run: [
     {
       method: "shell.run",
       params: {
         venv: "env",
-        env: { GRADIO_SERVER_NAME: "127.0.0.1" },
+        env: { },
         path: "app",
         message: [
           "python run.py",
         ],
         on: [{
-          "event": "/(http:\\/\\/\\S+)/",
+          "event": "/(http:\\/\\/[0-9.:]+)/", 
           "done": true
         }]
       }
