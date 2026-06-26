@@ -101,9 +101,14 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 };
 
 // Gallery of face thumbnails with selection + move/remove controls.
-export const FaceGallery = ({ title, faces, selected, onSelect, empty }) => (
+export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty }) => (
   <div>
-    <div className="text-xs font-semibold uppercase tracking-wider text-white/40 mb-2">{title}</div>
+    <div className="flex items-center gap-2 mb-2">
+      <span className="text-xs font-semibold uppercase tracking-wider text-white/40">{title}</span>
+      {faces.length > 0 && (
+        <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[10px] text-white/60 tabular-nums">{faces.length}</span>
+      )}
+    </div>
     {faces.length === 0 ? (
       <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">
         {empty || 'None yet'}
@@ -111,14 +116,21 @@ export const FaceGallery = ({ title, faces, selected, onSelect, empty }) => (
     ) : (
       <div className="grid grid-cols-4 gap-2">
         {faces.map((src, i) => (
-          <button
+          <div
             key={i}
-            type="button"
+            className={`group relative aspect-square rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${selected === i ? 'border-[#E94560] scale-105' : 'border-transparent hover:border-white/30'}`}
             onClick={() => onSelect(i)}
-            className={`aspect-square rounded-lg overflow-hidden border-2 transition-all ${selected === i ? 'border-[#E94560] scale-105' : 'border-transparent hover:border-white/30'}`}
           >
             <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
-          </button>
+            {onRemove && (
+              <button
+                type="button"
+                title="Remove this face"
+                onClick={(e) => { e.stopPropagation(); onRemove(i); }}
+                className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[#E94560] transition-opacity flex items-center justify-center"
+              >✕</button>
+            )}
+          </div>
         ))}
       </div>
     )}

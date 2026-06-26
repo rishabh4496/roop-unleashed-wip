@@ -4,6 +4,12 @@ import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery } from 
 
 const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
 
+const fmtTime = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+};
+
 export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
@@ -19,7 +25,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [previewing, setPreviewing] = useState(false);
+  const [compare, setCompare] = useState(false);
   const pollRef = useRef(null);
+  const startTimeRef = useRef(null);
   const previewBusyRef = useRef(false);   // a /api/preview call is in flight
   const previewPendingRef = useRef(null); // latest queued request while busy (coalesced)
 
@@ -98,27 +106,25 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   }, [fakePreview, previewKey, sourceFaces.length, targetFaces.length]);
 
   // ── source / target file handling ──
-  const onAddSource = async (e) => {
-    if (!e.target.files.length) return;
+  const onAddSource = async (files) => {
+    if (!files || !files.length) return;
     const before = sourceFaces.length;
-    const fileEl = e.target;
     setUploadingSrc(true);
     try {
-      const res = await postFiles('/api/source/add', fileEl.files);
+      const res = await postFiles('/api/source/add', files);
       setSourceFaces(res.source_faces);
       const added = res.source_faces.length - before;
       if (added > 0) notify(`Loaded ${added} face(s) — ${res.faceset_count} faceset(s) total`);
       else notify('No face detected in the uploaded file(s)', 'error');
     } catch (err) { notify(err.message, 'error'); }
-    finally { setUploadingSrc(false); fileEl.value = ''; }
+    finally { setUploadingSrc(false); }
   };
 
-  const onAddTarget = async (e) => {
-    if (!e.target.files.length) return;
-    const fileEl = e.target;
+  const onAddTarget = async (files) => {
+    if (!files || !files.length) return;
     setUploadingTgt(true);
     try {
-      const res = await postFiles('/api/target/add', fileEl.files);
+      const res = await postFiles('/api/target/add', files);
       setTargets(res.targets);
       setSelTarget(res.selected_target_index || 0);
       const mf = res.targets[res.selected_target_index || 0]?.frames || 1;
@@ -126,7 +132,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       refreshPreview({ index: res.selected_target_index || 0, frame: 1 });
       notify(`Added ${res.targets.length} target(s)`);
     } catch (err) { notify(err.message, 'error'); }
-    finally { setUploadingTgt(false); fileEl.value = ''; }
+    finally { setUploadingTgt(false); }
+  };
+
+  const removeTarget = async (i) => {
+    const res = await postJSON('/api/target/remove', { index: i });
+    setTargets(res.targets);
+    const newSel = res.selected_target_index || 0;
+    setSelTarget(newSel);
+    if (res.targets.length === 0) { setPreviewSrc(''); setMaxFrames(1); }
+    else { setMaxFrames(res.targets[newSel]?.frames || 1); setFrame(1); }
   };
 
   const selectTarget = async (i) => {
@@ -171,6 +186,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
       });
+      startTimeRef.current = Date.now();
       notify('Processing started');
       startPolling();
     } catch (e) { notify(e.message, 'error'); }
@@ -192,14 +208,24 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
 
   const out = progress.output;
   const outUrl = out?.path ? `${API}/api/file?path=${encodeURIComponent(out.path)}&t=${progress.progress}` : '';
+  const prog = progress.progress || 0;
+  const elapsedMs = progress.processing && startTimeRef.current ? Date.now() - startTimeRef.current : 0;
+  const etaMs = progress.processing && prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0;
+  const rawUrl = targets.length > 0 ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}` : '';
+
+  const revealOutput = async () => {
+    try { await postJSON('/api/reveal', { path: out?.path }); }
+    catch (e) { notify(e.message, 'error'); }
+  };
 
   return (
     <div className="space-y-6">
       {/* uploads */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Section title="Source images / facesets">
-          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onChange={onAddSource} busy={uploadingSrc} />
-          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} empty="Upload a face image" />
+          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
+          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
+            onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" />
           {sourceFaces.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
@@ -211,17 +237,23 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         </Section>
 
         <Section title="Target file(s)">
-          <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onChange={onAddTarget} busy={uploadingTgt} />
+          <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here" />
           {targets.length === 0 ? (
             <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
           ) : (
             <div className="space-y-1.5 max-h-40 overflow-auto">
               {targets.map((t, i) => (
-                <button key={i} onClick={() => selectTarget(i)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm border transition-colors ${selTarget === i ? 'bg-[#E94560]/15 border-[#E94560]/50' : 'bg-black/20 border-white/5 hover:border-white/20'}`}>
-                  <span className="truncate block">{t.name}</span>
-                  <span className="text-xs text-white/40">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
-                </button>
+                <div key={i}
+                  className={`group flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[#E94560]/15 border-[#E94560]/50' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
+                  onClick={() => selectTarget(i)}>
+                  <div className="flex-1 min-w-0">
+                    <span className="truncate block">{t.name}</span>
+                    <span className="text-xs text-white/40">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
+                  </div>
+                  <button type="button" title="Remove this target"
+                    onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
+                    className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[#E94560] hover:text-white transition-opacity flex items-center justify-center">✕</button>
+                </div>
               ))}
             </div>
           )}
@@ -233,18 +265,32 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       <Section title="Preview">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-3">
-            <div className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
-              {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
-                : <span className="text-white/30 text-sm">Select a target to preview</span>}
-              {previewing && (
-                <div className="absolute top-2 right-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80">
-                  <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
-                  Rendering…
+            {compare && previewSrc ? (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative aspect-square rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+                  <span className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-full bg-black/60 text-[10px] text-white/70">Before</span>
+                  {rawUrl ? <img src={rawUrl} alt="original" className="max-w-full max-h-full object-contain" /> : null}
                 </div>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
+                <div className="relative aspect-square rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+                  <span className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-full bg-[#E94560]/80 text-[10px] text-white">After</span>
+                  <img src={previewSrc} alt="swapped" className="max-w-full max-h-full object-contain" />
+                </div>
+              </div>
+            ) : (
+              <div className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+                {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
+                  : <span className="text-white/30 text-sm">Select a target to preview</span>}
+                {previewing && (
+                  <div className="absolute top-2 right-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80">
+                    <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+                    Rendering…
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="flex items-center flex-wrap gap-3">
               <Toggle label="Face-swap preview" checked={fakePreview} onChange={(v) => { setFakePreview(v); refreshPreview({ fake: v }); }} />
+              <Toggle label="🔍 Before / After" checked={compare} onChange={setCompare} />
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
             </div>
@@ -261,12 +307,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             )}
           </div>
           <div>
-            <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace} empty="Use 'face from frame'" />
-            {targetFaces.length > 0 && (
-              <div className="mt-2 flex gap-2">
-                <Button size="sm" variant="secondary" onClick={async () => { const r = await postJSON('/api/target/remove_face', { index: selTargetFace }); setTargetFaces(r.target_faces); }}>❌ Remove</Button>
-              </div>
-            )}
+            <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
+              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
+              empty="Use 'face from frame'" />
           </div>
         </div>
       </Section>
@@ -329,6 +372,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               {out.kind === 'video'
                 ? <video src={outUrl} controls className="w-full rounded-lg border border-white/10" />
                 : <img src={outUrl} alt="output" className="w-full rounded-lg border border-white/10" />}
+              <div className="flex flex-wrap gap-2">
+                <a href={outUrl} download
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-[#E94560] hover:bg-[#d83a52] text-white transition-colors">⬇ Download</a>
+                <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+              </div>
             </div>
           )}
         </Section>
@@ -345,7 +393,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <div className="flex-1">
             <div className="flex justify-between text-xs text-white/50 mb-1">
               <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
-              <span>{Math.round((progress.progress || 0) * 100)}%</span>
+              <span className="flex items-center gap-2 tabular-nums">
+                {progress.processing && (
+                  <span className="text-white/40">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
+                )}
+                <span>{Math.round(prog * 100)}%</span>
+              </span>
             </div>
             <div className="h-2 rounded-full bg-black/40 overflow-hidden">
               <div className="h-full bg-[#E94560] transition-all" style={{ width: `${(progress.progress || 0) * 100}%` }} />
@@ -358,20 +411,33 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   );
 }
 
-function FileDrop({ label, accept, multiple, onChange, busy }) {
+function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
+  const [drag, setDrag] = useState(false);
+  const onDrop = (e) => {
+    e.preventDefault(); setDrag(false);
+    if (busy) return;
+    if (e.dataTransfer.files && e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+  };
   return (
-    <label className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer'}`}>
-      <div className={`px-4 py-6 rounded-lg border-2 border-dashed text-center transition-colors ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
+    <label
+      onDragOver={(e) => { e.preventDefault(); if (!busy) setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={onDrop}
+      className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer'}`}
+    >
+      <div className={`px-4 py-6 rounded-lg border-2 border-dashed text-center transition-colors ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : drag ? 'border-[#E94560] bg-[#E94560]/[0.1]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
         {busy ? (
           <span className="inline-flex items-center gap-2 text-sm text-white/80">
             <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
             Uploading & analysing…
           </span>
         ) : (
-          <span className="text-sm text-white/60">📁 {label}</span>
+          <span className="text-sm text-white/60">📁 {drag ? 'Drop to upload' : label}{!drag && hint ? <span className="block text-xs text-white/30 mt-0.5">{hint}</span> : null}</span>
         )}
       </div>
-      <input type="file" accept={accept} multiple={multiple} onChange={onChange} disabled={busy} className="hidden" />
+      <input type="file" accept={accept} multiple={multiple}
+        onChange={(e) => { if (e.target.files.length) onFiles(e.target.files); e.target.value = ''; }}
+        disabled={busy} className="hidden" />
     </label>
   );
 }

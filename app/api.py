@@ -9,8 +9,10 @@ The Gradio UI (app/ui/) is the frozen legacy/backup UI and is NOT touched here.
 
 import os
 import io
+import sys
 import base64
 import shutil
+import subprocess
 import threading
 import traceback
 
@@ -333,6 +335,20 @@ def target_select(payload: dict = Body(...)):
     return _target_list_payload()
 
 
+@app.post("/api/target/remove")
+def target_remove(payload: dict = Body(...)):
+    """Remove a single target media item from the queue."""
+    global selected_target_index
+    idx = int(payload.get("index", -1))
+    if 0 <= idx < len(list_files_process):
+        list_files_process.pop(idx)
+    if selected_target_index >= len(list_files_process):
+        selected_target_index = max(0, len(list_files_process) - 1)
+    if list_files_process:
+        _refresh_target_frames(selected_target_index)
+    return _target_list_payload()
+
+
 @app.post("/api/target/clear")
 def target_clear():
     global selected_target_index
@@ -586,6 +602,32 @@ def list_output():
                 kind = "video" if util.is_video(full) else ("image" if util.is_image(full) else "file")
                 items.append({"name": f, "kind": kind, "mtime": os.path.getmtime(full)})
     return {"output_path": out, "files": items[:50]}
+
+
+@app.post("/api/reveal")
+def reveal_output(payload: dict = Body(default={})):
+    """Open the OS file manager at the output folder (optionally selecting a file)."""
+    target = payload.get("path") or getattr(roop_globals, "output_path", None)
+    if not target:
+        return JSONResponse(status_code=404, content={"message": "no output folder"})
+    target = os.path.abspath(target)
+    is_file = os.path.isfile(target)
+    folder = os.path.dirname(target) if is_file else target
+    if not os.path.isdir(folder):
+        return JSONResponse(status_code=404, content={"message": "folder not found"})
+    try:
+        if sys.platform.startswith("win"):
+            if is_file:
+                subprocess.Popen(["explorer", "/select,", target])
+            else:
+                os.startfile(folder)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", target] if is_file else ["open", folder])
+        else:
+            subprocess.Popen(["xdg-open", folder])
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    return {"status": "ok", "folder": folder}
 
 
 @app.get("/api/file")
