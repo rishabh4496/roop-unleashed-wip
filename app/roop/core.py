@@ -84,10 +84,21 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
             elif list_providers[i] == 'TensorrtExecutionProvider':
                 trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
                 os.makedirs(trt_cache, exist_ok=True)
+                # Precision mode: 'fp32' = full precision (baseline accuracy),
+                # 'fp16'/'mixed' = enable FP16 kernels (faster). TensorRT keeps
+                # numerically-sensitive layers in FP32 automatically, so 'mixed'
+                # and 'fp16' share the same flag but 'mixed' is the recommended
+                # balanced default. Separate engine caches per precision avoid
+                # rebuilds when switching modes.
+                trt_precision = getattr(roop.globals.CFG, 'trt_precision', 'mixed') if roop.globals.CFG else 'mixed'
+                fp16_enable = trt_precision in ('fp16', 'mixed')
+                precision_cache = os.path.join(trt_cache, trt_precision)
+                os.makedirs(precision_cache, exist_ok=True)
                 list_providers[i] = ('TensorrtExecutionProvider', {
                     'device_id': roop.globals.cuda_device_id,
+                    'trt_fp16_enable': fp16_enable,
                     'trt_engine_cache_enable': True,
-                    'trt_engine_cache_path': trt_cache,
+                    'trt_engine_cache_path': precision_cache,
                 })
     except:
         pass

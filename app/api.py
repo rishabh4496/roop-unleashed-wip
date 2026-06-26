@@ -160,6 +160,7 @@ def get_meta():
         providers = ["cpu"]
     return {
         "providers": providers,
+        "trt_precisions": ["fp32", "fp16", "mixed"],
         "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"],
         "swap_models": ["inswapper"],
         "face_detection_modes": ["First found", "All input faces", "All female",

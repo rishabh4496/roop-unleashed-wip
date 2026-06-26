@@ -31,6 +31,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
         <Section title="Performance">
           <Select label="Provider" value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
+          {p.provider === 'tensorrt' && (
+            <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate" value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
+          )}
           <Toggle label="Force CPU for face analyser" checked={!!p.force_cpu} onChange={(v) => set('force_cpu', v)} />
           <Toggle label="Use default Det-Size" checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
           <Slider label="Max threads" info="default 3" min={1} max={32} step={1} value={p.max_threads ?? 3} onChange={(v) => set('max_threads', v)} />
