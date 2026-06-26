@@ -30,7 +30,28 @@ class Settings:
         self.output_video_codec = self.default_get(data, 'output_video_codec', 'libx264')
         self.video_quality = self.default_get(data, 'video_quality', 14)
         self.clear_output = self.default_get(data, 'clear_output', True)
-        self.max_threads = self.default_get(data, 'max_threads', 2)
+        # Dynamically scale threads to saturate GPU without OOM
+        default_threads = 3
+        try:
+            self.provider = self.default_get(data, 'provider', 'cuda')
+            if self.provider in ['cuda', 'tensorrt']:
+                import torch
+                if torch.cuda.is_available():
+                    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    import psutil
+                    cores = psutil.cpu_count(logical=False) or 4
+                    # 1 thread per 1.5GB VRAM is safe for face swapping, bounded by CPU cores
+                    default_threads = int(min(max(2, cores - 1), max(2, vram_gb / 1.5)))
+        except Exception:
+            pass
+
+        saved_threads = self.default_get(data, 'max_threads', -1)
+        # Upgrade legacy default '2' to the auto-scaled value to fix CPU bottlenecks for existing users
+        if saved_threads == 2 or saved_threads == -1:
+            self.max_threads = default_threads
+        else:
+            self.max_threads = saved_threads
+        
         self.memory_limit = self.default_get(data, 'memory_limit', 0)
         self.provider = self.default_get(data, 'provider', 'cuda')
         # TensorRT precision mode: 'fp32' | 'fp16' | 'mixed' (only used when provider == 'tensorrt')

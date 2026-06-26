@@ -128,7 +128,20 @@ def suggest_execution_threads() -> int:
         return 1
     if 'ROCMExecutionProvider' in roop.globals.execution_providers:
         return 1
-    return 8
+    
+    suggested = 8
+    try:
+        if any(p in roop.globals.execution_providers for p in ['CUDAExecutionProvider', 'TensorrtExecutionProvider']):
+            import torch
+            if torch.cuda.is_available():
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                import psutil
+                cores = psutil.cpu_count(logical=False) or 4
+                suggested = int(min(max(2, cores - 1), max(2, vram_gb / 1.5)))
+    except Exception:
+        pass
+    
+    return suggested
 
 
 def limit_resources() -> None:
