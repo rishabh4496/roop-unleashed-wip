@@ -431,7 +431,8 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
 
 def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
                           use_source_bank=False, use_frontalization=False,
-                          frontalization_threshold=25.0, swap_model='inswapper') -> None:
+                          frontalization_threshold=25.0, swap_model='inswapper',
+                          stabilize_face=False, stabilize_min_cutoff=0.05, stabilize_beta=0.02) -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -451,7 +452,10 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               use_source_bank=use_source_bank,
                               use_frontalization=use_frontalization,
                               frontalization_threshold=frontalization_threshold,
-                              swap_model=swap_model)
+                              swap_model=swap_model,
+                              stabilize_face=stabilize_face,
+                              stabilize_min_cutoff=stabilize_min_cutoff,
+                              stabilize_beta=stabilize_beta)
     process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them

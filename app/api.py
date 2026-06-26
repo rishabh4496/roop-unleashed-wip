@@ -555,7 +555,10 @@ def _run_swap(payload):
             use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
             use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
             frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
-            swap_model=payload.get("swap_model", roop_globals.CFG.swap_model))
+            swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
+            stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
+            stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
+            stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)))
 
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"

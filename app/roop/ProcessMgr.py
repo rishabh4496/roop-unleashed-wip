@@ -97,6 +97,10 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
+        # One Euro keypoint stabilizer (video only); active flag is set per-run.
+        self.kps_stabilizer = None
+        self._stab_active = False
+        self._stab_t = 0
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -118,6 +122,18 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.options = options
         devicename = get_device()
+
+        # Build the One Euro keypoint stabilizer when requested. It only takes
+        # effect in the sequential video path (run_batch_inmem sets _stab_active).
+        if getattr(options, 'stabilize_face', False):
+            from roop.one_euro import KpsStabilizer
+            self.kps_stabilizer = KpsStabilizer(
+                min_cutoff=getattr(options, 'stabilize_min_cutoff', 1.0),
+                beta=getattr(options, 'stabilize_beta', 0.05))
+        else:
+            self.kps_stabilizer = None
+        self._stab_active = False
+        self._stab_t = 0
 
         roop.globals.g_desired_face_analysis = ["landmark_3d_68", "landmark_2d_106", "detection", "recognition"]
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":
@@ -410,6 +426,17 @@ class ProcessMgr():
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
+        # One Euro keypoint smoothing needs frames in order; the multithreaded
+        # reader strides frames across threads out-of-order, so force a single
+        # thread for the whole clip when stabilization is on (quality > speed).
+        if self.kps_stabilizer is not None:
+            if threads != 1:
+                print("[Stabilize] Forcing single thread for temporal keypoint smoothing.")
+            threads = 1
+            self._stab_active = True
+            self._stab_t = 0
+            self.kps_stabilizer.reset()
+
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
         cap = None
@@ -507,7 +534,7 @@ class ProcessMgr():
         if len(self.input_face_datas) < 1 and not self.options.show_face_masking:
             return frame
         temp_frame = frame.copy()
-        num_swapped, temp_frame = self.swap_faces(frame, temp_frame)
+        num_swapped, temp_frame = self.swap_faces(frame, temp_frame, stabilize=True)
         if num_swapped > 0:
             if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR:
                 if len(self.input_face_datas) > num_swapped:
@@ -545,13 +572,27 @@ class ProcessMgr():
         return frame
 
 
-    def swap_faces(self, frame, temp_frame):
+    def _apply_stab(self, face):
+        """Replace a face's 5-point kps with the temporally smoothed version."""
+        try:
+            if face is not None and getattr(face, 'kps', None) is not None:
+                face.kps = self.kps_stabilizer.apply(face.kps, self._stab_t)
+        except Exception:
+            pass
+
+    def swap_faces(self, frame, temp_frame, stabilize=False):
         num_faces_found = 0
+
+        do_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
+        if do_stab:
+            self._stab_t += 1   # one tick per frame (single-threaded in this path)
 
         if self.options.swap_mode == "first":
             face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
+            if do_stab:
+                self._apply_stab(face)
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
             del face
@@ -560,6 +601,9 @@ class ProcessMgr():
             faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
+            if do_stab:
+                for f in faces:
+                    self._apply_stab(f)
 
             if self.options.swap_mode == "all":
                 for face in faces:

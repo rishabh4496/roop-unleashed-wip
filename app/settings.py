@@ -77,6 +77,10 @@ class Settings:
         self.use_frontalization = self.default_get(data, 'use_frontalization', False)
         self.frontalization_threshold = self.default_get(data, 'frontalization_threshold', 30.0)
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
+        # One Euro temporal face stabilization (video)
+        self.stabilize_face = self.default_get(data, 'stabilize_face', False)
+        self.stabilize_min_cutoff = self.default_get(data, 'stabilize_min_cutoff', 0.05)
+        self.stabilize_beta = self.default_get(data, 'stabilize_beta', 0.02)
 
 
 
@@ -140,6 +144,10 @@ class Settings:
             'frontalization_threshold': self.frontalization_threshold,
             # Swap model
             'swap_model': self.swap_model,
+            # One Euro temporal face stabilization
+            'stabilize_face': self.stabilize_face,
+            'stabilize_min_cutoff': self.stabilize_min_cutoff,
+            'stabilize_beta': self.stabilize_beta,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

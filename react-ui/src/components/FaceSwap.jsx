@@ -391,6 +391,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
+          <Toggle label="🎯 Stabilize face (video)" info="One Euro smoothing — reduces swap wobble (uses In-Memory method; runs single-thread)" checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+          {p.stabilize_face && (
+            <>
+              <Slider label="Smoothing (min cutoff)" info="lower = smoother, more lag" min={0.01} max={0.3} step={0.01} value={num(p.stabilize_min_cutoff, 0.05)} onChange={(v) => set('stabilize_min_cutoff', v)} />
+              <Slider label="Reactivity (beta)" info="higher = less lag on fast motion" min={0} max={0.2} step={0.01} value={num(p.stabilize_beta, 0.02)} onChange={(v) => set('stabilize_beta', v)} />
+            </>
+          )}
         </Section>
         <Section title="Options">
           <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
