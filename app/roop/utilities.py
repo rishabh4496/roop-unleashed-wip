@@ -409,6 +409,10 @@ def is_video(video_path: str) -> bool:
 def conditional_download(download_directory_path: str, urls: List[str]) -> None:
     if not os.path.exists(download_directory_path):
         os.makedirs(download_directory_path)
+        
+    if hasattr(ssl, '_create_unverified_context'):
+        ssl._create_default_https_context = ssl._create_unverified_context
+        
     for url in urls:
         download_file_path = os.path.join(
             download_directory_path, os.path.basename(url)
