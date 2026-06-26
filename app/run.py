@@ -26,4 +26,7 @@ from roop import globals
 globals.execution_providers = [args.execution_provider + 'ExecutionProvider']
 
 if __name__ == '__main__':
+    import threading
+    from api import run_api
+    threading.Thread(target=run_api, daemon=True).start()
     core.run()

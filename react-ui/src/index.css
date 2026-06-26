@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply m-0 text-white min-h-screen bg-fixed;
+    background: linear-gradient(135deg, #1A1A2E, #16213E, #0F3460, #E94560);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
