@@ -3,16 +3,7 @@ module.exports = {
     bundle: "ai",
   },
   run: [
-    {
-      when: "{{!exists('app')}}",
-      method: "shell.run",
-      params: {
-        shell: "{{which('bash')}}",
-        message: [
-          "git clone --filter=blob:none --sparse https://github.com/rishabh4496/roop-unleashed-wip.git _app_tmp && git -C _app_tmp sparse-checkout set app && mv _app_tmp/app app && rm -rf _app_tmp"
-        ]
-      }
-    },
+    // Install Python dependencies for the backend (app/ is already in the repo)
     {
       method: "shell.run",
       params: {
@@ -20,6 +11,16 @@ module.exports = {
         path: "app",
         message: [
           "uv pip install -r requirements.txt"
+        ]
+      }
+    },
+    // Install Node.js dependencies for the React UI
+    {
+      method: "shell.run",
+      params: {
+        path: "react-ui",
+        message: [
+          "npm install"
         ]
       }
     },

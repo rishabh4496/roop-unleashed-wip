@@ -15,6 +15,13 @@ module.exports = {
       message: "uv pip install -r requirements.txt"
     }
   }, {
+    // Re-install Node dependencies in case package.json changed
+    method: "shell.run",
+    params: {
+      path: "react-ui",
+      message: "npm install"
+    }
+  }, {
     method: "script.start",
     params: {
       uri: "torch.js",
