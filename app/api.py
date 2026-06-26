@@ -192,6 +192,7 @@ def get_state():
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
+        "target_groups": _target_groups_ranked(),
         "targets": targets,
         "selected_target_index": selected_target_index,
         "faceset_count": len(roop_globals.INPUT_FACESETS),
@@ -355,6 +356,7 @@ def target_clear():
     global selected_target_index
     list_files_process.clear()
     roop_globals.TARGET_FACES.clear()
+    roop_globals.TARGET_FACE_GROUP.clear()
     ui_globals.ui_target_thumbs.clear()
     selected_target_index = 0
     return _target_list_payload()
@@ -391,24 +393,83 @@ def target_preview(index: int = 0, frame: int = 1):
     return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
 
 
-@app.post("/api/target/use_face")
-def target_use_face(payload: dict = Body(...)):
-    """Extract target faces from the current preview frame (Use Face from this Frame)."""
-    idx = int(payload.get("index", selected_target_index))
-    frame = int(payload.get("frame", 1))
-    if idx >= len(list_files_process):
-        return {"target_faces": []}
+def _target_groups_ranked():
+    """Map raw group ids in TARGET_FACE_GROUP to contiguous 0-based person ranks
+    (sorted by group id) so person N → source faceset N regardless of removals.
+    Also keeps the group list length in sync with TARGET_FACES."""
+    faces = roop_globals.TARGET_FACES
+    grp = roop_globals.TARGET_FACE_GROUP
+    if len(grp) != len(faces):
+        grp = list(range(len(faces)))   # default: each face its own person
+        roop_globals.TARGET_FACE_GROUP = grp
+    uniq = sorted(set(grp))
+    rank = {g: r for r, g in enumerate(uniq)}
+    return [rank[g] for g in grp]
+
+
+def _target_faces_payload(extra=None):
+    out = {
+        "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
+        "target_groups": _target_groups_ranked(),
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
+def _faces_from_frame(idx, frame):
     target_path = list_files_process[idx].filename
     roop_globals.target_path = target_path
     if util.is_image(target_path) and not target_path.lower().endswith("gif"):
-        faces_data = extract_face_images(target_path, (False, 0))
-    else:
-        faces_data = extract_face_images(target_path, (True, frame))
+        return extract_face_images(target_path, (False, 0))
+    return extract_face_images(target_path, (True, frame))
+
+
+@app.post("/api/target/use_face")
+def target_use_face(payload: dict = Body(...)):
+    """Add target faces from the current frame, each as a NEW person (group)."""
+    idx = int(payload.get("index", selected_target_index))
+    frame = int(payload.get("frame", 1))
+    if idx >= len(list_files_process):
+        return {"target_faces": [], "target_groups": []}
+    faces_data = _faces_from_frame(idx, frame)
+    next_id = (max(roop_globals.TARGET_FACE_GROUP) + 1) if roop_globals.TARGET_FACE_GROUP else 0
     for fd in faces_data:
         roop_globals.TARGET_FACES.append(fd[0])
+        roop_globals.TARGET_FACE_GROUP.append(next_id)
         ui_globals.ui_target_thumbs.append(util.convert_to_gradio(fd[1]))
-    return {"target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
-            "count": len(faces_data)}
+        next_id += 1
+    return _target_faces_payload({"count": len(faces_data)})
+
+
+@app.post("/api/target/add_angle")
+def target_add_angle(payload: dict = Body(...)):
+    """Add another angle (lateral/profile/upside-down) of an EXISTING target
+    person, picking the face in the current frame closest to that person so
+    matching survives pose changes (anti-flicker, multi-angle tracking)."""
+    person = int(payload.get("person", 0))     # 0-based person rank
+    idx = int(payload.get("index", selected_target_index))
+    frame = int(payload.get("frame", 1))
+    if idx >= len(list_files_process):
+        return _target_faces_payload({"count": 0})
+    ranks = _target_groups_ranked()
+    raw_group = next((roop_globals.TARGET_FACE_GROUP[i] for i, r in enumerate(ranks) if r == person), None)
+    if raw_group is None:
+        return _target_faces_payload({"count": 0, "message": "no such person"})
+    faces_data = _faces_from_frame(idx, frame)
+    if not faces_data:
+        return _target_faces_payload({"count": 0, "message": "no face in frame"})
+    existing = [roop_globals.TARGET_FACES[i] for i, g in enumerate(roop_globals.TARGET_FACE_GROUP) if g == raw_group]
+    best_fd, best_d = None, 1e9
+    for fd in faces_data:
+        d = min(util.compute_cosine_distance(e.embedding, fd[0].embedding) for e in existing)
+        if d < best_d:
+            best_d, best_fd = d, fd
+    if best_fd is not None:
+        roop_globals.TARGET_FACES.append(best_fd[0])
+        roop_globals.TARGET_FACE_GROUP.append(raw_group)
+        ui_globals.ui_target_thumbs.append(util.convert_to_gradio(best_fd[1]))
+    return _target_faces_payload({"count": 1, "distance": round(float(best_d), 3)})
 
 
 @app.post("/api/target/remove_face")
@@ -416,9 +477,11 @@ def target_remove_face(payload: dict = Body(...)):
     idx = int(payload.get("index", -1))
     if 0 <= idx < len(roop_globals.TARGET_FACES):
         roop_globals.TARGET_FACES.pop(idx)
+    if 0 <= idx < len(roop_globals.TARGET_FACE_GROUP):
+        roop_globals.TARGET_FACE_GROUP.pop(idx)
     if 0 <= idx < len(ui_globals.ui_target_thumbs):
         ui_globals.ui_target_thumbs.pop(idx)
-    return {"target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs]}
+    return _target_faces_payload()
 
 
 # ── Live preview swap ────────────────────────────────────────────────────────

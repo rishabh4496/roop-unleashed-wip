@@ -13,6 +13,7 @@ const fmtTime = (ms) => {
 export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
+  const [targetGroups, setTargetGroups] = useState([]);
   const [targets, setTargets] = useState([]);
   const [selSource, setSelSource] = useState(0);
   const [selTarget, setSelTarget] = useState(0);
@@ -41,6 +42,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     getJSON('/api/state').then((st) => {
       setSourceFaces(st.source_faces || []);
       setTargetFaces(st.target_faces || []);
+      setTargetGroups(st.target_groups || []);
       const tg = st.targets || [];
       setTargets(tg);
       if (tg.length > 0) {
@@ -191,8 +193,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     try {
       const res = await postJSON('/api/target/use_face', { index: selTarget, frame });
       setTargetFaces(res.target_faces);
+      setTargetGroups(res.target_groups || []);
       set('face_detection_mode', 'Selected face');
-      notify(`Added ${res.count} target face(s)`);
+      notify(`Added ${res.count} target person(s)`);
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  // Add another angle (profile/side/upside-down) of the SELECTED person, from
+  // the current frame, so matching survives pose changes (less flicker).
+  const addAngle = async () => {
+    const person = targetGroups[selTargetFace] ?? 0;
+    try {
+      const res = await postJSON('/api/target/add_angle', { person, index: selTarget, frame });
+      setTargetFaces(res.target_faces);
+      setTargetGroups(res.target_groups || []);
+      if (res.count) notify(`Added angle to Person ${person + 1} (match ${res.distance})`);
+      else notify(res.message || 'No matching face in this frame', 'error');
     } catch (e) { notify(e.message, 'error'); }
   };
 
@@ -284,7 +300,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               ))}
             </div>
           )}
-          {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setPreviewSrc(''); }}>Clear targets</Button>}
+          {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setPreviewSrc(''); }}>Clear targets</Button>}
         </Section>
       </div>
 
@@ -342,8 +358,19 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           </div>
           <div>
             <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
+              groups={targetGroups}
+              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
               empty="Use 'face from frame'" />
+            {targetFaces.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                <Button size="sm" variant="primary" className="w-full" onClick={addAngle}>
+                  ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
+                </Button>
+                <p className="text-[11px] text-white/40 leading-snug">
+                  Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </Section>

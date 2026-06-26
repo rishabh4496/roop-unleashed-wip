@@ -45,6 +45,10 @@ FACE_ENHANCER = 'GPEN'
 
 INPUT_FACESETS = []
 TARGET_FACES = []
+# Parallel to TARGET_FACES: the person/group id each target face belongs to.
+# Multiple angles of the same person share a group id; each group maps (by rank)
+# to one source faceset. Enables multi-angle target tracking (anti-flicker).
+TARGET_FACE_GROUP: List[int] = []
 
 
 IMAGE_CHAIN_PROCESSOR = None

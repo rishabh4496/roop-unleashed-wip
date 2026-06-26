@@ -79,6 +79,7 @@ class ProcessMgr():
         # and prevented VRAM from being released between runs).
         self.input_face_datas = []
         self.target_face_datas = []
+        self.target_face_groups = []   # parallel to target_face_datas: person id per face
         self.imagemask = None
         self.processors = []
         self.options = None
@@ -119,6 +120,12 @@ class ProcessMgr():
     def initialize(self, input_faces, target_faces, options):
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
+        # Multi-angle target groups: person id per target face (default = each its
+        # own person). Multiple angles of one person share an id; matching uses
+        # the min distance across a person's angles → robust to pose (anti-flicker).
+        self.target_face_groups = list(roop.globals.TARGET_FACE_GROUP)
+        if len(self.target_face_groups) != len(target_faces):
+            self.target_face_groups = list(range(len(target_faces)))
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.options = options
@@ -630,19 +637,28 @@ class ProcessMgr():
                         break
 
             elif self.options.swap_mode == "selected":
-                num_targetfaces = len(self.target_face_datas)
-                use_index = num_targetfaces == 1
-                for i, tf in enumerate(self.target_face_datas):
-                    for face in faces:
-                        if compute_cosine_distance(tf.embedding, face.embedding) <= self.options.face_distance_threshold:
-                            if i < len(self.input_face_datas):
-                                if use_index:
-                                    temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
-                                else:
-                                    temp_frame = self.process_face(i, face, temp_frame)
-                                num_faces_found += 1
-                            if not roop.globals.vr_mode and num_faces_found == num_targetfaces:
-                                break
+                # Multi-angle matching: for each detected face, find the target
+                # PERSON (group) with the smallest distance across all of that
+                # person's stored angles. Swap once with that person's source
+                # faceset. A turned head still matches via a side/back angle, so
+                # the swap doesn't drop out frame-to-frame (no flicker).
+                groups = self.target_face_groups
+                uniq = sorted(set(groups)) if groups else []
+                rank = {g: r for r, g in enumerate(uniq)}
+                single_person = len(uniq) <= 1
+                threshold = self.options.face_distance_threshold
+                for face in faces:
+                    best_i, best_d = -1, threshold
+                    for i, tf in enumerate(self.target_face_datas):
+                        d = compute_cosine_distance(tf.embedding, face.embedding)
+                        if d <= best_d:
+                            best_d, best_i = d, i
+                    if best_i < 0:
+                        continue
+                    src_index = self.options.selected_index if single_person else rank[groups[best_i]]
+                    if src_index < len(self.input_face_datas):
+                        temp_frame = self.process_face(src_index, face, temp_frame)
+                        num_faces_found += 1
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
                 gender = 'F' if self.options.swap_mode == "all_female" else 'M'
@@ -1412,4 +1428,5 @@ class ProcessMgr():
         # FIX: Clear face data and cached frame references so nothing holds VRAM-backed data
         self.input_face_datas = []
         self.target_face_datas = []
+        self.target_face_groups = []
         self.last_swapped_frame = None
