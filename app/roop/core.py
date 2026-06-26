@@ -232,7 +232,7 @@ def start() -> None:
 
 def get_processing_plugins(masking_engine, swap_model='inswapper'):
     """Build the processor dict for ProcessOptions."""
-    processors = {"faceswap": {}}
+    processors = {"faceswap": {"swap_model": swap_model}}
     if masking_engine is not None:
         processors.update({masking_engine: {}})
     

@@ -317,7 +317,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       {/* core controls */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Section title="Swap">
-          <Select label="Swap model" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
+          <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />

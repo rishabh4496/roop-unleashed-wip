@@ -853,9 +853,9 @@ class ProcessMgr():
                 subsample_frames = self.implode_pixel_boost(aligned_for_swap, model_output_size, subsample_total)
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
-                        sliced_frame = self.prepare_crop_frame(sliced_frame)
+                        sliced_frame = self.prepare_crop_frame(sliced_frame, p)
                         sliced_frame = p.Run(inputface, target_face, sliced_frame)
-                        sliced_frame = self.normalize_swap_frame(sliced_frame)
+                        sliced_frame = self.normalize_swap_frame(sliced_frame, p)
                     swap_result_frames.append(sliced_frame)
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
@@ -1164,9 +1164,9 @@ class ProcessMgr():
         return mask
 
 
-    def prepare_crop_frame(self, swap_frame):
-        model_mean = [0.0, 0.0, 0.0]
-        model_standard_deviation = [1.0, 1.0, 1.0]
+    def prepare_crop_frame(self, swap_frame, swap_p=None):
+        model_mean = getattr(swap_p, 'model_mean', [0.0, 0.0, 0.0])
+        model_standard_deviation = getattr(swap_p, 'model_standard_deviation', [1.0, 1.0, 1.0])
         swap_frame = swap_frame[:, :, ::-1] / 255.0
         swap_frame = (swap_frame - model_mean) / model_standard_deviation
         swap_frame = swap_frame.transpose(2, 0, 1)
@@ -1174,9 +1174,14 @@ class ProcessMgr():
         return swap_frame
 
 
-    def normalize_swap_frame(self, swap_frame):
+    def normalize_swap_frame(self, swap_frame, swap_p=None):
         swap_frame = swap_frame.transpose(1, 2, 0)
+        # Models trained with [-1,1] output (e.g. HyperSwap) must be mapped back
+        # to [0,1] before scaling to 8-bit.
+        if getattr(swap_p, 'model_denormalize', False):
+            swap_frame = (swap_frame + 1.0) / 2.0
         swap_frame = (swap_frame * 255.0).round()
+        swap_frame = swap_frame.clip(0, 255)
         swap_frame = swap_frame[:, :, ::-1]
         return swap_frame
 

@@ -164,7 +164,7 @@ def get_meta():
         "providers": providers,
         "trt_precisions": ["fp32", "fp16", "mixed"],
         "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"],
-        "swap_models": ["inswapper"],
+        "swap_models": ["inswapper", "reswapper", "hyperswap"],
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
         "mask_engines": ["None", "Clip2Seg", "DFL XSeg"],
