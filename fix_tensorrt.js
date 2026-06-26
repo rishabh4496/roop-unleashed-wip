@@ -12,7 +12,7 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-cu12"
+          "python -m pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-cu12==10.4.0"
         ]
       }
     },

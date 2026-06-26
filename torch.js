@@ -10,7 +10,7 @@ module.exports = {
         "message": [
            "python -m pip install torch==2.7.0 torchvision==0.22.0 {{args && args.xformers ? 'xformers' : ''}} --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps",
            "python -m pip install onnxruntime-gpu==1.19.0",
-           "python -m pip install tensorrt-cu12"
+           "python -m pip install tensorrt-cu12==10.4.0"
         ]
       },
       "next": null
@@ -77,7 +77,7 @@ module.exports = {
         "message": [
           "python -m pip install torch==2.7.0 torchvision==0.22.0 {{args && args.xformers ? 'xformers' : ''}} --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps",
           "python -m pip install onnxruntime-gpu==1.19.0",
-          "python -m pip install tensorrt-cu12"
+          "python -m pip install tensorrt-cu12==10.4.0"
         ]
       },
       "next": null
