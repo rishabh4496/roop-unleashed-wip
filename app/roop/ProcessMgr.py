@@ -869,9 +869,15 @@ class ProcessMgr():
                     if (posed_face is not None
                             and hasattr(posed_face, 'normed_embedding')
                             and posed_face.normed_embedding is not None):
-                        import copy
-                        posed_input = copy.copy(inputface)
-                        posed_input.normed_embedding = posed_face.normed_embedding
+                        # NB: copy.copy() crashes on an insightface Face (its
+                        # __getattr__ returns None for every missing dunder, so
+                        # pickle/copy ends up calling None). Use the Face dict
+                        # constructor to shallow-copy instead. And normed_embedding
+                        # is a read-only @property computed from `embedding`, so
+                        # set the raw embedding — assigning normed_embedding is a
+                        # no-op for the swap.
+                        posed_input = type(inputface)(inputface)
+                        posed_input.embedding = posed_face.embedding
                         inputface = posed_input
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware embedding failed: {e}")
