@@ -1,16 +1,33 @@
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import threading
-import uvicorn
-import shutil
+"""FastAPI backend for the React UI (react-ui/).
+
+This runs in a daemon thread alongside the Gradio app (see run.py) and shares the
+same roop.globals state. It mirrors the Gradio Face Swap / Face Manager / Settings /
+Extras handlers as plain HTTP endpoints so the React front-end can reach full parity.
+
+The Gradio UI (app/ui/) is the frozen legacy/backup UI and is NOT touched here.
+"""
+
 import os
-import json
-from roop import globals as roop_globals
+import io
+import base64
+import shutil
+import threading
+import traceback
+
+import cv2
+import numpy as np
+import uvicorn
+from fastapi import FastAPI, UploadFile, File, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+
+import roop.globals as roop_globals
 from roop import utilities as util
+from roop.face_util import extract_face_images
+from roop.FaceSet import FaceSet
+from roop.capturer import get_video_frame, get_video_frame_total, get_image_frame
 from roop.ProcessEntry import ProcessEntry
-from roop.core import batch_process_regular
-import time
+import ui.globals as ui_globals
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -18,14 +35,110 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 API_TEMP = os.path.join(os.getcwd(), "temp", "api_uploads")
 os.makedirs(API_TEMP, exist_ok=True)
 
+# ── Shared server-side state (mirrors the Gradio module globals) ──────────────
+list_files_process: list = []          # list[ProcessEntry] – the target media queue
+selected_input_face_index = 0          # which source faceset is "selected"
+selected_target_index = 0              # which target file is shown in preview
+current_video_fps = 30
+
+# Face Manager state (separate faceset builder)
+fm_thumbs: list = []                   # RGB numpy thumbnails
+fm_images: list = []                   # BGR numpy full face images
+fm_selected_index = -1
+fm_files: list = []                    # uploaded source paths for the facemgr tab
+
+# Live progress, polled by the React UI
+_progress = {"processing": False, "progress": 0.0, "desc": "", "error": ""}
+_last_output = {"path": "", "kind": ""}
+
+no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame",
+                   "Skip Frame if no similar face", "Use last swapped"]
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def _save_upload(file: UploadFile) -> str:
+    path = os.path.join(API_TEMP, file.filename)
+    with open(path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return path
+
+
+def _rgb_to_dataurl(rgb) -> str:
+    """rgb: HxWx3 RGB numpy (as produced by util.convert_to_gradio) -> data URL."""
+    if rgb is None:
+        return ""
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    ok, buf = cv2.imencode(".png", bgr)
+    if not ok:
+        return ""
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _bgr_to_dataurl(bgr) -> str:
+    if bgr is None:
+        return ""
+    ok, buf = cv2.imencode(".png", bgr)
+    if not ok:
+        return ""
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _mask_offsets_from_cfg():
+    c = roop_globals.CFG
+    return [c.mask_top, c.mask_bottom, c.mask_left, c.mask_right,
+            c.face_mask_blend, c.mouth_mask_blend,
+            c.mouth_top_scale, c.mouth_bottom_scale,
+            c.mouth_left_scale, c.mouth_right_scale]
+
+
+def translate_swap_mode(text):
+    return {"Selected face": "selected", "First found": "first",
+            "All input faces": "all_input", "All female": "all_female",
+            "All male": "all_male"}.get(text, "all")
+
+
+def index_of_no_face_action(text):
+    try:
+        return no_face_choices.index(text)
+    except ValueError:
+        return 0
+
+
+def map_mask_engine(selected_mask_engine, clip_text):
+    if selected_mask_engine == "Clip2Seg":
+        return "mask_clip2seg" if clip_text else None
+    if selected_mask_engine == "DFL XSeg":
+        return "mask_xseg"
+    return None
+
+
+class ApiProgress:
+    """gradio.Progress-compatible shim that records progress into _progress."""
+    def __call__(self, value=0, desc="", total=None, unit=None):
+        try:
+            if isinstance(value, (tuple, list)) and len(value) == 2 and value[1]:
+                _progress["progress"] = float(value[0]) / float(value[1])
+            else:
+                _progress["progress"] = float(value)
+        except Exception:
+            pass
+        if desc:
+            _progress["desc"] = desc
+
+    def tqdm(self, iterable=None, *a, **k):
+        return iterable if iterable is not None else []
+
+
+# ── Settings ─────────────────────────────────────────────────────────────────
 @app.get("/api/settings")
 def get_settings():
     if roop_globals.CFG:
         return roop_globals.CFG.__dict__
     return {}
 
+
 @app.post("/api/settings")
-def save_settings(settings: dict):
+def save_settings(settings: dict = Body(...)):
     if roop_globals.CFG:
         for k, v in settings.items():
             if hasattr(roop_globals.CFG, k):
@@ -33,68 +146,611 @@ def save_settings(settings: dict):
         roop_globals.CFG.save()
     return {"status": "success"}
 
-@app.post("/api/upload_source")
-async def upload_source(file: UploadFile = File(...)):
-    path = os.path.join(API_TEMP, file.filename)
-    with open(path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # Normally roop uses get_face_images and FaceSet
-    # For now, just return the path to it
-    return {"path": path}
 
-@app.post("/api/upload_target")
-async def upload_target(file: UploadFile = File(...)):
-    path = os.path.join(API_TEMP, file.filename)
-    with open(path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return {"path": path}
+@app.get("/api/meta")
+def get_meta():
+    """Choice lists + current galleries for the React UI to render."""
+    try:
+        from roop.core import suggest_execution_providers
+        providers = suggest_execution_providers()
+    except Exception:
+        providers = ["cpu"]
+    return {
+        "providers": providers,
+        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"],
+        "swap_models": ["inswapper"],
+        "face_detection_modes": ["First found", "All input faces", "All female",
+                                  "All male", "All faces", "Selected face"],
+        "mask_engines": ["None", "Clip2Seg", "DFL XSeg"],
+        "no_face_actions": no_face_choices,
+        "upscale": ["128px", "256px", "512px"],
+        "video_methods": ["Extract Frames to media", "In-Memory processing"],
+        "output_methods": ["File", "Virtual Camera", "Both"],
+        "image_formats": ["jpg", "png", "webp"],
+        "video_formats": ["avi", "mkv", "mp4", "webm"],
+        "video_codecs": ["libx264", "libx265", "libvpx-vp9", "h264_nvenc", "hevc_nvenc"],
+    }
 
-@app.post("/api/swap")
-async def trigger_swap(payload: dict, background_tasks: BackgroundTasks):
-    source_path = payload.get("source_path")
-    target_path = payload.get("target_path")
-    
-    if not source_path or not target_path:
-        return JSONResponse(status_code=400, content={"message": "Missing source or target"})
 
-    # Setup globals just like start_swap does
-    roop_globals.target_path = target_path
-    
-    # ProcessEntry is what batch_process_regular expects
-    list_files_process = [ProcessEntry(target_path, 0, 0, 0)]
-    
-    from roop.capturer import get_video_frame_total
-    if util.is_video(target_path) or target_path.lower().endswith('gif') or util.is_animated_webp(target_path):
-        frames = get_video_frame_total(target_path)
-        if frames:
-            list_files_process[0].endframe = frames
+@app.get("/api/state")
+def get_state():
+    """Rehydrate the UI: current source/target galleries and target queue."""
+    targets = []
+    for i, entry in enumerate(list_files_process):
+        targets.append({
+            "name": os.path.basename(entry.filename),
+            "startframe": entry.startframe,
+            "endframe": entry.endframe,
+        })
+    return {
+        "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+        "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
+        "targets": targets,
+        "selected_target_index": selected_target_index,
+        "faceset_count": len(roop_globals.INPUT_FACESETS),
+    }
 
-    # Create dummy progress
-    class DummyProgress:
-        def __call__(self, progress, desc=""):
-            print(f"Progress: {progress} {desc}")
-    
-    def process_task():
-        # Setup inputs
-        import ui.globals
-        ui.globals.ui_input_thumbs = [source_path] 
-        roop_globals.INPUT_FACESETS = [[]]
-        from roop.face_util import extract_face_images
-        faces = extract_face_images(source_path, False)
-        if faces:
-            roop_globals.INPUT_FACESETS = [faces]
+
+# ── Source faces ─────────────────────────────────────────────────────────────
+@app.post("/api/source/add")
+async def source_add(files: list[UploadFile] = File(...)):
+    for f in files:
+        path = _save_upload(f)
+        try:
+            if path.lower().endswith("fsz"):
+                _ingest_faceset(path)
+            elif util.has_image_extension(path):
+                roop_globals.source_path = path
+                faces_data = extract_face_images(path, (False, 0))
+                for fd in faces_data:
+                    fs = FaceSet()
+                    face = fd[0]
+                    face.mask_offsets = _mask_offsets_from_cfg()
+                    fs.faces.append(face)
+                    ui_globals.ui_input_thumbs.append(util.convert_to_gradio(fd[1]))
+                    roop_globals.INPUT_FACESETS.append(fs)
+        except Exception:
+            traceback.print_exc()
+    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+            "faceset_count": len(roop_globals.INPUT_FACESETS)}
+
+
+def _ingest_faceset(path):
+    unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
+    if os.path.isdir(unzipfolder):
+        shutil.rmtree(unzipfolder, ignore_errors=True)
+    os.makedirs(unzipfolder, exist_ok=True)
+    util.unzip(path, unzipfolder)
+    face_set = FaceSet()
+    is_first = True
+    for file in os.listdir(unzipfolder):
+        if file.endswith(".png"):
+            filename = os.path.join(unzipfolder, file)
+            for fd in extract_face_images(filename, (False, 0)):
+                face = fd[0]
+                face.mask_offsets = _mask_offsets_from_cfg()
+                face_set.faces.append(face)
+                if is_first:
+                    ui_globals.ui_input_thumbs.append(util.convert_to_gradio(fd[1]))
+                    is_first = False
+                face_set.ref_images.append(get_image_frame(filename))
+    if len(face_set.faces) > 0:
+        if len(face_set.faces) > 1:
+            face_set.AverageEmbeddings()
+        roop_globals.INPUT_FACESETS.append(face_set)
+
+
+@app.post("/api/source/remove")
+def source_remove(payload: dict = Body(...)):
+    idx = int(payload.get("index", -1))
+    if 0 <= idx < len(roop_globals.INPUT_FACESETS):
+        roop_globals.INPUT_FACESETS.pop(idx)
+    if 0 <= idx < len(ui_globals.ui_input_thumbs):
+        ui_globals.ui_input_thumbs.pop(idx)
+    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+            "faceset_count": len(roop_globals.INPUT_FACESETS)}
+
+
+@app.post("/api/source/move")
+def source_move(payload: dict = Body(...)):
+    idx = int(payload.get("index", -1))
+    direction = payload.get("direction", "right")
+    offset = -1 if direction == "left" else 1
+    new_idx = idx + offset
+    if 0 <= idx < len(ui_globals.ui_input_thumbs) and 0 <= new_idx < len(ui_globals.ui_input_thumbs):
+        for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
+            item = arr.pop(idx)
+            arr.insert(new_idx, item)
+    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs]}
+
+
+@app.post("/api/source/clear")
+def source_clear():
+    ui_globals.ui_input_thumbs.clear()
+    roop_globals.INPUT_FACESETS.clear()
+    return {"source_faces": [], "faceset_count": 0}
+
+
+@app.post("/api/source/select")
+def source_select(payload: dict = Body(...)):
+    global selected_input_face_index
+    selected_input_face_index = int(payload.get("index", 0))
+    return {"selected": selected_input_face_index}
+
+
+# ── Target media ─────────────────────────────────────────────────────────────
+@app.post("/api/target/add")
+async def target_add(files: list[UploadFile] = File(...)):
+    global current_video_fps, selected_target_index
+    for f in files:
+        path = _save_upload(f)
+        list_files_process.append(ProcessEntry(path, 0, 0, 0))
+    selected_target_index = 0
+    _refresh_target_frames(0)
+    return _target_list_payload()
+
+
+def _refresh_target_frames(idx):
+    global current_video_fps
+    if idx >= len(list_files_process):
+        return
+    filename = list_files_process[idx].filename
+    if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
+        total = get_video_frame_total(filename) or 1
+        if not filename.lower().endswith(".webp"):
+            try:
+                current_video_fps = util.detect_fps(filename)
+            except Exception:
+                current_video_fps = 30
+    else:
+        total = 1
+    list_files_process[idx].endframe = total
+
+
+def _target_list_payload():
+    targets = []
+    for entry in list_files_process:
+        total = entry.endframe if entry.endframe else 1
+        targets.append({
+            "name": os.path.basename(entry.filename),
+            "startframe": entry.startframe,
+            "endframe": entry.endframe,
+            "frames": total,
+        })
+    return {"targets": targets, "selected_target_index": selected_target_index,
+            "fps": current_video_fps}
+
+
+@app.post("/api/target/select")
+def target_select(payload: dict = Body(...)):
+    global selected_target_index
+    selected_target_index = int(payload.get("index", 0))
+    _refresh_target_frames(selected_target_index)
+    return _target_list_payload()
+
+
+@app.post("/api/target/clear")
+def target_clear():
+    global selected_target_index
+    list_files_process.clear()
+    roop_globals.TARGET_FACES.clear()
+    ui_globals.ui_target_thumbs.clear()
+    selected_target_index = 0
+    return _target_list_payload()
+
+
+@app.post("/api/target/set_frame")
+def target_set_frame(payload: dict = Body(...)):
+    """Set start/end frame of the selected target (Set as Start / End)."""
+    idx = selected_target_index
+    which = payload.get("which", "start")
+    frame = int(payload.get("frame", 1))
+    if idx < len(list_files_process):
+        entry = list_files_process[idx]
+        if which == "start":
+            entry.startframe = min(frame, entry.endframe or frame)
         else:
+            entry.endframe = max(frame, entry.startframe)
+    return _target_list_payload()
+
+
+@app.get("/api/target/preview")
+def target_preview(index: int = 0, frame: int = 1):
+    """Return the raw target frame (no swap) as PNG."""
+    if index >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target"})
+    filename = list_files_process[index].filename
+    if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
+        frame_img = get_video_frame(filename, frame)
+    else:
+        frame_img = get_image_frame(filename)
+    if frame_img is None:
+        return JSONResponse(status_code=404, content={"message": "no frame"})
+    ok, buf = cv2.imencode(".png", frame_img)
+    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
+
+
+@app.post("/api/target/use_face")
+def target_use_face(payload: dict = Body(...)):
+    """Extract target faces from the current preview frame (Use Face from this Frame)."""
+    idx = int(payload.get("index", selected_target_index))
+    frame = int(payload.get("frame", 1))
+    if idx >= len(list_files_process):
+        return {"target_faces": []}
+    target_path = list_files_process[idx].filename
+    roop_globals.target_path = target_path
+    if util.is_image(target_path) and not target_path.lower().endswith("gif"):
+        faces_data = extract_face_images(target_path, (False, 0))
+    else:
+        faces_data = extract_face_images(target_path, (True, frame))
+    for fd in faces_data:
+        roop_globals.TARGET_FACES.append(fd[0])
+        ui_globals.ui_target_thumbs.append(util.convert_to_gradio(fd[1]))
+    return {"target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
+            "count": len(faces_data)}
+
+
+@app.post("/api/target/remove_face")
+def target_remove_face(payload: dict = Body(...)):
+    idx = int(payload.get("index", -1))
+    if 0 <= idx < len(roop_globals.TARGET_FACES):
+        roop_globals.TARGET_FACES.pop(idx)
+    if 0 <= idx < len(ui_globals.ui_target_thumbs):
+        ui_globals.ui_target_thumbs.pop(idx)
+    return {"target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs]}
+
+
+# ── Live preview swap ────────────────────────────────────────────────────────
+@app.post("/api/preview")
+def preview(payload: dict = Body(...)):
+    """Render the selected target frame, optionally with a live face swap."""
+    global selected_target_index
+    idx = int(payload.get("index", selected_target_index))
+    frame = int(payload.get("frame", 1))
+    fake = bool(payload.get("fake_preview", False))
+
+    if idx >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target"})
+
+    filename = list_files_process[idx].filename
+    if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
+        current_frame = get_video_frame(filename, frame)
+    else:
+        current_frame = get_image_frame(filename)
+    if current_frame is None:
+        return JSONResponse(status_code=404, content={"message": "no frame"})
+
+    if not fake or len(roop_globals.INPUT_FACESETS) < 1:
+        return {"image": _bgr_to_dataurl(current_frame)}
+
+    try:
+        from roop.core import live_swap, get_processing_plugins
+        from roop.ProcessOptions import ProcessOptions
+
+        roop_globals.face_swap_mode = translate_swap_mode(payload.get("detection", "All faces"))
+        roop_globals.selected_enhancer = payload.get("enhancer", "None")
+        roop_globals.distance_threshold = float(payload.get("face_distance", 0.85))
+        roop_globals.blend_ratio = float(payload.get("blend_ratio", 0.8))
+        roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", "Retry rotated"))
+        roop_globals.vr_mode = bool(payload.get("vr_mode", False))
+        roop_globals.autorotate_faces = bool(payload.get("autorotate", True))
+        roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
+        roop_globals.execution_threads = roop_globals.CFG.max_threads
+
+        swap_model = payload.get("swap_model", "inswapper")
+        mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))
+        face_index = selected_input_face_index
+        if len(roop_globals.INPUT_FACESETS) <= face_index:
+            face_index = 0
+
+        options = ProcessOptions(
+            get_processing_plugins(mask_engine, swap_model=swap_model),
+            roop_globals.distance_threshold, roop_globals.blend_ratio,
+            roop_globals.face_swap_mode, face_index, payload.get("clip_text", ""),
+            None, int(payload.get("num_swap_steps", 1)), roop_globals.subsample_size,
+            bool(payload.get("show_mask_offsets", False)),
+            bool(payload.get("restore_original_mouth", False)),
+            use_3d_recon=bool(payload.get("use_3d_recon", False)),
+            use_source_bank=bool(payload.get("use_source_bank", False)),
+            use_frontalization=bool(payload.get("use_frontalization", False)),
+            frontalization_threshold=float(payload.get("frontalization_threshold", 30.0)),
+            swap_model=swap_model)
+
+        swapped = live_swap(current_frame, options)
+        if swapped is None:
+            return {"image": _bgr_to_dataurl(current_frame)}
+        return {"image": _bgr_to_dataurl(swapped)}
+    except Exception:
+        traceback.print_exc()
+        return {"image": _bgr_to_dataurl(current_frame), "error": "swap failed"}
+
+
+# ── Run the swap ─────────────────────────────────────────────────────────────
+@app.post("/api/swap")
+def trigger_swap(payload: dict = Body(...)):
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={"message": "already processing"})
+    if len(list_files_process) < 1:
+        return JSONResponse(status_code=400, content={"message": "no target media"})
+    if len(roop_globals.INPUT_FACESETS) < 1:
+        return JSONResponse(status_code=400, content={"message": "no source faces"})
+
+    threading.Thread(target=_run_swap, args=(payload,), daemon=True).start()
+    return {"status": "started"}
+
+
+def _run_swap(payload):
+    global selected_input_face_index
+    from ui.main import prepare_environment
+    from roop.core import batch_process_regular
+
+    _progress.update({"processing": True, "progress": 0.0, "desc": "Starting…", "error": ""})
+    try:
+        prepare_environment()
+        if roop_globals.CFG.clear_output:
+            shutil.rmtree(roop_globals.output_path, ignore_errors=True)
+            os.makedirs(roop_globals.output_path, exist_ok=True)
+
+        enhancer = payload.get("enhancer", roop_globals.CFG.selected_enhancer)
+        detection = payload.get("detection", roop_globals.CFG.face_detection_mode)
+        output_method = payload.get("output_method", roop_globals.CFG.output_method)
+        processing_method = payload.get("video_method", roop_globals.CFG.video_swapping_method)
+        upsample = payload.get("upscale", roop_globals.CFG.subsample_upscale)
+        selected_mask_engine = payload.get("mask_engine", roop_globals.CFG.mask_engine)
+        clip_text = payload.get("clip_text", roop_globals.CFG.mask_clip_text)
+
+        roop_globals.selected_enhancer = enhancer
+        roop_globals.target_path = None
+        roop_globals.distance_threshold = float(payload.get("face_distance", roop_globals.CFG.max_face_distance))
+        roop_globals.blend_ratio = float(payload.get("blend_ratio", roop_globals.CFG.blend_ratio))
+        roop_globals.keep_frames = bool(payload.get("keep_frames", roop_globals.CFG.keep_frames))
+        roop_globals.wait_after_extraction = bool(payload.get("wait_after_extraction", roop_globals.CFG.wait_after_extraction))
+        roop_globals.skip_audio = bool(payload.get("skip_audio", roop_globals.CFG.skip_audio))
+        roop_globals.face_swap_mode = translate_swap_mode(detection)
+        roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", roop_globals.CFG.no_face_action))
+        roop_globals.vr_mode = bool(payload.get("vr_mode", roop_globals.CFG.vr_mode))
+        roop_globals.autorotate_faces = bool(payload.get("autorotate", roop_globals.CFG.autorotate_faces))
+        roop_globals.subsample_size = int(str(upsample)[:3])
+        roop_globals.execution_threads = roop_globals.CFG.max_threads
+        roop_globals.video_encoder = roop_globals.CFG.output_video_codec
+        roop_globals.video_quality = roop_globals.CFG.video_quality
+        roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None
+
+        mask_engine = map_mask_engine(selected_mask_engine, clip_text)
+
+        if roop_globals.face_swap_mode == "selected" and len(roop_globals.TARGET_FACES) < 1:
+            _progress.update({"processing": False, "error": "No target face selected"})
             return
 
+        roop_globals.processing = True
         batch_process_regular(
-            "Extract & Re-encode", list_files_process, "None", "", False, None, False, 1, DummyProgress(), 0,
-            use_3d_recon=False, mask_per_frame_json="", use_source_bank=False,
-            use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper'
-        )
+            output_method, list_files_process, mask_engine, clip_text,
+            processing_method == "In-Memory processing", None,
+            bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
+            int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
+            ApiProgress(), selected_input_face_index,
+            use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
+            mask_per_frame_json="",
+            use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
+            use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
+            frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
+            swap_model=payload.get("swap_model", roop_globals.CFG.swap_model))
 
-    background_tasks.add_task(process_task)
-    return {"status": "started"}
+        _progress["progress"] = 1.0
+        _progress["desc"] = "Done"
+        _record_last_output()
+    except Exception as e:
+        traceback.print_exc()
+        _progress["error"] = str(e)
+    finally:
+        _progress["processing"] = False
+
+
+def _record_last_output():
+    out = roop_globals.output_path
+    if not out or not os.path.isdir(out):
+        return
+    files = [os.path.join(out, f) for f in os.listdir(out)
+             if not f.startswith(".") and os.path.isfile(os.path.join(out, f))]
+    if not files:
+        return
+    latest = max(files, key=os.path.getmtime)
+    kind = "video" if util.is_video(latest) else ("image" if util.is_image(latest) else "file")
+    _last_output.update({"path": latest, "kind": kind})
+
+
+@app.post("/api/stop")
+def stop_swap():
+    roop_globals.processing = False
+    _progress["desc"] = "Aborting…"
+    return {"status": "stopping"}
+
+
+@app.get("/api/progress")
+def get_progress():
+    return {**_progress, "output": _last_output}
+
+
+@app.get("/api/output")
+def list_output():
+    out = getattr(roop_globals, "output_path", None)
+    items = []
+    if out and os.path.isdir(out):
+        for f in sorted(os.listdir(out), reverse=True):
+            full = os.path.join(out, f)
+            if os.path.isfile(full) and not f.startswith("."):
+                kind = "video" if util.is_video(full) else ("image" if util.is_image(full) else "file")
+                items.append({"name": f, "kind": kind, "mtime": os.path.getmtime(full)})
+    return {"output_path": out, "files": items[:50]}
+
+
+@app.get("/api/file")
+def get_file(path: str):
+    """Serve an output/temp file by absolute path (guarded to known dirs)."""
+    allowed = [os.path.abspath(getattr(roop_globals, "output_path", "") or ""),
+               os.path.abspath(API_TEMP), os.path.abspath(os.path.join(os.getcwd(), "temp"))]
+    ap = os.path.abspath(path)
+    if not any(ap.startswith(a) and a for a in allowed) or not os.path.isfile(ap):
+        return JSONResponse(status_code=403, content={"message": "forbidden"})
+    return FileResponse(ap)
+
+
+# ── Face Manager (faceset builder) ───────────────────────────────────────────
+@app.post("/api/facemgr/add")
+async def facemgr_add(files: list[UploadFile] = File(...)):
+    global current_video_fps
+    video_path = None
+    for f in files:
+        path = _save_upload(f)
+        if util.has_image_extension(path):
+            for fd in extract_face_images(path, (False, 0), 0.5):
+                fm_images.append(fd[1])
+                fm_thumbs.append(util.convert_to_gradio(fd[1]))
+        elif util.is_video(path) or path.lower().endswith("gif"):
+            fm_files.append(path)
+            video_path = path
+            try:
+                current_video_fps = util.detect_fps(path)
+            except Exception:
+                current_video_fps = 30
+    resp = {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+    if video_path:
+        resp["video"] = os.path.basename(video_path)
+        resp["frames"] = get_video_frame_total(video_path) or 1
+    return resp
+
+
+@app.post("/api/facemgr/faceset")
+async def facemgr_faceset(file: UploadFile = File(...)):
+    path = _save_upload(file)
+    fm_thumbs.clear()
+    fm_images.clear()
+    if path.lower().endswith("fsz"):
+        unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
+        if os.path.isdir(unzipfolder):
+            shutil.rmtree(unzipfolder, ignore_errors=True)
+        os.makedirs(unzipfolder, exist_ok=True)
+        util.unzip(path, unzipfolder)
+        for file_ in os.listdir(unzipfolder):
+            if file_.endswith(".png"):
+                for fd in extract_face_images(os.path.join(unzipfolder, file_), (False, 0), 0.5):
+                    fm_images.append(fd[1])
+                    fm_thumbs.append(util.convert_to_gradio(fd[1]))
+    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+
+
+@app.get("/api/facemgr/frame")
+def facemgr_frame(frame: int = 1):
+    if not fm_files:
+        return JSONResponse(status_code=404, content={"message": "no video"})
+    img = get_video_frame(fm_files[-1], frame)
+    if img is None:
+        return JSONResponse(status_code=404, content={"message": "no frame"})
+    ok, buf = cv2.imencode(".jpg", img)
+    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/jpeg")
+
+
+@app.post("/api/facemgr/cut")
+def facemgr_cut(payload: dict = Body(...)):
+    frame = int(payload.get("frame", 1))
+    if not fm_files:
+        return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+    for fd in extract_face_images(fm_files[-1], (True, frame), 0.5):
+        fm_images.append(fd[1])
+        fm_thumbs.append(util.convert_to_gradio(fd[1]))
+    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+
+
+@app.post("/api/facemgr/remove")
+def facemgr_remove(payload: dict = Body(...)):
+    idx = int(payload.get("index", -1))
+    if 0 <= idx < len(fm_thumbs):
+        fm_thumbs.pop(idx)
+        fm_images.pop(idx)
+    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+
+
+@app.post("/api/facemgr/clear")
+def facemgr_clear():
+    fm_thumbs.clear()
+    fm_images.clear()
+    fm_files.clear()
+    return {"faces": []}
+
+
+@app.post("/api/facemgr/build")
+def facemgr_build():
+    if len(fm_images) < 1:
+        return JSONResponse(status_code=400, content={"message": "no faces"})
+    from ui.main import prepare_environment
+    prepare_environment()
+    imgnames = []
+    for index, img in enumerate(fm_images):
+        filename = os.path.join(roop_globals.output_path, f"{index}.png")
+        cv2.imwrite(filename, img)
+        imgnames.append(filename)
+    finalzip = os.path.join(roop_globals.output_path, "faceset.fsz")
+    util.zip(imgnames, finalzip)
+    return {"path": finalzip, "name": "faceset.fsz"}
+
+
+# ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
+@app.post("/api/extras/apply")
+async def extras_apply(file: UploadFile = File(...),
+                       resolution: str = "Original",
+                       rotation: str = "None",
+                       fps: float = 30.0,
+                       crop_left: int = 0, crop_right: int = 0,
+                       crop_top: int = 0, crop_bottom: int = 0):
+    from ui.main import prepare_environment
+    prepare_environment()
+    path = _save_upload(file)
+    is_video = util.is_video(path) or path.lower().endswith("gif")
+
+    def _process_frame(img):
+        h, w = img.shape[:2]
+        x0 = int(w * crop_left / 100)
+        x1 = w - int(w * crop_right / 100)
+        y0 = int(h * crop_top / 100)
+        y1 = h - int(h * crop_bottom / 100)
+        if x1 > x0 and y1 > y0:
+            img = img[y0:y1, x0:x1]
+        if rotation == "90° Clockwise":
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation == "90° Counter-Clockwise":
+            img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif rotation == "180°":
+            img = cv2.rotate(img, cv2.ROTATE_180)
+        if resolution and resolution != "Original":
+            try:
+                target_w = int(str(resolution).split("x")[0])
+                scale = target_w / img.shape[1]
+                img = cv2.resize(img, (target_w, int(img.shape[0] * scale)))
+            except Exception:
+                pass
+        return img
+
+    out_dir = roop_globals.output_path
+    if not is_video:
+        img = get_image_frame(path)
+        out = _process_frame(img)
+        outpath = os.path.join(out_dir, "edited_" + os.path.splitext(os.path.basename(path))[0] + ".png")
+        cv2.imwrite(outpath, out)
+        return {"path": outpath, "kind": "image"}
+
+    total = get_video_frame_total(path) or 1
+    first = _process_frame(get_video_frame(path, 1))
+    oh, ow = first.shape[:2]
+    outpath = os.path.join(out_dir, "edited_" + os.path.splitext(os.path.basename(path))[0] + ".mp4")
+    writer = cv2.VideoWriter(outpath, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))
+    for i in range(1, total + 1):
+        fr = get_video_frame(path, i)
+        if fr is None:
+            continue
+        writer.write(_process_frame(fr))
+    writer.release()
+    return {"path": outpath, "kind": "video"}
+
 
 def run_api():
     uvicorn.run(app, host="127.0.0.1", port=8001, log_level="error")
