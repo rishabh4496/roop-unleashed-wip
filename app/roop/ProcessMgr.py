@@ -1,7 +1,8 @@
 import os
-import cv2 
+import cv2
 import numpy as np
 import psutil
+import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
@@ -15,15 +16,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock
 from queue import Queue
 
-# Serialises GPU inference across all worker threads.
-# TensorRT and the CUDA execution provider are NOT safe for concurrent use
-# from multiple Python threads on the same InferenceSession: concurrent
-# cudaMemcpyAsync calls corrupt the CUDA context, producing error 999.
-# All frame-level work that touches the GPU (swap + enhance) is guarded by
-# this lock so at most one thread executes GPU ops at a time.
-# CPU-bound work (file I/O, face detection on CPU, progress updates) is
-# still parallelised freely between acquisitions of the lock.
+# Serialises GPU inference across worker threads ONLY when required.
+#
+# onnxruntime's InferenceSession.run() is thread-safe for the CPU and CUDA
+# execution providers, so multiple worker threads can run frames concurrently
+# and actually use the GPU + CPU in parallel. The TensorRT EP's execution
+# context is NOT thread-safe (concurrent enqueue corrupts the CUDA context →
+# error 999), so for TensorRT we serialise GPU work with this lock.
+#
+# Net effect: CUDA/CPU → full multi-thread throughput; TensorRT → serialised
+# (switch to the CUDA provider for parallelism).
 _gpu_lock = Lock()
+
+
+def _gpu_guard():
+    """Return the GPU lock only when the active provider needs serialising
+    (TensorRT); otherwise a no-op context so threads run concurrently."""
+    needs_lock = any('tensorrt' in str(p).lower() for p in roop.globals.execution_providers)
+    return _gpu_lock if needs_lock else contextlib.nullcontext()
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
@@ -331,12 +341,10 @@ class ProcessMgr():
             if temp_frame is not None:
                 try:
                     # Acquire the GPU lock before any GPU-bound work.
-                    # Multiple worker threads share the same ONNX sessions; concurrent
-                    # cudaMemcpyAsync calls from different threads corrupt TensorRT's
-                    # CUDA context (error 999).  Serialising here is safe: each thread
-                    # reads its own frame from disk, then takes the lock only for the
-                    # GPU-bound portion (swap + enhance).
-                    with _gpu_lock:
+                    # Serialise GPU work only for TensorRT (its execution context
+                    # is not thread-safe); CUDA/CPU run() is thread-safe so threads
+                    # proceed concurrently (see _gpu_guard).
+                    with _gpu_guard():
                         if self.options.frame_processing:
                             frame = temp_frame
                             for p in self.processors:
@@ -400,7 +408,7 @@ class ProcessMgr():
                 return
             else:
                 try:
-                    with _gpu_lock:
+                    with _gpu_guard():
                         if self.options.frame_processing:
                             out = frame
                             for p in self.processors:
@@ -489,9 +497,13 @@ class ProcessMgr():
         self.processing_threads = self.num_threads
         self.frames_queue = []
         self.processed_queue = []
+        # A little buffering per thread smooths variable per-frame times so the
+        # reader/writer don't stall worker threads (matters now that CUDA runs
+        # workers concurrently instead of serialised behind one GPU lock).
+        qdepth = 1 if threads <= 1 else 3
         for _ in range(threads):
-            self.frames_queue.append(Queue(1))
-            self.processed_queue.append(Queue(1))
+            self.frames_queue.append(Queue(qdepth))
+            self.processed_queue.append(Queue(qdepth))
 
         self.output_to_file = output_method != "Virtual Camera"
         self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
