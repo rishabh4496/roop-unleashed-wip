@@ -21,14 +21,5 @@ module.exports = {
       path: "react-ui",
       message: "npm install"
     }
-  }, {
-    method: "script.start",
-    params: {
-      uri: "torch.js",
-      params: {
-        venv: "env",
-        path: "app",
-      }
-    }
   }]
 }
