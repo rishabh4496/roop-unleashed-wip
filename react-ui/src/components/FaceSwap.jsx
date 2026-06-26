@@ -56,16 +56,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
 
   const refreshPreview = async (opts = {}) => {
     if (targets.length === 0) { setPreviewSrc(''); return; }
+    
+    const idx = opts.index ?? selTarget;
+    const fr = opts.frame ?? frame;
+    const fake = opts.fake ?? fakePreview;
+
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
     // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
     // TensorRT/CUDA. So never run two at once — queue the latest request and
     // run it once the current one finishes.
-    if (previewBusyRef.current) { previewPendingRef.current = opts; return; }
+    if (previewBusyRef.current) { 
+      previewPendingRef.current = { ...opts, index: idx, frame: fr, fake: fake }; 
+      return; 
+    }
+    
     previewBusyRef.current = true;
     setPreviewing(true);
-    const idx = opts.index ?? selTarget;
-    const fr = opts.frame ?? frame;
-    const fake = opts.fake ?? fakePreview;
     // Safety net: the first run of a new model downloads it and builds a
     // TensorRT/CUDA engine (minutes). Abort after 15 min so a genuine hang can
     // never wedge the single-flight guard permanently.
@@ -213,8 +219,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   };
 
   const setFrameMarker = async (which) => {
-    await postJSON('/api/target/set_frame', { which, frame });
-    notify(`Set ${which} frame = ${frame}`);
+    try {
+      const res = await postJSON('/api/target/set_frame', { which, frame });
+      if (res.targets) setTargets(res.targets);
+      notify(`Set ${which} frame = ${frame}`);
+    } catch (e) { notify(e.message, 'error'); }
   };
 
   // ── start / stop ──
@@ -338,12 +347,19 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             </div>
             {maxFrames > 1 && (
               <>
-                <Slider label="Frame" info={`${frame} / ${maxFrames}`} min={1} max={maxFrames} step={1} value={frame}
-                  onChange={(v) => setFrame(v)} />
-                <div className="flex gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>Show frame</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')}>⬅ Set start</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')}>Set end ➡</Button>
+                <div className="pt-2 border-t border-white/5">
+                  <Slider label="Frame" info={`${frame} / ${maxFrames}`} min={1} max={maxFrames} step={1} value={frame}
+                    onChange={(v) => setFrame(v)} />
+                </div>
+                <div className="flex flex-wrap items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
+                  <Button size="sm" variant="secondary" onClick={() => refreshPreview()} className="!py-1.5 flex-1 sm:flex-none justify-center">Show frame</Button>
+                  <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
+                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} className="!py-1.5 flex-1 sm:flex-none justify-center">
+                    <span className="opacity-60 mr-1">⬅ Start:</span> <span className="font-mono text-[#E94560]">{targets[selTarget]?.start_frame ?? 1}</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} className="!py-1.5 flex-1 sm:flex-none justify-center">
+                    <span className="opacity-60 mr-1">End:</span> <span className="font-mono text-[#E94560]">{targets[selTarget]?.end_frame ?? maxFrames}</span> ➡
+                  </Button>
                 </div>
               </>
             )}
