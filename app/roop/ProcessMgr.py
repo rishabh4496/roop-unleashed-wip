@@ -144,10 +144,15 @@ class ProcessMgr():
         # Build the One Euro stabilizers when requested. They only take effect in
         # the sequential video path (run_batch_inmem sets _stab_active).
         if getattr(options, 'stabilize_face', False):
-            from roop.one_euro import KpsStabilizer
-            self.kps_stabilizer = KpsStabilizer(
-                min_cutoff=getattr(options, 'stabilize_min_cutoff', 0.05),
-                beta=getattr(options, 'stabilize_beta', 0.02))
+            method = getattr(options, 'stabilize_method', 'one_euro')
+            if method == 'ema':
+                from roop.one_euro import EmaKpsStabilizer
+                self.kps_stabilizer = EmaKpsStabilizer(alpha=0.3)
+            else:
+                from roop.one_euro import KpsStabilizer
+                self.kps_stabilizer = KpsStabilizer(
+                    min_cutoff=getattr(options, 'stabilize_min_cutoff', 0.05),
+                    beta=getattr(options, 'stabilize_beta', 0.02))
         else:
             self.kps_stabilizer = None
         if getattr(options, 'stabilize_enhancer', False):

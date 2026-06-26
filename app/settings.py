@@ -79,6 +79,7 @@ class Settings:
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
         # One Euro temporal face stabilization (video)
         self.stabilize_face = self.default_get(data, 'stabilize_face', False)
+        self.stabilize_method = self.default_get(data, 'stabilize_method', 'one_euro')
         self.stabilize_min_cutoff = self.default_get(data, 'stabilize_min_cutoff', 0.05)
         self.stabilize_beta = self.default_get(data, 'stabilize_beta', 0.02)
         self.stabilize_enhancer = self.default_get(data, 'stabilize_enhancer', False)
@@ -148,6 +149,7 @@ class Settings:
             'swap_model': self.swap_model,
             # One Euro temporal face stabilization
             'stabilize_face': self.stabilize_face,
+            'stabilize_method': self.stabilize_method,
             'stabilize_min_cutoff': self.stabilize_min_cutoff,
             'stabilize_beta': self.stabilize_beta,
             'stabilize_enhancer': self.stabilize_enhancer,

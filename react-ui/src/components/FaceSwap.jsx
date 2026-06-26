@@ -22,6 +22,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [maxFrames, setMaxFrames] = useState(1);
   const [previewSrc, setPreviewSrc] = useState('');
   const [previewFaces, setPreviewFaces] = useState([]);
+  const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
@@ -60,7 +61,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     
     const idx = opts.index ?? selTarget;
     const fr = opts.frame ?? frame;
-    const fake = true;
+    const fake = opts.fake ?? fakePreview;
 
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
     // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
@@ -79,7 +80,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     const ctrl = new AbortController();
     const killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
     try {
-      const t0 = performance.now();
       const res = await postJSON('/api/preview', {
         index: idx, frame: fr, fake_preview: fake,
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
@@ -130,6 +130,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
   const previewKey = JSON.stringify({
+    fp: fakePreview,
     e: p.selected_enhancer, d: p.face_detection_mode, fd: p.max_face_distance,
     br: p.blend_ratio, me: p.mask_engine, ct: p.mask_clip_text, nfa: p.no_face_action,
     vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
@@ -357,6 +358,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               </div>
             )}
             <div className="flex items-center flex-wrap gap-3">
+              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
               <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
@@ -375,7 +377,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                   <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
                     <span className="text-xs opacity-60">Start:</span>
                     <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-[#E94560] outline-none text-sm"
+                      className="bg-transparent w-16 text-right font-mono text-white outline-none text-sm focus:ring-1 focus:ring-[#E94560] rounded"
                       key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
                       defaultValue={targets[selTarget]?.start_frame ?? 1}
                       onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
@@ -389,7 +391,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                   <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
                     <span className="text-xs opacity-60">End:</span>
                     <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-[#E94560] outline-none text-sm"
+                      className="bg-transparent w-16 text-right font-mono text-white outline-none text-sm focus:ring-1 focus:ring-[#E94560] rounded"
                       key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
                       defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
                       onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
@@ -463,11 +465,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
-          <Toggle label="🎯 Stabilize face (video)" info="One Euro smoothing — reduces swap wobble (uses In-Memory method; runs single-thread)" checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+          <Toggle label="🎯 Stabilize face (video)" info="Smoothing reduces swap wobble (uses In-Memory method; runs single-thread)" checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
           {p.stabilize_face && (
             <>
-              <Slider label="Smoothing (min cutoff)" info="lower = smoother, more lag" min={0.01} max={0.3} step={0.01} value={num(p.stabilize_min_cutoff, 0.05)} onChange={(v) => set('stabilize_min_cutoff', v)} />
-              <Slider label="Reactivity (beta)" info="higher = less lag on fast motion" min={0} max={0.2} step={0.01} value={num(p.stabilize_beta, 0.02)} onChange={(v) => set('stabilize_beta', v)} />
+              <Select label="Stabilization Method" value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
+              {p.stabilize_method !== 'ema' && (
+                <>
+                  <Slider label="Smoothing (min cutoff)" info="lower = smoother, more lag" min={0.01} max={0.3} step={0.01} value={num(p.stabilize_min_cutoff, 0.05)} onChange={(v) => set('stabilize_min_cutoff', v)} />
+                  <Slider label="Reactivity (beta)" info="higher = less lag on fast motion" min={0} max={0.2} step={0.01} value={num(p.stabilize_beta, 0.02)} onChange={(v) => set('stabilize_beta', v)} />
+                </>
+              )}
             </>
           )}
           <Toggle label="✨ Reduce enhancer flicker (video)" info="temporally blends the enhanced face to kill GFPGAN/GPEN shimmer (uses In-Memory method; single-thread)" checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />

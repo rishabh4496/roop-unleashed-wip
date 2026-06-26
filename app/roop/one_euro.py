@@ -92,6 +92,46 @@ class KpsStabilizer:
         return smoothed.astype(np.float32)
 
 
+class EmaKpsStabilizer:
+    """Smooths face 5-point keypoints across frames using an Exponential Moving Average (EMA)."""
+
+    def __init__(self, alpha=0.3, max_missing=8, match_scale=0.6):
+        self.alpha = float(alpha)
+        self.max_missing = int(max_missing)
+        self.match_scale = float(match_scale)
+        self.tracks = []
+
+    def reset(self):
+        self.tracks = []
+
+    def apply(self, kps, t):
+        kps = np.asarray(kps, dtype=np.float64)
+        if kps.shape != (5, 2):
+            return kps.astype(np.float32)
+        centroid = kps.mean(axis=0)
+        size = max(float(np.ptp(kps[:, 0])), float(np.ptp(kps[:, 1])), 1.0)
+
+        best, best_d = None, float('inf')
+        for tr in self.tracks:
+            d = float(np.linalg.norm(tr['centroid'] - centroid))
+            if d < best_d:
+                best_d, best = d, tr
+
+        if best is not None and best_d <= self.match_scale * size and (t - best['last_t']) <= self.max_missing:
+            tr = best
+            smoothed = self.alpha * kps + (1.0 - self.alpha) * tr['prev']
+            tr['prev'] = smoothed
+        else:
+            tr = {'prev': kps, 'centroid': centroid, 'last_t': t}
+            self.tracks.append(tr)
+            smoothed = kps
+
+        tr['centroid'] = smoothed.mean(axis=0)
+        tr['last_t'] = t
+        self.tracks = [x for x in self.tracks if (t - x['last_t']) <= self.max_missing]
+        return smoothed.astype(np.float32)
+
+
 class EnhancerStabilizer:
     """Reduces per-frame enhancer texture flicker (GFPGAN/GPEN/Codeformer shimmer)
     by temporally blending the *aligned* enhanced crop with a motion-adaptive

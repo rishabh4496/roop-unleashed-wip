@@ -549,7 +549,9 @@ def preview(payload: dict = Body(...)):
             use_source_bank=bool(payload.get("use_source_bank", False)),
             use_frontalization=bool(payload.get("use_frontalization", False)),
             frontalization_threshold=float(payload.get("frontalization_threshold", 30.0)),
-            swap_model=swap_model)
+            swap_model=swap_model,
+            stabilize_method=payload.get("stabilize_method", "one_euro"),
+            stabilize_face=bool(payload.get("stabilize_face", False)))
 
         swapped = live_swap(current_frame, options)
         if swapped is None:
@@ -631,6 +633,7 @@ def _run_swap(payload):
             frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
             swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
             stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
+            stabilize_method=payload.get("stabilize_method", roop_globals.CFG.stabilize_method),
             stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
             stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
             stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
