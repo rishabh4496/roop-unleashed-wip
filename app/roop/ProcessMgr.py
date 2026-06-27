@@ -92,7 +92,6 @@ from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
 from roop import session_pool
-from roop import thread_tuner
 from roop import swap_batcher
 import roop.globals
 
@@ -607,13 +606,8 @@ class ProcessMgr():
             print(f"[Stabilize] 2-pass: precomputed smoothed kps for "
                   f"{len(self._precomputed_kps)} frames; pass 2 runs multi-threaded.")
 
-        # Empirically auto-tune the worker thread count to saturate the GPU.
-        # The incoming `threads` (from the "Max. Number of Threads" setting) is
-        # treated as a ceiling; the tuner picks the fastest count <= it and
-        # caches the result so this only ever runs once per pipeline signature.
-        threads = self._autotune_threads(threads, source_video, awebp_frames,
-                                         frame_start, frame_count, width, height)
-
+        # Worker thread count is exactly the user's "Max. Number of Threads"
+        # setting (no auto-tuning).
         self.total_frames = frame_count
         self.num_threads = threads
         self.processing_threads = self.num_threads
@@ -683,10 +677,6 @@ class ProcessMgr():
         _prof_report()
 
 
-    def _enhancer_active(self) -> bool:
-        return any('enhance' in type(p).__name__.lower() for p in self.processors)
-
-
     def _make_swap_batcher(self, threads):
         """Build the cross-frame swap batcher when opted in. Requires >1 thread,
         a swapper exposing RunBatchMulti, and the batch-dynamic session
@@ -711,73 +701,6 @@ class ProcessMgr():
             max_batch=max_b, max_wait_ms=6.0)
         print(f"[BatchSwap] cross-frame batching ON (max_batch={max_b}, threads={threads}).")
         return b
-
-
-    def _sample_calibration_frames(self, source_video, awebp_frames, frame_start, n):
-        """Grab up to `n` representative BGR frames without disturbing the main
-        reader. Reads sequentially from the start (no seek — long HEVC clips
-        cannot be seeked reliably; see capturer.py)."""
-        frames = []
-        if awebp_frames is not None:
-            for fr in awebp_frames[frame_start:frame_start + n]:
-                if fr is not None:
-                    frames.append(fr)
-            return frames
-        cap = cv2.VideoCapture(source_video)
-        try:
-            while len(frames) < n:
-                ret, fr = cap.read()
-                if not ret or fr is None:
-                    break
-                frames.append(fr)
-        finally:
-            cap.release()
-        return frames
-
-
-    def _autotune_threads(self, threads, source_video, awebp_frames,
-                          frame_start, frame_count, width, height):
-        # Nothing to tune when forced single-thread (stabilizers) or disabled.
-        if threads <= 1 or not thread_tuner.enabled():
-            return threads
-
-        enhancer_on = self._enhancer_active()
-        key = thread_tuner.make_key(width, height, enhancer_on, threads)
-
-        cached = thread_tuner.get_cached(key)
-        if cached is not None:
-            tuned = max(1, min(int(cached), threads))
-            print(f"[AutoTune] using cached thread count {tuned} for {key}")
-            return tuned
-
-        # Only pay the calibration cost on clips long enough to amortise it;
-        # the result is cached, so later short clips reuse it for free.
-        MIN_FRAMES = 64
-        if frame_count < MIN_FRAMES:
-            return threads
-
-        sample_n = min(frame_count, max(48, threads * 8))
-        sample = self._sample_calibration_frames(source_video, awebp_frames, frame_start, sample_n)
-        if len(sample) < 8:
-            # Could not decode a usable sample (e.g. cv2 returned 0 frames).
-            return threads
-
-        print(f"[AutoTune] calibrating thread count on {len(sample)} frames "
-              f"(ceiling {threads}, {key}) ...")
-        # process_frame mutates these across frames; snapshot and restore so the
-        # throwaway calibration cannot leak state into the real run.
-        saved_last = self.last_swapped_frame
-        saved_noface = self.num_frames_no_face
-        try:
-            best, _results = thread_tuner.calibrate(self.process_frame, sample, threads)
-        finally:
-            self.last_swapped_frame = saved_last
-            self.num_frames_no_face = saved_noface
-
-        tuned = max(1, min(int(best), threads))
-        thread_tuner.set_cached(key, tuned)
-        print(f"[AutoTune] selected thread count {tuned} (cached as {key})")
-        return tuned
 
 
     def update_progress(self, progress: Any = None) -> None:

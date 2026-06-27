@@ -23,6 +23,5 @@ app/temp
 app/output
 app/config.yaml
 app/saved_configs
-app/.thread_tune_cache.json
 
 # app/output and app/temp are already ignored above as directories
