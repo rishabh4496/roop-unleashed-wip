@@ -7,7 +7,6 @@ import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.gpu_math import warp_affine_cuda, gaussian_blur_cuda, add_weighted_cuda
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
@@ -1138,7 +1137,7 @@ class ProcessMgr():
                             if (mh, mw) != (fh, fw)
                             else (mask * 255.0).clip(0, 255).astype(np.uint8)
                         )
-                        c = warp_affine_cuda(m8, M_ref, (subsample_size, subsample_size),
+                        c = cv2.warpAffine(m8, M_ref, (subsample_size, subsample_size),
                                            flags=cv2.INTER_LINEAR,
                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                         return c.astype(np.float32) / 255.0
@@ -1243,7 +1242,7 @@ class ProcessMgr():
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
-        img_matte = warp_affine_cuda(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
+        img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
         # Constrain mask to actual face outline using landmark convex hull.
@@ -1260,10 +1259,10 @@ class ProcessMgr():
         mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
-        paste_face = warp_affine_cuda(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+        paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
         if upsk_face is not fake_face:
-            fake_face = warp_affine_cuda(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-            paste_face = add_weighted_cuda(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
+            fake_face = cv2.warpAffine(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+            paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
 
         paste_face = img_matte * paste_face
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
@@ -1275,14 +1274,14 @@ class ProcessMgr():
             overlay = np.zeros_like(target_img, dtype=np.uint8)
             overlay[:, :, 1] = (mask_2d * 200).astype(np.uint8)
             overlay[:, :, 2] = np.clip((1.0 - mask_2d) * mask_2d * 4 * 255, 0, 255).astype(np.uint8)
-            paste_face = add_weighted_cuda(paste_face.astype(np.uint8), 0.6, overlay, 0.4, 0)
+            paste_face = cv2.addWeighted(paste_face.astype(np.uint8), 0.6, overlay, 0.4, 0)
 
         return paste_face.astype(np.uint8)
 
 
     def blur_area(self, img_matte, face_mask_blend):
         # Always apply minimal anti-aliasing after the affine warp
-        img_matte = gaussian_blur_cuda(img_matte, (3, 3), 0)
+        img_matte = cv2.GaussianBlur(img_matte, (3, 3), 0)
         if face_mask_blend <= 0:
             return img_matte
         mask_h_inds, mask_w_inds = np.where(img_matte > 127)
@@ -1294,7 +1293,7 @@ class ProcessMgr():
         # blend_px controls ONLY edge softness — no erosion, mask coverage unchanged
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
         blur_size = blend_px * 2 + 1
-        return gaussian_blur_cuda(img_matte, (blur_size, blur_size), 0)
+        return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 
 
     def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount):
@@ -1437,7 +1436,7 @@ class ProcessMgr():
         # Feathering then falls off only at the bounding-box edge, not into the lips.
         axes = (max(1, shape[1] // 2), max(1, shape[0] // 2))
         cv2.ellipse(mask, center, axes, 0, 0, 360, 1, -1)
-        mask = gaussian_blur_cuda(mask, (feather_amount * 2 + 1, feather_amount * 2 + 1), 0)
+        mask = cv2.GaussianBlur(mask, (feather_amount * 2 + 1, feather_amount * 2 + 1), 0)
         max_val = np.max(mask)
         return mask / max_val if max_val > 0 else mask
 
@@ -1473,7 +1472,7 @@ class ProcessMgr():
                     blur_k = dilate_px * 2 + 1
                 else:
                     blur_k = 3
-                mask = gaussian_blur_cuda(mask.astype(np.float32), (blur_k, blur_k), 0)
+                mask = cv2.GaussianBlur(mask.astype(np.float32), (blur_k, blur_k), 0)
                 mask /= 255.0
             else:
                 feather_amount = max(1, min(30, box_width // 15, box_height // 15))
@@ -1488,7 +1487,7 @@ class ProcessMgr():
                 # alongside the green face-swap overlay
                 red_overlay = np.zeros_like(frame[min_y:max_y, min_x:max_x])
                 red_overlay[:, :, 2] = 255  # BGR red
-                frame[min_y:max_y, min_x:max_x] = add_weighted_cuda(
+                frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(
                     frame[min_y:max_y, min_x:max_x], 0.5, red_overlay, 0.5, 0)
         except Exception as e:
             print(f'Error in apply_mouth_area: {e}')
