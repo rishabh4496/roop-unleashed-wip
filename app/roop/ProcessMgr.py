@@ -806,22 +806,27 @@ class ProcessMgr():
         # slower than processing (correct back-pressure; prevents unbounded RAM).
         _write_q = Queue(1)
 
+        _writer_exc = [None]  # propagate write errors back to the main thread
+
         def _writer():
-            while True:
-                item = _write_q.get()
-                if item is None:
-                    break
-                cs, res, clen = item
-                for gi in range(cs, cs + clen):
-                    if not roop.globals.processing:
+            try:
+                while True:
+                    item = _write_q.get()
+                    if item is None:
                         break
-                    fr = res.get(gi)
-                    if fr is None:
-                        continue
-                    if self.output_to_file:
-                        self.videowriter.write_frame(fr)
-                    if self.output_to_cam:
-                        self.streamwriter.WriteToStream(fr)
+                    cs, res, clen = item
+                    for gi in range(cs, cs + clen):
+                        if not roop.globals.processing:
+                            break
+                        fr = res.pop(gi, None)  # pop frees the frame ref immediately after write
+                        if fr is None:
+                            continue
+                        if self.output_to_file:
+                            self.videowriter.write_frame(fr)
+                        if self.output_to_cam:
+                            self.streamwriter.WriteToStream(fr)
+            except Exception as exc:
+                _writer_exc[0] = exc
 
         _wt = Thread(target=_writer, name='stab_writer', daemon=True)
         _wt.start()
@@ -891,9 +896,12 @@ class ProcessMgr():
                 carry = combined[-WU:] if WU > 0 else []
                 chunk_start += len(chunk)
         finally:
-            # Flush write thread: on normal exit let it drain; on cancel, discard
-            # pending items so the writer exits promptly.
-            if not roop.globals.processing:
+            # Drain _write_q before sending the sentinel when:
+            #  - cancel: discard queued frames so the writer exits promptly.
+            #  - writer died (IOError / broken pipe): the queue may still hold an
+            #    item that nobody will ever consume; put(None) would block forever
+            #    on the full Queue(1) without this drain.
+            if not roop.globals.processing or not _wt.is_alive():
                 try:
                     while True:
                         _write_q.get_nowait()
@@ -915,6 +923,9 @@ class ProcessMgr():
                     delattr(self._tls, _a)
             if cap is not None:
                 cap.release()
+            # Re-raise write error AFTER all cleanup so cap/prefetch are always freed
+            if _writer_exc[0] is not None:
+                raise _writer_exc[0]
 
 
     def update_progress(self, progress: Any = None) -> None:
