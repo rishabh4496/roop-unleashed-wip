@@ -741,7 +741,7 @@ class ProcessMgr():
         the frames just before it, so block boundaries are seam-free. Frames are
         written in order through the already-open videowriter. Deadlock-free
         fork-join (plain thread start/join, no queues)."""
-        WU = max(0, int(os.environ.get('ROOP_STAB_WARMUP', '12') or '12'))
+        WU = max(0, int(os.environ.get('ROOP_STAB_WARMUP', '4') or '4'))
         try:
             CHUNK = int(os.environ.get('ROOP_STAB_CHUNK', '0') or '0') or max(threads * 24, 192)
         except ValueError:
@@ -798,6 +798,33 @@ class ProcessMgr():
 
         rt = Thread(target=_reader, name='stab_reader', daemon=True)
         rt.start()
+
+        # Background write thread: chunk N results are queued here immediately
+        # after workers join, so the sequential FFMPEG write overlaps with workers
+        # processing chunk N+1 instead of stalling between chunks.
+        # Queue(1): one chunk can be in-flight; main blocks only when write is
+        # slower than processing (correct back-pressure; prevents unbounded RAM).
+        _write_q = Queue(1)
+
+        def _writer():
+            while True:
+                item = _write_q.get()
+                if item is None:
+                    break
+                cs, res, clen = item
+                for gi in range(cs, cs + clen):
+                    if not roop.globals.processing:
+                        break
+                    fr = res.get(gi)
+                    if fr is None:
+                        continue
+                    if self.output_to_file:
+                        self.videowriter.write_frame(fr)
+                    if self.output_to_cam:
+                        self.streamwriter.WriteToStream(fr)
+
+        _wt = Thread(target=_writer, name='stab_writer', daemon=True)
+        _wt.start()
 
         try:
             while True:
@@ -856,19 +883,26 @@ class ProcessMgr():
                 for w in workers:
                     w.join()
 
-                for gi in range(chunk_start, chunk_start + len(chunk)):
-                    fr = results.get(gi)
-                    if fr is None:
-                        continue
-                    if self.output_to_file:
-                        self.videowriter.write_frame(fr)
-                    if self.output_to_cam:
-                        self.streamwriter.WriteToStream(fr)
+                # Queue the chunk for the background write thread.
+                # Blocks only when FFMPEG is slower than frame processing
+                # (correct back-pressure; prevents unbounded memory growth).
+                _write_q.put((chunk_start, results, len(chunk)))
 
                 carry = combined[-WU:] if WU > 0 else []
                 chunk_start += len(chunk)
         finally:
-            # Drain the queue so _reader's put() can't block and rt.join() won't hang
+            # Flush write thread: on normal exit let it drain; on cancel, discard
+            # pending items so the writer exits promptly.
+            if not roop.globals.processing:
+                try:
+                    while True:
+                        _write_q.get_nowait()
+                except Exception:
+                    pass
+            _write_q.put(None)   # sentinel — always signals writer to stop
+            _wt.join(timeout=15)
+
+            # Drain the prefetch queue so _reader's put() can't block
             try:
                 while not prefetch_q.empty():
                     prefetch_q.get_nowait()
