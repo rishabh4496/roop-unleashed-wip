@@ -265,3 +265,77 @@ input[type="range"]::-webkit-slider-thumb {
 input[type="range"]::-webkit-slider-thumb:active {
   transform: scale(1.25);
 }
+
+/* ── Light Theme Readability & Contrast Overrides ──────────────────────── */
+.theme-glass-light,
+.theme-cyberpunk-light,
+.theme-emerald-light,
+.theme-nordic-light {
+  /* Dynamic text overrides: intercept text-white classes and convert to theme color variables */
+  .text-white {
+    color: var(--text-main) !important;
+  }
+  .text-white\/30 {
+    color: var(--text-main) !important;
+    opacity: 0.3 !important;
+  }
+  .text-white\/40 {
+    color: var(--text-main) !important;
+    opacity: 0.4 !important;
+  }
+  .text-white\/50 {
+    color: var(--text-main) !important;
+    opacity: 0.5 !important;
+  }
+  .text-white\/60 {
+    color: var(--text-main) !important;
+    opacity: 0.6 !important;
+  }
+  .text-white\/70 {
+    color: var(--text-main) !important;
+    opacity: 0.7 !important;
+  }
+  .text-white\/80 {
+    color: var(--text-main) !important;
+    opacity: 0.8 !important;
+  }
+  .text-white\/90 {
+    color: var(--text-main) !important;
+    opacity: 0.9 !important;
+  }
+  .text-white\/95 {
+    color: var(--text-main) !important;
+    opacity: 0.95 !important;
+  }
+
+  /* Exclude elements where white text is actually needed (e.g. primary buttons, labels on dark accent badges) */
+  button.bg-\[\#E94560\],
+  button.bg-\[var\(--accent\)\],
+  .bg-\[var\(--accent\)\] {
+    color: #ffffff !important;
+    opacity: 1 !important;
+  }
+
+  /* Dropdown option menu list backgrounds inside light themes */
+  select.glass-input {
+    background-color: var(--input-bg) !important;
+    color: var(--text-main) !important;
+  }
+  select.glass-input option {
+    background-color: #ffffff !important;
+    color: #1f2937 !important;
+  }
+
+  /* Neutral dark tone for secondary cards/tooltips background blur */
+  .bg-black\/90,
+  .bg-black\/95 {
+    background-color: rgba(255, 255, 255, 0.95) !important;
+    border-color: rgba(0, 0, 0, 0.08) !important;
+  }
+
+  /* File upload drop zones */
+  .hover\:bg-white\/5:hover,
+  .hover\:bg-white\/10:hover {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+  }
+}
