@@ -34,6 +34,45 @@ _gpu_lock = Lock()
 # the GPU. Off by default; flip to True only when debugging pose correction.
 _DEBUG_POSE_LOG = False
 
+# ── Optional per-stage timing probe (enable with env ROOP_PROFILE=1) ─────────
+# Sums wall-clock per pipeline stage across all worker threads. "share" is each
+# stage's slice of total CPU work; "ms/call" is the real per-frame / per-face
+# cost. Zero overhead when disabled, so it never affects normal runs. A report
+# is printed once per video at the end of run_batch_inmem.
+from collections import defaultdict as _defaultdict
+_PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
+_prof_lock = Lock()
+_prof_times = _defaultdict(float)
+_prof_counts = _defaultdict(int)
+
+
+@contextlib.contextmanager
+def _prof(stage):
+    if not _PROFILE:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        dt = time.perf_counter() - t0
+        with _prof_lock:
+            _prof_times[stage] += dt
+            _prof_counts[stage] += 1
+
+
+def _prof_report():
+    if not _PROFILE or not _prof_times:
+        return
+    total = sum(_prof_times.values()) or 1.0
+    print("\n==== STAGE TIMING (ROOP_PROFILE) — wall-clock summed across worker threads ====", flush=True)
+    print(f"  {'stage':16s} {'total':>9s} {'share':>7s} {'calls':>8s} {'ms/call':>9s}", flush=True)
+    for k in sorted(_prof_times, key=lambda x: -_prof_times[x]):
+        t = _prof_times[k]
+        c = _prof_counts[k]
+        print(f"  {k:16s} {t:8.2f}s {100 * t / total:6.1f}% {c:8d} {1000 * t / max(c, 1):8.2f}", flush=True)
+    print("=============================================================================\n", flush=True)
+
 
 def _gpu_guard():
     """Return the GPU lock only when the active provider needs serialising
@@ -400,7 +439,8 @@ class ProcessMgr():
             wait_while_paused()
             if not roop.globals.processing:
                 break
-            ret, frame = cap.read()
+            with _prof('decode'):
+                ret, frame = cap.read()
             if not ret:
                 break
             self.frames_queue[num_frame % num_threads].put(frame, block=True)
@@ -433,16 +473,17 @@ class ProcessMgr():
                 return
             else:
                 try:
-                    if self.options.frame_processing:
-                        with _gpu_guard():
-                            out = frame
-                            for p in self.processors:
-                                out = p.Run(out)
-                            resimg = out
-                    else:
-                        # process_frame serialises only its GPU primitives (under
-                        # TensorRT), so CPU work overlaps across threads.
-                        resimg = self.process_frame(frame)
+                    with _prof('frame_total'):
+                        if self.options.frame_processing:
+                            with _gpu_guard():
+                                out = frame
+                                for p in self.processors:
+                                    out = p.Run(out)
+                                resimg = out
+                        else:
+                            # process_frame serialises only its GPU primitives (under
+                            # TensorRT), so CPU work overlaps across threads.
+                            resimg = self.process_frame(frame)
                 except RuntimeError as exc:
                     err_str = str(exc)
                     if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
@@ -463,10 +504,11 @@ class ProcessMgr():
             process, frame = self.processed_queue[nextindex % self.num_threads].get()
             nextindex += 1
             if frame is not None:
-                if self.output_to_file:
-                    self.videowriter.write_frame(frame)
-                if self.output_to_cam:
-                    self.streamwriter.WriteToStream(frame)
+                with _prof('encode'):
+                    if self.output_to_file:
+                        self.videowriter.write_frame(frame)
+                    if self.output_to_cam:
+                        self.streamwriter.WriteToStream(frame)
                 del frame
             elif process == False:
                 num_producers -= 1
@@ -572,6 +614,7 @@ class ProcessMgr():
 
         self.frames_queue.clear()
         self.processed_queue.clear()
+        _prof_report()
 
 
     def update_progress(self, progress: Any = None) -> None:
@@ -648,7 +691,7 @@ class ProcessMgr():
         do_kps_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
 
         if self.options.swap_mode == "first":
-            with _gpu_guard():                      # face detection is GPU work
+            with _prof('detect'), _gpu_guard():     # face detection is GPU work
                 face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
@@ -659,7 +702,7 @@ class ProcessMgr():
             del face
 
         else:
-            with _gpu_guard():                      # face detection is GPU work
+            with _prof('detect'), _gpu_guard():     # face detection is GPU work
                 faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
@@ -973,6 +1016,7 @@ class ProcessMgr():
 
         for p in self.processors:
             if p.type == 'swap':
+              with _prof('swap'):
                 swap_result_frames = []
                 subsample_frames = self.implode_pixel_boost(aligned_for_swap, model_output_size, subsample_total)
                 for sliced_frame in subsample_frames:
@@ -993,10 +1037,10 @@ class ProcessMgr():
                     except Exception as e:
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
-                with _gpu_guard():                   # mask model inference is GPU work
+                with _prof('mask'), _gpu_guard():    # mask model inference is GPU work
                     fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
-                with _gpu_guard():                   # enhancer inference is GPU work
+                with _prof('enhance'), _gpu_guard():  # enhancer inference is GPU work
                     enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
