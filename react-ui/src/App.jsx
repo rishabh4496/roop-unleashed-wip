@@ -67,30 +67,51 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-40 px-6 py-3 border-b border-white/10 bg-black/30 backdrop-blur-xl flex items-center gap-6">
-        <h1 className="text-xl font-bold tracking-wide whitespace-nowrap">Roop Unleashed <span className="text-[var(--accent)]">Pro</span></h1>
-        <nav className="flex gap-1 overflow-x-auto">
+      {/* Floating Header Capsule */}
+      <header className="sticky top-4 z-40 mx-auto max-w-[1450px] w-[92%] sm:w-[96%] rounded-2xl glass-panel px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">⚡</span>
+          <h1 className="text-lg font-black tracking-wider uppercase text-white/90">
+            Roop Unleashed <span className="bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] bg-clip-text text-transparent">Pro</span>
+          </h1>
+        </div>
+        <nav className="flex gap-1 bg-black/20 p-1.5 rounded-xl border border-white/5 w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors apple-transition apple-spring-active ${tab === t.id ? 'bg-[var(--accent)] text-white' : 'text-white/60 hover:bg-white/10'}`}>
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold tracking-wide whitespace-nowrap transition-all duration-300 apple-transition apple-spring-active ${
+                tab === t.id
+                  ? 'bg-[var(--accent)] text-white shadow-[0_4px_12px_var(--accent-glow)]'
+                  : 'text-white/60 hover:text-white hover:bg-white/5'
+              }`}
+            >
               {t.label}
             </button>
           ))}
         </nav>
       </header>
 
-      <main className="flex-1 max-w-[1500px] w-full mx-auto px-6 py-6">
+      {/* Main Container Layout */}
+      <main className="flex-1 max-w-[1500px] w-full mx-auto px-6 py-8 mt-4">
         {error && (
-          <div className="rounded-xl bg-red-500/10 border border-red-500/30 p-4 text-sm text-red-300">{error}</div>
+          <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
+            ⚠️ {error}
+          </div>
         )}
-        {!error && !meta && <div className="text-white/40 text-sm">Connecting to backend…</div>}
+        {!error && !meta && (
+          <div className="flex flex-col items-center justify-center h-[50vh] gap-4">
+            <div className="h-8 w-8 rounded-full border-4 border-white/10 border-t-[var(--accent)] animate-spin" />
+            <div className="text-white/40 text-sm font-medium">Establishing secure gateway connection…</div>
+          </div>
+        )}
         {!error && meta && settings && (
-          <>
+          <div className="animate-slide-up">
             {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
             {tab === 'facemgr' && <FaceManager notify={notify} />}
             {tab === 'extras' && <Extras notify={notify} />}
             {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
-          </>
+          </div>
         )}
       </main>
 

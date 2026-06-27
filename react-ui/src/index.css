@@ -1,25 +1,149 @@
 @import "tailwindcss";
 
+/* ── Theme Definitions ────────────────────────────────────────────────── */
+:root {
+  /* Default: Glass Dark */
+  --bg-gradient: linear-gradient(135deg, #090a0f, #12131b, #0c111c, #160a12);
+  --card-bg: rgba(22, 24, 36, 0.55);
+  --text-main: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.6);
+  --accent: #E94560;
+  --accent-hover: #f05a74;
+  --accent-glow: rgba(233, 69, 96, 0.25);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(0, 0, 0, 0.3);
+  --input-focus: rgba(233, 69, 96, 0.2);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.15);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+}
+
+.theme-glass-light {
+  --bg-gradient: linear-gradient(135deg, #f7f9fc, #e5e9f0, #e2e8f0, #eedee8);
+  --card-bg: rgba(255, 255, 255, 0.6);
+  --text-main: #1f2937;
+  --text-muted: rgba(31, 41, 55, 0.6);
+  --accent: #E94560;
+  --accent-hover: #d63450;
+  --accent-glow: rgba(233, 69, 96, 0.15);
+  --border-color: rgba(0, 0, 0, 0.06);
+  --input-bg: rgba(255, 255, 255, 0.5);
+  --input-focus: rgba(233, 69, 96, 0.12);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+}
+
+.theme-cyberpunk-dark {
+  --bg-gradient: linear-gradient(135deg, #09010f, #030006, #00040e, #0e0007);
+  --card-bg: rgba(18, 4, 28, 0.65);
+  --text-main: #00ffcc;
+  --text-muted: rgba(0, 255, 204, 0.65);
+  --accent: #ff007f;
+  --accent-hover: #ff3399;
+  --accent-glow: rgba(255, 0, 127, 0.35);
+  --border-color: rgba(0, 255, 204, 0.15);
+  --input-bg: rgba(8, 1, 16, 0.45);
+  --input-focus: rgba(0, 255, 204, 0.18);
+  --scrollbar-thumb: rgba(0, 255, 204, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 255, 204, 0.42);
+}
+
+.theme-cyberpunk-light {
+  --bg-gradient: linear-gradient(135deg, #fff2f6, #f2fff2, #f2f7ff, #fff6f2);
+  --card-bg: rgba(255, 255, 255, 0.75);
+  --text-main: #270b4a;
+  --text-muted: rgba(39, 11, 74, 0.6);
+  --accent: #ff007f;
+  --accent-hover: #e00070;
+  --accent-glow: rgba(255, 0, 127, 0.18);
+  --border-color: rgba(39, 11, 74, 0.08);
+  --input-bg: rgba(255, 255, 255, 0.55);
+  --input-focus: rgba(255, 0, 127, 0.1);
+  --scrollbar-thumb: rgba(39, 11, 74, 0.12);
+  --scrollbar-thumb-hover: rgba(39, 11, 74, 0.28);
+}
+
+.theme-emerald-dark {
+  --bg-gradient: linear-gradient(135deg, #040f0a, #06140d, #040c12, #0a0715);
+  --card-bg: rgba(10, 24, 17, 0.6);
+  --text-main: #def0e7;
+  --text-muted: rgba(222, 240, 231, 0.55);
+  --accent: #10b981;
+  --accent-hover: #34d399;
+  --accent-glow: rgba(16, 185, 129, 0.25);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(0, 0, 0, 0.3);
+  --input-focus: rgba(16, 185, 129, 0.18);
+  --scrollbar-thumb: rgba(16, 185, 129, 0.2);
+  --scrollbar-thumb-hover: rgba(16, 185, 129, 0.38);
+}
+
+.theme-emerald-light {
+  --bg-gradient: linear-gradient(135deg, #effef4, #e6f6e8, #def2f0, #e1f2fc);
+  --card-bg: rgba(255, 255, 255, 0.65);
+  --text-main: #044333;
+  --text-muted: rgba(4, 67, 51, 0.6);
+  --accent: #059669;
+  --accent-hover: #047857;
+  --accent-glow: rgba(5, 150, 105, 0.18);
+  --border-color: rgba(0, 0, 0, 0.06);
+  --input-bg: rgba(255, 255, 255, 0.5);
+  --input-focus: rgba(5, 150, 105, 0.12);
+  --scrollbar-thumb: rgba(5, 150, 105, 0.15);
+  --scrollbar-thumb-hover: rgba(5, 150, 105, 0.32);
+}
+
+.theme-nordic-dark {
+  --bg-gradient: linear-gradient(135deg, #0b0f19, #121826, #080c14, #171420);
+  --card-bg: rgba(24, 32, 48, 0.6);
+  --text-main: #e5e9f0;
+  --text-muted: rgba(229, 233, 240, 0.55);
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --accent-glow: rgba(136, 192, 208, 0.25);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(0, 0, 0, 0.3);
+  --input-focus: rgba(136, 192, 208, 0.18);
+  --scrollbar-thumb: rgba(136, 192, 208, 0.2);
+  --scrollbar-thumb-hover: rgba(136, 192, 208, 0.38);
+}
+
+.theme-nordic-light {
+  --bg-gradient: linear-gradient(135deg, #f6f8fa, #e6ebf0, #dbe0e6, #e2e2e8);
+  --card-bg: rgba(255, 255, 255, 0.65);
+  --text-main: #2b303c;
+  --text-muted: rgba(43, 48, 60, 0.6);
+  --accent: #5e81ac;
+  --accent-hover: #4c566a;
+  --accent-glow: rgba(94, 129, 172, 0.18);
+  --border-color: rgba(0, 0, 0, 0.06);
+  --input-bg: rgba(255, 255, 255, 0.5);
+  --input-focus: rgba(94, 129, 172, 0.12);
+  --scrollbar-thumb: rgba(94, 129, 172, 0.15);
+  --scrollbar-thumb-hover: rgba(94, 129, 172, 0.32);
+}
+
 @layer base {
   body {
     margin: 0;
-    color: white;
+    color: var(--text-main);
     min-height: 100vh;
     background-attachment: fixed;
-    background: linear-gradient(135deg, #0f1016, #161824, #121c2c, #260f1c);
+    /* Ambient radial glow at top */
+    background: radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 45%), var(--bg-gradient);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
+    transition: background 0.6s cubic-bezier(0.16, 1, 0.3, 1), color 0.6s cubic-bezier(0.16, 1, 0.3, 1);
   }
 }
 
 /* Custom smooth transitions matching Apple-style spring animations */
 .apple-transition {
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .apple-spring-active:active {
   transform: scale(0.96);
-  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Slim modern scrollbars to match macOS */
@@ -28,12 +152,12 @@
   height: 5px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-thumb);
   border-radius: 99px;
   transition: background 0.2s;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.4);
+  background: var(--scrollbar-thumb-hover);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -51,8 +175,8 @@
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 15px rgba(233, 69, 96, 0.15); border-color: rgba(255, 255, 255, 0.08); }
-  50% { box-shadow: 0 0 25px rgba(233, 69, 96, 0.4); border-color: rgba(233, 69, 96, 0.35); }
+  0%, 100% { box-shadow: 0 0 15px var(--accent-glow); border-color: var(--border-color); }
+  50% { box-shadow: 0 0 25px rgba(233, 69, 96, 0.3); border-color: var(--accent); }
 }
 
 .preview-glow {
@@ -91,28 +215,37 @@
 
 /* Glassmorphism improvements */
 .glass-panel {
-  background: rgba(22, 24, 36, 0.7);
-  backdrop-filter: blur(20px) saturate(190%);
-  -webkit-backdrop-filter: blur(20px) saturate(190%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--card-bg);
+  backdrop-filter: blur(30px) saturate(210%);
+  -webkit-backdrop-filter: blur(30px) saturate(210%);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+  transition: background 0.6s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.6s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-panel:hover {
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.25);
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .glass-input {
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  transition: border-color 0.4s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .glass-input:focus {
-  border-color: rgba(233, 69, 96, 0.6);
-  background: rgba(0, 0, 0, 0.4);
-  box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.15);
+  border-color: var(--accent);
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 4px var(--input-focus);
 }
 
 /* Custom Webkit range input styling to match Apple Sliders */
 input[type="range"] {
   -webkit-appearance: none;
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 99px;
   outline: none;
   transition: background 0.3s;
@@ -124,12 +257,11 @@ input[type="range"]::-webkit-slider-thumb {
   height: 18px;
   border-radius: 99px;
   background: white;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.3);
   cursor: pointer;
-  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 input[type="range"]::-webkit-slider-thumb:active {
-  transform: scale(1.2);
+  transform: scale(1.25);
 }
-
