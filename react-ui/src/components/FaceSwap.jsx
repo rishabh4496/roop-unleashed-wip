@@ -362,31 +362,23 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       <Section title="Preview">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-3">
-            {compare && previewSrc && rawUrl ? (
+            {previewSrc ? (
               <InteractivePreview 
                 beforeSrc={rawUrl} 
                 afterSrc={previewSrc} 
                 faces={previewFaces}
                 splitView={splitView}
+                compare={compare}
+                setCompare={setCompare}
+                frame={frame}
+                setFrame={setFrame}
+                maxFrames={maxFrames}
+                previewing={previewing}
+                previewSecs={previewSecs}
               />
             ) : (
-              <div className={`relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center transition-all duration-300 ${previewing ? 'preview-glow' : ''}`}>
-                {previewSrc ? <img src={previewSrc} alt="preview" className="max-w-full max-h-full object-contain" />
-                  : <span className="text-white/30 text-sm">Select a target to preview</span>}
-                {previewing && <FloatingEmojis />}
-                {previewing && (
-                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-20">
-                    <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80 tabular-nums border border-white/10 shadow-lg">
-                      <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
-                      Rendering… {previewSecs}s
-                    </div>
-                    {previewSecs >= 12 && (
-                      <div className="px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur text-[10px] text-white/50 max-w-[220px] text-right border border-white/10 shadow-lg">
-                        First run of a model downloads it &amp; builds the engine — this can take a few minutes.
-                      </div>
-                    )}
-                  </div>
-                )}
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
+                <span className="text-white/30 text-sm">Select a target to preview</span>
               </div>
             )}
             <div className="flex items-center flex-wrap gap-3">
@@ -650,7 +642,19 @@ function FloatingEmojis() {
   );
 }
 
-function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false }) {
+function InteractivePreview({ 
+  beforeSrc, 
+  afterSrc, 
+  faces = [], 
+  splitView = false,
+  compare = false,
+  setCompare,
+  frame,
+  setFrame,
+  maxFrames = 1,
+  previewing = false,
+  previewSecs = 0
+}) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
@@ -659,6 +663,8 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+  const [showBoxes, setShowBoxes] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [imgDim, setImgDim] = useState(null);
 
@@ -679,6 +685,37 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
       window.removeEventListener('touchend', handleMouseUp);
     };
   }, []);
+
+  // Keyboard Navigation: arrow keys step frames, spacebar toggles compare
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ignore if user is typing in input fields
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+
+      if (e.key === 'ArrowLeft' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame((f) => Math.max(1, f - 1));
+      } else if (e.key === 'ArrowRight' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame((f) => Math.min(maxFrames, f + 1));
+      } else if (e.key === ' ' && setCompare) {
+        e.preventDefault();
+        setCompare((c) => !c);
+      } else if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        setZoom((z) => Math.min(z + 0.5, 5));
+      } else if (e.key === '-') {
+        e.preventDefault();
+        setZoom((z) => {
+          const nz = Math.max(1, z - 0.5);
+          if (nz === 1) setPan({ x: 0, y: 0 });
+          return nz;
+        });
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [maxFrames, setFrame, setCompare]);
 
   const handleWheel = (e) => {
     e.preventDefault();
@@ -705,8 +742,28 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
     }
   };
 
+  // Double click toggles between fit-to-screen and 2.5x zoom
+  const handleDoubleClick = (e) => {
+    if (zoom > 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    } else {
+      setZoom(2.5);
+      // Center pan coordinates roughly where clicked
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const clickX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
+        const clickY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
+        setPan({
+          x: (rect.width / 2 - clickX) * 1.5,
+          y: (rect.height / 2 - clickY) * 1.5
+        });
+      }
+    }
+  };
+
   const renderFaces = () => {
-    if (!faces.length || !imgDim) return null;
+    if (!faces.length || !imgDim || !showBoxes) return null;
     return faces.map((bbox, i) => {
       const [sx, sy, ex, ey] = bbox;
       const left = (sx / imgDim.w) * 100;
@@ -727,37 +784,83 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
   const transformStyle = { transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`, transformOrigin: 'center' };
   const aspectStyle = { aspectRatio: imgDim ? `${imgDim.w}/${imgDim.h}` : '1', maxHeight: '100%', maxWidth: '100%', display: 'flex' };
 
-  if (splitView) {
+  const triggerFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  // Split View comparisons
+  if (compare && splitView) {
     return (
-      <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 group shadow-lg"
-           onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} style={{ touchAction: 'none' }}>
+      <div 
+        ref={containerRef}
+        className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
+        onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+      >
         <div className="flex w-full h-full transition-transform duration-75" style={transformStyle}>
-          <div className="flex-1 relative border-r border-white/20 flex items-center justify-center overflow-hidden bg-black/50">
+          <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/50">
             <div className="relative" style={aspectStyle}>
               <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none" 
                    onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} />
               <div className="absolute inset-0 pointer-events-none">{renderFaces()}</div>
             </div>
-            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold text-white/80 uppercase">Before</span>
+            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold text-white/80 uppercase">Before</span>
           </div>
           <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black/50">
             <div className="relative" style={aspectStyle}>
               <img src={afterSrc} alt="After" className="w-full h-full object-contain pointer-events-none" />
             </div>
-            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
+            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
           </div>
         </div>
-        {zoom > 1 && (
-          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="absolute bottom-4 right-4 bg-black/80 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/20 transition-colors z-50 shadow-xl border border-white/10 pointer-events-auto">Reset Zoom</button>
-        )}
+
+        {/* HUD control bar overlays */}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/5 shadow-2xl opacity-40 hover:opacity-100 transition-opacity duration-300 z-50">
+          <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom In">+</button>
+          <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom Out">-</button>
+          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-white/70 hover:text-white text-[10px] font-bold hover:bg-white/10 rounded-lg apple-transition" title="Reset view">FIT</button>
+          <div className="w-px h-4 bg-white/10 mx-1" />
+          <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>BOXES</button>
+          <button onClick={triggerFullscreen} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg apple-transition" title="Toggle Fullscreen">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          </button>
+        </div>
       </div>
     );
   }
 
+  // Standard or Slide-Comparison View
   return (
-    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 select-none group shadow-lg"
-         ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} style={{ touchAction: 'none' }}>
-      
+    <div 
+      className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
+      ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+    >
+      {previewing && <FloatingEmojis />}
+      {previewing && (
+        <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md text-xs font-bold text-white/95 tabular-nums border border-white/10 shadow-2xl">
+            <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
+            Rendering… {previewSecs}s
+          </div>
+        </div>
+      )}
+
+      {/* Frame navigation shortcuts popup guide (visible when video) */}
+      {maxFrames > 1 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/50 backdrop-blur text-[10px] font-bold text-white/50 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-2">
+          <span>Shortcuts:</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">←</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">→</span>
+          <span>Frame</span>
+          <span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">Space</span>
+          <span>Compare</span>
+        </div>
+      )}
+
       <div className="absolute inset-0 transition-transform duration-75 flex items-center justify-center" style={transformStyle}>
         
         {/* Before Image & Bounding Boxes Wrapper */}
@@ -768,29 +871,39 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
           
           {/* After Image Overlay with Clip-path */}
           <div className="absolute inset-0 pointer-events-none z-20" 
-               style={{ clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` }}>
+               style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
             <img src={afterSrc} alt="After" className="w-full h-full object-contain" draggable={false} />
           </div>
         </div>
 
       </div>
 
-      <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>
-      <span className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
-            style={{ opacity: sliderPosition > 85 ? 0 : 1 }}>After</span>
+      {compare && <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>}
+      <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
+            style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
 
-      {/* Slider Line & Handle */}
-      <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
-             onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      {/* Slider Line & Handle (only when compare) */}
+      {compare && (
+        <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+               onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </div>
         </div>
-      </div>
-
-      {zoom > 1 && (
-        <button onClick={(e) => { e.stopPropagation(); setZoom(1); setPan({x:0, y:0}); }} className="absolute bottom-4 right-4 bg-black/80 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/20 transition-colors z-50 shadow-xl border border-white/10 pointer-events-auto cursor-pointer">Reset Zoom</button>
       )}
+
+      {/* HUD control bar overlays */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/5 shadow-2xl opacity-40 group-hover:opacity-100 hover:opacity-100 transition-opacity duration-300 z-50">
+        <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom In">+</button>
+        <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom Out">-</button>
+        <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-white/70 hover:text-white text-[10px] font-bold hover:bg-white/10 rounded-lg apple-transition" title="Reset view">FIT</button>
+        <div className="w-px h-4 bg-white/10 mx-1" />
+        <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>BOXES</button>
+        <button onClick={triggerFullscreen} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg apple-transition" title="Toggle Fullscreen">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+      </div>
     </div>
   );
 }
