@@ -50,7 +50,7 @@ fm_selected_index = -1
 fm_files: list = []                    # uploaded source paths for the facemgr tab
 
 # Live progress, polled by the React UI
-_progress = {"processing": False, "progress": 0.0, "desc": "", "error": ""}
+_progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
 _last_output = {"path": "", "kind": ""}
 
 no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame",
@@ -581,7 +581,8 @@ def _run_swap(payload):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
 
-    _progress.update({"processing": True, "progress": 0.0, "desc": "Starting…", "error": ""})
+    roop_globals.pause = False
+    _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     try:
         prepare_environment()
         if roop_globals.CFG.clear_output:
@@ -646,7 +647,9 @@ def _run_swap(payload):
         traceback.print_exc()
         _progress["error"] = str(e)
     finally:
+        roop_globals.pause = False
         _progress["processing"] = False
+        _progress["paused"] = False
 
 
 def _record_last_output():
@@ -664,9 +667,30 @@ def _record_last_output():
 
 @app.post("/api/stop")
 def stop_swap():
+    # Clear pause too so a stop while paused fully aborts (wait loop checks both).
+    roop_globals.pause = False
     roop_globals.processing = False
+    _progress["paused"] = False
     _progress["desc"] = "Aborting…"
     return {"status": "stopping"}
+
+
+@app.post("/api/pause")
+def pause_swap():
+    if not _progress["processing"]:
+        return JSONResponse(status_code=409, content={"message": "not processing"})
+    roop_globals.pause = True
+    _progress["paused"] = True
+    _progress["desc"] = "Paused"
+    return {"status": "paused"}
+
+
+@app.post("/api/resume")
+def resume_swap():
+    roop_globals.pause = False
+    _progress["paused"] = False
+    _progress["desc"] = "Resuming…"
+    return {"status": "resumed"}
 
 
 @app.get("/api/progress")

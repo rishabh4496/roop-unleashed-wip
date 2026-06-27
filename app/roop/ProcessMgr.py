@@ -1,5 +1,6 @@
 import os
 import cv2
+import time
 import numpy as np
 import psutil
 import contextlib
@@ -49,6 +50,14 @@ class eNoFaceAction():
     SKIP_FRAME_IF_DISSIMILAR = 3,
     USE_LAST_SWAPPED = 4
 
+
+
+def wait_while_paused():
+    """Block while a pause has been requested so processing can later resume
+    from the exact same frame. Returns immediately if a stop was requested
+    instead (roop.globals.processing == False), so abort always wins."""
+    while getattr(roop.globals, 'pause', False) and roop.globals.processing:
+        time.sleep(0.1)
 
 
 def create_queue(temp_frame_paths: List[str]) -> Queue[str]:
@@ -340,6 +349,7 @@ class ProcessMgr():
 
     def process_frames(self, source_files: List[str], target_files: List[str], current_files, update: Callable[[], None]) -> None:
         for f in current_files:
+            wait_while_paused()
             if not roop.globals.processing:
                 return
             temp_frame = cv2.imdecode(np.fromfile(f, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -379,6 +389,11 @@ class ProcessMgr():
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
 
         while True and roop.globals.processing:
+            # Pause the reader; consumers drain the queue then block on get(),
+            # so the whole pipeline pauses and resumes from the same frame.
+            wait_while_paused()
+            if not roop.globals.processing:
+                break
             ret, frame = cap.read()
             if not ret:
                 break
@@ -395,6 +410,7 @@ class ProcessMgr():
         """Feed pre-decoded BGR frames (from animated webp via PIL) into the processing queue."""
         subset = bgr_frames[frame_start:frame_end] if frame_end > frame_start else bgr_frames[frame_start:]
         for num_frame, frame in enumerate(subset):
+            wait_while_paused()
             if not roop.globals.processing:
                 break
             self.frames_queue[num_frame % num_threads].put(frame, block=True)

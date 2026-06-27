@@ -259,6 +259,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
 
   const stop = async () => { await postJSON('/api/stop', {}); notify('Stopping…', 'info'); };
 
+  const pause = async () => {
+    try {
+      await postJSON('/api/pause', {});
+      setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
+      notify('Paused', 'info');
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  const resume = async () => {
+    try {
+      await postJSON('/api/resume', {});
+      setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
+      notify('Resumed');
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
   const startPolling = () => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
@@ -510,7 +526,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       <div className="sticky bottom-0 -mx-2 px-2 py-3">
         <div className="rounded-xl bg-[#16213E]/80 backdrop-blur-md border border-white/10 p-4 flex items-center gap-4">
           {progress.processing ? (
-            <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+            <div className="flex items-center gap-2">
+              {progress.paused ? (
+                <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
+              ) : (
+                <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
+              )}
+              <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+            </div>
           ) : (
             <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
           )}

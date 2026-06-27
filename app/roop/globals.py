@@ -37,6 +37,10 @@ default_det_size = True
 no_face_action = 1
 
 processing = False
+# When True, the per-frame processing loops block (without aborting) so the
+# user can pause and later resume from the exact same spot. Stop clears both
+# `processing` and `pause`, so an abort always wins over a pause.
+pause = False
 
 g_current_face_analysis = None
 g_desired_face_analysis = None
