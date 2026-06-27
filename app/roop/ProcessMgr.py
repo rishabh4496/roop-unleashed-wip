@@ -41,6 +41,8 @@ _DEBUG_POSE_LOG = False
 # is printed once per video at the end of run_batch_inmem.
 from collections import defaultdict as _defaultdict
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
+# Opt-in batched swap: run the pixel-boost tiles through one inference call.
+_BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 _prof_lock = Lock()
 _prof_times = _defaultdict(float)
 _prof_counts = _defaultdict(int)
@@ -1214,19 +1216,30 @@ class ProcessMgr():
         for p in self.processors:
             if p.type == 'swap':
               with _prof('swap'):
-                swap_result_frames = []
                 subsample_frames = self.implode_pixel_boost(aligned_for_swap, model_output_size, subsample_total)
-                for sliced_frame in subsample_frames:
+                # Only skip the global GPU lock when THIS processor owns a real
+                # SessionPool (per-thread TRT contexts). Without one, concurrent
+                # threads would share a single non-thread-safe TensorRT context
+                # and corrupt/hang the CUDA context.
+                _pooled = getattr(p, 'pool', None) is not None
+                if _BATCH_SWAP and len(subsample_frames) > 1 and hasattr(p, 'RunBatch'):
+                    # Batch the pixel-boost tiles through one inference call.
+                    tiles = list(subsample_frames)
                     for _ in range(0, self.options.num_swap_steps):
-                        sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
-                        # Only skip the global GPU lock when THIS processor owns a
-                        # real SessionPool (per-thread TRT contexts). Without one,
-                        # concurrent threads would share a single non-thread-safe
-                        # TensorRT context and corrupt/hang the CUDA context.
-                        with _gpu_guard(pooled=getattr(p, 'pool', None) is not None):
-                            sliced_frame = p.Run(inputface, target_face, sliced_frame)
-                        sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
-                    swap_result_frames.append(sliced_frame)
+                        prepared = [self.prepare_crop_frame(t, p) for t in tiles]   # CPU
+                        with _gpu_guard(pooled=_pooled):
+                            outs = p.RunBatch(inputface, target_face, prepared)
+                        tiles = [self.normalize_swap_frame(o, p) for o in outs]      # CPU
+                    swap_result_frames = tiles
+                else:
+                    swap_result_frames = []
+                    for sliced_frame in subsample_frames:
+                        for _ in range(0, self.options.num_swap_steps):
+                            sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
+                            with _gpu_guard(pooled=_pooled):
+                                sliced_frame = p.Run(inputface, target_face, sliced_frame)
+                            sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
+                        swap_result_frames.append(sliced_frame)
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
                 scale_factor = 0.0

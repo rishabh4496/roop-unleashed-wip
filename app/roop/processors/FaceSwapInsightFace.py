@@ -55,6 +55,25 @@ SWAP_MODELS = {
 }
 
 
+# Opt-in batched swap (ROOP_BATCH_SWAP=1): runs multiple face crops through one
+# inference call instead of one-at-a-time, to better saturate the GPU. The stock
+# swap ONNX is fixed batch-1; we relax the input/output batch dim to symbolic so
+# the session (and TensorRT engine) accept batches. Verified to produce output
+# numerically identical to per-crop runs.
+_BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
+
+
+def _dynamic_batch_model_bytes(model_path):
+    """Return the swap ONNX serialized with a symbolic batch dimension."""
+    m = onnx.load(model_path)
+    for t in list(m.graph.input) + list(m.graph.output):
+        dims = t.type.tensor_type.shape.dim
+        if len(dims):
+            dims[0].dim_param = 'N'
+            dims[0].ClearField('dim_value')
+    return m.SerializeToString()
+
+
 def _swap_providers(providers):
     """Return a copy of `providers` with the TensorRT provider forced to FP32.
 
@@ -130,12 +149,15 @@ class FaceSwapInsightFace():
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
 
             swap_providers = _swap_providers(roop.globals.execution_providers)
+            # When batched swap is enabled, build the session from a batch-dynamic
+            # copy of the model so it accepts >1 crop per inference.
+            model_arg = _dynamic_batch_model_bytes(model_path) if _BATCH_SWAP else model_path
 
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
                 sess_options.enable_cpu_mem_arena = False
                 return onnxruntime.InferenceSession(
-                    model_path, sess_options, providers=swap_providers)
+                    model_arg, sess_options, providers=swap_providers)
 
             self.model_swap_insightface = _build()
 
@@ -194,6 +216,27 @@ class FaceSwapInsightFace():
             ort_outs = self.model_swap_insightface.run(None, feed)
         # Some models (HyperSwap) emit (image, mask); the image is output [0].
         return ort_outs[0][0]
+
+    def RunBatch(self, source_face: Face, target_face: Face, temp_frames: list) -> list:
+        """Batched equivalent of Run: temp_frames is a list of [1,3,H,W]
+        preprocessed crops sharing the same source identity. Returns a list of
+        [3,H,W] outputs, one per crop — numerically identical to calling Run on
+        each, but in a single inference (better GPU utilization). Requires the
+        session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
+        latent = source_face.normed_embedding.reshape((1, -1)).astype(np.float32)
+        if self.emap is not None:
+            latent = np.dot(latent, self.emap)
+            latent /= np.linalg.norm(latent)
+        img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
+        latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512]
+        feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
+        if self.pool is not None:
+            with self.pool.lease() as sess:
+                ort_outs = sess.run(None, feed)
+        else:
+            ort_outs = self.model_swap_insightface.run(None, feed)
+        out = ort_outs[0]   # [B,3,H,W]
+        return [out[i] for i in range(out.shape[0])]
 
     def Release(self):
         if self.pool is not None:
