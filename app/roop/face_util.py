@@ -4,6 +4,7 @@ import insightface
 
 import roop.globals
 from roop.typing import Frame, Face
+from roop.gpu_math import warp_affine_cuda
 
 import cv2
 import numpy as np
@@ -242,7 +243,7 @@ def estimate_norm(lmk, image_size=112):
 # aligned, M = norm_crop2(f[1], face.kps, 512)
 def align_crop(img, landmark, image_size=112, mode="arcface"):
     M = estimate_norm(landmark, image_size)
-    warped = cv2.warpAffine(img, M, (image_size, image_size), borderValue=0.0)
+    warped = warp_affine_cuda(img, M, (image_size, image_size), borderValue=0.0)
     return warped, M
 
 
@@ -273,7 +274,7 @@ def transform(data, center, output_size, scale, rotation):
     t4 = trans.SimilarityTransform(translation=(output_size / 2, output_size / 2))
     t = t1 + t2 + t3 + t4
     M = t.params[0:2]
-    cropped = cv2.warpAffine(data, M, (output_size, output_size), borderValue=0.0)
+    cropped = warp_affine_cuda(data, M, (output_size, output_size), borderValue=0.0)
     return cropped, M
 
 
