@@ -131,7 +131,8 @@ def _measure(process_fn, frames, threads: int) -> float:
                 # A failing frame must not skew or crash calibration.
                 pass
 
-    workers = [threading.Thread(target=worker, name=f'tune{threads}') for _ in range(threads)]
+    # daemon so a stuck GPU call during calibration can't block app exit/restart
+    workers = [threading.Thread(target=worker, name=f'tune{threads}', daemon=True) for _ in range(threads)]
     t0 = time.perf_counter()
     for w in workers:
         w.start()

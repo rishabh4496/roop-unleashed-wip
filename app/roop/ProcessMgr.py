@@ -1219,7 +1219,11 @@ class ProcessMgr():
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
                         sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
-                        with _gpu_guard(pooled=True):                             # GPU inference (pooled)
+                        # Only skip the global GPU lock when THIS processor owns a
+                        # real SessionPool (per-thread TRT contexts). Without one,
+                        # concurrent threads would share a single non-thread-safe
+                        # TensorRT context and corrupt/hang the CUDA context.
+                        with _gpu_guard(pooled=getattr(p, 'pool', None) is not None):
                             sliced_frame = p.Run(inputface, target_face, sliced_frame)
                         sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
                     swap_result_frames.append(sliced_frame)
@@ -1237,7 +1241,11 @@ class ProcessMgr():
                 with _prof('mask'), _gpu_guard():    # mask model inference is GPU work
                     fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
-                with _prof('enhance'), _gpu_guard(pooled=True):  # enhancer inference (pooled)
+                # Pooled (no global lock) ONLY when this enhancer built its own
+                # SessionPool (e.g. RestoreFormer++). Enhancers without a pool
+                # (GFPGAN/GPEN/CodeFormer/DMDNet) must take the global lock, or
+                # concurrent threads corrupt/hang their single TensorRT context.
+                with _prof('enhance'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):
                     enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
