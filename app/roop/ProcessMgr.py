@@ -134,6 +134,7 @@ class ProcessMgr():
         'faceswap'          : 'FaceSwapInsightFace',
         'mask_clip2seg'     : 'Mask_Clip2Seg',
         'mask_xseg'         : 'Mask_XSeg',
+        'mask_faceparser'   : 'Mask_FaceParser',
         'codeformer'        : 'Enhance_CodeFormer',
         'gfpgan'            : 'Enhance_GFPGAN',
         'dmdnet'            : 'Enhance_DMDNet',

@@ -114,6 +114,8 @@ def map_mask_engine(selected_mask_engine, clip_text):
         return "mask_clip2seg" if clip_text else None
     if selected_mask_engine == "DFL XSeg":
         return "mask_xseg"
+    if selected_mask_engine == "Face Parser (BiSeNet)":
+        return "mask_faceparser"
     return None
 
 
@@ -167,7 +169,7 @@ def get_meta():
         "swap_models": ["inswapper", "reswapper", "hyperswap"],
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
-        "mask_engines": ["None", "Clip2Seg", "DFL XSeg"],
+        "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "Face Parser (BiSeNet)"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
         "video_methods": ["Extract Frames to media", "In-Memory processing"],
