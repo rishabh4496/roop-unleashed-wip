@@ -779,6 +779,11 @@ class ProcessMgr():
 
         def _reader():
             while roop.globals.processing:
+                # Pause: stop reading new frames while paused
+                while getattr(roop.globals, 'pause', False) and roop.globals.processing:
+                    time.sleep(0.05)
+                if not roop.globals.processing:
+                    break
                 chunk = []
                 for fr in gen:
                     chunk.append(fr)
@@ -894,6 +899,12 @@ class ProcessMgr():
 
 
     def process_frame(self, frame:Frame, frame_idx=None):
+        # ── Pause support ────────────────────────────────────────────────────
+        # Spin-wait while the user has paused. Checks every 50 ms so the UI
+        # stays responsive. Exits immediately if processing is cancelled.
+        while getattr(roop.globals, 'pause', False) and roop.globals.processing:
+            time.sleep(0.05)
+
         if len(self.input_face_datas) < 1 and not self.options.show_face_masking:
             return frame
         temp_frame = frame.copy()
