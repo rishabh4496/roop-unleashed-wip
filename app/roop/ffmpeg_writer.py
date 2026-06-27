@@ -70,7 +70,7 @@ class FFMPEG_VideoWriter:
     """
 
     def __init__(self, filename, size, fps, codec="libx265", crf=14, audiofile=None,
-                 preset="medium", bitrate=None,
+                 preset="faster", bitrate=None,
                  logfile=None, threads=None, ffmpeg_params=None):
 
         if logfile is None:
@@ -108,8 +108,21 @@ class FFMPEG_VideoWriter:
         cmd.extend([
             '-vcodec', codec,
             '-crf', str(crf)
-            #'-preset', preset,
         ])
+
+        # For libx264 / libx265 the preset trades encode SPEED for FILE SIZE at a
+        # fixed CRF — the rate control holds perceptual quality constant, so a
+        # faster preset speeds up encoding with no visible quality loss (just
+        # slightly larger files). Only these encoders use x264-style preset
+        # names; vp9 (-deadline) and nvenc (p1-p7) are left untouched. Override
+        # the default with env ROOP_ENCODER_PRESET.
+        if codec in ('libx264', 'libx265'):
+            _valid = {'ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                      'medium', 'slow', 'slower', 'veryslow', 'placebo'}
+            _preset = os.environ.get('ROOP_ENCODER_PRESET', preset).strip().lower()
+            if _preset not in _valid:
+                _preset = 'faster'
+            cmd.extend(['-preset', _preset])
         if ffmpeg_params is not None:
             cmd.extend(ffmpeg_params)
         if bitrate is not None:
