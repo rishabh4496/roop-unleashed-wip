@@ -772,7 +772,10 @@ class ProcessMgr():
         gen = _gen_frames()
         carry = []
         chunk_start = 0
-        prefetch_q = Queue(1)
+        # Queue(2): reader can pre-fill one extra chunk so GPU never waits.
+        # Using 2 (not 1) also avoids deadlock on cancel — reader won't block
+        # on put() if the consumer has stopped and we drain below before join().
+        prefetch_q = Queue(2)
 
         def _reader():
             while roop.globals.processing:
@@ -786,57 +789,87 @@ class ProcessMgr():
                 prefetch_q.put(chunk)
                 if not roop.globals.processing:
                     break
-            prefetch_q.put(None)  # always send sentinel so consumer unblocks
+            prefetch_q.put(None)  # sentinel: always sent, even on cancel
 
         rt = Thread(target=_reader, name='stab_reader', daemon=True)
         rt.start()
-
 
         try:
             while True:
                 chunk = prefetch_q.get()
                 if chunk is None:
                     break
-                
+                if not roop.globals.processing:
+                    break
+
                 combined = carry + chunk
                 base = len(carry)
                 base_global = chunk_start - base
                 n = max(1, min(threads, len(chunk)))
                 results = {}
 
-                def _worker(a, b):
+                # ── Closure-capture fix ──────────────────────────────────────
+                # _worker is re-defined each loop iteration. Without default-arg
+                # capture, every thread closure shares the same `combined`,
+                # `base`, `base_global` and `results` variables — dangerous when
+                # Python advances the outer loop before threads finish reading them.
+                # Binding them as default args freezes the values per chunk.
+                def _worker(a, b,
+                            _combined=combined, _base=base,
+                            _base_global=base_global, _results=results):
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
-                    ca = base + a
-                    for ci in range(max(0, ca - WU), ca):
-                        if not roop.globals.processing: return
-                        self._tls.t = base_global + ci
-                        try: self.process_frame(combined[ci], frame_idx=None)
-                        except Exception: pass
-                    for ci in range(ca, base + b):
-                        if not roop.globals.processing: return
-                        gi = base_global + ci
+                    ca = _base + a
+                    for ci in range(max(0, ca - WU), ca):   # warm-up: prime filter, discard
+                        if not roop.globals.processing:
+                            return
+                        self._tls.t = _base_global + ci
+                        try:
+                            self.process_frame(_combined[ci], frame_idx=None)
+                        except Exception:
+                            pass
+                    for ci in range(ca, _base + b):
+                        if not roop.globals.processing:
+                            return
+                        gi = _base_global + ci
                         self._tls.t = gi
-                        try: out = self.process_frame(combined[ci], frame_idx=None)
-                        except Exception: out = combined[ci]
-                        results[gi] = out if out is not None else combined[ci]
+                        try:
+                            out = self.process_frame(_combined[ci], frame_idx=None)
+                        except Exception:
+                            out = _combined[ci]
+                        _results[gi] = out if out is not None else _combined[ci]
                         progress_cb()
 
                 step = len(chunk) / n
-                workers = [Thread(target=_worker, args=(int(round(i * step)), len(chunk) if i == n - 1 else int(round((i + 1) * step)))) for i in range(n)]
-                for w in workers: w.start()
-                for w in workers: w.join()
+                workers = []
+                for i in range(n):
+                    a = int(round(i * step))
+                    b = len(chunk) if i == n - 1 else int(round((i + 1) * step))
+                    workers.append(Thread(target=_worker, args=(a, b), name=f'stab_proc{i}'))
+                for w in workers:
+                    w.start()
+                for w in workers:
+                    w.join()
 
                 for gi in range(chunk_start, chunk_start + len(chunk)):
                     fr = results.get(gi)
-                    if fr is None: continue
-                    if self.output_to_file: self.videowriter.write_frame(fr)
-                    if self.output_to_cam: self.streamwriter.WriteToStream(fr)
+                    if fr is None:
+                        continue
+                    if self.output_to_file:
+                        self.videowriter.write_frame(fr)
+                    if self.output_to_cam:
+                        self.streamwriter.WriteToStream(fr)
 
                 carry = combined[-WU:] if WU > 0 else []
                 chunk_start += len(chunk)
-            rt.join()
         finally:
+            # Drain the queue so _reader's put() can't block and rt.join() won't hang
+            try:
+                while not prefetch_q.empty():
+                    prefetch_q.get_nowait()
+            except Exception:
+                pass
+            rt.join(timeout=5)
             self._parallel_stab = False
             for _a in ('kps', 'enh', 't'):
                 if hasattr(self._tls, _a):
