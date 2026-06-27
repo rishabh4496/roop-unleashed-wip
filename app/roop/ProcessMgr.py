@@ -176,6 +176,13 @@ class ProcessMgr():
         self.enh_stabilizer = None    # smooths enhancer output (anti-flicker)
         self._stab_active = False
         self._stab_t = 0
+        # 2-pass parallel stabilization: when only kps stabilization is on, pass 1
+        # precomputes the (order-dependent) smoothed kps sequentially, then pass 2
+        # swaps in parallel using a per-frame lookup (no temporal dependency), so
+        # stabilized video keeps multi-thread speed.
+        # {frame_idx: [(raw_centroid(2,), smoothed_kps(5,2)), ...]}
+        self._precomputed_kps = None
+        self._precomputed_mode = False
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -452,7 +459,7 @@ class ProcessMgr():
                 ret, frame = cap.read()
             if not ret:
                 break
-            self.frames_queue[num_frame % num_threads].put(frame, block=True)
+            self.frames_queue[num_frame % num_threads].put((num_frame, frame), block=True)
             num_frame += 1
             if num_frame == total_num:
                 break
@@ -468,19 +475,20 @@ class ProcessMgr():
             wait_while_paused()
             if not roop.globals.processing:
                 break
-            self.frames_queue[num_frame % num_threads].put(frame, block=True)
+            self.frames_queue[num_frame % num_threads].put((num_frame, frame), block=True)
         for i in range(num_threads):
             self.frames_queue[i].put(None)
 
 
     def process_videoframes(self, threadindex, progress) -> None:
         while True:
-            frame = self.frames_queue[threadindex].get()
-            if frame is None:
+            item = self.frames_queue[threadindex].get()
+            if item is None:
                 self.processing_threads -= 1
                 self.processed_queue[threadindex].put((False, None))
                 return
             else:
+                frame_idx, frame = item
                 try:
                     with _prof('frame_total'):
                         if self.options.frame_processing:
@@ -492,7 +500,7 @@ class ProcessMgr():
                         else:
                             # process_frame serialises only its GPU primitives (under
                             # TensorRT), so CPU work overlaps across threads.
-                            resimg = self.process_frame(frame)
+                            resimg = self.process_frame(frame, frame_idx=frame_idx)
                 except RuntimeError as exc:
                     err_str = str(exc)
                     if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
@@ -526,10 +534,22 @@ class ProcessMgr():
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
-        # Temporal smoothing (keypoints and/or enhancer) needs frames in order;
-        # the multithreaded reader strides frames out-of-order, so force a single
-        # thread for the whole clip when any stabilizer is on (quality > speed).
-        if self.kps_stabilizer is not None or self.enh_stabilizer is not None:
+        # Stabilization scheduling (temporal smoothing needs frames in order; the
+        # multithreaded reader strides them out-of-order):
+        #  - kps-only stabilization → 2-pass: precompute smoothed kps sequentially
+        #    (pass 1, below once the source is set up) then swap in parallel
+        #    (pass 2), keeping multi-thread speed.
+        #  - enhancer stabilization smooths the enhanced OUTPUT, which only exists
+        #    during the swap, so it can't be precomputed → fall back to the
+        #    original single-thread sequential path.
+        self._precomputed_mode = False
+        self._precomputed_kps = None
+        self._stab_active = False
+        _want_kps_stab = self.kps_stabilizer is not None
+        _want_enh_stab = self.enh_stabilizer is not None
+        _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
+        use_2pass = _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
+        if (_want_kps_stab or _want_enh_stab) and not use_2pass:
             if threads != 1:
                 print("[Stabilize] Forcing single thread for temporal smoothing.")
             threads = 1
@@ -569,6 +589,16 @@ class ProcessMgr():
         if processed_resolution is not None:
             width = processed_resolution[0]
             height = processed_resolution[1]
+
+        # 2-pass stabilization, pass 1: precompute smoothed kps sequentially so
+        # pass 2 (the swap) can run multi-threaded. Done before auto-tuning so the
+        # tuner calibrates the real pass-2 workload.
+        if use_2pass:
+            self._precomputed_kps = self._precompute_stabilized_kps(
+                source_video, awebp_frames, frame_start, frame_end, frame_count)
+            self._precomputed_mode = True
+            print(f"[Stabilize] 2-pass: precomputed smoothed kps for "
+                  f"{len(self._precomputed_kps)} frames; pass 2 runs multi-threaded.")
 
         # Empirically auto-tune the worker thread count to saturate the GPU.
         # The incoming `threads` (from the "Max. Number of Threads" setting) is
@@ -630,6 +660,8 @@ class ProcessMgr():
 
         self.frames_queue.clear()
         self.processed_queue.clear()
+        self._precomputed_mode = False
+        self._precomputed_kps = None
         _prof_report()
 
 
@@ -719,11 +751,11 @@ class ProcessMgr():
             self.progress_gradio((progress.n, self.total_frames), desc='Processing', total=self.total_frames, unit='frames')
 
 
-    def process_frame(self, frame:Frame):
+    def process_frame(self, frame:Frame, frame_idx=None):
         if len(self.input_face_datas) < 1 and not self.options.show_face_masking:
             return frame
         temp_frame = frame.copy()
-        num_swapped, temp_frame = self.swap_faces(frame, temp_frame, stabilize=True)
+        num_swapped, temp_frame = self.swap_faces(frame, temp_frame, stabilize=True, frame_idx=frame_idx)
         if num_swapped > 0:
             if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR:
                 if len(self.input_face_datas) > num_swapped:
@@ -761,6 +793,75 @@ class ProcessMgr():
         return frame
 
 
+    def _precompute_stabilized_kps(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
+        """Pass 1 of 2-pass stabilization. Sequentially detect every frame's faces
+        and run their kps through the (order-dependent) kps stabilizer, returning
+        {frame_idx: [(raw_centroid, smoothed_kps), ...]} for pass 2 to look up.
+        Frame indices are 0-based from frame_start, matching the pass-2 reader.
+        Reads through its own capture so the main reader (pass 2) is untouched."""
+        self.kps_stabilizer.reset()
+        precomputed = {}
+
+        def handle(idx, frame):
+            with _gpu_guard():
+                faces = get_all_faces(frame)
+            if not faces:
+                return
+            entries = []
+            for f in faces:
+                kps = getattr(f, 'kps', None)
+                if kps is None:
+                    continue
+                raw_centroid = np.asarray(kps, dtype=np.float64).mean(axis=0)
+                smoothed = self.kps_stabilizer.apply(kps, idx)
+                entries.append((raw_centroid, np.asarray(smoothed, dtype=np.float32)))
+            if entries:
+                precomputed[idx] = entries
+
+        if awebp_frames is not None:
+            subset = awebp_frames[frame_start:frame_end] if frame_end > frame_start else awebp_frames[frame_start:]
+            for idx, frame in enumerate(subset):
+                if not roop.globals.processing:
+                    break
+                handle(idx, frame)
+        else:
+            cap = cv2.VideoCapture(source_video)
+            try:
+                if frame_start > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
+                idx = 0
+                while roop.globals.processing:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        break
+                    handle(idx, frame)
+                    idx += 1
+                    if idx >= frame_count:
+                        break
+            finally:
+                cap.release()
+        return precomputed
+
+
+    def _lookup_precomputed_kps(self, frame_idx, face):
+        """Pass 2: return the smoothed kps precomputed for this face, matched by
+        nearest raw centroid within the frame. Falls back to the face's own kps
+        when there's no precomputed entry (e.g. pass 1 could not decode)."""
+        kps = getattr(face, 'kps', None)
+        if kps is None or not self._precomputed_kps:
+            return kps
+        entries = self._precomputed_kps.get(frame_idx)
+        if not entries:
+            return kps
+        c = np.asarray(kps, dtype=np.float64).mean(axis=0)
+        best, best_d = None, float('inf')
+        for raw_centroid, smoothed in entries:
+            d = float(np.linalg.norm(raw_centroid - c))
+            if d < best_d:
+                best_d, best = d, smoothed
+        return best if best is not None else kps
+
+
     def _apply_stab(self, face):
         """Replace a face's 5-point kps with the temporally smoothed version."""
         try:
@@ -769,20 +870,25 @@ class ProcessMgr():
         except Exception:
             pass
 
-    def swap_faces(self, frame, temp_frame, stabilize=False):
+    def swap_faces(self, frame, temp_frame, stabilize=False, frame_idx=None):
         num_faces_found = 0
 
         # Tick once per frame if any stabilizer is active (single-threaded path).
         if stabilize and self._stab_active and (self.kps_stabilizer is not None or self.enh_stabilizer is not None):
             self._stab_t += 1
         do_kps_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
+        # 2-pass parallel stabilization: replace kps with the value precomputed
+        # for this frame in pass 1 instead of running the (stateful) stabilizer.
+        precomp = stabilize and self._precomputed_mode and frame_idx is not None
 
         if self.options.swap_mode == "first":
             with _prof('detect'), _gpu_guard():     # face detection is GPU work
                 face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
-            if do_kps_stab:
+            if precomp:
+                face.kps = self._lookup_precomputed_kps(frame_idx, face)
+            elif do_kps_stab:
                 self._apply_stab(face)
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
@@ -793,7 +899,10 @@ class ProcessMgr():
                 faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
-            if do_kps_stab:
+            if precomp:
+                for f in faces:
+                    f.kps = self._lookup_precomputed_kps(frame_idx, f)
+            elif do_kps_stab:
                 for f in faces:
                     self._apply_stab(f)
 
