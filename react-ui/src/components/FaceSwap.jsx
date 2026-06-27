@@ -316,139 +316,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   };
 
   return (
-    <div className="space-y-6">
-      {/* uploads */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Section title="Source images / facesets">
-          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
-          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
-            onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" />
-          {sourceFaces.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
-              <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
-              <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
-              <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
-            </div>
-          )}
-        </Section>
-
-        <Section title="Target file(s)">
-          <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here" />
-          {targets.length === 0 ? (
-            <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
-          ) : (
-            <div className="space-y-1.5 max-h-40 overflow-auto">
-              {targets.map((t, i) => (
-                <div key={i}
-                  className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
-                  onClick={() => selectTarget(i)}>
-                  <div className="flex-1 min-w-0">
-                    <span className="truncate block">{t.name}</span>
-                    <span className="text-xs text-white/40">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
-                  </div>
-                  <button type="button" title="Remove this target"
-                    onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                    className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
-                </div>
-              ))}
-            </div>
-          )}
-          {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setPreviewSrc(''); }}>Clear targets</Button>}
-        </Section>
-      </div>
-
-      {/* preview + target faces */}
-      <Section title="Preview">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          <div className="lg:col-span-2 space-y-3">
-            {previewSrc ? (
-              <InteractivePreview 
-                beforeSrc={rawUrl} 
-                afterSrc={previewSrc} 
-                faces={previewFaces}
-                splitView={splitView}
-                compare={compare}
-                setCompare={setCompare}
-                frame={frame}
-                setFrame={setFrame}
-                maxFrames={maxFrames}
-                previewing={previewing}
-                previewSecs={previewSecs}
-              />
-            ) : (
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
-                <span className="text-white/30 text-sm">Select a target to preview</span>
-              </div>
-            )}
-            <div className="flex items-center flex-wrap gap-3">
-              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
-              {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
-              <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
-            </div>
-            {maxFrames > 1 && (
-              <>
-                <div className="pt-2 border-t border-white/5">
-                  <Slider label="Frame" info={`${frame} / ${maxFrames}`} min={1} max={maxFrames} step={1} value={frame}
-                    onChange={(v) => setFrame(v)} />
-                </div>
-                <div className="flex flex-wrap items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
-                  <Button size="sm" variant="secondary" onClick={() => refreshPreview()} className="!py-1.5 flex-1 sm:flex-none justify-center">Show frame</Button>
-                  <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
-                  
-                  <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
-                    <span className="text-xs opacity-60">Start:</span>
-                    <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
-                      key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
-                      defaultValue={targets[selTarget]?.start_frame ?? 1}
-                      onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                    />
-                  </div>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} title="Set to current slider frame" className="!py-1.5 !px-2">⬅ Set</Button>
-                  
-                  <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
-                  
-                  <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
-                    <span className="text-xs opacity-60">End:</span>
-                    <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
-                      key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
-                      defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
-                      onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                    />
-                  </div>
-                  <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} title="Set to current slider frame" className="!py-1.5 !px-2">Set ➡</Button>
-                </div>
-              </>
-            )}
-          </div>
-          <div>
-            <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-              groups={targetGroups} vertical={true}
-              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
-              empty="Use 'face from frame'" />
-            {targetFaces.length > 0 && (
-              <div className="mt-2 space-y-1.5">
-                <Button size="sm" variant="primary" className="w-full" onClick={addAngle}>
-                  ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
-                </Button>
-                <p className="text-[11px] text-white/40 leading-snug">
-                  Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </Section>
-
-      {/* core controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Section title="Swap">
+    <div className="flex flex-col lg:flex-row gap-6 items-start">
+      {/* LEFT SIDEBAR: Settings & Controls (Scrollable and fixed-width on large viewports) */}
+      <div className="w-full lg:w-[400px] shrink-0 space-y-6 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+        <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
@@ -458,7 +329,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
         </Section>
 
-        <Section title="Masking">
+        <Section title="Masking parameters">
           <Select label="Masking engine" value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
           {p.mask_engine === 'Clip2Seg' && (
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
@@ -472,7 +343,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Slider label="Face mask edge blend" min={0} max={200} step={1} value={num(p.face_mask_blend, 20)} onChange={(v) => set('face_mask_blend', v)} />
         </Section>
 
-        <Section title="Mouth mask">
+        <Section title="Mouth & Angle math">
           <Slider label="Mouth mask top" min={0} max={2} step={0.01} value={num(p.mouth_top_scale, 1)} onChange={(v) => set('mouth_top_scale', v)} />
           <Slider label="Mouth mask bottom" min={0} max={2} step={0.01} value={num(p.mouth_bottom_scale, 1)} onChange={(v) => set('mouth_bottom_scale', v)} />
           <Slider label="Mouth mask left" min={0} max={2} step={0.01} value={num(p.mouth_left_scale, 1)} onChange={(v) => set('mouth_left_scale', v)} />
@@ -480,23 +351,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Slider label="Mouth mask edge blend" min={0} max={200} step={1} value={num(p.mouth_mask_blend, 10)} onChange={(v) => set('mouth_mask_blend', v)} />
           <Toggle label="🧊 3D source pose matching" info="experimental — improves angled swaps" checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
           <Toggle label="🎯 Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
-          <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle. Enable this if side-on faces look wrong." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
+          <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
           {p.use_frontalization && (
-            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more (more side faces); higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 25)} onChange={(v) => set('frontalization_threshold', v)} />
+            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 25)} onChange={(v) => set('frontalization_threshold', v)} />
           )}
         </Section>
-      </div>
 
-      {/* video + output */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Section title="Video processing">
+        <Section title="Video parameters">
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
-          <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble/flicker. Runs at your Max Threads (2-pass), UNLESS 'Reduce enhancer flicker' is also on (that forces single-thread)." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+          <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
           {p.stabilize_face && (
             <>
-              <Select label="Smoothing method (One Euro / EMA)" info="One Euro = adaptive (best jitter-vs-lag). EMA = simpler fixed smoothing. Both run multi-threaded." value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
+              <Select label="Smoothing method" info="One Euro = adaptive (best jitter-vs-lag). EMA = simpler fixed smoothing." value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
               {p.stabilize_method !== 'ema' && (
                 <>
                   <Slider label="Smoothing (min cutoff)" info="lower = smoother, more lag" min={0.01} max={0.3} step={0.01} value={num(p.stabilize_min_cutoff, 0.05)} onChange={(v) => set('stabilize_min_cutoff', v)} />
@@ -505,64 +373,204 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               )}
             </>
           )}
-          <Toggle label="✨ Reduce enhancer flicker (video)" info="Temporally blends the enhanced face to kill GFPGAN/GPEN/swap shimmer. NOTE: this one still forces SINGLE-THREAD (it needs the enhanced output in order), so it's slower." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          <Toggle label="✨ Reduce enhancer flicker" info="Temporally blends the enhanced face. NOTE: forces SINGLE-THREAD, so it's slower." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
           {p.stabilize_enhancer && (
-            <Slider label="Flicker reduction strength" info="higher = smoother (more ghosting risk on motion)" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
+            <Slider label="Flicker reduction strength" info="higher = smoother" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
         </Section>
-        <Section title="Options">
+
+        <Section title="System options">
           <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
           <Toggle label="Skip audio" checked={!!p.skip_audio} onChange={(v) => set('skip_audio', v)} />
           <Toggle label="Keep frames (when extracting)" checked={!!p.keep_frames} onChange={(v) => set('keep_frames', v)} />
           <Toggle label="Wait before creating video" checked={!!p.wait_after_extraction} onChange={(v) => set('wait_after_extraction', v)} />
         </Section>
-        <Section title="Output">
-          <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
-          {out?.path && (
-            <div className="space-y-2">
-              <div className="text-xs text-white/50">Latest output</div>
-              {out.kind === 'video'
-                ? <video src={outUrl} controls className="w-full rounded-lg border border-white/10" />
-                : <img src={outUrl} alt="output" className="w-full rounded-lg border border-white/10" />}
-              <div className="flex flex-wrap gap-2">
-                <a href={outUrl} download
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">⬇ Download</a>
-                <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
-              </div>
-            </div>
-          )}
-        </Section>
       </div>
 
-      {/* run bar */}
-      <div className="sticky bottom-0 -mx-2 px-2 py-3">
-        <div className="rounded-xl bg-[#16213E]/80 backdrop-blur-md border border-white/10 p-4 flex items-center gap-4">
-          {progress.processing ? (
-            <div className="flex items-center gap-2">
-              {progress.paused ? (
-                <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
+      {/* RIGHT WORKSPACE: Media, Preview & Output */}
+      <div className="flex-1 w-full space-y-6">
+        {/* uploads */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Section title="Source images / facesets">
+            <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
+            <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
+              onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" />
+            {sourceFaces.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
+                <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
+              </div>
+            )}
+          </Section>
+
+          <Section title="Target file(s)">
+            <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here" />
+            {targets.length === 0 ? (
+              <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
+            ) : (
+              <div className="space-y-1.5 max-h-40 overflow-auto">
+                {targets.map((t, i) => (
+                  <div key={i}
+                    className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
+                    onClick={() => selectTarget(i)}>
+                    <div className="flex-1 min-w-0">
+                      <span className="truncate block">{t.name}</span>
+                      <span className="text-xs text-[var(--text-muted)]">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
+                    </div>
+                    <button type="button" title="Remove this target"
+                      onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
+                      className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setPreviewSrc(''); }}>Clear targets</Button>}
+          </Section>
+        </div>
+
+        {/* preview */}
+        <Section title="Preview">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="md:col-span-2 space-y-3">
+              {previewSrc ? (
+                <InteractivePreview 
+                  beforeSrc={rawUrl} 
+                  afterSrc={previewSrc} 
+                  faces={previewFaces}
+                  splitView={splitView}
+                  compare={compare}
+                  setCompare={setCompare}
+                  frame={frame}
+                  setFrame={setFrame}
+                  maxFrames={maxFrames}
+                  previewing={previewing}
+                  previewSecs={previewSecs}
+                />
               ) : (
-                <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
+                <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
+                  <span className="text-[var(--text-muted)] text-sm">Select a target to preview</span>
+                </div>
               )}
-              <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+              <div className="flex items-center flex-wrap gap-3">
+                <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
+                <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
+                {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
+                <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
+                <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
+              </div>
+              {maxFrames > 1 && (
+                <>
+                  <div className="pt-2 border-t border-white/5">
+                    <Slider label="Frame" info={`${frame} / ${maxFrames}`} min={1} max={maxFrames} step={1} value={frame}
+                      onChange={(v) => setFrame(v)} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
+                    <Button size="sm" variant="secondary" onClick={() => refreshPreview()} className="!py-1.5 flex-1 sm:flex-none justify-center">Show frame</Button>
+                    <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
+                    
+                    <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
+                      <span className="text-xs opacity-60">Start:</span>
+                      <input type="number" 
+                        className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
+                        key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
+                        defaultValue={targets[selTarget]?.start_frame ?? 1}
+                        onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                      />
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} title="Set to current slider frame" className="!py-1.5 !px-2">⬅ Set</Button>
+                    
+                    <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
+                    
+                    <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
+                      <span className="text-xs opacity-60">End:</span>
+                      <input type="number" 
+                        className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
+                        key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
+                        defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
+                        onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                      />
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} title="Set to current slider frame" className="!py-1.5 !px-2">Set ➡</Button>
+                  </div>
+                </>
+              )}
             </div>
-          ) : (
-            <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
-          )}
-          <div className="flex-1">
-            <div className="flex justify-between text-xs text-white/50 mb-1">
-              <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
-              <span className="flex items-center gap-2 tabular-nums">
-                {progress.processing && (
-                  <span className="text-white/40">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
+            <div>
+              <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
+                groups={targetGroups} vertical={true}
+                empty={targets.length === 0 ? 'No target loaded' : 'Analyzing target faces…'} />
+              {targetFaces.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
+                    <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
+                    <Button size="sm" variant="stop" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-snug">
+                    Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </Section>
+
+        {/* output results */}
+        <Section title="Output settings & renders">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            <div className="space-y-4">
+              <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
+            </div>
+            {out?.path && (
+              <div className="space-y-2">
+                <div className="text-xs text-[var(--text-muted)]">Latest output</div>
+                {out.kind === 'video'
+                  ? <video src={outUrl} controls className="w-full rounded-xl border border-white/5" />
+                  : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
+                <div className="flex flex-wrap gap-2">
+                  <a href={outUrl} download
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
+                  <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {/* run bar */}
+        <div className="sticky bottom-0 py-3 z-30">
+          <div className="rounded-2xl glass-panel p-4 flex items-center gap-4 shadow-2xl">
+            {progress.processing ? (
+              <div className="flex items-center gap-2">
+                {progress.paused ? (
+                  <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
+                ) : (
+                  <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
                 )}
-                <span>{Math.round(prog * 100)}%</span>
-              </span>
+                <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+              </div>
+            ) : (
+              <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
+            )}
+            <div className="flex-1">
+              <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
+                <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
+                <span className="flex items-center gap-2 tabular-nums">
+                  {progress.processing && (
+                    <span className="text-[var(--text-muted)] opacity-70">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
+                  )}
+                  <span className="font-bold text-[var(--text-main)]">{Math.round(prog * 100)}%</span>
+                </span>
+              </div>
+              <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
+                <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
+              </div>
+              {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
             </div>
-            <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
-              <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
-            </div>
-            {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
           </div>
         </div>
       </div>
