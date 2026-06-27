@@ -5,7 +5,7 @@ module.exports = {
       method: "shell.run",
       params: {
         venv: "env",
-        env: { ROOP_TRT_POOL: "2" },
+        env: { ROOP_TRT_POOL: "2", ROOP_PROFILE: "1" },
         path: "app",
         message: [
           "python run.py",
