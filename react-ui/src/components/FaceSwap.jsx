@@ -40,6 +40,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
 
   // ── initial rehydrate ──
+  // Pinokio reloads the webview whenever you switch the RUN/DEV/FILES tabs,
+  // which remounts this component and wipes its React state. The backend keeps
+  // running, so we restore both the faces/targets AND the live job state.
   useEffect(() => {
     getJSON('/api/state').then((st) => {
       setSourceFaces(st.source_faces || []);
@@ -54,6 +57,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         setFrame(1);
       }
     }).catch(() => {});
+
+    // Restore an in-flight swap so the run bar shows Pause/Resume/Stop and the
+    // progress %/desc again instead of falling back to "Start Swapping".
+    getJSON('/api/progress').then((pr) => {
+      setProgress(pr);
+      if (pr.processing) {
+        if (!startTimeRef.current) startTimeRef.current = Date.now();
+        startPolling();
+      }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshPreview = async (opts = {}) => {
