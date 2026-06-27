@@ -90,12 +90,45 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                 fp16_enable = trt_precision in ('fp16', 'mixed')
                 precision_cache = os.path.join(trt_cache, trt_precision)
                 os.makedirs(precision_cache, exist_ok=True)
-                list_providers[i] = ('TensorrtExecutionProvider', {
+
+                # ── Engine-build tuning, scaled to the GPU ──────────────────
+                # trt_max_workspace_size: scratch-memory CEILING TensorRT may use
+                #   while exploring kernel tactics (TRT only allocates what it
+                #   needs, up to this). In onnxruntime 1.19 the default 0 already
+                #   means "use all available VRAM", so we set an explicit fraction
+                #   of TOTAL VRAM instead: it makes engine builds reproducible
+                #   (independent of momentary free memory) and leaves headroom for
+                #   the multi-context pool + FP32 swapper so a build can't grab the
+                #   whole card. Override the fraction with ROOP_TRT_WORKSPACE_FRACTION.
+                # trt_max_partition_iterations: how hard the EP tries to fold graph
+                #   nodes into TensorRT subgraphs (vs CUDA fallback). Higher = more
+                #   of the model on TRT; only costs extra build time. Override with
+                #   ROOP_TRT_PARTITION_ITERATIONS.
+                try:
+                    total_vram = torch.cuda.get_device_properties(roop.globals.cuda_device_id).total_memory
+                except Exception:
+                    total_vram = 0
+                try:
+                    ws_frac = float(os.environ.get('ROOP_TRT_WORKSPACE_FRACTION', '0.8'))
+                except ValueError:
+                    ws_frac = 0.8
+                ws_frac = max(0.1, min(0.95, ws_frac))
+                workspace_size = int(total_vram * ws_frac) if total_vram else 0
+                try:
+                    partition_iters = int(os.environ.get('ROOP_TRT_PARTITION_ITERATIONS', '2000'))
+                except ValueError:
+                    partition_iters = 2000
+
+                trt_opts = {
                     'device_id': roop.globals.cuda_device_id,
                     'trt_fp16_enable': fp16_enable,
                     'trt_engine_cache_enable': True,
                     'trt_engine_cache_path': precision_cache,
-                })
+                    'trt_max_partition_iterations': partition_iters,
+                }
+                if workspace_size > 0:
+                    trt_opts['trt_max_workspace_size'] = workspace_size
+                list_providers[i] = ('TensorrtExecutionProvider', trt_opts)
     except:
         pass
 
