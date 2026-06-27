@@ -448,25 +448,20 @@ def resolve_relative_path(path: str) -> str:
 def get_device() -> str:
     import onnxruntime as ort
     available_providers = ort.get_available_providers()
-    print("Available ONNX providers in get_device:", available_providers)  # Debug print
 
     if len(roop.globals.execution_providers) < 1:
         if 'CUDAExecutionProvider' in available_providers:
             roop.globals.execution_providers = ['CUDAExecutionProvider']
-            print("Forcing CUDAExecutionProvider!")  # Debug
         else:
             roop.globals.execution_providers = ["CPUExecutionProvider"]
-            print("No GPU providers available—defaulting to CPU.")  # Debug
 
     prov = roop.globals.execution_providers[0]
     if "CoreMLExecutionProvider" in prov:
         return "mps"
     if "CUDAExecutionProvider" in prov or "ROCMExecutionProvider" in prov or "TensorrtExecutionProvider" in prov:
-        print("Using GPU (cuda/rocm/tensorrt) for acceleration!")  # Debug
         return "cuda"
     if "OpenVINOExecutionProvider" in prov:
         return "mkl"
-    print("Falling back to CPU.")  # Debug
     return "cpu"
 
 

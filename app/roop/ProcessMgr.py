@@ -386,6 +386,8 @@ class ProcessMgr():
                 import math as _math
                 from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
                 for fs in self.input_face_datas:
+                    if fs.face_poses is not None:
+                        continue   # already computed from a previous initialize() call
                     if len(fs.faces) < 2:
                         # Single-face facesets don't need pose selection
                         fs.face_poses = None
