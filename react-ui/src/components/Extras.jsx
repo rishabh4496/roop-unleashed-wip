@@ -34,7 +34,7 @@ export default function Extras({ notify }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Section title="Input & transform">
           <label className="block cursor-pointer">
-            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[#E94560]/50 text-center text-sm text-white/60">
+            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60">
               📁 {fileName || 'Pick an image or video'}
             </div>
             <input type="file" accept="image/*,video/*" onChange={onPick} className="hidden" />
@@ -58,7 +58,7 @@ export default function Extras({ notify }) {
           {result.kind === 'video'
             ? <video src={fileUrl(result.path)} controls className="w-full rounded-lg border border-white/10" />
             : <img src={fileUrl(result.path)} alt="output" className="max-w-full rounded-lg border border-white/10" />}
-          <a href={fileUrl(result.path)} download className="inline-block mt-2 text-sm text-[#E94560] underline">⬇ Download</a>
+          <a href={fileUrl(result.path)} download className="inline-block mt-2 text-sm text-[var(--accent)] underline">⬇ Download</a>
         </Section>
       )}
 

@@ -341,7 +341,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             <div className="space-y-1.5 max-h-40 overflow-auto">
               {targets.map((t, i) => (
                 <div key={i}
-                  className={`group flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[#E94560]/15 border-[#E94560]/50' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
+                  className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
                   onClick={() => selectTarget(i)}>
                   <div className="flex-1 min-w-0">
                     <span className="truncate block">{t.name}</span>
@@ -349,7 +349,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                   </div>
                   <button type="button" title="Remove this target"
                     onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                    className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[#E94560] hover:text-white transition-opacity flex items-center justify-center">✕</button>
+                    className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
                 </div>
               ))}
             </div>
@@ -377,7 +377,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                 {previewing && (
                   <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-20">
                     <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-xs text-white/80 tabular-nums border border-white/10 shadow-lg">
-                      <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+                      <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
                       Rendering… {previewSecs}s
                     </div>
                     {previewSecs >= 12 && (
@@ -409,7 +409,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                   <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
                     <span className="text-xs opacity-60">Start:</span>
                     <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-white outline-none text-sm focus:ring-1 focus:ring-[#E94560] rounded"
+                      className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
                       key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
                       defaultValue={targets[selTarget]?.start_frame ?? 1}
                       onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
@@ -423,7 +423,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                   <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
                     <span className="text-xs opacity-60">End:</span>
                     <input type="number" 
-                      className="bg-transparent w-16 text-right font-mono text-white outline-none text-sm focus:ring-1 focus:ring-[#E94560] rounded"
+                      className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
                       key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
                       defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
                       onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
@@ -534,7 +534,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                 : <img src={outUrl} alt="output" className="w-full rounded-lg border border-white/10" />}
               <div className="flex flex-wrap gap-2">
                 <a href={outUrl} download
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-[#E94560] hover:bg-[#d83a52] text-white transition-colors">⬇ Download</a>
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">⬇ Download</a>
                 <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
               </div>
             </div>
@@ -568,7 +568,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               </span>
             </div>
             <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
-              <div className={`absolute top-0 bottom-0 left-0 bg-[#E94560] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_rgba(233,69,96,0.6)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
+              <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
             </div>
             {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
           </div>
@@ -592,15 +592,15 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
       onDrop={onDrop}
       className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer group'}`}
     >
-      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[#E94560]/60 bg-[#E94560]/[0.06]' : drag ? 'border-[#E94560] bg-[#E94560]/[0.1] scale-[0.98]' : 'border-white/15 hover:border-[#E94560]/50 hover:bg-white/[0.02]'}`}>
+      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[var(--accent)]/60 bg-[var(--accent)]/[0.06]' : drag ? 'border-[var(--accent)] bg-[var(--accent)]/[0.1] scale-[0.98]' : 'border-white/15 hover:border-[var(--accent)]/50 hover:bg-white/[0.02]'}`}>
         {busy ? (
           <span className="inline-flex items-center gap-2 text-sm font-medium text-white/80">
-            <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[#E94560] animate-spin" />
+            <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
             Uploading & analysing…
           </span>
         ) : (
           <div className="flex flex-col items-center justify-center gap-3 pointer-events-none">
-            <div className={`p-3.5 rounded-full bg-black/20 ${drag ? 'scale-110 text-[#E94560] shadow-[0_0_15px_rgba(233,69,96,0.3)]' : 'text-white/40 group-hover:text-white/70 group-hover:bg-white/5'} transition-all duration-300`}>
+            <div className={`p-3.5 rounded-full bg-black/20 ${drag ? 'scale-110 text-[var(--accent)] shadow-[0_0_15px_var(--accent-glow)]' : 'text-white/40 group-hover:text-white/70 group-hover:bg-white/5'} transition-all duration-300`}>
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="17 8 12 3 7 8"></polyline>
@@ -608,7 +608,7 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
               </svg>
             </div>
             <div>
-              <span className={`text-sm font-semibold tracking-wide ${drag ? 'text-[#E94560]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
+              <span className={`text-sm font-semibold tracking-wide ${drag ? 'text-[var(--accent)]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
               {!drag && hint && <span className="block text-xs text-white/40 mt-1">{hint}</span>}
             </div>
           </div>
@@ -714,9 +714,9 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
       const width = ((ex - sx) / imgDim.w) * 100;
       const height = ((ey - sy) / imgDim.h) * 100;
       return (
-        <div key={i} className="absolute border-2 border-[#E94560] shadow-[0_0_10px_rgba(233,69,96,0.5)] z-20 pointer-events-none"
+        <div key={i} className="absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 pointer-events-none"
              style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}>
-          <span className="absolute -top-6 left-0 bg-[#E94560] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
+          <span className="absolute -top-6 left-0 bg-[var(--accent)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
             Person {i}
           </span>
         </div>
@@ -744,7 +744,7 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
             <div className="relative" style={aspectStyle}>
               <img src={afterSrc} alt="After" className="w-full h-full object-contain pointer-events-none" />
             </div>
-            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
+            <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
           </div>
         </div>
         {zoom > 1 && (
@@ -776,15 +776,15 @@ function InteractivePreview({ beforeSrc, afterSrc, faces = [], splitView = false
       </div>
 
       <span className="absolute top-2 left-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>
-      <span className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[#E94560]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
+      <span className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
             style={{ opacity: sliderPosition > 85 ? 0 : 1 }}>After</span>
 
       {/* Slider Line & Handle */}
       <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
              onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#E94560" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
         </div>
       </div>
 

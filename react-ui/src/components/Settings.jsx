@@ -29,6 +29,15 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <TextInput label="Filename output template" info="{file} {time} {index} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
         </Section>
 
+        <Section title="Appearance">
+          <Select 
+            label="Interface Theme" 
+            value={p.selected_theme || 'Default'} 
+            onChange={(v) => set('selected_theme', v)} 
+            options={['Default', 'Glass Light', 'Cyberpunk Dark', 'Cyberpunk Light', 'Emerald Dark', 'Emerald Light', 'Nordic Dark', 'Nordic Light']} 
+          />
+        </Section>
+
         <Section title="Performance">
           <Select label="Provider" value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
           {p.provider === 'tensorrt' && (

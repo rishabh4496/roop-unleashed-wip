@@ -46,7 +46,7 @@ export default function FaceManager({ notify }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Section title="Add faces">
           <label className="block cursor-pointer">
-            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[#E94560]/50 text-center text-sm text-white/60">📁 Add images / videos</div>
+            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60">📁 Add images / videos</div>
             <input type="file" accept="image/*,video/*" multiple onChange={onAddFiles} className="hidden" />
           </label>
           <label className="block cursor-pointer">
@@ -73,7 +73,7 @@ export default function FaceManager({ notify }) {
           </div>
           {built && (
             <a href={fileUrl(built.path)} download={built.name}
-              className="inline-block mt-2 text-sm text-[#E94560] underline">⬇ Download {built.name}</a>
+              className="inline-block mt-2 text-sm text-[var(--accent)] underline">⬇ Download {built.name}</a>
           )}
         </Section>
       </div>
