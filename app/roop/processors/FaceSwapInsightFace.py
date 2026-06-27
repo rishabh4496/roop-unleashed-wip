@@ -7,6 +7,7 @@ import onnxruntime
 
 from roop.typing import Face, Frame
 from roop.utilities import resolve_relative_path, conditional_download
+from roop import session_pool
 
 
 # ── Per-model swap contract ───────────────────────────────────────────────────
@@ -66,6 +67,7 @@ class FaceSwapInsightFace():
         self.embed_input_name = "source"
         self.loaded_model_key = None
         self.devicename = None
+        self.pool = None        # SessionPool of extra sessions (TRT multi-context)
         # Contract consumed by ProcessMgr — defaults match inswapper_128.
         self.model_output_size = 128
         self.model_mean = [0.0, 0.0, 0.0]
@@ -97,10 +99,14 @@ class FaceSwapInsightFace():
             self.emap = self._find_emap(graph) if spec["use_emap"] else None
 
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
-            sess_options = onnxruntime.SessionOptions()
-            sess_options.enable_cpu_mem_arena = False
-            self.model_swap_insightface = onnxruntime.InferenceSession(
-                model_path, sess_options, providers=roop.globals.execution_providers)
+
+            def _build(_i=0):
+                sess_options = onnxruntime.SessionOptions()
+                sess_options.enable_cpu_mem_arena = False
+                return onnxruntime.InferenceSession(
+                    model_path, sess_options, providers=roop.globals.execution_providers)
+
+            self.model_swap_insightface = _build()
 
             # Resolve input tensor names by rank instead of assuming names:
             # rank-4 = the image (NCHW), rank-2 = the identity embedding.
@@ -110,6 +116,15 @@ class FaceSwapInsightFace():
                     self.image_input_name = inp.name
                 elif rank == 2:
                     self.embed_input_name = inp.name
+
+            # Optional TensorRT multi-context pool: the primary session plus
+            # (N-1) independent extras so up to N worker threads can swap
+            # concurrently instead of serialising behind the global GPU lock.
+            if session_pool.pooling_enabled():
+                n = session_pool.pool_size()
+                extras = [_build(i) for i in range(n - 1)]
+                self.pool = session_pool.SessionPool(
+                    lambda i, _e=([self.model_swap_insightface] + extras): _e[i], n)
 
             # Publish the per-model contract ProcessMgr reads.
             self.model_output_size = spec["output_size"]
@@ -138,13 +153,21 @@ class FaceSwapInsightFace():
         # which registers a device type that copy_outputs_to_cpu() has no
         # transfer path for. run() handles all device transfers internally and
         # works correctly across CPU, CUDA, and TensorRT execution providers.
-        ort_outs = self.model_swap_insightface.run(
-            None, {self.image_input_name: temp_frame, self.embed_input_name: latent}
-        )
+        feed = {self.image_input_name: temp_frame, self.embed_input_name: latent}
+        if self.pool is not None:
+            # Lease an independent session so this thread's GPU work runs on its
+            # own TensorRT context, concurrently with other workers.
+            with self.pool.lease() as sess:
+                ort_outs = sess.run(None, feed)
+        else:
+            ort_outs = self.model_swap_insightface.run(None, feed)
         # Some models (HyperSwap) emit (image, mask); the image is output [0].
         return ort_outs[0][0]
 
     def Release(self):
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
         del self.model_swap_insightface
         self.model_swap_insightface = None
         self.emap = None

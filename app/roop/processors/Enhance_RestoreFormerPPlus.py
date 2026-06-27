@@ -6,12 +6,14 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path
+from roop import session_pool
 
 class Enhance_RestoreFormerPPlus():
     plugin_options:dict = None
     model_restoreformerpplus = None
     devicename = None
     name = None
+    pool = None        # SessionPool of (session, io_binding) for TRT multi-context
 
     processorname = 'restoreformer++'
     type = 'enhance'
@@ -27,11 +29,27 @@ class Enhance_RestoreFormerPPlus():
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             model_path = resolve_relative_path('../models/restoreformer_plus_plus.onnx')
-            self.model_restoreformerpplus = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+
+            def _build(_i=0):
+                sess = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+                outs = sess.get_outputs()
+                iob = sess.io_binding()
+                iob.bind_output(outs[0].name, self.devicename)
+                return (sess, iob)
+
+            self.model_restoreformerpplus, self.io_binding = _build()
             self.model_inputs = self.model_restoreformerpplus.get_inputs()
-            model_outputs = self.model_restoreformerpplus.get_outputs()
-            self.io_binding = self.model_restoreformerpplus.io_binding()
-            self.io_binding.bind_output(model_outputs[0].name, self.devicename)
+
+            # Optional TensorRT multi-context pool: primary (session, io_binding)
+            # plus (N-1) independent extras so N workers can enhance concurrently.
+            # Each copy keeps its own io_binding (binding state is not shareable
+            # across threads).
+            if session_pool.pooling_enabled():
+                n = session_pool.pool_size()
+                extras = [_build(i) for i in range(n - 1)]
+                primary = (self.model_restoreformerpplus, self.io_binding)
+                self.pool = session_pool.SessionPool(
+                    lambda i, _e=([primary] + extras): _e[i], n)
 
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
         # preprocess
@@ -42,11 +60,19 @@ class Enhance_RestoreFormerPPlus():
         temp_frame = (temp_frame - 0.5) / 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
         
-        self.io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame) # .astype(np.float32)
-        self.model_restoreformerpplus.run_with_iobinding(self.io_binding)
-        ort_outs = self.io_binding.copy_outputs_to_cpu()
+        if self.pool is not None:
+            # Lease an independent (session, io_binding) so this thread runs on
+            # its own TensorRT context concurrently with other workers.
+            with self.pool.lease() as (sess, iob):
+                iob.bind_cpu_input(self.model_inputs[0].name, temp_frame)
+                sess.run_with_iobinding(iob)
+                ort_outs = iob.copy_outputs_to_cpu()
+        else:
+            self.io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame) # .astype(np.float32)
+            self.model_restoreformerpplus.run_with_iobinding(self.io_binding)
+            ort_outs = self.io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]
-        del ort_outs 
+        del ort_outs
         
         result = np.clip(result, -1, 1)
         result = (result + 1) / 2
@@ -57,6 +83,9 @@ class Enhance_RestoreFormerPPlus():
 
 
     def Release(self):
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
         del self.model_restoreformerpplus
         self.model_restoreformerpplus = None
         del self.io_binding

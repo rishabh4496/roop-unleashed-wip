@@ -74,14 +74,22 @@ def _prof_report():
     print("=============================================================================\n", flush=True)
 
 
-def _gpu_guard():
+def _gpu_guard(pooled=False):
     """Return the GPU lock only when the active provider needs serialising
-    (TensorRT); otherwise a no-op context so threads run concurrently."""
+    (TensorRT); otherwise a no-op context so threads run concurrently.
+
+    `pooled=True` marks a stage whose processor owns a SessionPool (its own
+    per-thread TensorRT contexts). When pooling is enabled the lease provides
+    safe concurrency, so we must NOT also take the global lock or the stage
+    would re-serialise — return a no-op context instead."""
+    if pooled and session_pool.pooling_enabled():
+        return contextlib.nullcontext()
     needs_lock = any('tensorrt' in str(p).lower() for p in roop.globals.execution_providers)
     return _gpu_lock if needs_lock else contextlib.nullcontext()
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
+from roop import session_pool
 import roop.globals
 
 
@@ -1022,7 +1030,7 @@ class ProcessMgr():
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
                         sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
-                        with _gpu_guard():                                        # GPU inference
+                        with _gpu_guard(pooled=True):                             # GPU inference (pooled)
                             sliced_frame = p.Run(inputface, target_face, sliced_frame)
                         sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
                     swap_result_frames.append(sliced_frame)
@@ -1040,7 +1048,7 @@ class ProcessMgr():
                 with _prof('mask'), _gpu_guard():    # mask model inference is GPU work
                     fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
-                with _prof('enhance'), _gpu_guard():  # enhancer inference is GPU work
+                with _prof('enhance'), _gpu_guard(pooled=True):  # enhancer inference (pooled)
                     enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
