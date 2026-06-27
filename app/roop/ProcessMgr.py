@@ -14,7 +14,7 @@ import roop.vr_util as vr
 from typing import Any, List, Callable
 from roop.typing import Frame, Face
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Thread, Lock
+from threading import Thread, Lock, local
 from queue import Queue
 
 # Serialises GPU inference across worker threads ONLY when required.
@@ -194,7 +194,7 @@ class ProcessMgr():
         # can run multi-threaded on contiguous frame blocks instead of forcing
         # single-thread. Factories rebuild fresh instances per worker block.
         self._parallel_stab = False
-        self._tls = threading.local()
+        self._tls = local()
         self._kps_stab_factory = None
         self._enh_stab_factory = None
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
