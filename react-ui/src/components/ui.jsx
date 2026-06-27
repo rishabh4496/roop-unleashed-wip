@@ -138,13 +138,13 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
             return (
               <div
                 key={i}
-                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
-                style={{ borderColor: selected === i ? (color || '#E94560') : (color ? `${color}66` : 'transparent') }}
+                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 apple-transition apple-spring-active cursor-pointer ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
+                style={{ borderColor: selected === i ? (color || 'var(--accent)') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
               >
                 {vertical ? (
                   <>
-                    <img src={src} alt={`face ${i}`} className="w-10 h-10 rounded object-cover shrink-0" />
+                    <img src={src} alt={`face ${i}`} className="w-10 h-10 rounded-lg object-cover shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-white/90">
                         {person != null ? `Person ${person + 1}` : `Face ${i + 1}`}
@@ -154,7 +154,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                        className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[#E94560] hover:text-white transition-colors flex items-center justify-center"
+                        className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[var(--accent-hover)] hover:text-white transition-colors flex items-center justify-center"
                       >✕</button>
                     )}
                   </>
@@ -162,7 +162,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                   <>
                     <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
                     {person != null && (
-                      <span className="absolute bottom-0.5 left-0.5 px-1 rounded text-[9px] font-semibold leading-tight text-white"
+                      <span className="absolute bottom-1 left-1 px-1.5 rounded-md text-[9px] font-bold leading-tight text-white shadow-sm"
                         style={{ backgroundColor: color }}>P{person + 1}</span>
                     )}
                     {onRemove && (
@@ -170,7 +170,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                         type="button"
                         title="Remove this face"
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                        className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[#E94560] transition-opacity flex items-center justify-center"
+                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] transition-opacity flex items-center justify-center"
                       >✕</button>
                     )}
                   </>

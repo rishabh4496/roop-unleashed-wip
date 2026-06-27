@@ -867,7 +867,7 @@ function InteractivePreview({
         <div className="relative z-10" style={aspectStyle}>
           <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none" 
                onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
-          <div className="absolute inset-0 pointer-events-none">{renderFaces()}</div>
+          <div className="absolute inset-0 pointer-events-none z-30">{renderFaces()}</div>
           
           {/* After Image Overlay with Clip-path */}
           <div className="absolute inset-0 pointer-events-none z-20" 
