@@ -29,6 +29,11 @@ from queue import Queue
 # (switch to the CUDA provider for parallelism).
 _gpu_lock = Lock()
 
+# Per-frame diagnostic pose logging. Computing source yaw/pitch (estimate_pose)
+# every frame purely to print a line is wasted CPU in the hot loop and starves
+# the GPU. Off by default; flip to True only when debugging pose correction.
+_DEBUG_POSE_LOG = False
+
 
 def _gpu_guard():
     """Return the GPU lock only when the active provider needs serialising
@@ -113,6 +118,7 @@ class ProcessMgr():
         self.streamwriter = None
         self.progress_gradio = None
         self.total_frames = 0
+        self._psutil_proc = None       # cached psutil.Process for the progress bar
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.output_to_file = None
@@ -569,7 +575,10 @@ class ProcessMgr():
 
 
     def update_progress(self, progress: Any = None) -> None:
-        process = psutil.Process(os.getpid())
+        # Reuse one Process handle instead of rebuilding it every frame.
+        process = self._psutil_proc
+        if process is None:
+            process = self._psutil_proc = psutil.Process(os.getpid())
         memory_usage = process.memory_info().rss / 1024 / 1024 / 1024
         progress.set_postfix({
             'memory_usage': '{:.2f}'.format(memory_usage).zfill(5) + 'GB',
@@ -906,16 +915,17 @@ class ProcessMgr():
                         src_crop_ss, src_lm68_crop, tgt_lm68_crop,
                         img_size=subsample_size,
                     )
-                    try:
-                        from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
-                        sv, _ = estimate_pose(src_lm68_crop, subsample_size)
-                        sy, sp = decompose_yaw_pitch(sv)
-                        dy = tgt_yaw_deg - _math.degrees(sy)
-                        dp = tgt_pitch_deg - _math.degrees(sp)
-                        if abs(dy) > 15 or abs(dp) > 15:
-                            print(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
-                    except Exception:
-                        pass
+                    if _DEBUG_POSE_LOG:
+                        try:
+                            from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
+                            sv, _ = estimate_pose(src_lm68_crop, subsample_size)
+                            sy, sp = decompose_yaw_pitch(sv)
+                            dy = tgt_yaw_deg - _math.degrees(sy)
+                            dp = tgt_pitch_deg - _math.degrees(sp)
+                            if abs(dy) > 15 or abs(dp) > 15:
+                                print(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
+                        except Exception:
+                            pass
 
                     with _gpu_guard():           # re-detection on the posed crop is GPU work
                         posed_face = _gff(posed_crop)
