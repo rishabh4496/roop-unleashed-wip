@@ -495,10 +495,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
-          <Toggle label="🎯 Stabilize face (video)" info="Smoothing reduces swap wobble (uses In-Memory method; runs single-thread)" checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+          <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble/flicker. Runs at your Max Threads (2-pass), UNLESS 'Reduce enhancer flicker' is also on (that forces single-thread)." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
           {p.stabilize_face && (
             <>
-              <Select label="Stabilization Method" value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
+              <Select label="Smoothing method (One Euro / EMA)" info="One Euro = adaptive (best jitter-vs-lag). EMA = simpler fixed smoothing. Both run multi-threaded." value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
               {p.stabilize_method !== 'ema' && (
                 <>
                   <Slider label="Smoothing (min cutoff)" info="lower = smoother, more lag" min={0.01} max={0.3} step={0.01} value={num(p.stabilize_min_cutoff, 0.05)} onChange={(v) => set('stabilize_min_cutoff', v)} />
@@ -507,7 +507,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
               )}
             </>
           )}
-          <Toggle label="✨ Reduce enhancer flicker (video)" info="temporally blends the enhanced face to kill GFPGAN/GPEN shimmer (uses In-Memory method; single-thread)" checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          <Toggle label="✨ Reduce enhancer flicker (video)" info="Temporally blends the enhanced face to kill GFPGAN/GPEN/swap shimmer. NOTE: this one still forces SINGLE-THREAD (it needs the enhanced output in order), so it's slower." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
           {p.stabilize_enhancer && (
             <Slider label="Flicker reduction strength" info="higher = smoother (more ghosting risk on motion)" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
