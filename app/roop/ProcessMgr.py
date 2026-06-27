@@ -662,6 +662,7 @@ class ProcessMgr():
         finally:
             if self._swap_batcher is not None:
                 self._swap_batcher.stop()
+                self._swap_batcher.report()
                 self._swap_batcher = None
 
         readthread.join()

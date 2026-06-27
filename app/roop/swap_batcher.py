@@ -20,6 +20,7 @@ waiters (they fall back to nothing/raise) instead of hanging forever.
 """
 
 import os
+import time
 import threading
 
 
@@ -50,8 +51,36 @@ class SwapBatcher:
         self._cond = threading.Condition(threading.Lock())
         self._queue = []
         self._stopped = False
+        # ── per-run stats (batch sizes + inference time) ────────────────────
+        self._stats_lock = threading.Lock()
+        self._n_batches = 0
+        self._n_items = 0
+        self._run_time = 0.0
+        self._hist = {}
         self._thread = threading.Thread(target=self._loop, name='swap_batcher', daemon=True)
         self._thread.start()
+
+    def _record(self, size, dt):
+        with self._stats_lock:
+            self._n_batches += 1
+            self._n_items += size
+            self._run_time += dt
+            self._hist[size] = self._hist.get(size, 0) + 1
+
+    def report(self):
+        """Print a one-shot summary of how well swaps coalesced. avg-batch near 1
+        means threads rarely overlap at the swap stage (batching isn't buying
+        much); a high avg-batch with low ms/item means it's saturating well."""
+        with self._stats_lock:
+            nb, ni, rt, hist = self._n_batches, self._n_items, self._run_time, dict(self._hist)
+        if nb == 0:
+            return
+        print("\n==== SWAP BATCHER (ROOP_BATCH_SWAP_XFRAME) ====", flush=True)
+        print(f"  batches: {nb}   items: {ni}   avg batch: {ni / nb:.2f}   max: {max(hist)}", flush=True)
+        print(f"  batch-size histogram: {dict(sorted(hist.items()))}", flush=True)
+        print(f"  swap inference: {rt:.2f}s  "
+              f"({1000 * rt / nb:.2f} ms/batch, {1000 * rt / max(ni, 1):.2f} ms/item)", flush=True)
+        print("===============================================\n", flush=True)
 
     # ── producer side (worker threads) ──────────────────────────────────────
     def submit(self, src, tgt, blob):
@@ -94,7 +123,9 @@ class SwapBatcher:
             return
         try:
             with self._guard_fn():
+                t0 = time.perf_counter()
                 outs = self._run_fn([(r.src, r.tgt, r.blob) for r in batch])
+                self._record(len(batch), time.perf_counter() - t0)
             for r, o in zip(batch, outs):
                 r.out = o
                 r.ev.set()
@@ -106,7 +137,9 @@ class SwapBatcher:
     def _run_inline(self, req):
         try:
             with self._guard_fn():
+                t0 = time.perf_counter()
                 req.out = self._run_fn([(req.src, req.tgt, req.blob)])[0]
+                self._record(1, time.perf_counter() - t0)
         except Exception as e:
             req.err = e
         req.ev.set()
