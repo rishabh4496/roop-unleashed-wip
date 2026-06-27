@@ -55,6 +55,35 @@ SWAP_MODELS = {
 }
 
 
+def _swap_providers(providers):
+    """Return a copy of `providers` with the TensorRT provider forced to FP32.
+
+    inswapper_128 (and the other emap swappers) have layers that overflow in
+    FP16, producing rainbow/smudge artifacts when the global precision mode is
+    'mixed'/'fp16'. The swapper is tiny (128-256px), so full precision costs
+    almost nothing while fixing the corruption; detection and enhancers stay on
+    FP16 where they're stable and fast. Opt back into an FP16 swapper with
+    ROOP_SWAP_FP16=1 (not recommended)."""
+    if os.environ.get('ROOP_SWAP_FP16', '0') == '1':
+        return providers
+    patched = []
+    for p in providers:
+        if isinstance(p, (tuple, list)) and len(p) == 2 and 'tensorrt' in str(p[0]).lower():
+            name, opts = p[0], dict(p[1])
+            opts['trt_fp16_enable'] = False
+            # Separate engine cache so the FP32 swap engine never collides with
+            # the FP16 engines TensorRT builds for the other models.
+            cache = opts.get('trt_engine_cache_path')
+            if cache:
+                fp32_cache = cache + '_swap_fp32'
+                os.makedirs(fp32_cache, exist_ok=True)
+                opts['trt_engine_cache_path'] = fp32_cache
+            patched.append((name, opts))
+        else:
+            patched.append(p)
+    return patched
+
+
 class FaceSwapInsightFace():
     processorname = 'faceswap'
     type = 'swap'
@@ -100,11 +129,13 @@ class FaceSwapInsightFace():
 
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
 
+            swap_providers = _swap_providers(roop.globals.execution_providers)
+
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
                 sess_options.enable_cpu_mem_arena = False
                 return onnxruntime.InferenceSession(
-                    model_path, sess_options, providers=roop.globals.execution_providers)
+                    model_path, sess_options, providers=swap_providers)
 
             self.model_swap_insightface = _build()
 
