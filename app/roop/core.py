@@ -108,12 +108,27 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     total_vram = torch.cuda.get_device_properties(roop.globals.cuda_device_id).total_memory
                 except Exception:
                     total_vram = 0
-                try:
-                    ws_frac = float(os.environ.get('ROOP_TRT_WORKSPACE_FRACTION', '0.8'))
-                except ValueError:
-                    ws_frac = 0.8
+                total_gb = total_vram / (1024 ** 3) if total_vram else 0
+                env_frac = os.environ.get('ROOP_TRT_WORKSPACE_FRACTION')
+                if env_frac is not None:
+                    try:
+                        ws_frac = float(env_frac)
+                    except ValueError:
+                        ws_frac = 0.8
+                else:
+                    # VRAM-aware default: leave MORE headroom on smaller GPUs so the
+                    # FP32 swapper + multi-context pool can't exhaust the card during
+                    # engine builds. Big cards keep the larger workspace.
+                    if total_gb >= 10:
+                        ws_frac = 0.8
+                    elif total_gb >= 7:
+                        ws_frac = 0.6
+                    else:
+                        ws_frac = 0.5
                 ws_frac = max(0.1, min(0.95, ws_frac))
                 workspace_size = int(total_vram * ws_frac) if total_vram else 0
+                print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace fraction {ws_frac} "
+                      f"({workspace_size / (1024**3):.1f}GB), partition_iters from env/default")
                 try:
                     partition_iters = int(os.environ.get('ROOP_TRT_PARTITION_ITERATIONS', '2000'))
                 except ValueError:
