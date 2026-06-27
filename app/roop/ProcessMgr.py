@@ -751,7 +751,7 @@ class ProcessMgr():
         self._stab_active = True
         cap = None
 
-        def _frames():
+        def _gen_frames():
             nonlocal cap
             if awebp_frames is not None:
                 subset = awebp_frames[frame_start:frame_end] if frame_end > frame_start else awebp_frames[frame_start:]
@@ -769,10 +769,12 @@ class ProcessMgr():
                     yield fr
                     produced += 1
 
-        gen = _frames()
-        carry = []          # last WU frames of the previous chunk (warm-up for block 0)
-        chunk_start = 0     # global index (0-based from frame_start) of this chunk's first frame
-        try:
+        gen = _gen_frames()
+        carry = []
+        chunk_start = 0
+        prefetch_q = Queue(1)
+
+        def _reader():
             while roop.globals.processing:
                 chunk = []
                 for fr in gen:
@@ -781,59 +783,59 @@ class ProcessMgr():
                         break
                 if not chunk:
                     break
+                prefetch_q.put(chunk)
+                if not roop.globals.processing:
+                    break
+            prefetch_q.put(None)  # always send sentinel so consumer unblocks
 
-                combined = carry + chunk          # warm-up context precedes the chunk
-                base = len(carry)                 # combined index where the chunk starts
-                base_global = chunk_start - base  # global index of combined[0]
+        rt = Thread(target=_reader, name='stab_reader', daemon=True)
+        rt.start()
+
+
+        try:
+            while True:
+                chunk = prefetch_q.get()
+                if chunk is None:
+                    break
+                
+                combined = carry + chunk
+                base = len(carry)
+                base_global = chunk_start - base
                 n = max(1, min(threads, len(chunk)))
                 results = {}
 
-                def _worker(a, b):                # chunk-local range [a, b)
+                def _worker(a, b):
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
-                    ca = base + a                 # combined index of the block start
-                    for ci in range(max(0, ca - WU), ca):   # warm-up: prime filter, discard
-                        if not roop.globals.processing:
-                            return
+                    ca = base + a
+                    for ci in range(max(0, ca - WU), ca):
+                        if not roop.globals.processing: return
                         self._tls.t = base_global + ci
-                        try:
-                            self.process_frame(combined[ci], frame_idx=None)
-                        except Exception:
-                            pass
+                        try: self.process_frame(combined[ci], frame_idx=None)
+                        except Exception: pass
                     for ci in range(ca, base + b):
-                        if not roop.globals.processing:
-                            return
+                        if not roop.globals.processing: return
                         gi = base_global + ci
                         self._tls.t = gi
-                        try:
-                            out = self.process_frame(combined[ci], frame_idx=None)
-                        except Exception:
-                            out = combined[ci]
+                        try: out = self.process_frame(combined[ci], frame_idx=None)
+                        except Exception: out = combined[ci]
                         results[gi] = out if out is not None else combined[ci]
                         progress_cb()
 
                 step = len(chunk) / n
-                workers = []
-                for i in range(n):
-                    a = int(round(i * step))
-                    b = len(chunk) if i == n - 1 else int(round((i + 1) * step))
-                    w = Thread(target=_worker, args=(a, b), name=f'stab_proc{i}')
-                    w.start()
-                    workers.append(w)
-                for w in workers:
-                    w.join()
+                workers = [Thread(target=_worker, args=(int(round(i * step)), len(chunk) if i == n - 1 else int(round((i + 1) * step)))) for i in range(n)]
+                for w in workers: w.start()
+                for w in workers: w.join()
 
                 for gi in range(chunk_start, chunk_start + len(chunk)):
                     fr = results.get(gi)
-                    if fr is None:
-                        continue
-                    if self.output_to_file:
-                        self.videowriter.write_frame(fr)
-                    if self.output_to_cam:
-                        self.streamwriter.WriteToStream(fr)
+                    if fr is None: continue
+                    if self.output_to_file: self.videowriter.write_frame(fr)
+                    if self.output_to_cam: self.streamwriter.WriteToStream(fr)
 
                 carry = combined[-WU:] if WU > 0 else []
                 chunk_start += len(chunk)
+            rt.join()
         finally:
             self._parallel_stab = False
             for _a in ('kps', 'enh', 't'):
