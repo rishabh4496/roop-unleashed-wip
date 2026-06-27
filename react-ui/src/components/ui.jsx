@@ -1,14 +1,14 @@
 import React from 'react';
 
 export const Card = ({ children, className = '' }) => (
-  <div className={`rounded-xl bg-white/[0.04] border border-white/10 backdrop-blur-md ${className}`}>
+  <div className={`rounded-2xl glass-panel apple-transition ${className}`}>
     {children}
   </div>
 );
 
 export const Section = ({ title, children, className = '' }) => (
-  <Card className={`p-5 ${className}`}>
-    {title && <h3 className="text-sm font-semibold uppercase tracking-wider text-white/50 mb-4">{title}</h3>}
+  <Card className={`p-5 shadow-sm hover:shadow-md ${className}`}>
+    {title && <h3 className="text-xs font-bold uppercase tracking-widest text-white/40 mb-4">{title}</h3>}
     <div className="space-y-4">{children}</div>
   </Card>
 );
@@ -16,11 +16,11 @@ export const Section = ({ title, children, className = '' }) => (
 export const Field = ({ label, info, children }) => (
   <label className="block">
     <div className="flex items-baseline justify-between mb-1.5">
-      <span className="text-sm text-white/80">{label}</span>
+      <span className="text-xs font-medium text-white/70">{label}</span>
       {info && (
         <div className="relative group inline-flex items-center">
-          <span className="text-[10px] text-white/30 hover:text-white/70 cursor-help transition-colors ml-2 bg-white/5 rounded-full w-4 h-4 flex items-center justify-center font-bold">?</span>
-          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-2.5 rounded-lg bg-black/90 backdrop-blur border border-white/10 shadow-xl text-xs text-white/80 whitespace-normal leading-relaxed pointer-events-none text-right">
+          <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
+          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-right">
             {info}
           </div>
         </div>
@@ -35,10 +35,10 @@ export const Select = ({ label, info, value, onChange, options = [] }) => (
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm focus:outline-none focus:border-[#E94560] transition-colors"
+      className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none cursor-pointer"
     >
       {options.map((o) => (
-        <option key={o} value={o} className="bg-[#16213E]">{o}</option>
+        <option key={o} value={o} className="bg-[#121420]">{o}</option>
       ))}
     </select>
   </Field>
@@ -52,9 +52,9 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
         min={min} max={max} step={step}
         value={value ?? 0}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="flex-1 accent-[#E94560] h-1.5"
+        className="flex-1 accent-[#E94560] h-1.5 apple-transition"
       />
-      <span className="w-14 text-right text-sm tabular-nums text-white/70">{Number(value ?? 0).toFixed(step < 1 ? 2 : 0)}</span>
+      <span className="w-12 text-right text-xs font-semibold tabular-nums text-white/60">{Number(value ?? 0).toFixed(step < 1 ? 2 : 0)}</span>
     </div>
   </Field>
 );
@@ -65,15 +65,15 @@ export const Toggle = ({ label, info, checked, onChange }) => (
       <span className="text-sm text-white/80">{label}</span>
       {info && (
         <div className="relative group inline-flex items-center">
-          <span className="text-[10px] text-white/30 hover:text-white/70 cursor-help transition-colors bg-white/5 rounded-full w-4 h-4 flex items-center justify-center font-bold">?</span>
-          <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-2.5 rounded-lg bg-black/90 backdrop-blur border border-white/10 shadow-xl text-xs text-white/80 whitespace-normal leading-relaxed pointer-events-none text-left">
+          <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
+          <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left">
             {info}
           </div>
         </div>
       )}
     </div>
-    <div className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ml-3 ${checked ? 'bg-[#E94560]' : 'bg-white/15'}`}>
-      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-4' : ''}`} />
+    <div className={`relative shrink-0 w-10.5 h-6 rounded-full transition-all duration-300 ml-3 ${checked ? 'bg-[#E94560] shadow-[0_0_10px_rgba(233,69,96,0.3)]' : 'bg-white/10'}`}>
+      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-all duration-300 cubic-bezier(0.16, 1, 0.3, 1) ${checked ? 'translate-x-4.5' : ''}`} />
     </div>
     <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
   </label>
@@ -86,17 +86,17 @@ export const TextInput = ({ label, info, value, onChange, placeholder, type = 't
       value={value ?? ''}
       placeholder={placeholder}
       onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
-      className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm focus:outline-none focus:border-[#E94560] transition-colors"
+      className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none"
     />
   </Field>
 );
 
 export const Button = ({ children, onClick, variant = 'primary', disabled, className = '', size = 'md' }) => {
   const variants = {
-    primary: 'bg-[#E94560] hover:bg-[#d63450] text-white shadow-[0_4px_15px_rgba(233,69,96,0.35)]',
-    secondary: 'bg-white/10 hover:bg-white/15 text-white border border-white/10',
-    stop: 'bg-transparent hover:bg-red-500/15 text-red-400 border border-red-500/40',
-    ghost: 'bg-transparent hover:bg-white/10 text-white/70',
+    primary: 'bg-[#E94560] hover:bg-[#eb5068] text-white shadow-[0_4px_20px_rgba(233,69,96,0.3)] hover:shadow-[0_6px_25px_rgba(233,69,96,0.45)]',
+    secondary: 'bg-white/10 hover:bg-white/15 text-white border border-white/5 backdrop-blur-md',
+    stop: 'bg-transparent hover:bg-red-500/10 text-red-400 border border-red-500/30 hover:border-red-500/60',
+    ghost: 'bg-transparent hover:bg-white/5 text-white/60 hover:text-white',
   };
   const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm', lg: 'px-6 py-3.5 text-base' };
   return (
@@ -104,7 +104,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg font-semibold transition-all active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`rounded-xl font-bold apple-transition apple-spring-active disabled:opacity-30 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
     </button>

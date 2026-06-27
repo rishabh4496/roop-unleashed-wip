@@ -6,24 +6,42 @@
     color: white;
     min-height: 100vh;
     background-attachment: fixed;
-    background: linear-gradient(135deg, #1A1A2E, #16213E, #0F3460, #E94560);
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(135deg, #0f1016, #161824, #121c2c, #260f1c);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
-@keyframes fadein {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+/* Custom smooth transitions matching Apple-style spring animations */
+.apple-transition {
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* slim scrollbars to match the dark theme */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+.apple-spring-active:active {
+  transform: scale(0.96);
+  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Slim modern scrollbars to match macOS */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 99px;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 
 @keyframes float-up {
   0% { transform: translateY(20px) scale(0.5); opacity: 0; }
-  20% { opacity: 1; transform: translateY(0px) scale(1.2); }
+  20% { opacity: 1; transform: translateY(0px) scale(1.1); }
   80% { opacity: 1; transform: translateY(-40px) scale(1); }
   100% { transform: translateY(-60px) scale(0.8); opacity: 0; }
 }
@@ -33,8 +51,8 @@
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 15px rgba(233, 69, 96, 0.2); border-color: rgba(255, 255, 255, 0.1); }
-  50% { box-shadow: 0 0 25px rgba(233, 69, 96, 0.5); border-color: rgba(233, 69, 96, 0.4); }
+  0%, 100% { box-shadow: 0 0 15px rgba(233, 69, 96, 0.15); border-color: rgba(255, 255, 255, 0.08); }
+  50% { box-shadow: 0 0 25px rgba(233, 69, 96, 0.4); border-color: rgba(233, 69, 96, 0.35); }
 }
 
 .preview-glow {
@@ -47,18 +65,18 @@
 }
 
 .progress-bar-animated {
-  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.1) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.1) 50%, rgba(255, 255, 255, 0.1) 75%, transparent 75%, transparent);
   background-size: 1rem 1rem;
   animation: progress-stripes 1s linear infinite;
 }
 
 @keyframes slide-up {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .animate-slide-up {
-  animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes tooltip-fade {
@@ -68,5 +86,50 @@
 
 .group-hover\:animate-tooltip:hover .tooltip-content {
   display: block;
-  animation: tooltip-fade 0.15s ease-out forwards;
+  animation: tooltip-fade 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* Glassmorphism improvements */
+.glass-panel {
+  background: rgba(22, 24, 36, 0.7);
+  backdrop-filter: blur(20px) saturate(190%);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-input {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-input:focus {
+  border-color: rgba(233, 69, 96, 0.6);
+  background: rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.15);
+}
+
+/* Custom Webkit range input styling to match Apple Sliders */
+input[type="range"] {
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+  outline: none;
+  transition: background 0.3s;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 99px;
+  background: white;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  cursor: pointer;
+  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+input[type="range"]::-webkit-slider-thumb:active {
+  transform: scale(1.2);
+}
+
