@@ -502,9 +502,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             <div>
               <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
                 groups={targetGroups} vertical={true}
-                empty={targets.length === 0 ? 'No target loaded' : 'Analyzing target faces…'} />
+                onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
+                empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
               {targetFaces.length > 0 && (
                 <div className="mt-3 space-y-2">
+                  <Button size="sm" variant="primary" className="w-full justify-center" onClick={addAngle}>
+                    ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
+                  </Button>
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
                     <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
