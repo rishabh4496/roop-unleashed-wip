@@ -93,6 +93,7 @@ from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
 from roop import session_pool
 from roop import thread_tuner
+from roop import swap_batcher
 import roop.globals
 
 
@@ -186,6 +187,9 @@ class ProcessMgr():
         # {frame_idx: [(raw_centroid(2,), smoothed_kps(5,2)), ...]}
         self._precomputed_kps = None
         self._precomputed_mode = False
+        # Cross-frame swap batcher (Phase 2): coalesces concurrent swap calls
+        # from worker threads into one batched inference. Set per video run.
+        self._swap_batcher = None
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -640,15 +644,25 @@ class ProcessMgr():
         writethread = Thread(target=self.write_frames_thread)
         writethread.start()
 
+        # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
+        # the worker threads into one batched inference. Needs >1 thread and the
+        # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
+        self._swap_batcher = self._make_swap_batcher(threads)
+
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-        with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-            with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
-                futures = []
-                for threadindex in range(threads):
-                    future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
-                    futures.append(future)
-                for future in as_completed(futures):
-                    future.result()
+        try:
+            with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+                with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
+                    futures = []
+                    for threadindex in range(threads):
+                        future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
+                        futures.append(future)
+                    for future in as_completed(futures):
+                        future.result()
+        finally:
+            if self._swap_batcher is not None:
+                self._swap_batcher.stop()
+                self._swap_batcher = None
 
         readthread.join()
         writethread.join()
@@ -670,6 +684,32 @@ class ProcessMgr():
 
     def _enhancer_active(self) -> bool:
         return any('enhance' in type(p).__name__.lower() for p in self.processors)
+
+
+    def _make_swap_batcher(self, threads):
+        """Build the cross-frame swap batcher when opted in. Requires >1 thread,
+        a swapper exposing RunBatchMulti, and the batch-dynamic session
+        (ROOP_BATCH_SWAP). Returns None otherwise (→ normal per-call swap)."""
+        if not swap_batcher.xframe_enabled() or threads <= 1:
+            return None
+        if not _BATCH_SWAP:
+            print("[BatchSwap] ROOP_BATCH_SWAP_XFRAME needs ROOP_BATCH_SWAP=1 "
+                  "(batch-dynamic session) — skipping cross-frame batching.")
+            return None
+        swap_p = next((p for p in self.processors if getattr(p, 'type', None) == 'swap'), None)
+        if swap_p is None or not hasattr(swap_p, 'RunBatchMulti'):
+            return None
+        pooled = getattr(swap_p, 'pool', None) is not None
+        try:
+            max_b = int(os.environ.get('ROOP_BATCH_SWAP_MAX', str(threads)))
+        except ValueError:
+            max_b = threads
+        max_b = max(2, min(max_b, threads))
+        b = swap_batcher.SwapBatcher(
+            swap_p.RunBatchMulti, lambda: _gpu_guard(pooled=pooled),
+            max_batch=max_b, max_wait_ms=6.0)
+        print(f"[BatchSwap] cross-frame batching ON (max_batch={max_b}, threads={threads}).")
+        return b
 
 
     def _sample_calibration_frames(self, source_video, awebp_frames, frame_start, n):
@@ -1222,7 +1262,18 @@ class ProcessMgr():
                 # threads would share a single non-thread-safe TensorRT context
                 # and corrupt/hang the CUDA context.
                 _pooled = getattr(p, 'pool', None) is not None
-                if _BATCH_SWAP and len(subsample_frames) > 1 and hasattr(p, 'RunBatch'):
+                if self._swap_batcher is not None and hasattr(p, 'RunBatchMulti'):
+                    # Cross-frame batching: submit every tile to the batcher (which
+                    # coalesces them with crops from other worker threads), then
+                    # collect. The batcher thread holds the GPU guard.
+                    tiles = list(subsample_frames)
+                    for _ in range(0, self.options.num_swap_steps):
+                        handles = [self._swap_batcher.submit(inputface, target_face,
+                                   self.prepare_crop_frame(t, p)) for t in tiles]
+                        tiles = [self.normalize_swap_frame(self._swap_batcher.wait(h), p)
+                                 for h in handles]
+                    swap_result_frames = tiles
+                elif _BATCH_SWAP and len(subsample_frames) > 1 and hasattr(p, 'RunBatch'):
                     # Batch the pixel-boost tiles through one inference call.
                     tiles = list(subsample_frames)
                     for _ in range(0, self.options.num_swap_steps):

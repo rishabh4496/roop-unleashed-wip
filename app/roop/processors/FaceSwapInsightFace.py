@@ -238,6 +238,29 @@ class FaceSwapInsightFace():
         out = ort_outs[0]   # [B,3,H,W]
         return [out[i] for i in range(out.shape[0])]
 
+    def RunBatchMulti(self, requests: list) -> list:
+        """Like RunBatch but each crop carries its OWN source identity (for
+        cross-frame coalescing where different faces batch together).
+        requests = list of (source_face, target_face, blob[1,3,H,W]); the
+        target_face is unused by the swap net. Returns a list of [3,H,W]."""
+        latents = []
+        for src, _tgt, _blob in requests:
+            lat = src.normed_embedding.reshape((1, -1)).astype(np.float32)
+            if self.emap is not None:
+                lat = np.dot(lat, self.emap)
+                lat /= np.linalg.norm(lat)
+            latents.append(lat)
+        latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
+        img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
+        feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
+        if self.pool is not None:
+            with self.pool.lease() as sess:
+                ort_outs = sess.run(None, feed)
+        else:
+            ort_outs = self.model_swap_insightface.run(None, feed)
+        out = ort_outs[0]
+        return [out[i] for i in range(out.shape[0])]
+
     def Release(self):
         if self.pool is not None:
             self.pool.release()
