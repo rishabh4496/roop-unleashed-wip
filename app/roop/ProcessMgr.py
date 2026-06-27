@@ -189,6 +189,14 @@ class ProcessMgr():
         # Cross-frame swap batcher (Phase 2): coalesces concurrent swap calls
         # from worker threads into one batched inference. Set per video run.
         self._swap_batcher = None
+        # Parallel stabilization (opt-in): per-thread stabilizer instances via
+        # thread-local storage so the (order-dependent) enhancer/kps stabilizers
+        # can run multi-threaded on contiguous frame blocks instead of forcing
+        # single-thread. Factories rebuild fresh instances per worker block.
+        self._parallel_stab = False
+        self._tls = threading.local()
+        self._kps_stab_factory = None
+        self._enh_stab_factory = None
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -219,24 +227,30 @@ class ProcessMgr():
 
         # Build the One Euro stabilizers when requested. They only take effect in
         # the sequential video path (run_batch_inmem sets _stab_active).
+        # Factories rebuild fresh, independent stabilizer instances (used to give
+        # each worker its own state in the parallel-stabilization path).
         if getattr(options, 'stabilize_face', False):
             method = getattr(options, 'stabilize_method', 'one_euro')
             if method == 'ema':
                 from roop.one_euro import EmaKpsStabilizer
-                self.kps_stabilizer = EmaKpsStabilizer(alpha=0.3)
+                self._kps_stab_factory = lambda: EmaKpsStabilizer(alpha=0.3)
             else:
                 from roop.one_euro import KpsStabilizer
-                self.kps_stabilizer = KpsStabilizer(
-                    min_cutoff=getattr(options, 'stabilize_min_cutoff', 0.05),
-                    beta=getattr(options, 'stabilize_beta', 0.02))
+                _mc = getattr(options, 'stabilize_min_cutoff', 0.05)
+                _bt = getattr(options, 'stabilize_beta', 0.02)
+                self._kps_stab_factory = lambda: KpsStabilizer(min_cutoff=_mc, beta=_bt)
+            self.kps_stabilizer = self._kps_stab_factory()
         else:
             self.kps_stabilizer = None
+            self._kps_stab_factory = None
         if getattr(options, 'stabilize_enhancer', False):
             from roop.one_euro import EnhancerStabilizer
-            self.enh_stabilizer = EnhancerStabilizer(
-                strength=getattr(options, 'stabilize_enhancer_strength', 0.5))
+            _st = getattr(options, 'stabilize_enhancer_strength', 0.5)
+            self._enh_stab_factory = lambda: EnhancerStabilizer(strength=_st)
+            self.enh_stabilizer = self._enh_stab_factory()
         else:
             self.enh_stabilizer = None
+            self._enh_stab_factory = None
         self._stab_active = False
         self._stab_t = 0
 
@@ -548,14 +562,20 @@ class ProcessMgr():
         #  - enhancer stabilization smooths the enhanced OUTPUT, which only exists
         #    during the swap, so it can't be precomputed → fall back to the
         #    original single-thread sequential path.
+        #  - parallel stabilization (opt-in ROOP_STAB_PARALLEL): process contiguous
+        #    frame blocks per thread, each with its own stabilizer + warm-up, so
+        #    BOTH kps and enhancer stabilization run multi-threaded.
         self._precomputed_mode = False
         self._precomputed_kps = None
         self._stab_active = False
+        self._parallel_stab = False
         _want_kps_stab = self.kps_stabilizer is not None
         _want_enh_stab = self.enh_stabilizer is not None
+        _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
+        use_parallel_stab = (_want_kps_stab or _want_enh_stab) and threads > 1 and _parallel_ok
         _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
-        use_2pass = _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
-        if (_want_kps_stab or _want_enh_stab) and not use_2pass:
+        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
+        if (_want_kps_stab or _want_enh_stab) and not use_2pass and not use_parallel_stab:
             if threads != 1:
                 print("[Stabilize] Forcing single thread for temporal smoothing.")
             threads = 1
@@ -629,38 +649,45 @@ class ProcessMgr():
         if self.output_to_cam:
             self.streamwriter = StreamWriter((width, height), int(fps))
 
-        if is_awebp:
-            readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
-        else:
-            readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
-        readthread.start()
-
-        writethread = Thread(target=self.write_frames_thread)
-        writethread.start()
-
-        # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
-        # the worker threads into one batched inference. Needs >1 thread and the
-        # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
-        self._swap_batcher = self._make_swap_batcher(threads)
-
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-        try:
+        if use_parallel_stab:
+            print(f"[Stabilize] parallel stabilization ON (threads={threads}, warm-up overlap) — "
+                  f"both kps and enhancer smoothing run multi-threaded.")
             with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-                with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
-                    futures = []
-                    for threadindex in range(threads):
-                        future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
-                        futures.append(future)
-                    for future in as_completed(futures):
-                        future.result()
-        finally:
-            if self._swap_batcher is not None:
-                self._swap_batcher.stop()
-                self._swap_batcher.report()
-                self._swap_batcher = None
+                self._run_stab_parallel(source_video, awebp_frames, frame_start, frame_end,
+                                        frame_count, threads, lambda: self.update_progress(progress))
+        else:
+            if is_awebp:
+                readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
+            else:
+                readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
+            readthread.start()
 
-        readthread.join()
-        writethread.join()
+            writethread = Thread(target=self.write_frames_thread)
+            writethread.start()
+
+            # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
+            # the worker threads into one batched inference. Needs >1 thread and the
+            # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
+            self._swap_batcher = self._make_swap_batcher(threads)
+
+            try:
+                with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+                    with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
+                        futures = []
+                        for threadindex in range(threads):
+                            future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
+                            futures.append(future)
+                        for future in as_completed(futures):
+                            future.result()
+            finally:
+                if self._swap_batcher is not None:
+                    self._swap_batcher.stop()
+                    self._swap_batcher.report()
+                    self._swap_batcher = None
+
+            readthread.join()
+            writethread.join()
         if cap is not None:
             cap.release()
         if self.output_to_file:
@@ -701,6 +728,117 @@ class ProcessMgr():
             max_batch=max_b, max_wait_ms=6.0)
         print(f"[BatchSwap] cross-frame batching ON (max_batch={max_b}, threads={threads}).")
         return b
+
+
+    def _run_stab_parallel(self, source_video, awebp_frames, frame_start, frame_end,
+                           frame_count, threads, progress_cb):
+        """Parallel stabilization (opt-in). Decodes the clip in chunks sequentially
+        into memory (no seek → HEVC-safe), splits each chunk into contiguous
+        per-thread sub-blocks, and runs each sub-block IN ORDER with its own
+        stabilizer instances. A warm-up overlap primes each block's filter from
+        the frames just before it, so block boundaries are seam-free. Frames are
+        written in order through the already-open videowriter. Deadlock-free
+        fork-join (plain thread start/join, no queues)."""
+        WU = max(0, int(os.environ.get('ROOP_STAB_WARMUP', '12') or '12'))
+        try:
+            CHUNK = int(os.environ.get('ROOP_STAB_CHUNK', '0') or '0') or max(threads * 24, 192)
+        except ValueError:
+            CHUNK = max(threads * 24, 192)
+
+        self._parallel_stab = True
+        self._stab_active = True
+        cap = None
+
+        def _frames():
+            nonlocal cap
+            if awebp_frames is not None:
+                subset = awebp_frames[frame_start:frame_end] if frame_end > frame_start else awebp_frames[frame_start:]
+                for fr in subset:
+                    yield fr
+            else:
+                cap = cv2.VideoCapture(source_video)
+                if frame_start > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
+                produced = 0
+                while produced < frame_count:
+                    ret, fr = cap.read()
+                    if not ret or fr is None:
+                        break
+                    yield fr
+                    produced += 1
+
+        gen = _frames()
+        carry = []          # last WU frames of the previous chunk (warm-up for block 0)
+        chunk_start = 0     # global index (0-based from frame_start) of this chunk's first frame
+        try:
+            while roop.globals.processing:
+                chunk = []
+                for fr in gen:
+                    chunk.append(fr)
+                    if len(chunk) >= CHUNK:
+                        break
+                if not chunk:
+                    break
+
+                combined = carry + chunk          # warm-up context precedes the chunk
+                base = len(carry)                 # combined index where the chunk starts
+                base_global = chunk_start - base  # global index of combined[0]
+                n = max(1, min(threads, len(chunk)))
+                results = {}
+
+                def _worker(a, b):                # chunk-local range [a, b)
+                    self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
+                    self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
+                    ca = base + a                 # combined index of the block start
+                    for ci in range(max(0, ca - WU), ca):   # warm-up: prime filter, discard
+                        if not roop.globals.processing:
+                            return
+                        self._tls.t = base_global + ci
+                        try:
+                            self.process_frame(combined[ci], frame_idx=None)
+                        except Exception:
+                            pass
+                    for ci in range(ca, base + b):
+                        if not roop.globals.processing:
+                            return
+                        gi = base_global + ci
+                        self._tls.t = gi
+                        try:
+                            out = self.process_frame(combined[ci], frame_idx=None)
+                        except Exception:
+                            out = combined[ci]
+                        results[gi] = out if out is not None else combined[ci]
+                        progress_cb()
+
+                step = len(chunk) / n
+                workers = []
+                for i in range(n):
+                    a = int(round(i * step))
+                    b = len(chunk) if i == n - 1 else int(round((i + 1) * step))
+                    w = Thread(target=_worker, args=(a, b), name=f'stab_proc{i}')
+                    w.start()
+                    workers.append(w)
+                for w in workers:
+                    w.join()
+
+                for gi in range(chunk_start, chunk_start + len(chunk)):
+                    fr = results.get(gi)
+                    if fr is None:
+                        continue
+                    if self.output_to_file:
+                        self.videowriter.write_frame(fr)
+                    if self.output_to_cam:
+                        self.streamwriter.WriteToStream(fr)
+
+                carry = combined[-WU:] if WU > 0 else []
+                chunk_start += len(chunk)
+        finally:
+            self._parallel_stab = False
+            for _a in ('kps', 'enh', 't'):
+                if hasattr(self._tls, _a):
+                    delattr(self._tls, _a)
+            if cap is not None:
+                cap.release()
 
 
     def update_progress(self, progress: Any = None) -> None:
@@ -829,21 +967,38 @@ class ProcessMgr():
         return best if best is not None else kps
 
 
+    # ── Stabilizer accessors: in the parallel path each worker has its own
+    #    instances + frame-time via thread-local storage; otherwise the shared
+    #    single-thread instances are used. ─────────────────────────────────────
+    def _cur_kps_stab(self):
+        return getattr(self._tls, 'kps', None) if self._parallel_stab else self.kps_stabilizer
+
+    def _cur_enh_stab(self):
+        return getattr(self._tls, 'enh', None) if self._parallel_stab else self.enh_stabilizer
+
+    def _cur_stab_t(self):
+        return getattr(self._tls, 't', 0) if self._parallel_stab else self._stab_t
+
     def _apply_stab(self, face):
         """Replace a face's 5-point kps with the temporally smoothed version."""
+        ks = self._cur_kps_stab()
+        if ks is None:
+            return
         try:
             if face is not None and getattr(face, 'kps', None) is not None:
-                face.kps = self.kps_stabilizer.apply(face.kps, self._stab_t)
+                face.kps = ks.apply(face.kps, self._cur_stab_t())
         except Exception:
             pass
 
     def swap_faces(self, frame, temp_frame, stabilize=False, frame_idx=None):
         num_faces_found = 0
 
-        # Tick once per frame if any stabilizer is active (single-threaded path).
-        if stabilize and self._stab_active and (self.kps_stabilizer is not None or self.enh_stabilizer is not None):
+        # Tick once per frame if any stabilizer is active. Parallel path uses a
+        # per-thread frame index (TLS) instead of this shared counter.
+        if (stabilize and self._stab_active and not self._parallel_stab
+                and (self.kps_stabilizer is not None or self.enh_stabilizer is not None)):
             self._stab_t += 1
-        do_kps_stab = stabilize and self._stab_active and self.kps_stabilizer is not None
+        do_kps_stab = stabilize and self._stab_active and self._cur_kps_stab() is not None
         # 2-pass parallel stabilization: replace kps with the value precomputed
         # for this frame in pass 1 instead of running the (stateful) stabilizer.
         precomp = stabilize and self._precomputed_mode and frame_idx is not None
@@ -1241,9 +1396,10 @@ class ProcessMgr():
         # motion-adaptive blend across frames removes enhancer texture shimmer
         # without ghosting on movement. Skipped when autorotate rebound the face
         # (rotated crop space is inconsistent frame-to-frame).
-        if (self._stab_active and self.enh_stabilizer is not None
+        _es = self._cur_enh_stab()
+        if (self._stab_active and _es is not None
                 and enhanced_frame is not None and rotation_action is None):
-            enhanced_frame = self.enh_stabilizer.apply(enhanced_frame, target_face.kps, self._stab_t)
+            enhanced_frame = _es.apply(enhanced_frame, target_face.kps, self._cur_stab_t())
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
