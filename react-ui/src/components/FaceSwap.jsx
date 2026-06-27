@@ -103,6 +103,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
         num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
+        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
         swap_model: p.swap_model,
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
@@ -150,6 +151,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
+    uf: p.use_frontalization, fth: p.frontalization_threshold,
   });
   useEffect(() => {
     if (targets.length === 0 || progress.processing) return;
@@ -486,6 +488,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Slider label="Mouth mask edge blend" min={0} max={200} step={1} value={num(p.mouth_mask_blend, 10)} onChange={(v) => set('mouth_mask_blend', v)} />
           <Toggle label="🧊 3D source pose matching" info="experimental — improves angled swaps" checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
           <Toggle label="🎯 Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
+          <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle. Enable this if side-on faces look wrong." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
+          {p.use_frontalization && (
+            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more (more side faces); higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 25)} onChange={(v) => set('frontalization_threshold', v)} />
+          )}
         </Section>
       </div>
 
