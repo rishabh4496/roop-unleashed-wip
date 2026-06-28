@@ -17,9 +17,15 @@ module.exports = {
       }
     },
     {
+      method: "fs.rm",
+      params: {
+        path: "app/models/trt_cache"
+      }
+    },
+    {
       method: "log",
       params: {
-        text: "Done! TensorRT is now installed.\nRestart the app (Stop → Start) and you should see:\n  Using provider [('TensorrtExecutionProvider', ...)] - Device:cuda"
+        text: "Done! TensorRT is now installed and cache cleared.\nRestart the app (Stop → Start) and you should see:\n  Using provider [('TensorrtExecutionProvider', ...)] - Device:cuda"
       }
     }
   ]
