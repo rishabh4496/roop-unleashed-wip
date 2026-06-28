@@ -257,7 +257,18 @@ class ProcessMgr():
         self._stab_active = False
         self._stab_t = 0
 
-        roop.globals.g_desired_face_analysis = ["landmark_3d_68", "landmark_2d_106", "detection", "recognition"]
+        # Only request the analysis sub-models actually needed → faster detection.
+        # landmark_3d_68 (the 1k3d68 model, run per face on every frame) is consumed
+        # ONLY by the optional pose features (3D recon / source bank / frontalization),
+        # all of which are off by default and guard their use with hasattr(). Skipping
+        # it when they're all off removes one per-face model inference every frame with
+        # no quality change. It is re-added automatically when any of those is enabled.
+        modules = ["landmark_2d_106", "detection", "recognition"]
+        if (getattr(options, 'use_3d_recon', False)
+                or getattr(options, 'use_source_bank', False)
+                or getattr(options, 'use_frontalization', False)):
+            modules.insert(0, "landmark_3d_68")
+        roop.globals.g_desired_face_analysis = modules
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":
             roop.globals.g_desired_face_analysis.append("genderage")
 
