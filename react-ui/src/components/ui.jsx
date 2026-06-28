@@ -131,7 +131,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           {empty || 'None yet'}
         </div>
       ) : (
-        <div className={vertical ? "flex flex-col gap-2" : "grid grid-cols-4 gap-2"}>
+        <div className={vertical ? "flex flex-col gap-2" : "grid grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2"}>
           {faces.map((src, i) => {
             const person = groups && i < groups.length ? groups[i] : null;
             const color = person != null ? PERSON_COLORS[person % PERSON_COLORS.length] : null;

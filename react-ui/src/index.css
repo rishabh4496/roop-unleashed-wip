@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* ── Ultrawide breakpoints ────────────────────────────────────────────────
+   Tailwind's defaults stop at 2xl (1536px), so on ultrawide monitors (2560px,
+   3440px, 5120px) the layout would just sit in a centered column with huge empty
+   side margins. These extra breakpoints let the container and grids expand to use
+   the horizontal space. Usage: `3xl:max-w-[1800px]`, `4xl:grid-cols-4`, etc. */
+@theme {
+  --breakpoint-3xl: 1920px;
+  --breakpoint-4xl: 2560px;
+  --breakpoint-5xl: 3440px;
+}
+
 /* ── Theme Definitions ────────────────────────────────────────────────── */
 :root {
   /* Default: Glass Dark */

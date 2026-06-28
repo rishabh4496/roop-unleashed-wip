@@ -318,7 +318,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   return (
     <div className="flex flex-col lg:flex-row gap-6 items-start">
       {/* LEFT SIDEBAR: Settings & Controls (Scrollable and fixed-width on large viewports) */}
-      <div className="w-full lg:w-[400px] shrink-0 space-y-6 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+      <div className="w-full lg:w-[400px] 3xl:w-[460px] 4xl:w-[520px] shrink-0 space-y-6 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
         <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />

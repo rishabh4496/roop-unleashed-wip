@@ -31,7 +31,7 @@ export default function Extras({ notify }) {
         <p className="text-sm text-white/50">Resize, rotate, crop and re-time images or videos.</p>
       </Section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
         <Section title="Input & transform">
           <label className="block cursor-pointer">
             <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60">

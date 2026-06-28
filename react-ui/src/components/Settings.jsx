@@ -20,7 +20,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
         <Section title="Server">
           <Toggle label="Public server (share)" checked={!!p.server_share} onChange={(v) => set('server_share', v)} />
           <Toggle label="Clear output folder before each run" checked={!!p.clear_output} onChange={(v) => set('clear_output', v)} />
