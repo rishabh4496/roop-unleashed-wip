@@ -875,9 +875,12 @@ class ProcessMgr():
         _wt = Thread(target=_writer, name='stab_writer', daemon=True)
         _wt.start()
 
+        _chunk_no = 0
         try:
             while True:
+                _t_get0 = time.perf_counter()
                 chunk = prefetch_q.get()
+                _t_get = time.perf_counter() - _t_get0   # read-starvation wait
                 if chunk is None:
                     break
                 if not roop.globals.processing:
@@ -888,6 +891,7 @@ class ProcessMgr():
                 base_global = chunk_start - base
                 n = max(1, min(threads, len(chunk)))
                 results = {}
+                _block_times = {}   # per sub-block wall time → barrier imbalance
 
                 # ── Closure-capture fix ──────────────────────────────────────
                 # _worker is re-defined each loop iteration. Without default-arg
@@ -895,9 +899,11 @@ class ProcessMgr():
                 # `base`, `base_global` and `results` variables — dangerous when
                 # Python advances the outer loop before threads finish reading them.
                 # Binding them as default args freezes the values per chunk.
-                def _worker(a, b,
+                def _worker(a, b, _i=0,
                             _combined=combined, _base=base,
-                            _base_global=base_global, _results=results):
+                            _base_global=base_global, _results=results,
+                            _bt=_block_times):
+                    _w0 = time.perf_counter()
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
                     ca = _base + a
@@ -920,22 +926,38 @@ class ProcessMgr():
                             out = _combined[ci]
                         _results[gi] = out if out is not None else _combined[ci]
                         progress_cb()
+                    _bt[_i] = time.perf_counter() - _w0
 
                 step = len(chunk) / n
                 workers = []
                 for i in range(n):
                     a = int(round(i * step))
                     b = len(chunk) if i == n - 1 else int(round((i + 1) * step))
-                    workers.append(Thread(target=_worker, args=(a, b), name=f'stab_proc{i}'))
+                    workers.append(Thread(target=_worker, args=(a, b, i), name=f'stab_proc{i}'))
+                _t_proc0 = time.perf_counter()
                 for w in workers:
                     w.start()
                 for w in workers:
                     w.join()
+                _t_proc = time.perf_counter() - _t_proc0   # compute time (slowest block gates this)
 
                 # Queue the chunk for the background write thread.
                 # Blocks only when FFMPEG is slower than frame processing
                 # (correct back-pressure; prevents unbounded memory growth).
+                _t_put0 = time.perf_counter()
                 _write_q.put((chunk_start, results, len(chunk)))
+                _t_put = time.perf_counter() - _t_put0     # write back-pressure stall
+
+                if _PROFILE:
+                    _bts = list(_block_times.values())
+                    _imbal = (max(_bts) - min(_bts)) if _bts else 0.0
+                    _fps = len(chunk) / _t_proc if _t_proc > 0 else 0.0
+                    print(f"[STAB chunk {_chunk_no:3d}] frames={len(chunk):4d} "
+                          f"read_wait={_t_get*1000:6.0f}ms  proc={_t_proc:6.2f}s ({_fps:5.1f} fps)  "
+                          f"write_stall={_t_put*1000:6.0f}ms  block_imbalance={_imbal:5.2f}s "
+                          f"(slowest {max(_bts) if _bts else 0:.2f}s / fastest {min(_bts) if _bts else 0:.2f}s)",
+                          flush=True)
+                _chunk_no += 1
 
                 carry = combined[-WU:] if WU > 0 else []
                 chunk_start += len(chunk)
