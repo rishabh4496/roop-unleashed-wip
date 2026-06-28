@@ -47,9 +47,12 @@ def _remove_file_retry(path, attempts=5, delay=0.3):
         try:
             os.remove(path)
             return
+        except FileNotFoundError:
+            return  # already gone — nothing to do
         except PermissionError:
             if i < attempts - 1:
                 _time.sleep(delay)
+    print(f'[Warning] Could not delete temp file after {attempts} attempts: {path}')
 
 process_mgr = None
 _preview_process_mgr = None   # dedicated instance for live_swap — never shared with batch

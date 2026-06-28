@@ -15,7 +15,7 @@ from typing import Any, List, Callable
 from roop.typing import Frame, Face
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
-from queue import Queue
+from queue import Queue, Full as _QueueFull
 
 # Serialises GPU inference across worker threads ONLY when required.
 #
@@ -481,7 +481,14 @@ class ProcessMgr():
                 ret, frame = cap.read()
             if not ret:
                 break
-            self.frames_queue[num_frame % num_threads].put((num_frame, frame), block=True)
+            _thr = num_frame % num_threads
+            while True:
+                try:
+                    self.frames_queue[_thr].put((num_frame, frame), timeout=0.1)
+                    break
+                except _QueueFull:
+                    if not roop.globals.processing:
+                        break
             num_frame += 1
             if num_frame == total_num:
                 break
@@ -497,7 +504,14 @@ class ProcessMgr():
             wait_while_paused()
             if not roop.globals.processing:
                 break
-            self.frames_queue[num_frame % num_threads].put((num_frame, frame), block=True)
+            _thr = num_frame % num_threads
+            while True:
+                try:
+                    self.frames_queue[_thr].put((num_frame, frame), timeout=0.1)
+                    break
+                except _QueueFull:
+                    if not roop.globals.processing:
+                        break
         for i in range(num_threads):
             self.frames_queue[i].put(None)
 
@@ -674,57 +688,65 @@ class ProcessMgr():
             self.streamwriter = StreamWriter((width, height), int(fps))
 
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-        if use_parallel_stab:
-            print(f"[Stabilize] parallel stabilization ON (threads={threads}, warm-up overlap) — "
-                  f"both kps and enhancer smoothing run multi-threaded.")
-            with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-                self._run_stab_parallel(source_video, awebp_frames, frame_start, frame_end,
-                                        frame_count, threads, lambda: self.update_progress(progress))
-        else:
-            if is_awebp:
-                readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
-            else:
-                readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
-            readthread.start()
-
-            writethread = Thread(target=self.write_frames_thread)
-            writethread.start()
-
-            # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
-            # the worker threads into one batched inference. Needs >1 thread and the
-            # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
-            self._swap_batcher = self._make_swap_batcher(threads)
-
-            try:
+        try:
+            if use_parallel_stab:
+                print(f"[Stabilize] parallel stabilization ON (threads={threads}, warm-up overlap) — "
+                      f"both kps and enhancer smoothing run multi-threaded.")
                 with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-                    with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
-                        futures = []
-                        for threadindex in range(threads):
-                            future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
-                            futures.append(future)
-                        for future in as_completed(futures):
-                            future.result()
-            finally:
-                if self._swap_batcher is not None:
-                    self._swap_batcher.stop()
-                    self._swap_batcher.report()
-                    self._swap_batcher = None
+                    self._run_stab_parallel(source_video, awebp_frames, frame_start, frame_end,
+                                            frame_count, threads, lambda: self.update_progress(progress))
+            else:
+                if is_awebp:
+                    readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
+                else:
+                    readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
+                readthread.start()
 
-            readthread.join()
-            writethread.join()
-        if cap is not None:
-            cap.release()
-        if self.output_to_file:
-            self.videowriter.close()
-            self.videowriter = None  # FIX: null out so GC can collect
-        if self.output_to_cam:
-            self.streamwriter.Close()
-            self.streamwriter = None  # FIX: null out so GC can collect
+                writethread = Thread(target=self.write_frames_thread)
+                writethread.start()
 
-        self.frames_queue.clear()
-        self.processed_queue.clear()
-        self._precomputed_mode = False
-        self._precomputed_kps = None
+                # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
+                # the worker threads into one batched inference. Needs >1 thread and the
+                # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
+                self._swap_batcher = self._make_swap_batcher(threads)
+
+                try:
+                    with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+                        with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
+                            futures = []
+                            for threadindex in range(threads):
+                                future = executor.submit(self.process_videoframes, threadindex, lambda: self.update_progress(progress))
+                                futures.append(future)
+                            for future in as_completed(futures):
+                                future.result()
+                finally:
+                    if self._swap_batcher is not None:
+                        self._swap_batcher.stop()
+                        self._swap_batcher.report()
+                        self._swap_batcher = None
+                    # Join with timeouts so an exception path never leaves background
+                    # threads running (or holding the videowriter open). Timeouts are a
+                    # safety net: normally both threads exit quickly because workers have
+                    # already set roop.globals.processing=False and sent their sentinels.
+                    readthread.join(timeout=5)
+                    writethread.join(timeout=10)
+        finally:
+            # Always release the capture and close writers regardless of which path ran
+            # and whether it raised.  The write thread MUST be joined (above) before we
+            # close videowriter, otherwise the pipe stdin close races with an in-flight
+            # write_frame() call and corrupts the temp file.
+            if cap is not None:
+                cap.release()
+            if self.output_to_file and self.videowriter is not None:
+                self.videowriter.close()
+                self.videowriter = None
+            if self.output_to_cam and self.streamwriter is not None:
+                self.streamwriter.Close()
+                self.streamwriter = None
+            self.frames_queue.clear()
+            self.processed_queue.clear()
+            self._precomputed_mode = False
+            self._precomputed_kps = None
         _prof_report()
 
 
