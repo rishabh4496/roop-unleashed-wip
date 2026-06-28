@@ -51,6 +51,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
 
+  // One-click speed/quality profiles. Each bundles the core levers (detection
+  // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
+  // engine, target selection, etc.) are left as-is. Pure UI — no runtime cost.
+  const PRESETS = {
+    Fast:     { default_det_size: false, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
+    Balanced: { default_det_size: true,  subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
+    Quality:  { default_det_size: true,  subsample_upscale: '512px', selected_enhancer: 'Restoreformer++', num_swap_steps: 2 },
+  };
+  const activePreset = Object.keys(PRESETS).find((name) =>
+    Object.entries(PRESETS[name]).every(([k, v]) =>
+      k === 'default_det_size' ? (p[k] !== false) === (v !== false) : p[k] === v));
+  const applyPreset = (name) => {
+    setSettings((s) => ({ ...s, ...PRESETS[name] }));
+    notify(`Applied ${name} preset`, 'info');
+  };
+
   // ── initial rehydrate ──
   // Pinokio reloads the webview whenever you switch the RUN/DEV/FILES tabs,
   // which remounts this component and wipes its React state. The backend keeps
@@ -537,6 +553,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
       {/* COLUMN 1: Settings & Controls (Scrollable sidebar on large viewports) */}
       <div className="w-full lg:w-[400px] 3xl:w-[820px] 4xl:w-[900px] shrink-0 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+        <Section title="Presets">
+          <div className="flex flex-wrap gap-2">
+            {Object.keys(PRESETS).map((name) => (
+              <Button key={name} size="sm"
+                variant={activePreset === name ? 'primary' : 'secondary'}
+                onClick={() => applyPreset(name)}>
+                {name === 'Fast' ? '⚡ Fast' : name === 'Balanced' ? '⚖️ Balanced' : '💎 Quality'}
+              </Button>
+            ))}
+          </div>
+          <div className="text-xs text-[var(--text-muted)] mt-2">
+            Sets detection resolution, upscale, enhancer & swap steps. Other settings unchanged.
+          </div>
+        </Section>
+
         <div className="grid grid-cols-1 3xl:grid-cols-2 gap-6">
           <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
