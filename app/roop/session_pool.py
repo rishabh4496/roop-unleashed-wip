@@ -34,6 +34,31 @@ def pooling_enabled() -> bool:
     return _POOL_SIZE >= 2
 
 
+# Separate, opt-in pool for the face-analysis (detection/landmark/recognition)
+# and mask models. Profiling showed those two stages are ~90% of video time and
+# run single-threaded behind the global GPU lock (their per-call cost is dominated
+# by lock-wait, not compute). Giving each its OWN pool of independent TensorRT
+# contexts lets N worker threads run them concurrently — keeping TRT's fast FP16
+# per-call (CUDA FP32 was benchmarked slower) while removing the serialisation.
+#
+# Kept distinct from ROOP_TRT_POOL (the swapper pool) so it can be tuned / turned
+# off independently: each FaceAnalysis instance loads 5 small models, so VRAM
+# scales with the pool size. Default 0 (unset) = original single-instance + global
+# lock behaviour, byte-for-byte — zero risk for default installs and small GPUs.
+try:
+    _DETMASK_POOL_SIZE = max(0, int(os.environ.get('ROOP_DETMASK_POOL', '0') or '0'))
+except ValueError:
+    _DETMASK_POOL_SIZE = 0
+
+
+def detmask_pool_size() -> int:
+    return _DETMASK_POOL_SIZE
+
+
+def detmask_pooling_enabled() -> bool:
+    return _DETMASK_POOL_SIZE >= 2
+
+
 class SessionPool:
     """A fixed set of interchangeable per-model resources (e.g. an onnxruntime
     session, optionally paired with its own io_binding). `lease()` hands one
