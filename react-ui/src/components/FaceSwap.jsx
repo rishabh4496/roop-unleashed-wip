@@ -269,6 +269,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+        sam2_model_size: p.sam2_model_size,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
       });
@@ -488,6 +489,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+        sam2_model_size: p.sam2_model_size,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
       });
@@ -551,6 +553,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Select label="Masking engine" value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
           {p.mask_engine === 'Clip2Seg' && (
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
+          )}
+          {p.mask_engine === 'Segment Anything 2 (tracked)' && (
+            <Select label="SAM2 checkpoint (speed ↔ quality)" value={p.sam2_model_size || 'tiny'} onChange={(v) => set('sam2_model_size', v)} options={meta.sam2_model_sizes || ['tiny', 'small', 'base_plus', 'large']} />
           )}
           <Toggle label="Show mask overlay in preview" checked={!!p.show_mask_offsets} onChange={(v) => set('show_mask_offsets', v)} />
           <Toggle label="Restore original mouth area" checked={!!p.restore_original_mouth} onChange={(v) => set('restore_original_mouth', v)} />
