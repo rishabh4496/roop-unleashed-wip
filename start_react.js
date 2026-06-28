@@ -5,9 +5,10 @@ module.exports = {
       method: "shell.run",
       params: {
         venv: "env",
-        env: { 
-          ROOP_TRT_POOL: "4", 
-          ROOP_PROFILE: "1", 
+        env: {
+          ROOP_TRT_POOL: "4",
+          ROOP_DETMASK_POOL: "2",
+          ROOP_PROFILE: "1",
           ROOP_BATCH_SWAP_XFRAME: "1", 
           ROOP_BATCH_SWAP: "1", 
           ROOP_STAB_PARALLEL: "1",
