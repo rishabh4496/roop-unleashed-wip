@@ -1163,10 +1163,16 @@ class ProcessMgr():
         clip instead of being re-matched (and possibly flipped) every frame."""
         from roop.face_util import get_all_faces
 
-        tracks = []          # {id, bbox, emb_mean, embs, last_seen}
+        # active = tracks seen within STALE frames (candidates for matching);
+        # retired = older tracks, kept only for the final source assignment. This
+        # keeps the per-frame match loop small on long clips. emb_mean is a RUNNING
+        # mean (emb_sum / emb_n) — never a np.mean over a growing list, which would
+        # make the persistent main-face track O(N^2) and freeze long videos.
+        active, retired = [], []
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
         IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
+        print('[Track] identity pre-pass: scanning frames…')
 
         cap = cv2.VideoCapture(source_video)
         try:
@@ -1177,15 +1183,21 @@ class ProcessMgr():
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     break
+                # Retire tracks not seen for STALE frames so matching stays O(active).
+                if active:
+                    fresh = []
+                    for t in active:
+                        (fresh if t['last_seen'] >= idx - STALE else retired).append(t)
+                    active = fresh
                 with _gpu_guard(pooled=analysis_pooled()):
                     faces = get_all_faces(frame) or []
                 entries, used = [], set()
                 for face in faces:
                     bbox = np.asarray(face.bbox, dtype=np.float32)
-                    emb = face.embedding
+                    emb = np.asarray(face.embedding, dtype=np.float32)
                     best, best_iou = None, IOU_MIN
-                    for t in tracks:
-                        if t['id'] in used or t['last_seen'] < idx - STALE:
+                    for t in active:
+                        if t['id'] in used:
                             continue
                         iou = self._bbox_iou(bbox, t['bbox'])
                         if iou < best_iou:
@@ -1194,14 +1206,16 @@ class ProcessMgr():
                             continue
                         best, best_iou = t, iou
                     if best is None:
-                        best = {'id': next_id, 'bbox': bbox, 'emb_mean': emb,
-                                'embs': [emb], 'last_seen': idx}
+                        best = {'id': next_id, 'bbox': bbox,
+                                'emb_sum': emb.astype(np.float64).copy(), 'emb_n': 1,
+                                'emb_mean': emb, 'last_seen': idx}
                         next_id += 1
-                        tracks.append(best)
+                        active.append(best)
                     else:
                         best['bbox'] = bbox
-                        best['embs'].append(emb)
-                        best['emb_mean'] = np.mean(best['embs'], axis=0)
+                        best['emb_sum'] += emb
+                        best['emb_n'] += 1
+                        best['emb_mean'] = (best['emb_sum'] / best['emb_n']).astype(np.float32)
                         best['last_seen'] = idx
                     used.add(best['id'])
                     centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
@@ -1209,11 +1223,17 @@ class ProcessMgr():
                     entries.append((centroid, best['id']))
                 per_frame[idx] = entries
                 idx += 1
+                # Drive the UI progress bar so the pre-pass isn't a silent black box.
+                if self.progress_gradio is not None and (idx % 10 == 0 or idx == 1):
+                    tot = frame_count or idx
+                    self.progress_gradio((idx, tot), desc='Tracking identities',
+                                         total=tot, unit='frames')
                 if frame_count and idx >= frame_count:
                     break
         finally:
             cap.release()
 
+        tracks = active + retired
         # Assign each track to a source (person rank), once, by mean embedding.
         groups = self.target_face_groups
         uniq = sorted(set(groups)) if groups else []
