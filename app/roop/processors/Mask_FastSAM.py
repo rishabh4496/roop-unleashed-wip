@@ -57,9 +57,14 @@ class Mask_FastSAM():
             model_path = os.path.join(model_dir, _FILE)
             onnxruntime.set_default_logger_severity(3)
 
+            # Run on CUDA, not TensorRT: keep these per-crop SAM models off the TRT
+            # EP (slow/fragile engine builds, shape-tensor issues) — see
+            # session_pool.providers_without_tensorrt.
+            providers = session_pool.providers_without_tensorrt(roop.globals.execution_providers)
+
             def _build(_i=0):
                 return onnxruntime.InferenceSession(
-                    model_path, None, providers=roop.globals.execution_providers)
+                    model_path, None, providers=providers)
 
             self.model = _build()
             self.input_name = self.model.get_inputs()[0].name

@@ -30,6 +30,24 @@ def pool_size() -> int:
     return _POOL_SIZE
 
 
+def providers_without_tensorrt(providers):
+    """Return *providers* with the TensorRT EP removed (keeping CUDA/CPU).
+
+    Some ONNX models don't run under the TensorRT execution provider — e.g. the
+    MobileSAM decoder feeds a float `orig_im_size`, which TRT treats as a shape
+    tensor and rejects ("must have type Int32 or Int64. Type is Float"). Routing
+    such models to CUDA avoids the breakage; TRT's benefit on these small per-crop
+    models is marginal anyway. Each entry may be a string or an (name, opts) tuple.
+    """
+    out = []
+    for p in (providers or []):
+        name = p[0] if isinstance(p, (list, tuple)) else p
+        if 'Tensorrt' in name or 'TensorRT' in name:
+            continue
+        out.append(p)
+    return out or ['CPUExecutionProvider']
+
+
 def pooling_enabled() -> bool:
     return _POOL_SIZE >= 2
 

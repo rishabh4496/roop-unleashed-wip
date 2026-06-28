@@ -68,13 +68,17 @@ class Mask_MobileSAM():
             dec_path = os.path.join(model_dir, _DEC_FILE)
             onnxruntime.set_default_logger_severity(3)
 
+            # Run on CUDA, not TensorRT: the decoder's float `orig_im_size` is a
+            # shape tensor TRT rejects (Error Code 4, must be Int32/Int64).
+            providers = session_pool.providers_without_tensorrt(roop.globals.execution_providers)
+
             def _build_enc(_i=0):
                 return onnxruntime.InferenceSession(
-                    enc_path, None, providers=roop.globals.execution_providers)
+                    enc_path, None, providers=providers)
 
             self.encoder = _build_enc()
             self.decoder = onnxruntime.InferenceSession(
-                dec_path, None, providers=roop.globals.execution_providers)
+                dec_path, None, providers=providers)
             self.enc_input = self.encoder.get_inputs()[0].name
 
             # replace Mac mps with cpu for the moment
