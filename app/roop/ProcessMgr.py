@@ -1174,6 +1174,12 @@ class ProcessMgr():
         IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
         print('[Track] identity pre-pass: scanning frames…')
 
+        # Terminal progress bar (same style as the swap phase) so the pre-pass is
+        # visible in the console too, not just the web UI.
+        _bar_fmt = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        pbar = tqdm(total=frame_count or 0, desc='Tracking identities', unit='frames',
+                    dynamic_ncols=True, bar_format=_bar_fmt)
+
         cap = cv2.VideoCapture(source_video)
         try:
             if frame_start and frame_start > 0:
@@ -1223,6 +1229,7 @@ class ProcessMgr():
                     entries.append((centroid, best['id']))
                 per_frame[idx] = entries
                 idx += 1
+                pbar.update(1)   # terminal bar
                 # Drive the UI progress bar so the pre-pass isn't a silent black box.
                 if self.progress_gradio is not None and (idx % 10 == 0 or idx == 1):
                     tot = frame_count or idx
@@ -1231,6 +1238,7 @@ class ProcessMgr():
                 if frame_count and idx >= frame_count:
                     break
         finally:
+            pbar.close()
             cap.release()
 
         tracks = active + retired
