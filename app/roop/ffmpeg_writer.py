@@ -105,10 +105,20 @@ class FFMPEG_VideoWriter:
                 '-acodec', 'copy'
             ])
 
-        cmd.extend([
-            '-vcodec', codec,
-            '-crf', str(crf)
-        ])
+        cmd.extend(['-vcodec', codec])
+        is_nvenc = codec in ('h264_nvenc', 'hevc_nvenc')
+        if is_nvenc:
+            # NVENC has no -crf; -cq is the constant-quality equivalent (same 0-51
+            # scale), so reuse the configured quality directly. Preset p1(fastest)
+            # ..p7(slowest/best); p5 + "-tune hq" under VBR is a balanced default.
+            # Encoding runs on the GPU's dedicated NVENC engine — off the CPU and
+            # separate from CUDA inference. Override the preset with ROOP_NVENC_PRESET.
+            nvenc_preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
+            if nvenc_preset not in {f'p{i}' for i in range(1, 8)}:
+                nvenc_preset = 'p5'
+            cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-preset', nvenc_preset, '-tune', 'hq'])
+        else:
+            cmd.extend(['-crf', str(crf)])
 
         # For libx264 / libx265 the preset trades encode SPEED for FILE SIZE at a
         # fixed CRF — the rate control holds perceptual quality constant, so a

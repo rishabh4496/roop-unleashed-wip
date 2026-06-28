@@ -36,6 +36,21 @@ def run_ffmpeg(args: List[str]) -> bool:
 
 
 
+def _rate_control(codec: str, quality) -> List[str]:
+    """Return the encoder rate-control args for *codec* at *quality*.
+
+    libx264/libx265 (and most CPU encoders) use -crf; NVENC has no -crf and uses
+    -cq under VBR with p1..p7 presets instead. Keeping this in one place means
+    every re-encode path supports h264_nvenc/hevc_nvenc (GPU encode) correctly.
+    """
+    if codec in ('h264_nvenc', 'hevc_nvenc'):
+        preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
+        if preset not in {f'p{i}' for i in range(1, 8)}:
+            preset = 'p5'
+        return ['-rc', 'vbr', '-cq', str(quality), '-preset', preset, '-tune', 'hq']
+    return ['-crf', str(quality)]
+
+
 def cut_video(original_video: str, cut_video: str, start_frame: int, end_frame: int, reencode: bool):
     fps = util.detect_fps(original_video)
     start_time = start_frame / fps
@@ -132,7 +147,7 @@ def create_video(target_path: str, dest_filename: str, fps: float = 24.0, temp_d
     # required by yuv420p / libx264. Without this, frames with odd width or height
     # cause ffmpeg to fail silently and produce an empty (corrupt) output file.
     vf = 'scale=trunc(iw/2)*2:trunc(ih/2)*2,colorspace=bt709:iall=bt601-6-625:fast=1'
-    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, f'%06d.{roop.globals.CFG.output_image_format}'), '-c:v', roop.globals.video_encoder, '-crf', str(roop.globals.video_quality), '-pix_fmt', 'yuv420p', '-vf', vf, '-y', dest_filename])
+    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, f'%06d.{roop.globals.CFG.output_image_format}'), '-c:v', roop.globals.video_encoder] + _rate_control(roop.globals.video_encoder, roop.globals.video_quality) + ['-pix_fmt', 'yuv420p', '-vf', vf, '-y', dest_filename])
     return dest_filename
 
 
@@ -199,7 +214,7 @@ def resize_video(input_path: str, output_path: str, width: int, height: int) -> 
     )
     return run_ffmpeg(['-i', input_path, '-vf', scale_filter,
                        '-c:v', roop.globals.video_encoder,
-                       '-crf', str(roop.globals.video_quality),
+                       *_rate_control(roop.globals.video_encoder, roop.globals.video_quality),
                        '-c:a', 'copy', output_path])
 
 
@@ -218,7 +233,7 @@ def rotate_media(input_path: str, output_path: str, transform: str) -> bool:
 def change_fps(input_path: str, output_path: str, fps: float) -> bool:
     return run_ffmpeg(['-i', input_path, '-vf', f'fps={fps}',
                        '-c:v', roop.globals.video_encoder,
-                       '-crf', str(roop.globals.video_quality),
+                       *_rate_control(roop.globals.video_encoder, roop.globals.video_quality),
                        '-c:a', 'copy', output_path])
 
 
@@ -243,7 +258,7 @@ def apply_media_transforms(input_path: str, output_path: str,
     vf = ','.join(vf_filters)
     args = ['-i', input_path, '-vf', vf]
     if is_video:
-        args += ['-c:v', codec, '-crf', str(quality), '-c:a', 'copy']
+        args += ['-c:v', codec, *_rate_control(codec, quality), '-c:a', 'copy']
     args.append(output_path)
     return run_ffmpeg(args)
 
@@ -297,7 +312,7 @@ def apply_media_transforms_webp(input_path: str, output_path: str,
         '-an', '-i', '-',
         '-vf', vf,
         '-c:v', codec,
-        '-crf', str(quality),
+        *_rate_control(codec, quality),
         '-pix_fmt', 'yuv420p',
         output_path,
     ]
@@ -343,7 +358,7 @@ def create_video_from_frames_dir(frames_dir: str, output_path: str, fps: float,
         '-r',    str(fps),
         '-i',    os.path.join(frames_dir, f'%06d.{image_format}'),
         '-c:v',  codec,
-        '-crf',  str(quality),
+    ] + _rate_control(codec, quality) + [
         '-pix_fmt', 'yuv420p',
         '-vf',   vf,
         '-y',    output_path,
