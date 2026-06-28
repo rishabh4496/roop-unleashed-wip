@@ -21,7 +21,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import roop.globals as roop_globals
 from roop import utilities as util
@@ -744,25 +744,50 @@ def reveal_output(payload: dict = Body(default={})):
     return {"status": "ok", "folder": folder}
 
 
-# Max bytes returned for a single open-ended Range request. The browser's <video>
-# element asks for "bytes=N-" (to end of file); we answer with at most this much and
-# advertise the partial Content-Range, so it comes back for the next chunk. Keeping
-# each response bounded means we never read a whole large video into memory, and—
-# crucially—we close the OS file handle before streaming the bytes out (see below).
-_FILE_CHUNK = 4 * 1024 * 1024  # 4 MiB
+def _open_shared(path: str):
+    """Open *path* for reading in a way that does NOT lock it against move/delete.
+
+    A normal open() on Windows omits FILE_SHARE_DELETE, so for the life of the
+    handle the OS refuses to move/rename/delete the file ("the file is open in
+    Python"). While a <video> element streams a finished output, that handle is
+    alive — so the user can't move the result out of the output folder. We open
+    via CreateFileW with all three share flags (READ|WRITE|DELETE) so Explorer can
+    still move or delete the file even while we're streaming it. On non-Windows,
+    POSIX already allows unlink/rename of open files, so a plain open() is fine.
+    """
+    if os.name != "nt":
+        return open(path, "rb")
+    import ctypes
+    import msvcrt
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE = 0x1, 0x2, 0x4
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    CreateFileW = ctypes.windll.kernel32.CreateFileW
+    CreateFileW.restype = ctypes.c_void_p
+    CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p]
+    handle = CreateFileW(path, GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
+    if not handle or handle == INVALID_HANDLE_VALUE:
+        # Fall back to a normal open rather than failing the request outright.
+        return open(path, "rb")
+    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    return os.fdopen(fd, "rb")
 
 
 @app.get("/api/file")
 def get_file(path: str, request: Request):
     """Serve an output/temp file by absolute path (guarded to known dirs).
 
-    The handle is opened, the requested bytes are read into memory, and the handle
-    is CLOSED before the response is returned. A plain FileResponse keeps the file
-    open for the whole streamed connection, and on Windows an <video> element that
-    keeps that connection alive (or re-requests on every cache-bust) leaves python
-    holding the file open — so the finished output can't be moved/deleted ("file is
-    open in Python"). Reading + closing up front avoids that lock entirely while
-    still supporting HTTP Range so video seeking works.
+    Streams the file (with HTTP Range support, so video seeking is instant) using
+    a share-delete handle (_open_shared). This matches FileResponse's smooth
+    seeking but, unlike FileResponse, never locks the output against move/delete —
+    so the finished video can be moved out of the output folder while it's still
+    showing in the player.
     """
     allowed = [os.path.abspath(getattr(roop_globals, "output_path", "") or ""),
                os.path.abspath(API_TEMP), os.path.abspath(os.path.join(os.getcwd(), "temp"))]
@@ -775,7 +800,19 @@ def get_file(path: str, request: Request):
     media_type = mimetypes.guess_type(ap)[0] or "application/octet-stream"
     range_header = request.headers.get("range") or request.headers.get("Range")
 
-    base_headers = {"Accept-Ranges": "bytes"}
+    def _iter(start: int, length: int, chunk: int = 1024 * 1024):
+        remaining = length
+        f = _open_shared(ap)
+        try:
+            f.seek(start)
+            while remaining > 0:
+                data = f.read(min(chunk, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+        finally:
+            f.close()
 
     if range_header and range_header.strip().lower().startswith("bytes="):
         spec = range_header.split("=", 1)[1].split(",", 1)[0].strip()
@@ -784,31 +821,23 @@ def get_file(path: str, request: Request):
             start = int(start_s) if start_s else 0
         except ValueError:
             start = 0
-        if end_s:
-            try:
-                end = int(end_s)
-            except ValueError:
-                end = file_size - 1
-        else:
-            # Open-ended ("bytes=N-"): cap the slice so we don't buffer huge files.
-            end = start + _FILE_CHUNK - 1
+        try:
+            end = int(end_s) if end_s else file_size - 1
+        except ValueError:
+            end = file_size - 1
         start = max(0, min(start, file_size - 1))
         end = max(start, min(end, file_size - 1))
         length = end - start + 1
-        with open(ap, "rb") as f:
-            f.seek(start)
-            data = f.read(length)
         headers = {
-            **base_headers,
+            "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Content-Length": str(len(data)),
+            "Content-Length": str(length),
         }
-        return Response(content=data, status_code=206, media_type=media_type, headers=headers)
+        return StreamingResponse(_iter(start, length), status_code=206,
+                                 media_type=media_type, headers=headers)
 
-    # No Range header: read the whole file into memory, then close before responding.
-    with open(ap, "rb") as f:
-        data = f.read()
-    return Response(content=data, media_type=media_type, headers=base_headers)
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(file_size)}
+    return StreamingResponse(_iter(0, file_size), media_type=media_type, headers=headers)
 
 
 # ── Face Manager (faceset builder) ───────────────────────────────────────────
