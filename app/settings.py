@@ -117,6 +117,7 @@ class Settings:
         # Face-detector input resolution: True = 640x640 (accurate, default),
         # False = 320x320 (~4x faster detection, may miss small/distant faces).
         self.default_det_size = self.default_get(data, 'default_det_size', True)
+        self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
         self.num_swap_steps = self.default_get(data, 'num_swap_steps', 1)
         self.selected_enhancer = self.default_get(data, 'selected_enhancer', 'GPEN')
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')

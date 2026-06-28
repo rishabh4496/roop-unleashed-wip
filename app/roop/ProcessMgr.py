@@ -142,6 +142,7 @@ class ProcessMgr():
         'mask_faceparser'   : 'Mask_FaceParser',
         'mask_mobilesam'    : 'Mask_MobileSAM',
         'mask_fastsam'      : 'Mask_FastSAM',
+        'mask_sam2'         : 'Mask_SAM2',
         'codeformer'        : 'Enhance_CodeFormer',
         'gfpgan'            : 'Enhance_GFPGAN',
         'dmdnet'            : 'Enhance_DMDNet',
@@ -703,6 +704,18 @@ class ProcessMgr():
         if self.output_to_cam:
             self.streamwriter = StreamWriter((width, height), int(fps))
 
+        # SAM2 temporal-mask pre-pass: track the faces across the trimmed clip and
+        # cache a full-frame mask per frame, so the (still parallel) swap below can
+        # look them up. Opt-in — only runs when the SAM2 engine is selected.
+        sam2_p = next((p for p in self.processors
+                       if getattr(p, 'processorname', None) == 'mask_sam2'), None)
+        if sam2_p is not None and not is_awebp:
+            try:
+                self._precompute_sam2(sam2_p, source_video, frame_start, frame_end, frame_count)
+            except Exception as e:
+                print(f'[SAM2] pre-pass failed ({e}); falling back to unmasked swap')
+                sam2_p.precomputed = {}
+
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
         try:
             if use_parallel_stab:
@@ -1073,6 +1086,48 @@ class ProcessMgr():
         return frame
 
 
+    def _precompute_sam2(self, sam2_p, source_video, frame_start, frame_end, frame_count):
+        """SAM2 pre-pass: dump the trimmed frames to a temp JPEG dir (0-based,
+        matching the swap reader's frame_idx), detect the faces on frame 0 to seed
+        the tracker, and let SAM2 propagate full-frame masks across the clip."""
+        import tempfile, shutil
+        from roop.face_util import get_all_faces
+
+        tmp = tempfile.mkdtemp(prefix='sam2_')
+        try:
+            cap = cv2.VideoCapture(source_video)
+            try:
+                if frame_start and frame_start > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
+                first = None
+                idx = 0
+                while roop.globals.processing:
+                    ret, fr = cap.read()
+                    if not ret or fr is None:
+                        break
+                    if first is None:
+                        first = fr
+                    cv2.imwrite(os.path.join(tmp, f'{idx:06d}.jpg'), fr)
+                    idx += 1
+                    if frame_count and idx >= frame_count:
+                        break
+            finally:
+                cap.release()
+
+            if first is None or idx == 0:
+                sam2_p.precomputed = {}
+                return
+
+            with _gpu_guard(pooled=analysis_pooled()):
+                faces = get_all_faces(first) or []
+            boxes = [f.bbox.astype(np.float32) for f in faces if getattr(f, 'bbox', None) is not None]
+            print(f'[SAM2] seeding tracker with {len(boxes)} face(s) over {idx} frames')
+            h, w = first.shape[:2]
+            sam2_p.precompute(tmp, boxes, (h, w))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
     def _precompute_stabilized_kps(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Pass 1 of 2-pass stabilization. Sequentially detect every frame's faces
         and run their kps through the (order-dependent) kps stabilizer, returning
@@ -1167,6 +1222,11 @@ class ProcessMgr():
 
     def swap_faces(self, frame, temp_frame, stabilize=False, frame_idx=None):
         num_faces_found = 0
+
+        # Stash the current frame index per-thread so the SAM2 mask engine can look
+        # up its precomputed full-frame mask for this frame from inside process_mask
+        # (set here because every worker thread enters swap_faces once per frame).
+        self._tls.frame_idx = frame_idx
 
         # Tick once per frame if any stabilizer is active. Parallel path uses a
         # per-thread frame index (TLS) instead of this shared counter.
@@ -1381,6 +1441,9 @@ class ProcessMgr():
         aligned_img, M = align_crop(frame, target_face.kps, subsample_size)
         fake_frame = aligned_img
         target_face.matrix = M
+        # Stash the crop affine per-thread so the SAM2 mask engine can warp its
+        # precomputed full-frame mask into this exact crop space (see process_mask).
+        self._tls.cur_M = M
 
         # ── Shared landmark / pose computation ────────────────────────────────
         # Computed once and reused by source-bank selection, 3D recon, and
@@ -1902,7 +1965,16 @@ class ProcessMgr():
         return final_frame
 
     def process_mask(self, processor, frame:Frame, target:Frame):
-        img_mask = processor.Run(frame, self.options.masking_text)
+        # SAM2 is temporally tracked: instead of running per-crop inference it warps
+        # its precomputed full-frame mask into this crop via the affine M stashed in
+        # TLS by process_face, indexed by the TLS frame index from swap_faces.
+        if getattr(processor, 'processorname', None) == 'mask_sam2':
+            img_mask = processor.get_crop_mask(
+                getattr(self._tls, 'frame_idx', None),
+                getattr(self._tls, 'cur_M', None),
+                frame.shape)
+        else:
+            img_mask = processor.Run(frame, self.options.masking_text)
         img_mask = cv2.resize(img_mask, (target.shape[1], target.shape[0]))
         img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
 

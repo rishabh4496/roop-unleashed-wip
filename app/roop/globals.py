@@ -33,6 +33,7 @@ face_swap_mode = 'DFL XSeg'
 blend_ratio = 0.80
 distance_threshold = 1
 default_det_size = True
+sam2_model_size = 'tiny'   # SAM2 tracked-mask checkpoint: tiny|small|base_plus|large
 
 no_face_action = 1
 
