@@ -19,9 +19,9 @@ import traceback
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Body
+from fastapi import FastAPI, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 import roop.globals as roop_globals
 from roop import utilities as util
@@ -744,15 +744,71 @@ def reveal_output(payload: dict = Body(default={})):
     return {"status": "ok", "folder": folder}
 
 
+# Max bytes returned for a single open-ended Range request. The browser's <video>
+# element asks for "bytes=N-" (to end of file); we answer with at most this much and
+# advertise the partial Content-Range, so it comes back for the next chunk. Keeping
+# each response bounded means we never read a whole large video into memory, and—
+# crucially—we close the OS file handle before streaming the bytes out (see below).
+_FILE_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
 @app.get("/api/file")
-def get_file(path: str):
-    """Serve an output/temp file by absolute path (guarded to known dirs)."""
+def get_file(path: str, request: Request):
+    """Serve an output/temp file by absolute path (guarded to known dirs).
+
+    The handle is opened, the requested bytes are read into memory, and the handle
+    is CLOSED before the response is returned. A plain FileResponse keeps the file
+    open for the whole streamed connection, and on Windows an <video> element that
+    keeps that connection alive (or re-requests on every cache-bust) leaves python
+    holding the file open — so the finished output can't be moved/deleted ("file is
+    open in Python"). Reading + closing up front avoids that lock entirely while
+    still supporting HTTP Range so video seeking works.
+    """
     allowed = [os.path.abspath(getattr(roop_globals, "output_path", "") or ""),
                os.path.abspath(API_TEMP), os.path.abspath(os.path.join(os.getcwd(), "temp"))]
     ap = os.path.abspath(path)
     if not any(ap.startswith(a) and a for a in allowed) or not os.path.isfile(ap):
         return JSONResponse(status_code=403, content={"message": "forbidden"})
-    return FileResponse(ap)
+
+    import mimetypes
+    file_size = os.path.getsize(ap)
+    media_type = mimetypes.guess_type(ap)[0] or "application/octet-stream"
+    range_header = request.headers.get("range") or request.headers.get("Range")
+
+    base_headers = {"Accept-Ranges": "bytes"}
+
+    if range_header and range_header.strip().lower().startswith("bytes="):
+        spec = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+        start_s, _, end_s = spec.partition("-")
+        try:
+            start = int(start_s) if start_s else 0
+        except ValueError:
+            start = 0
+        if end_s:
+            try:
+                end = int(end_s)
+            except ValueError:
+                end = file_size - 1
+        else:
+            # Open-ended ("bytes=N-"): cap the slice so we don't buffer huge files.
+            end = start + _FILE_CHUNK - 1
+        start = max(0, min(start, file_size - 1))
+        end = max(start, min(end, file_size - 1))
+        length = end - start + 1
+        with open(ap, "rb") as f:
+            f.seek(start)
+            data = f.read(length)
+        headers = {
+            **base_headers,
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(len(data)),
+        }
+        return Response(content=data, status_code=206, media_type=media_type, headers=headers)
+
+    # No Range header: read the whole file into memory, then close before responding.
+    with open(ap, "rb") as f:
+        data = f.read()
+    return Response(content=data, media_type=media_type, headers=base_headers)
 
 
 # ── Face Manager (faceset builder) ───────────────────────────────────────────
