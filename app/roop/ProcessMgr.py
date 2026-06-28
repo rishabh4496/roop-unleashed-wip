@@ -7,7 +7,7 @@ import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_threadsafe
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -76,22 +76,17 @@ def _prof_report():
     print("=============================================================================\n", flush=True)
 
 
-def _gpu_guard(pooled=False, threadsafe=False):
+def _gpu_guard(pooled=False):
     """Return the GPU lock only when the active provider needs serialising
     (TensorRT); otherwise a no-op context so threads run concurrently.
 
-    `pooled=True` marks a stage whose processor owns a SessionPool (its own
-    per-thread TensorRT contexts). When pooling is enabled the lease provides
-    safe concurrency, so we must NOT also take the global lock or the stage
-    would re-serialise — return a no-op context instead.
-
-    `threadsafe=True` marks a stage whose session was built WITHOUT TensorRT
-    (CUDA/CPU only). onnxruntime's CUDA/CPU Run() is thread-safe, so such a stage
-    can run concurrently from every worker thread with no lock — even though the
-    swapper still uses TensorRT. Face detection and the mask models set this, so
-    the two heaviest stages (~94% of video time) stop serialising the pipeline."""
-    if threadsafe:
-        return contextlib.nullcontext()
+    `pooled=True` marks a stage that leases from a pool of INDEPENDENT sessions
+    (the swapper's onnxruntime SessionPool, the per-instance FaceAnalysis pool, or
+    a mask SessionPool). Each lease hands one thread its own session, so the work
+    is already safely concurrent and must NOT also take the global lock or it would
+    re-serialise — return a no-op context instead. When no pool exists the single
+    shared session is serialised by the lock (the original, known-safe behaviour),
+    which is why concurrency is opt-in via ROOP_TRT_POOL."""
     if pooled and session_pool.pooling_enabled():
         return contextlib.nullcontext()
     needs_lock = any('tensorrt' in str(p).lower() for p in roop.globals.execution_providers)
@@ -1053,7 +1048,7 @@ class ProcessMgr():
         precomputed = {}
 
         def handle(idx, frame):
-            with _gpu_guard(threadsafe=analysis_threadsafe()):
+            with _gpu_guard(pooled=analysis_pooled()):
                 faces = get_all_faces(frame)
             if not faces:
                 return
@@ -1149,7 +1144,7 @@ class ProcessMgr():
         precomp = stabilize and self._precomputed_mode and frame_idx is not None
 
         if self.options.swap_mode == "first":
-            with _prof('detect'), _gpu_guard(threadsafe=analysis_threadsafe()):  # detection: lock-free on CUDA
+            with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detection: lock-free on CUDA
                 face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
@@ -1162,7 +1157,7 @@ class ProcessMgr():
             del face
 
         else:
-            with _prof('detect'), _gpu_guard(threadsafe=analysis_threadsafe()):  # detection: lock-free on CUDA
+            with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detection: lock-free on CUDA
                 faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
@@ -1329,7 +1324,7 @@ class ProcessMgr():
                     rotcutframe = rotate_anticlockwise(rotcutframe)
                 elif rotation_action == "rotate_clockwise":
                     rotcutframe = rotate_clockwise(rotcutframe)
-                with _gpu_guard(threadsafe=analysis_threadsafe()):  # autorotate re-detection: lock-free on CUDA
+                with _gpu_guard(pooled=analysis_pooled()):  # autorotate re-detection: lock-free on CUDA
                     rotface = get_first_face(rotcutframe)
                 if rotface is None:
                     rotation_action = None
@@ -1433,7 +1428,7 @@ class ProcessMgr():
                         except Exception:
                             pass
 
-                    with _gpu_guard(threadsafe=analysis_threadsafe()):  # re-detection on posed crop: lock-free on CUDA
+                    with _gpu_guard(pooled=analysis_pooled()):  # re-detection on posed crop: lock-free on CUDA
                         posed_face = _gff(posed_crop)
                     if (posed_face is not None
                             and hasattr(posed_face, 'normed_embedding')
@@ -1526,7 +1521,7 @@ class ProcessMgr():
                     except Exception as e:
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
-                with _prof('mask'), _gpu_guard(threadsafe=getattr(p, 'threadsafe', False)):  # CUDA masks run lock-free
+                with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # CUDA masks run lock-free
                     fake_frame = self.process_mask(p, aligned_img, fake_frame)
                     if enhanced_frame is not None:
                         enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame)
