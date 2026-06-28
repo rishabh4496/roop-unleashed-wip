@@ -3,6 +3,7 @@
 import os
 import sys
 import shutil
+import time as _time
 # single thread doubles cuda performance - needs to be set before torch import
 if any(arg.startswith('--execution-provider') for arg in sys.argv):
     os.environ['OMP_NUM_THREADS'] = '1'
@@ -39,6 +40,16 @@ from roop.capturer import get_video_frame_total, release_video
 clip_text = None
 
 call_display_ui = None
+
+
+def _remove_file_retry(path, attempts=5, delay=0.3):
+    for i in range(attempts):
+        try:
+            os.remove(path)
+            return
+        except PermissionError:
+            if i < attempts - 1:
+                _time.sleep(delay)
 
 process_mgr = None
 _preview_process_mgr = None   # dedicated instance for live_swap — never shared with batch
@@ -695,7 +706,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     # timing — avoids a lossy re-detect from the intermediate MP4.
                     ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
                     if os.path.isfile(destination):
-                        os.remove(video_file_name)
+                        _remove_file_retry(video_file_name)
                 else:
                     skip_audio = roop.globals.skip_audio
                     destination = util.replace_template(video_file_name, index=index)
@@ -704,7 +715,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     if not skip_audio:
                         ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
                         if os.path.isfile(destination):
-                            os.remove(video_file_name)
+                            _remove_file_retry(video_file_name)
                     else:
                         shutil.move(video_file_name, destination)
 

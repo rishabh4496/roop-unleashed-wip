@@ -529,7 +529,29 @@ class ProcessMgr():
                         print(f'[ProcessMgr] GPU error on video frame {threadindex} — writing original: {err_str[:200]}')
                         resimg = frame  # fall back to unmodified frame
                     else:
+                        # Fatal non-GPU RuntimeError: drain our input queue and post
+                        # sentinel so write_frames_thread doesn't hang forever.
+                        try:
+                            while True:
+                                self.frames_queue[threadindex].get_nowait()
+                        except Exception:
+                            pass
+                        self.processing_threads -= 1
+                        self.processed_queue[threadindex].put((False, None))
+                        roop.globals.processing = False
                         raise
+                except Exception:
+                    # Any other exception (cv2.error, MemoryError, etc.) — same
+                    # drain-and-signal so write_frames_thread unblocks.
+                    try:
+                        while True:
+                            self.frames_queue[threadindex].get_nowait()
+                    except Exception:
+                        pass
+                    self.processing_threads -= 1
+                    self.processed_queue[threadindex].put((False, None))
+                    roop.globals.processing = False
+                    raise
                 self.processed_queue[threadindex].put((True, resimg))
                 del frame
                 progress()
