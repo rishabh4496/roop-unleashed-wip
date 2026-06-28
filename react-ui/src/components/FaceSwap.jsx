@@ -285,7 +285,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        sam2_model_size: p.sam2_model_size,
+        sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
       });
@@ -505,7 +505,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         enhancer: p.selected_enhancer, detection: p.face_detection_mode,
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        sam2_model_size: p.sam2_model_size,
+        sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
       });
@@ -572,6 +572,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
+          <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
           <Toggle label="High-accuracy detection (640px)" info="On = 640px (accurate, default). Off = 320px: ~4× faster face detection, but may miss small or distant faces. Leave on for far/multi-face shots; turn off to speed up close-up swaps." checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />

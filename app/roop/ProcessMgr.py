@@ -716,6 +716,21 @@ class ProcessMgr():
                 print(f'[SAM2] pre-pass failed ({e}); falling back to unmasked swap')
                 sam2_p.precomputed = {}
 
+        # Identity-lock pre-pass: track each person across the clip and assign a
+        # single source per track, so the per-frame embedding match can't flip
+        # identities mid-video. Opt-in, only for "selected" mode on real video.
+        self._track_mode = False
+        self._track_assignments = {}
+        if (roop.globals.track_identities and not is_awebp
+                and self.options.swap_mode == "selected"
+                and len(self.target_face_datas) > 0):
+            try:
+                self._precompute_tracks(source_video, frame_start, frame_end, frame_count)
+                self._track_mode = True
+            except Exception as e:
+                print(f'[Track] identity pre-pass failed ({e}); using per-frame matching')
+                self._track_mode = False
+
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
         try:
             if use_parallel_stab:
@@ -1128,6 +1143,103 @@ class ProcessMgr():
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+    @staticmethod
+    def _bbox_iou(a, b):
+        ax0, ay0, ax1, ay1 = a; bx0, by0, bx1, by1 = b
+        ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+        ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+        iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        ua = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
+        return inter / ua if ua > 0 else 0.0
+
+    def _precompute_tracks(self, source_video, frame_start, frame_end, frame_count):
+        """Identity-lock pass 1: build tracklets (IoU + embedding association)
+        across the clip, assign each tracklet to ONE source via its mean embedding,
+        and store {frame_idx: [(bbox_centroid, src_index), ...]} for pass 2 to look
+        up by nearest centroid — so a person keeps the same source for the whole
+        clip instead of being re-matched (and possibly flipped) every frame."""
+        from roop.face_util import get_all_faces
+
+        tracks = []          # {id, bbox, emb_mean, embs, last_seen}
+        next_id = 0
+        per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
+        IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
+
+        cap = cv2.VideoCapture(source_video)
+        try:
+            if frame_start and frame_start > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
+            idx = 0
+            while roop.globals.processing:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    break
+                with _gpu_guard(pooled=analysis_pooled()):
+                    faces = get_all_faces(frame) or []
+                entries, used = [], set()
+                for face in faces:
+                    bbox = np.asarray(face.bbox, dtype=np.float32)
+                    emb = face.embedding
+                    best, best_iou = None, IOU_MIN
+                    for t in tracks:
+                        if t['id'] in used or t['last_seen'] < idx - STALE:
+                            continue
+                        iou = self._bbox_iou(bbox, t['bbox'])
+                        if iou < best_iou:
+                            continue
+                        if compute_cosine_distance(t['emb_mean'], emb) > EMB_MAX:
+                            continue
+                        best, best_iou = t, iou
+                    if best is None:
+                        best = {'id': next_id, 'bbox': bbox, 'emb_mean': emb,
+                                'embs': [emb], 'last_seen': idx}
+                        next_id += 1
+                        tracks.append(best)
+                    else:
+                        best['bbox'] = bbox
+                        best['embs'].append(emb)
+                        best['emb_mean'] = np.mean(best['embs'], axis=0)
+                        best['last_seen'] = idx
+                    used.add(best['id'])
+                    centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
+                                         (bbox[1] + bbox[3]) * 0.5], np.float32)
+                    entries.append((centroid, best['id']))
+                per_frame[idx] = entries
+                idx += 1
+                if frame_count and idx >= frame_count:
+                    break
+        finally:
+            cap.release()
+
+        # Assign each track to a source (person rank), once, by mean embedding.
+        groups = self.target_face_groups
+        uniq = sorted(set(groups)) if groups else []
+        rank = {g: r for r, g in enumerate(uniq)}
+        single_person = len(uniq) <= 1
+        threshold = self.options.face_distance_threshold
+        track_src = {}
+        for t in tracks:
+            best_i, best_d = -1, threshold
+            for i, tf in enumerate(self.target_face_datas):
+                d = compute_cosine_distance(tf.embedding, t['emb_mean'])
+                if d <= best_d:
+                    best_d, best_i = d, i
+            if best_i < 0:
+                track_src[t['id']] = None
+            else:
+                track_src[t['id']] = self.options.selected_index if single_person else rank[groups[best_i]]
+
+        self._track_assignments = {
+            f: [(c, track_src.get(tid)) for (c, tid) in lst] for f, lst in per_frame.items()
+        }
+        matched = sum(1 for v in track_src.values() if v is not None)
+        print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
+              f'{matched} matched to a source')
+
+
     def _precompute_stabilized_kps(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Pass 1 of 2-pass stabilization. Sequentially detect every frame's faces
         and run their kps through the (order-dependent) kps stabilizer, returning
@@ -1275,6 +1387,24 @@ class ProcessMgr():
                         temp_frame = self.process_face(i, face, temp_frame)
                     else:
                         break
+
+            elif self.options.swap_mode == "selected" and getattr(self, '_track_mode', False) and frame_idx is not None:
+                # Identity-lock: use the source assigned to this person's TRACK in
+                # the pre-pass (matched by nearest bbox centroid), so the source
+                # can't flip frame-to-frame as it can with per-frame embedding
+                # matching. Falls through to per-frame matching if untracked.
+                entries = self._track_assignments.get(frame_idx, [])
+                if entries:
+                    cents = np.array([e[0] for e in entries], dtype=np.float32)
+                    for face in faces:
+                        bb = face.bbox
+                        c = np.array([(bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5], np.float32)
+                        j = int(np.argmin(np.hypot(cents[:, 0] - c[0], cents[:, 1] - c[1])))
+                        src_index = entries[j][1]
+                        if src_index is None or src_index >= len(self.input_face_datas):
+                            continue
+                        temp_frame = self.process_face(src_index, face, temp_frame)
+                        num_faces_found += 1
 
             elif self.options.swap_mode == "selected":
                 # Multi-angle matching: for each detected face, find the target
