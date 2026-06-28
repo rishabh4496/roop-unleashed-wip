@@ -68,7 +68,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Floating Header Capsule */}
-      <header className="sticky top-4 z-40 mx-auto max-w-[1450px] 3xl:max-w-[1800px] 4xl:max-w-[2300px] 5xl:max-w-[2800px] w-[92%] sm:w-[96%] rounded-2xl glass-panel px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
         <div className="flex items-center gap-3">
           <span className="text-2xl">⚡</span>
           <h1 className="text-lg font-black tracking-wider uppercase text-white/90">
@@ -93,7 +93,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <main className="flex-1 max-w-[1500px] 3xl:max-w-[1850px] 4xl:max-w-[2350px] 5xl:max-w-[2850px] w-full mx-auto px-6 py-8 mt-4">
+      <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4">
         {error && (
           <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
             ⚠️ {error}

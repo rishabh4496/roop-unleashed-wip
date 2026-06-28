@@ -30,6 +30,18 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
   const [splitView, setSplitView] = useState(false);
+  
+  // Custom Timeline and Playback States
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLooping, setIsLooping] = useState(true);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
+  const [storyboardThumbs, setStoryboardThumbs] = useState([]);
+  const timelineRef = useRef(null);
+  const playIntervalRef = useRef(null);
+  const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
+  const [origStartEnd, setOrigStartEnd] = useState(null);
+
   const pollRef = useRef(null);
   const startTimeRef = useRef(null);
   const previewBusyRef = useRef(false);   // a /api/preview call is in flight
@@ -136,11 +148,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   // Auto-refresh preview when the target list, selected target, or frame
   // changes (targets.length covers initial rehydrate after a page refresh).
   useEffect(() => {
-    if (targets.length === 0 || progress.processing) return;
+    if (targets.length === 0 || progress.processing || isScrubbing || isPlaying) return;
     const t = setTimeout(() => refreshPreview(), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selTarget, frame, targets.length]);
+  }, [selTarget, frame, targets.length, isScrubbing, isPlaying]);
 
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
@@ -155,11 +167,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     dds: p.default_det_size,
   });
   useEffect(() => {
-    if (targets.length === 0 || progress.processing) return;
+    if (targets.length === 0 || progress.processing || isScrubbing || isPlaying) return;
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewKey, sourceFaces.length, targetFaces.length]);
+  }, [previewKey, sourceFaces.length, targetFaces.length, isScrubbing, isPlaying]);
 
   // ── source / target file handling ──
   const onAddSource = async (files) => {
@@ -239,14 +251,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     } catch (e) { notify(e.message, 'error'); }
   };
 
-  const setFrameMarker = async (which) => {
-    try {
-      const res = await postJSON('/api/target/set_frame', { which, frame });
-      if (res.targets) setTargets(res.targets);
-      notify(`Set ${which} frame = ${frame}`);
-    } catch (e) { notify(e.message, 'error'); }
-  };
-
   const setFrameMarkerVal = async (which, val) => {
     if (!val || isNaN(val)) return;
     try {
@@ -316,11 +320,216 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     catch (e) { notify(e.message, 'error'); }
   };
 
+  // Playback timer effect
+  useEffect(() => {
+    if (isPlaying) {
+      const fps = targets[selTarget]?.fps || 25;
+      const intervalMs = 1000 / fps;
+      playIntervalRef.current = setInterval(() => {
+        setFrame((f) => {
+          const start = targets[selTarget]?.start_frame ?? 1;
+          const end = targets[selTarget]?.end_frame ?? maxFrames;
+          let next = f + 1;
+          if (next > end) {
+            if (isLooping) {
+              next = start;
+            } else {
+              setIsPlaying(false);
+              return f;
+            }
+          }
+          return next;
+        });
+      }, intervalMs);
+    } else {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+    }
+    return () => {
+      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
+    };
+  }, [isPlaying, isLooping, selTarget, maxFrames, targets]);
+
+  // Storyboard loading effect
+  useEffect(() => {
+    if (targets.length === 0 || maxFrames <= 1) {
+      setStoryboardThumbs([]);
+      return;
+    }
+    const numThumbs = 8;
+    const step = maxFrames > numThumbs ? (maxFrames - 1) / (numThumbs - 1) : 1;
+    const urls = [];
+    for (let i = 0; i < numThumbs; i++) {
+      const f = Math.min(maxFrames, Math.round(1 + i * step));
+      urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}`);
+    }
+    setStoryboardThumbs(urls);
+  }, [selTarget, maxFrames, targets.length]);
+
+  // Scrubbing event handler setup
+  const updateTimelinePos = (targetFrame, type) => {
+    if (type === 'start') {
+      const end = targets[selTarget]?.end_frame ?? maxFrames;
+      const val = Math.max(1, Math.min(targetFrame, end));
+      setTargets((prev) => {
+        const copy = [...prev];
+        if (copy[selTarget]) copy[selTarget] = { ...copy[selTarget], start_frame: val };
+        return copy;
+      });
+    } else if (type === 'end') {
+      const start = targets[selTarget]?.start_frame ?? 1;
+      const val = Math.max(start, Math.min(targetFrame, maxFrames));
+      setTargets((prev) => {
+        const copy = [...prev];
+        if (copy[selTarget]) copy[selTarget] = { ...copy[selTarget], end_frame: val };
+        return copy;
+      });
+    } else {
+      setFrame(Math.max(1, Math.min(targetFrame, maxFrames)));
+    }
+  };
+
+  useEffect(() => {
+    if (!isScrubbing) return;
+
+    const handlePointerMove = (e) => {
+      if (!timelineRef.current) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+      if (clientX === undefined) return;
+      const x = clientX - rect.left;
+      const pct = Math.max(0, Math.min(x / rect.width, 1));
+      const targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+      updateTimelinePos(targetFrame, dragType);
+    };
+
+    const handlePointerUp = () => {
+      setIsScrubbing(false);
+      if (dragType === 'start') {
+        const val = targets[selTarget]?.start_frame ?? 1;
+        setFrameMarkerVal('start', val);
+      } else if (dragType === 'end') {
+        const val = targets[selTarget]?.end_frame ?? maxFrames;
+        setFrameMarkerVal('end', val);
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [isScrubbing, dragType, selTarget, maxFrames, targets]);
+
+  const handleTimelinePointerDown = (e) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+    if (clientX === undefined) return;
+    const x = clientX - rect.left;
+    const pct = Math.max(0, Math.min(x / rect.width, 1));
+    const targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+
+    const sPct = ((targets[selTarget]?.start_frame ?? 1) - 1) / (maxFrames - 1);
+    const ePct = ((targets[selTarget]?.end_frame ?? maxFrames) - 1) / (maxFrames - 1);
+    const cPct = (frame - 1) / (maxFrames - 1);
+
+    const distStart = Math.abs(pct - sPct);
+    const distEnd = Math.abs(pct - ePct);
+    const distCurrent = Math.abs(pct - cPct);
+
+    let dragTarget = 'playhead';
+    const tolerance = 0.04;
+
+    if (distStart < tolerance && distStart < distEnd && distStart < distCurrent) {
+      dragTarget = 'start';
+    } else if (distEnd < tolerance && distEnd < distStart && distEnd < distCurrent) {
+      dragTarget = 'end';
+    } else {
+      dragTarget = 'playhead';
+    }
+
+    setDragType(dragTarget);
+    setIsScrubbing(true);
+    updateTimelinePos(targetFrame, dragTarget);
+  };
+
+  const renderPreviewClip = async () => {
+    if (targets.length === 0) return;
+    const fps = targets[selTarget]?.fps || 25;
+    const origStart = targets[selTarget]?.start_frame || 1;
+    const origEnd = targets[selTarget]?.end_frame || maxFrames;
+    setOrigStartEnd({ start: origStart, end: origEnd });
+    setIsGeneratingPreviewClip(true);
+
+    const previewStart = frame;
+    // 5 seconds preview = frame + 5 * fps
+    const previewEnd = Math.min(maxFrames, frame + Math.round(5 * fps));
+
+    try {
+      // Set temporary start/end frames in backend
+      await postJSON('/api/target/set_frame', { which: 'start', frame: previewStart });
+      await postJSON('/api/target/set_frame', { which: 'end', frame: previewEnd });
+
+      // Start the swap with current settings
+      await postJSON('/api/settings', p);
+      await postJSON('/api/swap', {
+        ...p,
+        enhancer: p.selected_enhancer, detection: p.face_detection_mode,
+        output_method: p.output_method, video_method: p.video_swapping_method,
+        upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
+        num_swap_steps: num(p.num_swap_steps, 1),
+      });
+      
+      startTimeRef.current = Date.now();
+      notify('Generating 5-second preview clip...');
+      startPolling();
+    } catch (e) {
+      notify(e.message, 'error');
+      setIsGeneratingPreviewClip(false);
+      setOrigStartEnd(null);
+    }
+  };
+
+  // Restoration effect when swapping finishes
+  useEffect(() => {
+    if (isGeneratingPreviewClip && !progress.processing && origStartEnd) {
+      const restore = async () => {
+        try {
+          await postJSON('/api/target/set_frame', { which: 'start', frame: origStartEnd.start });
+          await postJSON('/api/target/set_frame', { which: 'end', frame: origStartEnd.end });
+          
+          // Sync targets list
+          const res = await getJSON('/api/state');
+          if (res.targets) setTargets(res.targets);
+        } catch (e) {
+          console.error("Failed to restore timeline range markers:", e);
+        } finally {
+          setIsGeneratingPreviewClip(false);
+          setOrigStartEnd(null);
+          notify('5-second preview clip generated successfully!');
+        }
+      };
+      restore();
+    }
+  }, [progress.processing, isGeneratingPreviewClip, origStartEnd]);
+
+  const startFrame = targets[selTarget]?.start_frame || 1;
+  const endFrame = targets[selTarget]?.end_frame || maxFrames;
+  const startPct = maxFrames > 1 ? ((startFrame - 1) / (maxFrames - 1)) * 100 : 0;
+  const endPct = maxFrames > 1 ? ((endFrame - 1) / (maxFrames - 1)) * 100 : 100;
+  const currentPct = maxFrames > 1 ? ((frame - 1) / (maxFrames - 1)) * 100 : 0;
+
   return (
-    <div className="flex flex-col lg:flex-row gap-6 items-start">
-      {/* LEFT SIDEBAR: Settings & Controls (Scrollable and fixed-width on large viewports) */}
-      <div className="w-full lg:w-[400px] 3xl:w-[460px] 4xl:w-[520px] shrink-0 space-y-6 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
-        <Section title="Swap settings">
+    <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
+      {/* COLUMN 1: Settings & Controls (Scrollable sidebar on large viewports) */}
+      <div className="w-full lg:w-[400px] 3xl:w-[820px] 4xl:w-[900px] shrink-0 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+        <div className="grid grid-cols-1 3xl:grid-cols-2 gap-6">
+          <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Toggle label="High-accuracy detection (640px)" info="On = 640px (accurate, default). Off = 320px: ~4× faster face detection, but may miss small or distant faces. Leave on for far/multi-face shots; turn off to speed up close-up swaps." checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
@@ -381,18 +590,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
           )}
         </Section>
 
-        <Section title="System options">
-          <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
-          <Toggle label="Skip audio" checked={!!p.skip_audio} onChange={(v) => set('skip_audio', v)} />
-          <Toggle label="Keep frames (when extracting)" checked={!!p.keep_frames} onChange={(v) => set('keep_frames', v)} />
-          <Toggle label="Wait before creating video" checked={!!p.wait_after_extraction} onChange={(v) => set('wait_after_extraction', v)} />
-        </Section>
+        <div className="3xl:col-span-2">
+          <Section title="System options">
+            <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
+            <Toggle label="Skip audio" checked={!!p.skip_audio} onChange={(v) => set('skip_audio', v)} />
+            <Toggle label="Keep frames (when extracting)" checked={!!p.keep_frames} onChange={(v) => set('keep_frames', v)} />
+            <Toggle label="Wait before creating video" checked={!!p.wait_after_extraction} onChange={(v) => set('wait_after_extraction', v)} />
+          </Section>
+        </div>
       </div>
+    </div>
 
-      {/* RIGHT WORKSPACE: Media, Preview & Output */}
-      <div className="flex-1 w-full space-y-6">
-        {/* uploads */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* COLUMN 2 & 3 WRAPPER: Media asset managers on left and large active workspace on right */}
+      <div className="flex-1 w-full space-y-6 flex flex-col 2xl:flex-row gap-6">
+        
+        {/* COLUMN 2: Media Asset Manager */}
+        <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
           <Section title="Source images / facesets">
             <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
             <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
@@ -430,155 +643,290 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             )}
             {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setPreviewSrc(''); }}>Clear targets</Button>}
           </Section>
-        </div>
 
-        {/* preview */}
-        <Section title="Preview">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <div className="md:col-span-2 space-y-3">
-              {previewSrc ? (
-                <InteractivePreview 
-                  beforeSrc={rawUrl} 
-                  afterSrc={previewSrc} 
-                  faces={previewFaces}
-                  splitView={splitView}
-                  compare={compare}
-                  setCompare={setCompare}
-                  frame={frame}
-                  setFrame={setFrame}
-                  maxFrames={maxFrames}
-                  previewing={previewing}
-                  previewSecs={previewSecs}
-                />
-              ) : (
-                <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
-                  <span className="text-[var(--text-muted)] text-sm">Select a target to preview</span>
-                </div>
-              )}
-              <div className="flex items-center flex-wrap gap-3">
-                <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-                <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
-                {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-                <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
-                <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
-              </div>
-              {maxFrames > 1 && (
-                <>
-                  <div className="pt-2 border-t border-white/5">
-                    <Slider label="Frame" info={`${frame} / ${maxFrames}`} min={1} max={maxFrames} step={1} value={frame}
-                      onChange={(v) => setFrame(v)} />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
-                    <Button size="sm" variant="secondary" onClick={() => refreshPreview()} className="!py-1.5 flex-1 sm:flex-none justify-center">Show frame</Button>
-                    <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
-                    
-                    <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
-                      <span className="text-xs opacity-60">Start:</span>
-                      <input type="number" 
-                        className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
-                        key={`start-${selTarget}-${targets[selTarget]?.start_frame}`}
-                        defaultValue={targets[selTarget]?.start_frame ?? 1}
-                        onBlur={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
-                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                      />
-                    </div>
-                    <Button size="sm" variant="ghost" onClick={() => setFrameMarker('start')} title="Set to current slider frame" className="!py-1.5 !px-2">⬅ Set</Button>
-                    
-                    <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block"></div>
-                    
-                    <div className="flex items-center gap-1 bg-black/30 rounded px-2 py-1">
-                      <span className="text-xs opacity-60">End:</span>
-                      <input type="number" 
-                        className="bg-transparent w-16 text-right font-mono text-[var(--text-main)] outline-none text-sm focus:ring-1 focus:ring-[var(--accent)] rounded border border-white/10 px-1"
-                        key={`end-${selTarget}-${targets[selTarget]?.end_frame}`}
-                        defaultValue={targets[selTarget]?.end_frame ?? maxFrames}
-                        onBlur={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
-                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                      />
-                    </div>
-                    <Button size="sm" variant="ghost" onClick={() => setFrameMarker('end')} title="Set to current slider frame" className="!py-1.5 !px-2">Set ➡</Button>
-                  </div>
-                </>
-              )}
-            </div>
-            <div>
-              <FaceGallery title="Target faces" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-                groups={targetGroups} vertical={true}
-                onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
-                empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
-              {targetFaces.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  <Button size="sm" variant="primary" className="w-full justify-center" onClick={addAngle}>
-                    ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
-                  </Button>
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
-                    <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
-                    <Button size="sm" variant="stop" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
-                  </div>
-                  <p className="text-[11px] text-[var(--text-muted)] leading-snug">
-                    Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </Section>
-
-        {/* output results */}
-        <Section title="Output settings & renders">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-            <div className="space-y-4">
-              <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
-            </div>
-            {out?.path && (
-              <div className="space-y-2">
-                <div className="text-xs text-[var(--text-muted)]">Latest output</div>
-                {out.kind === 'video'
-                  ? <video src={outUrl} controls className="w-full rounded-xl border border-white/5" />
-                  : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
+          <Section title="Target faces">
+            <FaceGallery title="" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
+              groups={targetGroups} vertical={true}
+              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
+              empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
+            {targetFaces.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <Button size="sm" variant="primary" className="w-full justify-center" onClick={addAngle}>
+                  ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
+                </Button>
                 <div className="flex flex-wrap gap-2">
-                  <a href={outUrl} download
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
-                  <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+                  <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
+                  <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
+                  <Button size="sm" variant="stop" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
+                </div>
+                <p className="text-[11px] text-[var(--text-muted)] leading-snug">
+                  Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
+                </p>
+              </div>
+            )}
+          </Section>
+        </div>
+
+        {/* COLUMN 3: Active Canvas, Timeline & Outputs */}
+        <div className="flex-1 min-w-0 space-y-6">
+          <Section title="Preview">
+            {previewSrc ? (
+              <InteractivePreview 
+                beforeSrc={rawUrl} 
+                afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : rawUrl} 
+                faces={previewFaces}
+                splitView={splitView}
+                compare={compare}
+                setCompare={setCompare}
+                frame={frame}
+                setFrame={setFrame}
+                maxFrames={maxFrames}
+                previewing={previewing}
+                previewSecs={previewSecs}
+                setIsPlaying={setIsPlaying}
+              />
+            ) : (
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
+                <span className="text-[var(--text-muted)] text-sm">Select a target to preview</span>
+              </div>
+            )}
+            
+            <div className="flex items-center flex-wrap gap-3">
+              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
+              {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
+              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
+              <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
+            </div>
+
+            {/* CINEMATIC TIMELINE SLIDER */}
+            {maxFrames > 1 && (
+              <div className="space-y-3 pt-3 border-t border-white/5 select-none">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-white/40">Cinematic Timeline</span>
+                  <div className="text-[11px] font-mono text-[var(--text-muted)] bg-black/30 px-2 py-0.5 rounded border border-white/5">
+                    Start: <span className="text-[var(--text-main)] font-semibold">{targets[selTarget]?.start_frame ?? 1}</span> · 
+                    End: <span className="text-[var(--text-main)] font-semibold">{targets[selTarget]?.end_frame ?? maxFrames}</span>
+                  </div>
+                </div>
+
+                {/* Timeline Track with Storyboard Background */}
+                <div 
+                  ref={timelineRef}
+                  onPointerDown={handleTimelinePointerDown}
+                  className="relative h-14 w-full rounded-xl bg-black/60 border border-white/10 overflow-hidden cursor-ew-resize select-none shadow-inner"
+                >
+                  {/* Storyboard Thumbnails strip */}
+                  {storyboardThumbs.length > 0 && (
+                    <div className="absolute inset-0 flex opacity-30 pointer-events-none">
+                      {storyboardThumbs.map((url, i) => (
+                        <img 
+                          key={i} 
+                          src={url} 
+                          alt="thumb" 
+                          className="flex-1 h-full object-cover border-r border-white/5 last:border-r-0"
+                          loading="lazy"
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Active Track Highlight */}
+                  <div 
+                    className="absolute top-0 bottom-0 bg-[var(--accent)]/15 border-l border-r border-[var(--accent)]/30 z-10 pointer-events-none"
+                    style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
+                  />
+
+                  {/* Start Marker Handle */}
+                  <div 
+                    className="absolute top-0 bottom-0 w-1.5 bg-emerald-500 hover:bg-emerald-400 z-25 transition-colors"
+                    style={{ left: `${startPct}%` }}
+                  >
+                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-emerald-500 border border-white/20 shadow-md pointer-events-none" />
+                    {/* Visual marker bracket */}
+                    <div className="absolute top-1/2 left-0 w-2 h-4 -translate-y-1/2 border-t-2 border-b-2 border-r-2 border-emerald-500 rounded-r pointer-events-none" />
+                  </div>
+
+                  {/* End Marker Handle */}
+                  <div 
+                    className="absolute top-0 bottom-0 w-1.5 bg-orange-500 hover:bg-orange-400 z-25 transition-colors"
+                    style={{ left: `${endPct}%` }}
+                  >
+                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-orange-500 border border-white/20 shadow-md pointer-events-none" />
+                    {/* Visual marker bracket */}
+                    <div className="absolute top-1/2 right-0 w-2 h-4 -translate-y-1/2 border-t-2 border-b-2 border-l-2 border-orange-500 rounded-l pointer-events-none" />
+                  </div>
+
+                  {/* Red Playhead Line & Top diamond */}
+                  <div 
+                    className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-30 pointer-events-none shadow-[0_0_8px_rgba(239,68,68,0.8)]"
+                    style={{ left: `${currentPct}%` }}
+                  >
+                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-red-500 border border-white/20 shadow-md" />
+                  </div>
+                </div>
+
+                {/* Cinematic Timeline Controls Toolbar */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
+                  {/* Left Side: Timecode / Frame Info */}
+                  <div className="text-xs text-[var(--text-muted)] font-mono flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-[var(--text-main)] text-sm">Frame {frame}</span>
+                      <span className="opacity-40">/</span>
+                      <span className="opacity-60">{maxFrames}</span>
+                    </div>
+                    <span className="opacity-30 hidden sm:inline">·</span>
+                    <span className="bg-white/5 px-2 py-0.5 rounded text-[11px]">{(frame / (targets[selTarget]?.fps || 25)).toFixed(2)}s</span>
+                  </div>
+
+                  {/* Center: Playback Control Buttons */}
+                  <div className="flex items-center gap-1 bg-black/40 p-1 rounded-lg border border-white/5">
+                    <button 
+                      onClick={() => setFrame(targets[selTarget]?.start_frame || 1)} 
+                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                      title="Jump to Start Range"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+                    </button>
+                    <button 
+                      onClick={() => setFrame(f => Math.max(1, f - 1))} 
+                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                      title="Previous Frame (Left Arrow)"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 12 5 12"/><polyline points="12 19 5 12 12 5"/></svg>
+                    </button>
+                    
+                    <button 
+                      onClick={() => setIsPlaying(!isPlaying)} 
+                      className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1 active:scale-95 transition-all ${isPlaying ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-[var(--accent)] text-white shadow-[0_2px_8px_var(--accent-glow)] hover:bg-[var(--accent-hover)]'}`}
+                      title="Play/Pause (Spacebar)"
+                    >
+                      {isPlaying ? (
+                        <>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                          PAUSE
+                        </>
+                      ) : (
+                        <>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                          PLAY
+                        </>
+                      )}
+                    </button>
+
+                    <button 
+                      onClick={() => setFrame(f => Math.min(maxFrames, f + 1))} 
+                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                      title="Next Frame (Right Arrow)"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 12 19 12"/><polyline points="12 5 19 12 12 19"/></svg>
+                    </button>
+                    <button 
+                      onClick={() => setFrame(targets[selTarget]?.end_frame || maxFrames)} 
+                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                      title="Jump to End Range"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                    </button>
+                  </div>
+
+                  {/* Right Side: Loop toggle & manual start/end frame inputs */}
+                  <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                    {/* Manual start/end numeric inputs */}
+                    <div className="flex items-center gap-1.5 bg-black/20 px-2 py-1 rounded-lg border border-white/5">
+                      <span className="text-[10px] text-white/40 font-semibold uppercase">Range:</span>
+                      <input 
+                        type="number"
+                        value={targets[selTarget]?.start_frame || 1}
+                        onChange={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
+                        className="bg-black/30 w-12 text-center text-xs font-mono font-bold text-emerald-400 outline-none rounded border border-white/5 py-0.5 focus:border-emerald-500"
+                        title="Start Frame"
+                      />
+                      <span className="text-white/20 text-xs">-</span>
+                      <input 
+                        type="number"
+                        value={targets[selTarget]?.end_frame || maxFrames}
+                        onChange={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
+                        className="bg-black/30 w-12 text-center text-xs font-mono font-bold text-orange-400 outline-none rounded border border-white/5 py-0.5 focus:border-orange-500"
+                        title="End Frame"
+                      />
+                    </div>
+
+                    <button 
+                      onClick={() => setIsLooping(!isLooping)} 
+                      className={`p-1.5 rounded transition-all active:scale-95 ${isLooping ? 'bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30' : 'text-white/40 hover:text-white/60 hover:bg-white/5'}`} 
+                      title="Toggle Loop Playback"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
-          </div>
-        </Section>
+          </Section>
 
-        {/* run bar */}
-        <div className="sticky bottom-0 py-3 z-30">
-          <div className="rounded-2xl glass-panel p-4 flex items-center gap-4 shadow-2xl">
-            {progress.processing ? (
-              <div className="flex items-center gap-2">
-                {progress.paused ? (
-                  <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
-                ) : (
-                  <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
-                )}
-                <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+          <Section title="Output settings & renders">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              <div className="space-y-4">
+                <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
               </div>
-            ) : (
-              <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
-            )}
-            <div className="flex-1">
-              <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
-                <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
-                <span className="flex items-center gap-2 tabular-nums">
-                  {progress.processing && (
-                    <span className="text-[var(--text-muted)] opacity-70">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
+              {out?.path && (
+                <div className="space-y-2">
+                  <div className="text-xs text-[var(--text-muted)]">Latest output</div>
+                  {out.kind === 'video'
+                    ? <video src={outUrl} controls className="w-full rounded-xl border border-white/5" />
+                    : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
+                  <div className="flex flex-wrap gap-2">
+                    <a href={outUrl} download
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
+                    <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Section>
+
+          {/* run bar */}
+          <div className="sticky bottom-0 py-3 z-30">
+            <div className="rounded-2xl glass-panel p-4 flex items-center gap-4 shadow-2xl">
+              {progress.processing ? (
+                <div className="flex items-center gap-2">
+                  {progress.paused ? (
+                    <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
+                  ) : (
+                    <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
                   )}
-                  <span className="font-bold text-[var(--text-main)]">{Math.round(prog * 100)}%</span>
-                </span>
+                  <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
+                  {maxFrames > 1 && (
+                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10">
+                      ⚡ Render 5s Preview
+                    </Button>
+                  )}
+                </div>
+              )}
+              <div className="flex-1">
+                <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
+                  <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
+                  <span className="flex items-center gap-2 tabular-nums">
+                    {progress.processing && (
+                      <span className="text-[var(--text-muted)] opacity-70">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
+                    )}
+                    <span className="font-bold text-[var(--text-main)]">{Math.round(prog * 100)}%</span>
+                  </span>
+                </div>
+                <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
+                  <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
+                </div>
+                {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
               </div>
-              <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
-                <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
-              </div>
-              {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
             </div>
           </div>
         </div>
+
       </div>
     </div>
   );
@@ -663,11 +1011,11 @@ function InteractivePreview({
   splitView = false,
   compare = false,
   setCompare,
-  frame,
   setFrame,
   maxFrames = 1,
   previewing = false,
-  previewSecs = 0
+  previewSecs = 0,
+  setIsPlaying
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -700,7 +1048,7 @@ function InteractivePreview({
     };
   }, []);
 
-  // Keyboard Navigation: arrow keys step frames, spacebar toggles compare
+  // Keyboard Navigation: arrow keys step frames, spacebar toggles play/compare
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ignore if user is typing in input fields
@@ -712,9 +1060,13 @@ function InteractivePreview({
       } else if (e.key === 'ArrowRight' && maxFrames > 1 && setFrame) {
         e.preventDefault();
         setFrame((f) => Math.min(maxFrames, f + 1));
-      } else if (e.key === ' ' && setCompare) {
+      } else if (e.key === ' ') {
         e.preventDefault();
-        setCompare((c) => !c);
+        if (maxFrames > 1 && setIsPlaying) {
+          setIsPlaying((p) => !p);
+        } else if (setCompare) {
+          setCompare((c) => !c);
+        }
       } else if (e.key === '=' || e.key === '+') {
         e.preventDefault();
         setZoom((z) => Math.min(z + 0.5, 5));
@@ -729,7 +1081,7 @@ function InteractivePreview({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [maxFrames, setFrame, setCompare]);
+  }, [maxFrames, setFrame, setCompare, setIsPlaying]);
 
   const handleWheel = (e) => {
     e.preventDefault();
@@ -812,7 +1164,7 @@ function InteractivePreview({
     return (
       <div 
         ref={containerRef}
-        className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
+        className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
         onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
       >
         <div className="flex w-full h-full transition-transform duration-75" style={transformStyle}>
@@ -850,7 +1202,7 @@ function InteractivePreview({
   // Standard or Slide-Comparison View
   return (
     <div 
-      className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
+      className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
       ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
     >
       {previewing && <FloatingEmojis />}
