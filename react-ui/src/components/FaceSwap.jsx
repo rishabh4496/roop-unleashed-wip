@@ -273,6 +273,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         num_swap_steps: num(p.num_swap_steps, 1),
       });
       startTimeRef.current = Date.now();
+      // Optimistically flag processing so the old "Latest output" clears
+      // immediately, before the first poll tick (~1s) confirms it.
+      setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Starting…' }));
       notify('Processing started');
       startPolling();
     } catch (e) { notify(e.message, 'error'); }
@@ -308,7 +311,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   };
   useEffect(() => () => pollRef.current && clearInterval(pollRef.current), []);
 
-  const out = progress.output;
+  // Hide the previous "Latest output" while a job is running so a new upload +
+  // run never shows a stale result. The poll keeps reporting the old _last_output
+  // until the new job finishes, so we gate on `processing` rather than clearing
+  // progress.output (which the next poll tick would just restore).
+  const out = progress.processing ? null : progress.output;
   const outUrl = out?.path ? `${API}/api/file?path=${encodeURIComponent(out.path)}&t=${progress.progress}` : '';
   const prog = progress.progress || 0;
   const elapsedMs = progress.processing && startTimeRef.current ? Date.now() - startTimeRef.current : 0;
