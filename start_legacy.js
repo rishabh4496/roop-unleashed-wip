@@ -11,10 +11,10 @@ module.exports = {
           ROOP_BATCH_SWAP_XFRAME: "1", 
           ROOP_BATCH_SWAP: "1", 
           ROOP_STAB_PARALLEL: "1",
-          OMP_NUM_THREADS: "16",
-          OPENBLAS_NUM_THREADS: "16",
-          MKL_NUM_THREADS: "16",
-          NUMEXPR_NUM_THREADS: "16"
+          OMP_NUM_THREADS: "1",
+          OPENBLAS_NUM_THREADS: "1",
+          MKL_NUM_THREADS: "1",
+          NUMEXPR_NUM_THREADS: "1"
         },
         path: "app",
         message: [

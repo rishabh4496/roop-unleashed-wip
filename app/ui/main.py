@@ -39,7 +39,14 @@ def run():
 
     set_display_ui(show_msg)
     if roop.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
-       roop.globals.CFG.provider = "cpu"
+        import onnxruntime as _ort
+        _available = _ort.get_available_providers()
+        if 'DmlExecutionProvider' in _available:
+            roop.globals.CFG.provider = "dml"
+        elif 'ROCMExecutionProvider' in _available:
+            roop.globals.CFG.provider = "rocm"
+        else:
+            roop.globals.CFG.provider = "cpu"
 
     # If TensorRT is selected, verify its runtime DLLs are actually loadable.
     # onnxruntime lists TensorrtExecutionProvider as "available" even when the
@@ -57,7 +64,12 @@ def run():
             print("TensorRT runtime libraries not found – falling back to CUDA provider.")
             roop.globals.CFG.provider = "cuda"
 
-    roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
+    # Configure execution providers. If TensorRT is selected, also register CUDA as a fallback
+    # to prevent silent fallback to CPU if TensorRT initialization fails at run time.
+    providers = [roop.globals.CFG.provider]
+    if roop.globals.CFG.provider == "tensorrt":
+        providers.append("cuda")
+    roop.globals.execution_providers = decode_execution_providers(providers)
     gputype = util.get_device()
     if gputype == 'cuda':
         util.print_cuda_info()

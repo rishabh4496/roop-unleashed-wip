@@ -1520,6 +1520,8 @@ class ProcessMgr():
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard():    # mask model inference is GPU work
                     fake_frame = self.process_mask(p, aligned_img, fake_frame)
+                    if enhanced_frame is not None:
+                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame)
             else:
                 # Pooled (no global lock) ONLY when this enhancer built its own
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool

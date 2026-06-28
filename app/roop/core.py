@@ -304,9 +304,7 @@ def start() -> None:
 def get_processing_plugins(masking_engine, swap_model='inswapper'):
     """Build the processor dict for ProcessOptions."""
     processors = {"faceswap": {"swap_model": swap_model}}
-    if masking_engine is not None:
-        processors.update({masking_engine: {}})
-    
+
     if roop.globals.selected_enhancer == 'GFPGAN':
         processors.update({"gfpgan": {}})
     elif roop.globals.selected_enhancer == 'Codeformer':
@@ -317,6 +315,10 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         processors.update({"gpen": {}})
     elif roop.globals.selected_enhancer == 'Restoreformer++':
         processors.update({"restoreformer++": {}})
+
+    if masking_engine is not None:
+        processors.update({masking_engine: {}})
+
     return processors
 
 

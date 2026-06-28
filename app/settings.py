@@ -92,6 +92,15 @@ class Settings:
             self.max_threads = default_threads
         else:
             self.max_threads = saved_threads
+
+        # Prevent extreme CPU oversubscription by capping max_threads to logical CPU cores
+        try:
+            import psutil
+            logical_cores = psutil.cpu_count(logical=True) or 4
+            if self.max_threads > logical_cores:
+                self.max_threads = logical_cores
+        except Exception:
+            pass
         
         self.memory_limit = self.default_get(data, 'memory_limit', 0)
         self.provider = self.default_get(data, 'provider', 'cuda')
