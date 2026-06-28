@@ -23,6 +23,24 @@ from datetime import datetime
 
 import roop.template_parser as template_parser
 
+
+def cuda_only_providers(providers: List[Any]) -> List[Any]:
+    """Return a copy of an onnxruntime providers list with the TensorRT provider
+    removed, leaving CUDA (+ CPU fallback) in place.
+
+    Rationale: TensorRT's execution context is NOT thread-safe, which forces the
+    pipeline to serialise every TRT inference behind one global lock. The CUDA and
+    CPU execution providers ARE thread-safe, so a session built without TensorRT
+    can be called concurrently from many worker threads with no lock. For the small
+    detection / landmark / recognition / mask models this trades a negligible
+    single-call slowdown for full multi-thread concurrency (and skips per-machine
+    TRT engine builds), which is the dominant throughput win. Entries may be plain
+    strings or (name, options) tuples; both are handled. A CPU-only list (no TRT to
+    strip) passes through unchanged."""
+    stripped = [p for p in providers
+                if 'tensorrt' not in str(p[0] if isinstance(p, (tuple, list)) else p).lower()]
+    return stripped if stripped else list(providers)
+
 import roop.globals
 
 TEMP_FILE = "temp.mp4"

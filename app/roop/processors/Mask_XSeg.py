@@ -5,7 +5,7 @@ import threading
 import roop.globals
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, cuda_only_providers
 
 THREAD_LOCK_CLIP = threading.Lock()
 
@@ -17,6 +17,9 @@ class Mask_XSeg():
 
     processorname = 'mask_xseg'
     type = 'mask'
+    # Built on thread-safe providers (CUDA/CPU, no TensorRT) so ProcessMgr can run
+    # the mask concurrently across worker threads without the global GPU lock.
+    threadsafe = True
 
 
     def Initialize(self, plugin_options:dict):
@@ -28,7 +31,7 @@ class Mask_XSeg():
         if self.model_xseg is None:
             model_path = resolve_relative_path('../models/xseg.onnx')
             onnxruntime.set_default_logger_severity(3)
-            self.model_xseg = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_xseg = onnxruntime.InferenceSession(model_path, None, providers=cuda_only_providers(roop.globals.execution_providers))
             self.model_inputs = self.model_xseg.get_inputs()
             self.model_outputs = self.model_xseg.get_outputs()
 

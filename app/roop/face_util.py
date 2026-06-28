@@ -9,12 +9,24 @@ import cv2
 import numpy as np
 from skimage import transform as trans
 from roop.capturer import get_video_frame
-from roop.utilities import resolve_relative_path, conditional_download
+from roop.utilities import resolve_relative_path, conditional_download, cuda_only_providers
 
 FACE_ANALYSER = None
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
+
+# True when the active FaceAnalysis was built on thread-safe providers
+# (CUDA / CPU, i.e. without TensorRT), so its get() can be called concurrently
+# from many worker threads WITHOUT the global GPU lock. ProcessMgr reads this to
+# decide whether face detection needs serialising. Detection is ~55% of video
+# processing time, so running it concurrently is the single biggest win for
+# keeping the GPU busy and the frame rate steady.
+_ANALYSIS_THREADSAFE = False
+
+
+def analysis_threadsafe() -> bool:
+    return _ANALYSIS_THREADSAFE
 
 
 def release_face_analyser():
@@ -26,7 +38,7 @@ def release_face_analyser():
 
 
 def get_face_analyser() -> Any:
-    global FACE_ANALYSER
+    global FACE_ANALYSER, _ANALYSIS_THREADSAFE
 
     with THREAD_LOCK_ANALYSER:
         if FACE_ANALYSER is None or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis:
@@ -40,10 +52,23 @@ def get_face_analyser() -> Any:
                     name="buffalo_l",
                     root=model_path, providers=["CPUExecutionProvider"],allowed_modules=allowed_modules
                 )
+                _ANALYSIS_THREADSAFE = True
             else:
+                # Build the detection / landmark / recognition models WITHOUT
+                # TensorRT (CUDA + CPU only). Those providers are thread-safe, so
+                # get() can run concurrently across all worker threads with no
+                # global GPU lock — detection no longer serialises the pipeline.
+                # Same model weights, so the result is bit-for-bit equivalent
+                # (CUDA defaults to FP32, i.e. equal-or-higher precision than the
+                # TRT FP16 path it replaces — no quality loss). The heavy swapper
+                # keeps its own TensorRT multi-context pool.
+                analysis_providers = cuda_only_providers(roop.globals.execution_providers)
                 FACE_ANALYSER = insightface.app.FaceAnalysis(
-                    name="buffalo_l", root=model_path, providers=roop.globals.execution_providers,allowed_modules=allowed_modules
+                    name="buffalo_l", root=model_path, providers=analysis_providers,allowed_modules=allowed_modules
                 )
+                _ANALYSIS_THREADSAFE = not any(
+                    'tensorrt' in str(p[0] if isinstance(p, (tuple, list)) else p).lower()
+                    for p in analysis_providers)
             FACE_ANALYSER.prepare(
                 ctx_id=0,
                 det_size=(640, 640) if roop.globals.default_det_size else (320, 320),

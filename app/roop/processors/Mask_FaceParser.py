@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path, conditional_download
+from roop.utilities import resolve_relative_path, conditional_download, cuda_only_providers
 
 
 # BiSeNet (yakhyo/face-parsing, resnet18) trained on CelebAMask-HQ — 19 classes:
@@ -33,6 +33,9 @@ class Mask_FaceParser():
 
     processorname = 'mask_faceparser'
     type = 'mask'
+    # Built on thread-safe providers (CUDA/CPU, no TensorRT) so ProcessMgr can run
+    # the mask concurrently across worker threads without the global GPU lock.
+    threadsafe = True
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
@@ -46,7 +49,7 @@ class Mask_FaceParser():
             model_path = os.path.join(model_dir, _MODEL_FILE)
             onnxruntime.set_default_logger_severity(3)
             self.model = onnxruntime.InferenceSession(
-                model_path, None, providers=roop.globals.execution_providers)
+                model_path, None, providers=cuda_only_providers(roop.globals.execution_providers))
             self.input_name = self.model.get_inputs()[0].name
             self.output_name = self.model.get_outputs()[0].name
 
