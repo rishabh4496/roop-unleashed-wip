@@ -5,8 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path, conditional_download, cuda_only_providers
-from roop import session_pool
+from roop.utilities import resolve_relative_path, conditional_download
 
 
 # BiSeNet (yakhyo/face-parsing, resnet18) trained on CelebAMask-HQ — 19 classes:
@@ -35,12 +34,6 @@ class Mask_FaceParser():
     processorname = 'mask_faceparser'
     type = 'mask'
 
-    def __init__(self):
-        # SessionPool of independent CUDA sessions so the mask can run concurrently
-        # across worker threads (ProcessMgr keys lock-free concurrency off `pool`).
-        # None → single shared session serialised by the global lock (safe default).
-        self.pool = None
-
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
             if self.plugin_options["devicename"] != plugin_options["devicename"]:
@@ -52,26 +45,13 @@ class Mask_FaceParser():
             conditional_download(model_dir, [_MODEL_URL])
             model_path = os.path.join(model_dir, _MODEL_FILE)
             onnxruntime.set_default_logger_severity(3)
-            # CUDA/CPU only (no TensorRT) so the sessions are independent and cheap.
-            providers = cuda_only_providers(roop.globals.execution_providers)
-
-            def _build(_i=0):
-                return onnxruntime.InferenceSession(model_path, None, providers=providers)
-
-            self.model = _build()
+            self.model = onnxruntime.InferenceSession(
+                model_path, None, providers=roop.globals.execution_providers)
             self.input_name = self.model.get_inputs()[0].name
             self.output_name = self.model.get_outputs()[0].name
 
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
-
-            # Optional multi-session pool (same knob as the swapper, ROOP_TRT_POOL):
-            # up to N threads run the mask concurrently, each on its own session.
-            if session_pool.pooling_enabled():
-                n = session_pool.pool_size()
-                extras = [_build(i) for i in range(n - 1)]
-                self.pool = session_pool.SessionPool(
-                    lambda i, _e=([self.model] + extras): _e[i], n)
 
     def Run(self, img1, keywords: str) -> Frame:
         # img1 is the aligned face crop (BGR uint8). Returned mask matches the
@@ -82,11 +62,7 @@ class Mask_FaceParser():
         rgb = (rgb - _MEAN) / _STD
         blob = np.transpose(rgb, (2, 0, 1))[None, ...].astype(np.float32)
 
-        if self.pool is not None:
-            with self.pool.lease() as sess:
-                ort_outs = sess.run([self.output_name], {self.input_name: blob})
-        else:
-            ort_outs = self.model.run([self.output_name], {self.input_name: blob})
+        ort_outs = self.model.run([self.output_name], {self.input_name: blob})
         labels = ort_outs[0][0].argmax(0)                          # (512,512) class ids
         face = np.isin(labels, _FACE_CLASSES).astype(np.float32)   # 1 inside swap region
         # Soften edges so the blend matches the smooth XSeg output.
@@ -96,8 +72,5 @@ class Mask_FaceParser():
         return (1.0 - face).astype(np.float32)
 
     def Release(self):
-        if self.pool is not None:
-            self.pool.release()
-            self.pool = None
         del self.model
         self.model = None

@@ -1,128 +1,59 @@
 import threading
-import contextlib
-from queue import Queue
 from typing import Any
 import insightface
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop import session_pool
 
 import cv2
 import numpy as np
 from skimage import transform as trans
 from roop.capturer import get_video_frame
-from roop.utilities import resolve_relative_path, conditional_download, cuda_only_providers
+from roop.utilities import resolve_relative_path, conditional_download
 
-# Pool of independent insightface FaceAnalysis instances.
-#
-# A single FaceAnalysis instance is NOT safe to call concurrently from multiple
-# worker threads (its internal models share buffers / caches), which is why face
-# detection used to run behind the one global GPU lock — serialising ~55% of the
-# pipeline and leaving the GPU idle. To run detection concurrently we give each
-# worker its OWN instance (leased from this pool), exactly like the swapper does
-# with its onnxruntime SessionPool. The instances are built WITHOUT TensorRT
-# (CUDA/CPU only) so each is cheap (weights only, no per-context TRT engine) and
-# numerically identical to the model weights — no quality loss.
-#
-# Concurrency is opt-in via ROOP_TRT_POOL (same knob as the swapper): with a pool
-# of N, up to N threads detect in parallel. WITHOUT a pool (size 1) detection
-# falls back to the single shared instance serialised by the global lock — the
-# original, known-safe behaviour — so default installs and small GPUs are never
-# at risk. VRAM cost scales ~N x the (small) buffalo_l weights.
-FACE_ANALYSER = None              # primary instance (== FACE_ANALYSER_POOL[0])
-FACE_ANALYSER_POOL = []           # all instances (length 1 when not pooling)
-_ANALYSER_Q = None                # lease queue (only used when pooling)
+FACE_ANALYSER = None
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
 
 
-def analysis_pooled() -> bool:
-    """True when >1 independent FaceAnalysis instance exists, i.e. detection can
-    run lock-free concurrently (each worker leases its own instance). ProcessMgr
-    passes this as `pooled=` to _gpu_guard: pooled → no global lock; otherwise the
-    single shared instance is serialised by the lock (safe)."""
-    return len(FACE_ANALYSER_POOL) > 1
-
-
-def _build_face_analyser():
-    model_path = resolve_relative_path('..')
-    allowed_modules = roop.globals.g_desired_face_analysis
-    if roop.globals.CFG.force_cpu:
-        providers = ["CPUExecutionProvider"]
-    else:
-        # Detection / landmark / recognition WITHOUT TensorRT (CUDA + CPU only).
-        # CUDA defaults to FP32 — equal-or-higher precision than the TRT FP16 it
-        # replaces, so no quality loss. The heavy swapper keeps its own TRT pool.
-        providers = cuda_only_providers(roop.globals.execution_providers)
-    fa = insightface.app.FaceAnalysis(
-        name="buffalo_l", root=model_path, providers=providers, allowed_modules=allowed_modules)
-    fa.prepare(
-        ctx_id=0,
-        det_size=(640, 640) if roop.globals.default_det_size else (320, 320),
-    )
-    return fa
-
-
-def _ensure_face_analyser():
-    """(Re)build the FaceAnalysis pool when missing or when the requested module
-    set changed. Returns the primary instance."""
-    global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q
-    # Fast path (no lock): the pool is built once before the run and the module
-    # set is stable during it, so the hot per-frame detect path skips the lock.
-    if FACE_ANALYSER_POOL and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis:
-        return FACE_ANALYSER
-    with THREAD_LOCK_ANALYSER:
-        if not FACE_ANALYSER_POOL or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis:
-            roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
-            if roop.globals.CFG.force_cpu:
-                print("Forcing CPU for Face Analysis")
-            n = session_pool.pool_size() if session_pool.pooling_enabled() else 1
-            FACE_ANALYSER_POOL = [_build_face_analyser() for _ in range(n)]
-            FACE_ANALYSER = FACE_ANALYSER_POOL[0]
-            q = Queue()
-            for fa in FACE_ANALYSER_POOL:
-                q.put(fa)
-            _ANALYSER_Q = q
-            if n > 1:
-                print(f"[FaceAnalysis] pool of {n} instances — detection runs {n}-way concurrent (lock-free).")
-    return FACE_ANALYSER
-
-
 def release_face_analyser():
-    global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q
+    global FACE_ANALYSER
     with THREAD_LOCK_ANALYSER:
-        FACE_ANALYSER = None
-        FACE_ANALYSER_POOL = []
-        _ANALYSER_Q = None
+        if FACE_ANALYSER is not None:
+            del FACE_ANALYSER
+            FACE_ANALYSER = None
 
 
 def get_face_analyser() -> Any:
-    return _ensure_face_analyser()
+    global FACE_ANALYSER
 
-
-@contextlib.contextmanager
-def lease_face_analyser():
-    """Lease one FaceAnalysis instance for the duration of a detect call. When a
-    pool exists each waiting thread gets its OWN instance (safe concurrency); the
-    Queue blocks once all N are out, capping concurrency at the pool size. Without
-    a pool it yields the single shared instance (caller serialises via the lock)."""
-    _ensure_face_analyser()
-    if analysis_pooled():
-        fa = _ANALYSER_Q.get()
-        try:
-            yield fa
-        finally:
-            _ANALYSER_Q.put(fa)
-    else:
-        yield FACE_ANALYSER
+    with THREAD_LOCK_ANALYSER:
+        if FACE_ANALYSER is None or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis:
+            model_path = resolve_relative_path('..')
+            # removed genderage
+            allowed_modules = roop.globals.g_desired_face_analysis
+            roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
+            if roop.globals.CFG.force_cpu:
+                print("Forcing CPU for Face Analysis")
+                FACE_ANALYSER = insightface.app.FaceAnalysis(
+                    name="buffalo_l",
+                    root=model_path, providers=["CPUExecutionProvider"],allowed_modules=allowed_modules
+                )
+            else:
+                FACE_ANALYSER = insightface.app.FaceAnalysis(
+                    name="buffalo_l", root=model_path, providers=roop.globals.execution_providers,allowed_modules=allowed_modules
+                )
+            FACE_ANALYSER.prepare(
+                ctx_id=0,
+                det_size=(640, 640) if roop.globals.default_det_size else (320, 320),
+            )
+    return FACE_ANALYSER
 
 
 def get_first_face(frame: Frame) -> Any:
     try:
-        with lease_face_analyser() as fa:
-            faces = fa.get(frame)
+        faces = get_face_analyser().get(frame)
         return min(faces, key=lambda x: x.bbox[0])
     #   return sorted(faces, reverse=True, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))[0]
     except:
@@ -131,8 +62,7 @@ def get_first_face(frame: Frame) -> Any:
 
 def get_all_faces(frame: Frame) -> Any:
     try:
-        with lease_face_analyser() as fa:
-            faces = fa.get(frame)
+        faces = get_face_analyser().get(frame)
         return sorted(faces, key=lambda x: x.bbox[0])
     except:
         return None
