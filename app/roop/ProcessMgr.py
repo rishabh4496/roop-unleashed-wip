@@ -1868,13 +1868,18 @@ class ProcessMgr():
         img_mask = cv2.resize(img_mask, (target.shape[1], target.shape[0]))
         img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
 
+        if frame.shape[:2] != target.shape[:2]:
+            frame_resized = cv2.resize(frame, (target.shape[1], target.shape[0]))
+        else:
+            frame_resized = frame
+
         if self.options.show_face_masking:
-            result = (1 - img_mask) * frame.astype(np.float32)
+            result = (1 - img_mask) * frame_resized.astype(np.float32)
             return np.uint8(result)
 
         target = target.astype(np.float32)
         result = (1 - img_mask) * target
-        result += img_mask * frame.astype(np.float32)
+        result += img_mask * frame_resized.astype(np.float32)
         return np.uint8(result)
 
 
