@@ -104,7 +104,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
-        swap_model: p.swap_model,
+        swap_model: p.swap_model, default_det_size: p.default_det_size,
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewSrc(res.image || '');
@@ -152,6 +152,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
+    dds: p.default_det_size,
   });
   useEffect(() => {
     if (targets.length === 0 || progress.processing) return;
@@ -322,6 +323,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
+          <Toggle label="High-accuracy detection (640px)" info="On = 640px (accurate, default). Off = 320px: ~4× faster face detection, but may miss small or distant faces. Leave on for far/multi-face shots; turn off to speed up close-up swaps." checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face similarity" info="0=identical 1=any" min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />

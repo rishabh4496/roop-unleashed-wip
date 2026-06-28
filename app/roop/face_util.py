@@ -27,9 +27,14 @@ from roop.utilities import resolve_relative_path, conditional_download
 FACE_ANALYSER = None              # primary instance (== FACE_ANALYSER_POOL[0])
 FACE_ANALYSER_POOL = []           # all instances (length 1 when not pooling)
 _ANALYSER_Q = None                # lease queue (only used when pooling)
+_ANALYSER_DET_SIZE = None         # det_size the pool was built with (rebuild on change)
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
+
+
+def _desired_det_size():
+    return (640, 640) if roop.globals.default_det_size else (320, 320)
 
 
 def analysis_pooled() -> bool:
@@ -49,22 +54,28 @@ def _build_face_analyser():
         name="buffalo_l", root=model_path, providers=providers, allowed_modules=allowed_modules)
     fa.prepare(
         ctx_id=0,
-        det_size=(640, 640) if roop.globals.default_det_size else (320, 320),
+        det_size=_desired_det_size(),
     )
     return fa
 
 
 def _ensure_face_analyser():
-    """(Re)build the FaceAnalysis pool when missing or when the requested module
-    set changed. Returns the primary instance."""
-    global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q
-    # Fast path (no lock): pool is built once before the run and the module set is
-    # stable during it, so the hot per-frame detect path skips the lock.
-    if FACE_ANALYSER_POOL and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis:
+    """(Re)build the FaceAnalysis pool when missing, when the requested module set
+    changed, or when the detection resolution (default_det_size) changed. Returns
+    the primary instance."""
+    global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q, _ANALYSER_DET_SIZE
+    # Fast path (no lock): pool is built once before the run and the module set +
+    # det_size are stable during it, so the hot per-frame detect path skips the lock.
+    if (FACE_ANALYSER_POOL
+            and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis
+            and _ANALYSER_DET_SIZE == _desired_det_size()):
         return FACE_ANALYSER
     with THREAD_LOCK_ANALYSER:
-        if not FACE_ANALYSER_POOL or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis:
+        if (not FACE_ANALYSER_POOL
+                or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis
+                or _ANALYSER_DET_SIZE != _desired_det_size()):
             roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
+            _ANALYSER_DET_SIZE = _desired_det_size()
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
             n = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1

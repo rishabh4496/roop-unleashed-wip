@@ -506,6 +506,10 @@ def preview(payload: dict = Body(...)):
     if current_frame is None:
         return JSONResponse(status_code=404, content={"message": "no frame"})
 
+    # Apply detection resolution before any detection so the face-box overlay and
+    # the swap both use the chosen det_size (640 accurate / 320 fast).
+    roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
+
     faces_list = []
     try:
         from roop.face_util import get_all_faces
@@ -607,6 +611,7 @@ def _run_swap(payload):
         roop_globals.wait_after_extraction = bool(payload.get("wait_after_extraction", roop_globals.CFG.wait_after_extraction))
         roop_globals.skip_audio = bool(payload.get("skip_audio", roop_globals.CFG.skip_audio))
         roop_globals.face_swap_mode = translate_swap_mode(detection)
+        roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", roop_globals.CFG.no_face_action))
         roop_globals.vr_mode = bool(payload.get("vr_mode", roop_globals.CFG.vr_mode))
         roop_globals.autorotate_faces = bool(payload.get("autorotate", roop_globals.CFG.autorotate_faces))
