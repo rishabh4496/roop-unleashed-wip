@@ -118,6 +118,8 @@ def map_mask_engine(selected_mask_engine, clip_text):
         return "mask_faceparser"
     if selected_mask_engine == "Segment Anything (MobileSAM)":
         return "mask_mobilesam"
+    if selected_mask_engine == "Segment Anything (FastSAM)":
+        return "mask_fastsam"
     return None
 
 
@@ -172,7 +174,7 @@ def get_meta():
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
         "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "Face Parser (BiSeNet)",
-                          "Segment Anything (MobileSAM)"],
+                          "Segment Anything (MobileSAM)", "Segment Anything (FastSAM)"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
         "video_methods": ["Extract Frames to media", "In-Memory processing"],

@@ -141,6 +141,7 @@ class ProcessMgr():
         'mask_xseg'         : 'Mask_XSeg',
         'mask_faceparser'   : 'Mask_FaceParser',
         'mask_mobilesam'    : 'Mask_MobileSAM',
+        'mask_fastsam'      : 'Mask_FastSAM',
         'codeformer'        : 'Enhance_CodeFormer',
         'gfpgan'            : 'Enhance_GFPGAN',
         'dmdnet'            : 'Enhance_DMDNet',
