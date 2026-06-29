@@ -1208,6 +1208,8 @@ class ProcessMgr():
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
             idx = 0
             while roop.globals.processing:
+                if frame_count and idx >= frame_count:
+                    break
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     break
