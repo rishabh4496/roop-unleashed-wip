@@ -297,6 +297,19 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
 
+  // While face-swap preview is on, auto-refresh when the swapped result would
+  // change: new source faces, target faces, or any swap/mask parameter.
+  const previewKey = JSON.stringify({
+    fp: fakePreview,
+    e: p.selected_enhancer, d: p.face_detection_mode, fd: p.max_face_distance,
+    br: p.blend_ratio, me: p.mask_engine, ct: p.mask_clip_text, nfa: p.no_face_action,
+    vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
+    rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
+    r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
+    uf: p.use_frontalization, fth: p.frontalization_threshold,
+    dds: p.default_det_size,
+  });
+
   // One-click speed/quality profiles. Each bundles the core levers (detection
   // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
   // engine, target selection, etc.) are left as-is. Pure UI — no runtime cost.
@@ -493,18 +506,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selTarget, frame, targets.length, isScrubbing, isPlaying]);
 
-  // While face-swap preview is on, auto-refresh when the swapped result would
-  // change: new source faces, target faces, or any swap/mask parameter.
-  const previewKey = JSON.stringify({
-    fp: fakePreview,
-    e: p.selected_enhancer, d: p.face_detection_mode, fd: p.max_face_distance,
-    br: p.blend_ratio, me: p.mask_engine, ct: p.mask_clip_text, nfa: p.no_face_action,
-    vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
-    rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
-    r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
-    uf: p.use_frontalization, fth: p.frontalization_threshold,
-    dds: p.default_det_size,
-  });
   useEffect(() => {
     if (targets.length === 0 || progress.processing || isScrubbing || isPlaying) return;
     const t = setTimeout(() => refreshPreview(), 350);
