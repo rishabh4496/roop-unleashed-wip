@@ -410,12 +410,26 @@ class ProcessMgr():
                         fs.face_poses = None
                         continue
                     poses = []
-                    for face in fs.faces:
+                    for idx, face in enumerate(fs.faces):
                         yaw_d = pitch_d = None
-                        if (hasattr(face, 'landmark_3d_68')
-                                and face.landmark_3d_68 is not None):
+                        curr_face = face
+                        if not hasattr(curr_face, 'landmark_3d_68') or curr_face.landmark_3d_68 is None:
+                            if idx < len(fs.ref_images) and fs.ref_images[idx] is not None:
+                                from roop.face_util import get_first_face
+                                redetected = get_first_face(fs.ref_images[idx])
+                                if redetected is not None:
+                                    curr_face = redetected
+                                    if hasattr(redetected, 'landmark_3d_68'):
+                                        face.landmark_3d_68 = redetected.landmark_3d_68
+                                        face['landmark_3d_68'] = redetected.landmark_3d_68
+                                        if hasattr(redetected, 'embedding'):
+                                            face.embedding = redetected.embedding
+                                            face['embedding'] = redetected.embedding
+
+                        if (hasattr(curr_face, 'landmark_3d_68')
+                                and curr_face.landmark_3d_68 is not None):
                             try:
-                                lm = face.landmark_3d_68[:, :2].astype(np.float32)
+                                lm = curr_face.landmark_3d_68[:, :2].astype(np.float32)
                                 rvec, _ = estimate_pose(lm, 512)
                                 y, p = decompose_yaw_pitch(rvec)
                                 yaw_d = _math.degrees(y)
