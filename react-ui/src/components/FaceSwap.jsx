@@ -408,7 +408,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     }
   };
 
-  const loadEnhancerPreviews = async () => {
+  const loadEnhancerPreviews = async (activeCheck) => {
     if (targets.length === 0) return;
     const list = ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'];
     const available = list.filter(e => meta.enhancers?.includes(e));
@@ -422,6 +422,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     });
 
     for (const enh of available) {
+      if (!activeCheck()) return;
       const localParams = { ...p, selected_enhancer: enh };
       const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
         fp: fakePreview,
@@ -435,6 +436,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
       
       if (previewCacheRef.current[cacheKey]) {
+        if (!activeCheck()) return;
         setEnhancerPreviews((prev) => ({ ...prev, [enh]: previewCacheRef.current[cacheKey].image }));
         continue;
       }
@@ -452,6 +454,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
         });
+        if (!activeCheck()) return;
         if (res.image) {
           setEnhancerPreviews((prev) => ({ ...prev, [enh]: res.image }));
           previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
@@ -464,7 +467,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   useEffect(() => {
     if (!comparingEnhancers || targets.length === 0) return;
-    loadEnhancerPreviews();
+    let active = true;
+    loadEnhancerPreviews(() => active);
+    return () => {
+      active = false;
+    };
   }, [comparingEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
