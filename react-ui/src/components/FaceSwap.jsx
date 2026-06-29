@@ -30,6 +30,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
   const [splitView, setSplitView] = useState(false);
+  const [comparingEnhancers, setComparingEnhancers] = useState(false);
+  const [enhancerPreviews, setEnhancerPreviews] = useState({});
 
   // Telemetry HUD State
   const [telemetry, setTelemetry] = useState(null);
@@ -405,6 +407,65 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       }
     }
   };
+
+  const loadEnhancerPreviews = async () => {
+    if (targets.length === 0) return;
+    const list = ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'];
+    const available = list.filter(e => meta.enhancers?.includes(e));
+
+    setEnhancerPreviews((prev) => {
+      const reset = {};
+      for (const enh of available) {
+        if (prev[enh]) reset[enh] = prev[enh];
+      }
+      return reset;
+    });
+
+    for (const enh of available) {
+      const localParams = { ...p, selected_enhancer: enh };
+      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
+        fp: fakePreview,
+        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
+        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
+        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
+        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
+        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
+        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
+        dds: localParams.default_det_size,
+      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+      
+      if (previewCacheRef.current[cacheKey]) {
+        setEnhancerPreviews((prev) => ({ ...prev, [enh]: previewCacheRef.current[cacheKey].image }));
+        continue;
+      }
+
+      try {
+        const res = await postJSON('/api/preview', {
+          index: selTarget, frame: frame, fake_preview: fakePreview,
+          enhancer: enh, detection: p.face_detection_mode,
+          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
+          mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
+          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
+          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
+          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
+          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
+          swap_model: p.swap_model, default_det_size: p.default_det_size,
+        });
+        if (res.image) {
+          setEnhancerPreviews((prev) => ({ ...prev, [enh]: res.image }));
+          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
+        }
+      } catch (err) {
+        // Fail silently
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!comparingEnhancers || targets.length === 0) return;
+    loadEnhancerPreviews();
+  }, [comparingEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
@@ -1024,20 +1085,38 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         <div className="flex-1 min-w-0 space-y-6">
           <Section title="Preview">
             {previewSrc ? (
-              <InteractivePreview 
-                beforeSrc={rawUrl} 
-                afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)} 
-                faces={previewFaces}
-                splitView={splitView}
-                compare={compare}
-                setCompare={setCompare}
-                frame={frame}
-                setFrame={setFrame}
-                maxFrames={maxFrames}
-                previewing={previewing}
-                previewSecs={previewSecs}
-                setIsPlaying={setIsPlaying}
-              />
+              comparingEnhancers ? (
+                <div className="grid grid-cols-2 gap-3 aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2">
+                  {['None', 'GPEN', 'Restoreformer++', 'GFPGAN'].filter(e => meta.enhancers?.includes(e)).map((enh) => (
+                    <div key={enh} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center">
+                      {enhancerPreviews[enh] ? (
+                        <img src={enhancerPreviews[enh]} alt={enh} className="max-w-full max-h-full object-contain" />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
+                          <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
+                          Rendering {enh}…
+                        </div>
+                      )}
+                      <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase">{enh}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <InteractivePreview 
+                  beforeSrc={rawUrl} 
+                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)} 
+                  faces={previewFaces}
+                  splitView={splitView}
+                  compare={compare}
+                  setCompare={setCompare}
+                  frame={frame}
+                  setFrame={setFrame}
+                  maxFrames={maxFrames}
+                  previewing={previewing}
+                  previewSecs={previewSecs}
+                  setIsPlaying={setIsPlaying}
+                />
+              )
             ) : (
               <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
                 <span className="text-[var(--text-muted)] text-sm">Select a target to preview</span>
@@ -1046,8 +1125,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             
             <div className="flex items-center flex-wrap gap-3">
               <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={setCompare} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
             </div>
