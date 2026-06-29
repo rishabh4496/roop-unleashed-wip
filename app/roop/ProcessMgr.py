@@ -1178,9 +1178,7 @@ class ProcessMgr():
         import os
         from roop.face_util import get_all_faces
 
-        # 1. Force low-res 320px detection during pre-pass to speed up inference by ~3x
-        orig_det_size = roop.globals.default_det_size
-        roop.globals.default_det_size = False
+
 
         # 2. Skip frames step (N=3 runs detection on 33% of frames; N=1 scans all)
         TRACK_STEP = 3
@@ -1271,8 +1269,7 @@ class ProcessMgr():
         finally:
             pbar.close()
             cap.release()
-            # Restore original accuracy configuration for the swap phase
-            roop.globals.default_det_size = orig_det_size
+            pass
 
         tracks = active + retired
         # Assign each track to a source (person rank), once, by mean embedding.
