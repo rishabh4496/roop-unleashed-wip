@@ -1660,16 +1660,46 @@ class ProcessMgr():
             if (getattr(self.options, 'use_source_bank', False)
                     and len(fs.faces) > 1
                     and fs.face_poses is not None):
-                best_idx  = 0
-                best_dist = float('inf')
-                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
-                    if yaw_d is None:
-                        continue
-                    dist = (tgt_yaw_deg - yaw_d) ** 2 + (tgt_pitch_deg - pitch_d) ** 2
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx  = i
-                inputface = fs.faces[best_idx]
+                # Dynamic pose-weighted blending of the source facesets.
+                # Computes a weighted sum of the face embeddings based on how close
+                # their yaw/pitch poses are to the target face's pose.
+                valid_faces = []
+                for idx, face in enumerate(fs.faces):
+                    if idx < len(fs.face_poses) and fs.face_poses[idx] is not None:
+                        y_d, p_d = fs.face_poses[idx]
+                        if y_d is not None:
+                            valid_faces.append((face, y_d, p_d))
+                
+                if valid_faces:
+                    # Calculate weights using a Gaussian function of distance in pose space (sigma = 18 degrees)
+                    sigma2 = 2 * (18.0 ** 2)
+                    weights = []
+                    for face, y_d, p_d in valid_faces:
+                        d2 = (tgt_yaw_deg - y_d) ** 2 + (tgt_pitch_deg - p_d) ** 2
+                        weights.append(_math.exp(-d2 / sigma2))
+                    
+                    sum_w = sum(weights)
+                    if sum_w > 0.001:
+                        blended_emb = np.zeros_like(valid_faces[0][0]['embedding'])
+                        for idx, w in enumerate(weights):
+                            blended_emb += (w / sum_w) * valid_faces[idx][0]['embedding']
+                        
+                        # Return a copy of the default face with the blended embedding
+                        import copy
+                        inputface = copy.copy(inputface)
+                        inputface['embedding'] = blended_emb
+                    else:
+                        # Fallback to closest single pose
+                        best_idx = 0
+                        best_dist = float('inf')
+                        for idx, (y_d, p_d) in enumerate(fs.face_poses):
+                            if y_d is None:
+                                continue
+                            dist = (tgt_yaw_deg - y_d) ** 2 + (tgt_pitch_deg - p_d) ** 2
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_idx = idx
+                        inputface = fs.faces[best_idx]
 
         # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
         if (getattr(self.options, 'use_3d_recon', False)
