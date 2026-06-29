@@ -5,9 +5,12 @@ module.exports = {
       method: "shell.run",
       params: {
         venv: "env",
-        env: { 
-          ROOP_TRT_POOL: "4", 
-          ROOP_PROFILE: "1", 
+        env: {
+          // GPU pool sizes are auto-tuned by detected VRAM (see
+          // app/roop/session_pool.py): small cards (e.g. 6GB) disable pooling,
+          // large cards get the validated multi-context settings. To force a
+          // value, set ROOP_TRT_POOL / ROOP_DETMASK_POOL here.
+          ROOP_PROFILE: "1",
           ROOP_BATCH_SWAP_XFRAME: "1", 
           ROOP_BATCH_SWAP: "1", 
           ROOP_STAB_PARALLEL: "1",

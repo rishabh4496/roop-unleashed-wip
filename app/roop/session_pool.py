@@ -20,14 +20,78 @@ import os
 import contextlib
 from queue import Queue
 
-try:
-    _POOL_SIZE = max(0, int(os.environ.get('ROOP_TRT_POOL', '0') or '0'))
-except ValueError:
-    _POOL_SIZE = 0
+
+def _detect_vram_gb() -> float:
+    """Best-effort total VRAM of the active CUDA device, in GB (0 if unknown).
+
+    Used to auto-tune the pool sizes so the same install runs on cards of very
+    different capacity. Detection is deferred to first use (not import time) so
+    torch's CUDA context is already initialised and import-order is irrelevant.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            idx = torch.cuda.current_device()
+            return torch.cuda.get_device_properties(idx).total_memory / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _auto_pool_defaults():
+    """VRAM-tiered defaults for (swapper pool, detmask pool).
+
+    Each pooled instance holds its OWN TensorRT engine + context, so VRAM scales
+    ~Nx per pooled model. The pools raise GPU concurrency/throughput (the swapper
+    pool was validated at +46% fps on a large card) but small cards can't afford
+    them — on a 6GB card the extra engines OOM / trigger an endless engine-build
+    thrash that drops throughput below 1fps. So: pools OFF on small cards, the
+    validated multi-context settings on large cards.
+
+        < 7 GB   (e.g. RTX 3060 6GB)  -> 0 / 0   (single context + global lock)
+        7-11 GB                       -> 2 / 2
+        >= 12 GB (e.g. 3060 12GB+)    -> 4 / 2   (validated)
+    """
+    gb = _detect_vram_gb()
+    if gb <= 0:
+        return 0, 0          # unknown / CPU-only -> safest
+    if gb < 7:
+        return 0, 0
+    if gb < 12:
+        return 2, 2
+    return 4, 2
+
+
+def _resolve(env_name, auto_value) -> int:
+    """Explicit env var wins (manual override); otherwise use the auto value."""
+    raw = os.environ.get(env_name)
+    if raw is not None and raw != '':
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return auto_value
+
+
+_pool_cache = {}
+
+
+def _resolve_pools():
+    if not _pool_cache:
+        auto_trt, auto_detmask = _auto_pool_defaults()
+        trt = _resolve('ROOP_TRT_POOL', auto_trt)
+        detmask = _resolve('ROOP_DETMASK_POOL', auto_detmask)
+        _pool_cache['trt'] = trt
+        _pool_cache['detmask'] = detmask
+        gb = _detect_vram_gb()
+        print(f"[SessionPool] detected {gb:.1f}GB VRAM -> "
+              f"ROOP_TRT_POOL={trt}, ROOP_DETMASK_POOL={detmask} "
+              f"(env override wins if set)")
+    return _pool_cache
 
 
 def pool_size() -> int:
-    return _POOL_SIZE
+    return _resolve_pools()['trt']
 
 
 def providers_without_tensorrt(providers):
@@ -49,7 +113,7 @@ def providers_without_tensorrt(providers):
 
 
 def pooling_enabled() -> bool:
-    return _POOL_SIZE >= 2
+    return pool_size() >= 2
 
 
 # Separate, opt-in pool for the face-analysis (detection/landmark/recognition)
@@ -61,20 +125,15 @@ def pooling_enabled() -> bool:
 #
 # Kept distinct from ROOP_TRT_POOL (the swapper pool) so it can be tuned / turned
 # off independently: each FaceAnalysis instance loads 5 small models, so VRAM
-# scales with the pool size. Default 0 (unset) = original single-instance + global
-# lock behaviour, byte-for-byte — zero risk for default installs and small GPUs.
-try:
-    _DETMASK_POOL_SIZE = max(0, int(os.environ.get('ROOP_DETMASK_POOL', '0') or '0'))
-except ValueError:
-    _DETMASK_POOL_SIZE = 0
-
-
+# scales with the pool size. The default is auto-tuned by VRAM (see
+# _auto_pool_defaults): 0 on small cards = original single-instance + global lock
+# behaviour, byte-for-byte. Set ROOP_DETMASK_POOL explicitly to override.
 def detmask_pool_size() -> int:
-    return _DETMASK_POOL_SIZE
+    return _resolve_pools()['detmask']
 
 
 def detmask_pooling_enabled() -> bool:
-    return _DETMASK_POOL_SIZE >= 2
+    return detmask_pool_size() >= 2
 
 
 class SessionPool:
