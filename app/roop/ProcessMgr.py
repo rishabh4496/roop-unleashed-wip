@@ -1198,9 +1198,8 @@ class ProcessMgr():
                 if not ret or frame is None:
                     break
                 
-                # Propagate assignments for skipped frames
+                # Skip frames to speed up detection and save memory
                 if idx > 0 and idx % TRACK_STEP != 0:
-                    per_frame[idx] = per_frame.get(idx - 1, []).copy()
                     idx += 1
                     pbar.update(1)
                     continue
@@ -1439,7 +1438,17 @@ class ProcessMgr():
                 # the pre-pass (matched by nearest bbox centroid), so the source
                 # can't flip frame-to-frame as it can with per-frame embedding
                 # matching. Falls through to per-frame matching if untracked.
-                entries = self._track_assignments.get(frame_idx, [])
+                entries = self._track_assignments.get(frame_idx)
+                if not entries:
+                    # Fallback lookup to nearest tracked frame within a 5-frame window
+                    for offset in range(1, 6):
+                        entries = self._track_assignments.get(frame_idx - offset)
+                        if entries:
+                            break
+                        entries = self._track_assignments.get(frame_idx + offset)
+                        if entries:
+                            break
+                entries = entries or []
                 if entries:
                     cents = np.array([e[0] for e in entries], dtype=np.float32)
                     for face in faces:
