@@ -1161,7 +1161,15 @@ class ProcessMgr():
         and store {frame_idx: [(bbox_centroid, src_index), ...]} for pass 2 to look
         up by nearest centroid — so a person keeps the same source for the whole
         clip instead of being re-matched (and possibly flipped) every frame."""
+        import os
         from roop.face_util import get_all_faces
+
+        # 1. Force low-res 320px detection during pre-pass to speed up inference by ~3x
+        orig_det_size = roop.globals.default_det_size
+        roop.globals.default_det_size = False
+
+        # 2. Skip frames step (N=3 runs detection on 33% of frames; N=1 scans all)
+        TRACK_STEP = 3
 
         # active = tracks seen within STALE frames (candidates for matching);
         # retired = older tracks, kept only for the final source assignment. This
@@ -1172,7 +1180,7 @@ class ProcessMgr():
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
         IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
-        print('[Track] identity pre-pass: scanning frames…')
+        print(f'[Track] identity pre-pass: scanning frames (step={TRACK_STEP}, low-res)...')
 
         # Terminal progress bar (same style as the swap phase) so the pre-pass is
         # visible in the console too, not just the web UI.
@@ -1189,6 +1197,14 @@ class ProcessMgr():
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     break
+                
+                # Propagate assignments for skipped frames
+                if idx > 0 and idx % TRACK_STEP != 0:
+                    per_frame[idx] = per_frame.get(idx - 1, []).copy()
+                    idx += 1
+                    pbar.update(1)
+                    continue
+
                 # Retire tracks not seen for STALE frames so matching stays O(active).
                 if active:
                     fresh = []
@@ -1240,6 +1256,8 @@ class ProcessMgr():
         finally:
             pbar.close()
             cap.release()
+            # Restore original accuracy configuration for the swap phase
+            roop.globals.default_det_size = orig_det_size
 
         tracks = active + retired
         # Assign each track to a source (person rank), once, by mean embedding.
