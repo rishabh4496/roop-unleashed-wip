@@ -1716,6 +1716,7 @@ class ProcessMgr():
 
         # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
         if (getattr(self.options, 'use_3d_recon', False)
+                and abs(tgt_yaw_deg) < 42.0  # bypass on extreme lateral profiles to prevent alignment distortion
                 and inputface is not None
                 and len(self.input_face_datas) > face_index
                 and self.input_face_datas[face_index].face_3d is not None):
@@ -1779,6 +1780,7 @@ class ProcessMgr():
         aligned_for_swap = aligned_img   # may be replaced by frontalized version
 
         if (getattr(self.options, 'use_frontalization', False)
+                and abs(tgt_yaw_deg) < 42.0  # bypass on extreme lateral profiles to prevent warping distortion
                 and tgt_lm68_crop is not None
                 and inputface is not None):
             try:
