@@ -1,19 +1,51 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { postFile, fileUrl } from '../api';
 import { Section, Select, Slider, Button } from './ui';
 
 const RESOLUTIONS = ['Original', '3840x', '2560x', '1920x', '1280x', '1024x', '640x'];
 const ROTATIONS = ['None', '90° Clockwise', '90° Counter-Clockwise', '180°'];
 
-export default function Extras({ notify }) {
+export default function Extras({ notify, registerFileListener }) {
   const [file, setFile] = useState(null);
   const [fileName, setFileName] = useState('');
+  const [fileUrlSrc, setFileUrlSrc] = useState('');
   const [opts, setOpts] = useState({ resolution: 'Original', rotation: 'None', fps: 30, crop_left: 0, crop_right: 0, crop_top: 0, crop_bottom: 0 });
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const set = (k, v) => setOpts((o) => ({ ...o, [k]: v }));
 
-  const onPick = (e) => { const f = e.target.files[0]; setFile(f); setFileName(f?.name || ''); setResult(null); };
+  const onPick = (e) => {
+    const f = e.target?.files?.[0] || e;
+    if (f) {
+      setFile(f);
+      setFileName(f.name);
+      setResult(null);
+      if (fileUrlSrc) URL.revokeObjectURL(fileUrlSrc);
+      setFileUrlSrc(URL.createObjectURL(f));
+    }
+  };
+
+  useEffect(() => {
+    if (!registerFileListener) return;
+    return registerFileListener((files) => {
+      const f = files[0];
+      if (f) {
+        setFile(f);
+        setFileName(f.name);
+        setResult(null);
+        if (fileUrlSrc) URL.revokeObjectURL(fileUrlSrc);
+        setFileUrlSrc(URL.createObjectURL(f));
+        notify(`Loaded ${f.name} into editor`);
+      }
+      return true; // consumed
+    });
+  }, [registerFileListener, fileUrlSrc]);
+
+  useEffect(() => {
+    return () => {
+      if (fileUrlSrc) URL.revokeObjectURL(fileUrlSrc);
+    };
+  }, [fileUrlSrc]);
 
   const apply = async () => {
     if (!file) { notify('Pick a file first', 'error'); return; }
@@ -34,11 +66,32 @@ export default function Extras({ notify }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
         <Section title="Input & transform">
           <label className="block cursor-pointer">
-            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60">
+            <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60 mb-4">
               📁 {fileName || 'Pick an image or video'}
             </div>
             <input type="file" accept="image/*,video/*" onChange={onPick} className="hidden" />
           </label>
+
+          {file && fileUrlSrc && (
+            <div className="relative overflow-hidden rounded-xl bg-black/45 border border-white/10 aspect-video flex items-center justify-center mb-4 max-h-[300px]">
+              {file.type?.startsWith('video') ? (
+                <video src={fileUrlSrc} muted loop autoPlay className="max-w-full max-h-full object-contain pointer-events-none" />
+              ) : (
+                <img src={fileUrlSrc} alt="Input source" className="max-w-full max-h-full object-contain pointer-events-none" />
+              )}
+              {/* Bounding box crop overlay dims the cropped regions */}
+              <div 
+                className="absolute border-2 border-dashed border-[var(--accent)] shadow-[0_0_0_9999px_rgba(0,0,0,0.6)] pointer-events-none z-20"
+                style={{
+                  left: `${opts.crop_left}%`,
+                  right: `${opts.crop_right}%`,
+                  top: `${opts.crop_top}%`,
+                  bottom: `${opts.crop_bottom}%`
+                }}
+              />
+            </div>
+          )}
+
           <Select label="Resize width" value={opts.resolution} onChange={(v) => set('resolution', v)} options={RESOLUTIONS} />
           <Select label="Rotation" value={opts.rotation} onChange={(v) => set('rotation', v)} options={ROTATIONS} />
           <Slider label="Output FPS (video)" min={1} max={120} step={1} value={opts.fps} onChange={(v) => set('fps', v)} />

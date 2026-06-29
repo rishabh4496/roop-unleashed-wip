@@ -1008,5 +1008,41 @@ async def extras_apply(file: UploadFile = File(...),
     return {"path": outpath, "kind": "video"}
 
 
+@app.get("/api/system/telemetry")
+def get_telemetry():
+    telemetry = {
+        "gpu": "CPU Only",
+        "vram_total": 0.0,
+        "vram_used": 0.0,
+        "cpu_percent": 0.0,
+        "ram_total": 0.0,
+        "ram_used": 0.0,
+        "threads": 0
+    }
+    try:
+        import psutil
+        cpu_percent = psutil.cpu_percent()
+        ram = psutil.virtual_memory()
+        telemetry["cpu_percent"] = cpu_percent
+        telemetry["ram_total"] = round(ram.total / (1024 ** 3), 2)
+        telemetry["ram_used"] = round(ram.used / (1024 ** 3), 2)
+    except Exception:
+        pass
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            telemetry["gpu"] = torch.cuda.get_device_name(0)
+            telemetry["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
+            telemetry["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
+    except Exception:
+        pass
+
+    import threading
+    telemetry["threads"] = threading.active_count()
+    return telemetry
+
+
 def run_api():
     uvicorn.run(app, host="127.0.0.1", port=8001, log_level="error")
+

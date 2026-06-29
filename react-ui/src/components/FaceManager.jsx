@@ -1,14 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { postJSON, postFiles, postFile, fileUrl, API } from '../api';
 import { Section, Slider, Button, FaceGallery } from './ui';
 
-export default function FaceManager({ notify }) {
+export default function FaceManager({ notify, registerFileListener }) {
   const [faces, setFaces] = useState([]);
   const [sel, setSel] = useState(0);
   const [video, setVideo] = useState(null);
   const [frame, setFrame] = useState(1);
   const [maxFrames, setMaxFrames] = useState(1);
   const [built, setBuilt] = useState(null);
+
+  useEffect(() => {
+    if (!registerFileListener) return;
+    return registerFileListener(async (files) => {
+      try {
+        const res = await postFiles('/api/facemgr/add', files);
+        setFaces(res.faces);
+        if (res.video) { setVideo(res.video); setMaxFrames(res.frames || 1); setFrame(1); }
+        notify('Loaded files into faceset');
+      } catch (err) { notify(err.message, 'error'); }
+      return true; // consumed
+    });
+  }, [registerFileListener]);
 
   const onAddFiles = async (e) => {
     if (!e.target.files.length) return;

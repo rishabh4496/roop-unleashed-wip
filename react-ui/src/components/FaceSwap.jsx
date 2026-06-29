@@ -10,7 +10,7 @@ const fmtTime = (ms) => {
   return m > 0 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
 };
 
-export default function FaceSwap({ meta, settings, setSettings, notify }) {
+export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
   const [targetGroups, setTargetGroups] = useState([]);
@@ -30,7 +30,251 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
   const [splitView, setSplitView] = useState(false);
-  
+
+  // Telemetry HUD State
+  const [telemetry, setTelemetry] = useState(null);
+
+  // Profile Management
+  const [profiles, setProfiles] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('roop_profiles') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [newProfileName, setNewProfileName] = useState('');
+
+  // Keyboard Shortcuts Modal visibility
+  const [showShortcutHUD, setShowShortcutHUD] = useState(false);
+
+  // Drag and drop overlay state removed (managed globally by App.jsx)
+
+  // Batch Queue Manager
+  const [queue, setQueue] = useState([]);
+  const [currentQueueIndex, setCurrentQueueIndex] = useState(null);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+
+  // Pasted Files Dialog State
+  const [pastedFiles, setPastedFiles] = useState(null);
+
+  // Preview Cache Ref
+  const previewCacheRef = useRef({});
+
+  const clearPreviewCache = () => {
+    previewCacheRef.current = {};
+  };
+
+  const getCacheKey = (idx = selTarget, fr = frame) => {
+    return `${idx}_${fr}_${previewKey}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+  };
+
+  const getCachedPreview = (idx = selTarget, fr = frame) => {
+    const key = getCacheKey(idx, fr);
+    return previewCacheRef.current[key];
+  };
+
+  const setCachedPreview = (idx, fr, data) => {
+    const key = getCacheKey(idx, fr);
+    const cache = previewCacheRef.current;
+    const keys = Object.keys(cache);
+    if (keys.length > 200) {
+      delete cache[keys[0]]; // cap at 200 items to prevent memory bloat
+    }
+    cache[key] = data;
+  };
+
+  // Invalidate cache when source/target files or selections change
+  useEffect(() => {
+    clearPreviewCache();
+  }, [sourceFaces.length, targetFaces.length, selSource, selTargetFace]);
+
+  // Keyboard Escape and Shortcuts HUD
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (e.key === '?' || e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        setShowShortcutHUD((prev) => !prev);
+      }
+    };
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') {
+        setShowShortcutHUD(false);
+        setPastedFiles(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, []);
+
+  // Telemetry Polling Effect
+  useEffect(() => {
+    const fetchTelemetry = async () => {
+      try {
+        const data = await getJSON('/api/system/telemetry');
+        setTelemetry(data);
+      } catch (err) {
+        // quiet fail
+      }
+    };
+    fetchTelemetry();
+    const id = setInterval(fetchTelemetry, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Save active parameters to a new profile
+  const saveProfile = () => {
+    if (!newProfileName.trim()) {
+      notify('Enter a profile name first', 'error');
+      return;
+    }
+    const profile = {
+      name: newProfileName,
+      settings: { ...p }
+    };
+    const updated = [...profiles.filter(pr => pr.name !== newProfileName), profile];
+    setProfiles(updated);
+    localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    setNewProfileName('');
+    notify(`Saved profile: ${profile.name}`);
+  };
+
+  // Load a profile and apply it
+  const loadProfile = (name) => {
+    const profile = profiles.find(pr => pr.name === name);
+    if (!profile) return;
+    setSettings((s) => ({ ...s, ...profile.settings }));
+    notify(`Loaded profile: ${name}`);
+  };
+
+  // Delete a profile
+  const deleteProfile = (name) => {
+    const updated = profiles.filter(pr => pr.name !== name);
+    setProfiles(updated);
+    localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    notify(`Deleted profile: ${name}`);
+  };
+
+  // Register clipboard & drop listener with global App registry
+  useEffect(() => {
+    if (!registerFileListener) return;
+    return registerFileListener((files) => {
+      setPastedFiles(files);
+      return true; // consumed
+    });
+  }, [registerFileListener]);
+
+  // Add current target, source, and settings to the queue
+  const addToQueue = () => {
+    if (targets.length === 0) {
+      notify('Load target media first', 'error');
+      return;
+    }
+    const newJob = {
+      id: Date.now() + Math.random().toString(36).substr(2, 9),
+      targetIndex: selTarget,
+      targetName: targets[selTarget]?.name || 'Unknown',
+      sourceIndex: selSource,
+      sourceName: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected Face',
+      params: { ...p },
+      status: 'Pending'
+    };
+    setQueue((prev) => [...prev, newJob]);
+    notify(`Added "${newJob.targetName}" to Batch Queue`);
+  };
+
+  const removeFromQueue = (id) => {
+    setQueue((prev) => prev.filter(job => job.id !== id));
+  };
+
+  const clearQueue = () => {
+    setQueue([]);
+    setIsQueueRunning(false);
+    setCurrentQueueIndex(null);
+  };
+
+  const startQueue = async () => {
+    if (queue.length === 0) {
+      notify('Queue is empty', 'error');
+      return;
+    }
+    setIsQueueRunning(true);
+    setCurrentQueueIndex(0);
+  };
+
+  // Queue Runner State Machine
+  useEffect(() => {
+    if (!isQueueRunning || currentQueueIndex === null) return;
+    
+    if (currentQueueIndex >= queue.length) {
+      setIsQueueRunning(false);
+      setCurrentQueueIndex(null);
+      notify('All batch queue jobs finished!', 'success');
+      return;
+    }
+
+    const job = queue[currentQueueIndex];
+
+    if (job.status === 'Pending') {
+      const executeJob = async () => {
+        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
+        
+        try {
+          await postJSON('/api/target/select', { index: job.targetIndex });
+          setSelTarget(job.targetIndex);
+          
+          await postJSON('/api/source/select', { index: job.sourceIndex });
+          setSelSource(job.sourceIndex);
+
+          await postJSON('/api/settings', job.params);
+          setSettings(job.params);
+          
+          await postJSON('/api/swap', {
+            ...job.params,
+            enhancer: job.params.selected_enhancer,
+            detection: job.params.face_detection_mode,
+            output_method: job.params.output_method,
+            video_method: job.params.video_swapping_method,
+            upscale: job.params.subsample_upscale,
+            mask_engine: job.params.mask_engine,
+            clip_text: job.params.mask_clip_text,
+            sam2_model_size: job.params.sam2_model_size,
+            track_identities: job.params.track_identities,
+            face_distance: num(job.params.max_face_distance, 0.85),
+            blend_ratio: num(job.params.blend_ratio, 0.8),
+            num_swap_steps: num(job.params.num_swap_steps, 1),
+          });
+
+          startTimeRef.current = Date.now();
+          setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
+          startPolling();
+        } catch (e) {
+          notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
+          setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
+          setCurrentQueueIndex((idx) => idx + 1);
+        }
+      };
+      executeJob();
+    }
+  }, [isQueueRunning, currentQueueIndex]);
+
+  // Monitor job progress to move to next queue item
+  useEffect(() => {
+    if (!isQueueRunning || currentQueueIndex === null) return;
+    const job = queue[currentQueueIndex];
+    if (!job || job.status !== 'Running') return;
+
+    if (!progress.processing) {
+      const isFailed = progress.error || (progress.desc && progress.desc.toLowerCase().includes('fail'));
+      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: isFailed ? 'Failed' : 'Completed' } : j));
+      setCurrentQueueIndex((idx) => idx + 1);
+    }
+  }, [progress.processing]);
+
   // Custom Timeline and Playback States
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLooping, setIsLooping] = useState(true);
@@ -105,6 +349,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
     const fr = opts.frame ?? frame;
     const fake = opts.fake ?? fakePreview;
 
+    // Check client-side preview cache first
+    const cached = getCachedPreview(idx, fr);
+    if (cached) {
+      setPreviewFaces(cached.faces);
+      setPreviewSrc(cached.image);
+      return;
+    }
+
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
     // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
     // TensorRT/CUDA. So never run two at once — queue the latest request and
@@ -136,6 +388,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewSrc(res.image || '');
+      if (res.image) {
+        setCachedPreview(idx, fr, { faces: res.faces || [], image: res.image });
+      }
     } catch (e) {
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
     }
@@ -642,6 +897,60 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             <Toggle label="Wait before creating video" checked={!!p.wait_after_extraction} onChange={(v) => set('wait_after_extraction', v)} />
           </Section>
         </div>
+
+        <div className="3xl:col-span-2">
+          <Section title="Saved Profiles">
+            <div className="flex flex-wrap gap-2 items-end">
+              <div className="flex-1 min-w-[120px]">
+                <TextInput label="Save active settings as:" value={newProfileName} onChange={setNewProfileName} placeholder="My Preset Name" />
+              </div>
+              <Button size="sm" onClick={saveProfile}>💾 Save</Button>
+            </div>
+            {profiles.length > 0 && (
+              <div className="space-y-2 mt-3">
+                <span className="text-xs font-semibold text-white/50">Apply custom preset:</span>
+                <div className="flex flex-wrap gap-2">
+                  {profiles.map((pr) => (
+                    <div key={pr.name} className="flex items-center gap-1 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg px-2.5 py-1 text-xs transition-colors">
+                      <button onClick={() => loadProfile(pr.name)} className="text-white hover:text-[var(--accent)] font-semibold">{pr.name}</button>
+                      <button onClick={() => deleteProfile(pr.name)} className="text-white/40 hover:text-red-400 font-bold ml-1.5" title="Delete preset">✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Section>
+        </div>
+
+        <div className="3xl:col-span-2">
+          <Section title="Live Telemetry & Diagnostics">
+            {telemetry ? (
+              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                <div className="bg-black/20 p-2 rounded border border-white/5 flex flex-col">
+                  <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">GPU / VRAM</span>
+                  <span className="truncate text-white font-semibold">{telemetry.gpu}</span>
+                  {telemetry.vram_total > 0 && (
+                    <span className="text-emerald-400 font-semibold">{telemetry.vram_used} GB / {telemetry.vram_total} GB</span>
+                  )}
+                </div>
+                <div className="bg-black/20 p-2 rounded border border-white/5 flex flex-col">
+                  <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">CPU / Memory</span>
+                  <span className="text-white font-semibold">Usage: {telemetry.cpu_percent}%</span>
+                  <span className="text-blue-300 font-semibold">{telemetry.ram_used} GB / {telemetry.ram_total} GB</span>
+                </div>
+                <div className="col-span-2 bg-black/20 px-2 py-1 rounded border border-white/5 flex items-center justify-between">
+                  <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider">Active Python Threads:</span>
+                  <span className="text-orange-300 font-bold text-xs">{telemetry.threads}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-white/30 italic">Connecting to hardware diagnostics…</div>
+            )}
+            <div className="mt-3 flex justify-between items-center">
+              <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>⌨️ Keyboard Shortcuts Info</Button>
+            </div>
+          </Section>
+        </div>
       </div>
     </div>
 
@@ -717,7 +1026,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
             {previewSrc ? (
               <InteractivePreview 
                 beforeSrc={rawUrl} 
-                afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : rawUrl} 
+                afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)} 
                 faces={previewFaces}
                 splitView={splitView}
                 compare={compare}
@@ -922,12 +1231,60 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
                     : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
                   <div className="flex flex-wrap gap-2">
                     <a href={outUrl} download
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
+                      className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
                     <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
                   </div>
                 </div>
               )}
             </div>
+          </Section>
+
+          <Section title="Batch Swapping Queue">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs text-white/50">
+                {queue.length === 0 
+                  ? 'No jobs in queue. Configure settings & click "Add Current to Queue".' 
+                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Completed').length} done`}
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add Current to Queue</Button>
+                {queue.length > 0 && (
+                  <>
+                    <Button size="sm" variant={isQueueRunning ? 'stop' : 'primary'} onClick={isQueueRunning ? () => setIsQueueRunning(false) : startQueue}>
+                      {isQueueRunning ? '⏹ Stop Queue' : '▶ Start Queue'}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {queue.length > 0 && (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {queue.map((job, idx) => {
+                  const statusColors = {
+                    Pending: 'text-white/60 bg-white/5 border-white/5',
+                    Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
+                    Completed: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+                    Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
+                  };
+                  return (
+                    <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[job.status] || 'text-white bg-white/5'}`}>
+                      <div className="flex-1 min-w-0 pr-3">
+                        <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
+                        <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{job.status}</span>
+                        {!isQueueRunning && (
+                          <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </Section>
 
           {/* run bar */}
@@ -972,6 +1329,53 @@ export default function FaceSwap({ meta, settings, setSettings, notify }) {
         </div>
 
       </div>
+
+      {/* Paste routing dialog */}
+      {pastedFiles && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center animate-slide-up">
+          <Card className="p-6 max-w-md w-full border border-white/10 shadow-2xl flex flex-col gap-4 text-center">
+            <h3 className="text-lg font-bold text-white">📋 Clipboard/Dropped File</h3>
+            <p className="text-sm text-white/60">Would you like to load <span className="font-semibold text-white">{pastedFiles[0]?.name}</span> as a Source Face or Target Media?</p>
+            <div className="flex gap-3 justify-center mt-2">
+              <Button variant="primary" onClick={() => { onAddSource(pastedFiles); setPastedFiles(null); }}>🎭 Source Face</Button>
+              <Button variant="secondary" onClick={() => { onAddTarget(pastedFiles); setPastedFiles(null); }}>🎞️ Target Media</Button>
+              <Button variant="stop" onClick={() => setPastedFiles(null)}>Cancel</Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Drag-n-Drop overlay removed (managed globally by App.jsx) */}
+
+      {/* Keyboard Shortcuts HUD */}
+      {showShortcutHUD && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center animate-slide-up" onClick={() => setShowShortcutHUD(false)}>
+          <Card className="p-6 max-w-lg w-full border border-white/10 shadow-2xl flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">⌨️ Pro Keyboard Shortcuts</h3>
+              <Button size="sm" variant="ghost" onClick={() => setShowShortcutHUD(false)}>✕</Button>
+            </div>
+            <div className="grid grid-cols-2 gap-4 py-2 text-sm text-white/80">
+              <div className="space-y-3">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Playback & Nav</h4>
+                <div className="flex items-center justify-between"><span className="text-white/60">Play / Pause</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Space</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Prev / Next Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">← / →</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Step 10 Frames</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Shift + ← / →</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Jump to Start/End</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Home / End</kbd></div>
+              </div>
+              <div className="space-y-3">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">View & Zoom</h4>
+                <div className="flex items-center justify-between"><span className="text-white/60">Zoom In / Out</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">+ / -</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Toggle Comparison</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">C</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Toggle Split View</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">S</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Toggle Shortcuts HUD</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">?</kbd></div>
+              </div>
+            </div>
+            <p className="text-xs text-white/40 text-center mt-2">Click anywhere outside this modal or press Esc to close.</p>
+          </Card>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1100,10 +1504,16 @@ function InteractivePreview({
 
       if (e.key === 'ArrowLeft' && maxFrames > 1 && setFrame) {
         e.preventDefault();
-        setFrame((f) => Math.max(1, f - 1));
+        setFrame((f) => Math.max(1, f - (e.shiftKey ? 10 : 1)));
       } else if (e.key === 'ArrowRight' && maxFrames > 1 && setFrame) {
         e.preventDefault();
-        setFrame((f) => Math.min(maxFrames, f + 1));
+        setFrame((f) => Math.min(maxFrames, f + (e.shiftKey ? 10 : 1)));
+      } else if (e.key === 'Home' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame(1);
+      } else if (e.key === 'End' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame(maxFrames);
       } else if (e.key === ' ') {
         e.preventDefault();
         if (maxFrames > 1 && setIsPlaying) {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { getJSON } from './api';
 import { Toast } from './components/ui';
 import FaceSwap from './components/FaceSwap';
@@ -19,6 +19,61 @@ export default function App() {
   const [settings, setSettings] = useState(null);
   const [toast, setToast] = useState(null);
   const [error, setError] = useState('');
+
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const fileListenersRef = useRef([]);
+
+  const registerFileListener = useCallback((cb) => {
+    fileListenersRef.current.push(cb);
+    return () => {
+      fileListenersRef.current = fileListenersRef.current.filter((l) => l !== cb);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleDragOver = (e) => {
+      e.preventDefault();
+      setIsDraggingOver(true);
+    };
+    const handleDragLeave = (e) => {
+      e.preventDefault();
+      if (e.clientX === 0 && e.clientY === 0) {
+        setIsDraggingOver(false);
+      }
+    };
+    const handleDrop = (e) => {
+      e.preventDefault();
+      setIsDraggingOver(false);
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        fileListenersRef.current.forEach((listener) => listener(files));
+      }
+    };
+    const handlePaste = (e) => {
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file') {
+          files.push(items[i].getAsFile());
+        }
+      }
+      if (files.length > 0) {
+        fileListenersRef.current.forEach((listener) => listener(files));
+      }
+    };
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, []);
 
   const notify = useCallback((message, type = 'success') => {
     setToast({ message, type });
@@ -107,15 +162,24 @@ export default function App() {
         )}
         {!error && meta && settings && (
           <div className="animate-slide-up">
-            {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
-            {tab === 'facemgr' && <FaceManager notify={notify} />}
-            {tab === 'extras' && <Extras notify={notify} />}
+            {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
+            {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
+            {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
             {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
           </div>
         )}
       </main>
 
       <Toast toast={toast} />
+
+      {isDraggingOver && (
+        <div className="fixed inset-0 bg-[var(--accent)]/10 backdrop-blur-[2px] border-4 border-dashed border-[var(--accent)] z-50 flex items-center justify-center pointer-events-none">
+          <div className="bg-black/80 px-6 py-4 rounded-2xl border border-white/10 shadow-2xl flex flex-col items-center gap-2">
+            <span className="text-4xl animate-bounce">📥</span>
+            <span className="text-lg font-bold text-white uppercase tracking-wider">Drop media here</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
