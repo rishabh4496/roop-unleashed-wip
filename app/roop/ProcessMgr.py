@@ -1840,6 +1840,14 @@ class ProcessMgr():
                         swap_result_frames.append(sliced_frame)
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
+                
+                # Dynamic color tone correction: transfer target crop's skin tone
+                # and lighting highlights/shadows to the swapped face.
+                try:
+                    fake_frame = self.apply_color_transfer(fake_frame, aligned_img)
+                except Exception as e:
+                    print(f"[ProcessMgr] Face color transfer failed: {e}")
+                
                 scale_factor = 0.0
                 # ── Defrontalize after swap (Option 2) ────────────────────────
                 if M_frontal is not None:
