@@ -1699,8 +1699,7 @@ class ProcessMgr():
                             blended_emb += (w / sum_w) * valid_faces[idx][0]['embedding']
                         
                         # Return a copy of the default face with the blended embedding
-                        import copy
-                        inputface = copy.copy(inputface)
+                        inputface = type(inputface)(inputface)
                         inputface['embedding'] = blended_emb
                     else:
                         # Fallback to closest single pose
