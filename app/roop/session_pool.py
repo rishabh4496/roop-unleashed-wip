@@ -48,16 +48,20 @@ def _auto_pool_defaults():
     thrash that drops throughput below 1fps. So: pools OFF on small cards, the
     validated multi-context settings on large cards.
 
-        < 7 GB   (e.g. RTX 3060 6GB)  -> 0 / 0   (single context + global lock)
-        7-11 GB                       -> 2 / 2
-        >= 12 GB (e.g. 3060 12GB+)    -> 4 / 2   (validated)
+        < 7 GB    (e.g. RTX 3060 6GB)       -> 0 / 0  (single context + lock)
+        7-11.5 GB (e.g. 3080 10GB)          -> 2 / 2
+        >= 11.5 GB (e.g. RTX 4070 12GB)     -> 4 / 2  (validated)
+
+    Note the 11.5 boundary: a nominal "12GB" card reports ~11.99GB to torch
+    (RTX 4070 = 12282 MiB), so the large-card tier must sit just below 12 to
+    catch them — otherwise a 12GB card gets demoted to 2/2 and loses throughput.
     """
     gb = _detect_vram_gb()
     if gb <= 0:
         return 0, 0          # unknown / CPU-only -> safest
     if gb < 7:
         return 0, 0
-    if gb < 12:
+    if gb < 11.5:
         return 2, 2
     return 4, 2
 
