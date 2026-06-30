@@ -2314,9 +2314,9 @@ class ProcessMgr():
         # left temple (pts[0]) -> forehead points -> right temple (pts[32]) -> jaw contour -> left temple.
         boundary = np.vstack([
             pts[0:33],
-            [forehead_pts[2]], # right forehead
-            [forehead_pts[1]], # mid forehead
-            [forehead_pts[0]], # left forehead
+            [[right_x,                  forehead_y]], # right forehead
+            [[(left_x + right_x) // 2,  forehead_y]], # mid forehead
+            [[left_x,                   forehead_y]], # left forehead
         ])
         cv2.fillPoly(mask, [boundary.astype(np.int32)], 255)
 
