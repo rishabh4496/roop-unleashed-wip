@@ -20,7 +20,7 @@ import contextlib
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Body, Request
+from fastapi import FastAPI, UploadFile, File, Body, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -1039,11 +1039,11 @@ def facemgr_build():
 # ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
 @app.post("/api/extras/apply")
 async def extras_apply(file: UploadFile = File(...),
-                       resolution: str = "Original",
-                       rotation: str = "None",
-                       fps: float = 30.0,
-                       crop_left: int = 0, crop_right: int = 0,
-                       crop_top: int = 0, crop_bottom: int = 0):
+                       resolution: str = Form("Original"),
+                       rotation: str = Form("None"),
+                       fps: float = Form(30.0),
+                       crop_left: int = Form(0), crop_right: int = Form(0),
+                       crop_top: int = Form(0), crop_bottom: int = Form(0)):
     from ui.main import prepare_environment
     prepare_environment()
     path = _save_upload(file)
