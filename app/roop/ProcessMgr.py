@@ -1439,6 +1439,24 @@ class ProcessMgr():
         except Exception:
             pass
 
+    def enhance_low_light(self, frame):
+        if frame is None:
+            return frame
+        import cv2 as local_cv2
+        import numpy as local_np
+        mean_val = local_np.mean(frame)
+        if mean_val < 55.0:
+            try:
+                lab = local_cv2.cvtColor(frame, local_cv2.COLOR_BGR2LAB)
+                l, a, b_channel = local_cv2.split(lab)
+                clahe = local_cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+                limg = local_cv2.merge((cl, a, b_channel))
+                return local_cv2.cvtColor(limg, local_cv2.COLOR_LAB2BGR)
+            except Exception:
+                pass
+        return frame
+
     def swap_faces(self, frame, temp_frame, stabilize=False, frame_idx=None):
         num_faces_found = 0
 
@@ -1457,9 +1475,12 @@ class ProcessMgr():
         # for this frame in pass 1 instead of running the (stateful) stabilizer.
         precomp = stabilize and self._precomputed_mode and frame_idx is not None
 
+        # Low-light detection enhancement for night scenes
+        det_frame = self.enhance_low_light(frame)
+
         if self.options.swap_mode == "first":
             with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
-                face = get_first_face(frame)
+                face = get_first_face(det_frame)
             if face is None:
                 if self.last_target_face is not None and self.num_frames_no_face < 5:
                     self.num_frames_no_face += 1
@@ -1480,7 +1501,7 @@ class ProcessMgr():
 
         else:
             with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
-                faces = get_all_faces(frame)
+                faces = get_all_faces(det_frame)
             if faces is None or len(faces) == 0:
                 if self.last_detected_faces and self.num_frames_no_face < 5:
                     self.num_frames_no_face += 1
@@ -1712,7 +1733,7 @@ class ProcessMgr():
                 elif rotation_action == "rotate_180":
                     rotcutframe = rotate_image_180(rotcutframe)
                 with _gpu_guard(pooled=analysis_pooled()):  # autorotate re-detection: lock-free when pooled
-                    rotface = get_first_face(rotcutframe)
+                    rotface = get_first_face(self.enhance_low_light(rotcutframe))
                 if rotface is None:
                     rotation_action = None
                 else:
@@ -2389,9 +2410,11 @@ class ProcessMgr():
                 scale_x = box_width  / max(1, mouth_cutout.shape[1])
                 scale_y = box_height / max(1, mouth_cutout.shape[0])
                 scaled_pts = (mouth_polygon * [scale_x, scale_y]).astype(np.int32)
-                hull = cv2.convexHull(scaled_pts)
+                # Outer lip loop contour is points 0 to 12 in mouth_polygon slice landmarks[52:71]
+                # Using precise sequential polyline rather than convex hull prevents cheek skin leakage on profile yawing.
+                outer_lips = scaled_pts[0:12]
                 mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.uint8)
-                cv2.fillConvexPoly(mask, hull, 255)
+                cv2.fillPoly(mask, [outer_lips], 255)
                 # mouth_blend (0-30) controls dilation and edge softness.
                 # At 0: binary mask with only 3px anti-alias blur (hardest edge).
                 # Higher values expand the mask outward and soften the transition.

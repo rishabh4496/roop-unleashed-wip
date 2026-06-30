@@ -336,6 +336,24 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     if frame_bgr is None:
         return ""
 
+    def enhance_low_light(frame):
+        if frame is None:
+            return frame
+        import cv2 as local_cv2
+        import numpy as local_np
+        mean_val = local_np.mean(frame)
+        if mean_val < 55.0:
+            try:
+                lab = local_cv2.cvtColor(frame, local_cv2.COLOR_BGR2LAB)
+                l, a, b_channel = local_cv2.split(lab)
+                clahe = local_cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+                limg = local_cv2.merge((cl, a, b_channel))
+                return local_cv2.cvtColor(limg, local_cv2.COLOR_LAB2BGR)
+            except Exception:
+                pass
+        return frame
+
     def _rotation_action(face, frame):
         if hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
             eye_y = (face.kps[0][1] + face.kps[1][1]) / 2.0
@@ -357,7 +375,7 @@ def get_face_crop_from_frame(frame_bgr) -> str:
         bbox_cx = face.bbox[0] + bbox_w / 2.0
         return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
 
-    face = get_first_face(frame_bgr)
+    face = get_first_face(enhance_low_light(frame_bgr))
     if face is None or not hasattr(face, 'kps') or face.kps is None:
         return ""
 
@@ -376,7 +394,7 @@ def get_face_crop_from_frame(frame_bgr) -> str:
                 cut = rotate_clockwise(cut)
             elif action == "rotate_180":
                 cut = rotate_image_180(cut)
-            rotface = get_first_face(cut)
+            rotface = get_first_face(enhance_low_light(cut))
             if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
                 face  = rotface
                 frame = cut
