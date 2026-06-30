@@ -299,6 +299,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
   const [storyboardThumbs, setStoryboardThumbs] = useState([]);
+  const [hoverFrame, setHoverFrame] = useState(null);
   const timelineRef = useRef(null);
   const playIntervalRef = useRef(null);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
@@ -780,6 +781,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     } else {
       setFrame(Math.max(1, Math.min(targetFrame, maxFrames)));
     }
+  };
+
+  const handleTimelinePointerMove = (e) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+    if (clientX === undefined) return;
+    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+    const pct = x / rect.width;
+    const f = Math.max(1, Math.min(Math.round(pct * maxFrames), maxFrames));
+    setHoverFrame(f);
+  };
+
+  const handleTimelinePointerLeave = () => {
+    setHoverFrame(null);
   };
 
   useEffect(() => {
@@ -1303,11 +1319,30 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
 
                 {/* Timeline Track with Storyboard Background */}
-                <div 
-                  ref={timelineRef}
-                  onPointerDown={handleTimelinePointerDown}
-                  className="relative h-14 w-full rounded-xl bg-black/60 border border-white/10 overflow-hidden cursor-ew-resize select-none shadow-inner"
-                >
+                <div className="relative">
+                  {hoverFrame !== null && (
+                    <div 
+                      className="absolute bottom-[66px] z-50 bg-[#121420]/95 backdrop-blur-md p-1.5 rounded-xl border border-white/10 flex flex-col items-center gap-1 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
+                      style={{ left: `${(hoverFrame / maxFrames) * 100}%` }}
+                    >
+                      <img 
+                        src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}`} 
+                        alt="Hover Preview" 
+                        className="w-20 h-12 object-cover rounded-lg border border-white/10 bg-black/50"
+                      />
+                      <span className="text-[9px] font-mono font-bold text-white/80 whitespace-nowrap">
+                        Frame {hoverFrame} ({((hoverFrame) / (targets[selTarget]?.fps || 25)).toFixed(2)}s)
+                      </span>
+                    </div>
+                  )}
+
+                  <div 
+                    ref={timelineRef}
+                    onPointerDown={handleTimelinePointerDown}
+                    onPointerMove={handleTimelinePointerMove}
+                    onPointerLeave={handleTimelinePointerLeave}
+                    className="relative h-14 w-full rounded-xl bg-black/60 border border-white/10 overflow-hidden cursor-ew-resize select-none shadow-inner"
+                  >
                   {/* Storyboard Thumbnails strip */}
                   {storyboardThumbs.length > 0 && (
                     <div className="absolute inset-0 flex opacity-30 pointer-events-none">
@@ -1357,6 +1392,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-red-500 border border-white/20 shadow-md" />
                   </div>
                 </div>
+              </div>
 
                 {/* Cinematic Timeline Controls Toolbar */}
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
@@ -1419,6 +1455,34 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       title="Jump to End Range"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                    </button>
+                  </div>
+
+                  {/* Trim Shortcuts */}
+                  <div className="flex items-center gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
+                    <button 
+                      onClick={() => setFrameMarkerVal('start', frame)}
+                      className="px-2 py-1 hover:bg-emerald-500/10 rounded text-emerald-400 text-[10px] font-bold transition-all"
+                      title="Set Range Start to Current Frame"
+                    >
+                      [ Set Start
+                    </button>
+                    <button 
+                      onClick={() => setFrameMarkerVal('end', frame)}
+                      className="px-2 py-1 hover:bg-orange-500/10 rounded text-orange-400 text-[10px] font-bold transition-all"
+                      title="Set Range End to Current Frame"
+                    >
+                      Set End ]
+                    </button>
+                    <button 
+                      onClick={async () => {
+                        await setFrameMarkerVal('start', 1);
+                        await setFrameMarkerVal('end', maxFrames);
+                      }}
+                      className="px-2 py-1 hover:bg-white/5 rounded text-white/50 hover:text-white text-[10px] font-bold transition-all"
+                      title="Reset Range to Full Video"
+                    >
+                      Reset
                     </button>
                   </div>
 
