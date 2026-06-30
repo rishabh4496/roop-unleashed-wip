@@ -2256,48 +2256,9 @@ class ProcessMgr():
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], kps=target_face.kps)
-        else:
-            # Automatic inner-mouth (teeth, tongue, cavity) restoration:
-            # Keeps the swapped face lips 100% intact, but recovers the original teeth/tongue from target frame when the mouth opens.
-            if face_lm is not None:
-                landmarks = face_lm
-                inner_mouth_pts = landmarks[64:72].astype(np.int32)
-                min_y = np.min(inner_mouth_pts[:, 1])
-                max_y = np.max(inner_mouth_pts[:, 1])
-                min_x = np.min(inner_mouth_pts[:, 0])
-                max_x = np.max(inner_mouth_pts[:, 0])
-                inner_h = max_y - min_y
-                inner_w = max_x - min_x
-                if inner_h / max(1.0, inner_w) > 0.06:
-                    margin = 1
-                    min_x_m = max(0, min_x - margin)
-                    min_y_m = max(0, min_y - margin)
-                    max_x_m = min(frame.shape[1], max_x + margin)
-                    max_y_m = min(frame.shape[0], max_y + margin)
-                    
-                    box_width = max_x_m - min_x_m
-                    box_height = max_y_m - min_y_m
-                    if box_width > 0 and box_height > 0:
-                        try:
-                            inner_cutout = frame[min_y_m:max_y_m, min_x_m:max_x_m].copy()
-                            roi = result[min_y_m:max_y_m, min_x_m:max_x_m]
-                            resized_inner = cv2.resize(inner_cutout, (roi.shape[1], roi.shape[0]))
-                            color_corrected = self.apply_color_transfer(resized_inner, roi, target_face.kps, key='inner_mouth')
-                            
-                            local_pts = inner_mouth_pts - np.array([min_x_m, min_y_m], dtype=np.int32)
-                            scale_x = roi.shape[1] / max(1, inner_cutout.shape[1])
-                            scale_y = roi.shape[0] / max(1, inner_cutout.shape[0])
-                            scaled_pts = (local_pts * [scale_x, scale_y]).astype(np.int32)
-                            
-                            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-                            cv2.fillPoly(mask, [scaled_pts], 255)
-                            mask = cv2.GaussianBlur(mask.astype(np.float32), (3, 3), 0) / 255.0
-                            mask = mask[:, :, np.newaxis]
-                            
-                            blended = (color_corrected * mask + roi * (1 - mask)).astype(np.uint8)
-                            result[min_y_m:max_y_m, min_x_m:max_x_m] = blended
-                        except Exception as e:
-                            print(f'Error in auto_inner_mouth_restore: {e}')
+        # When restore_original_mouth is OFF the swapped mouth is used as-is — no
+        # automatic inner-mouth restoration (it bled the target's teeth/tongue
+        # through and made the mouth not match the faceset).
 
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
