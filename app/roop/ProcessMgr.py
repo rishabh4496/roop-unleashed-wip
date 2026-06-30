@@ -1172,22 +1172,19 @@ class ProcessMgr():
     def _precompute_tracks(self, source_video, frame_start, frame_end, frame_count):
         """Identity-lock pass 1: build tracklets (IoU + embedding association)
         across the clip, assign each tracklet to ONE source via its mean embedding,
-        and store {frame_idx: [(bbox_centroid, src_index), ...]} for pass 2 to look
-        up by nearest centroid — so a person keeps the same source for the whole
-        clip instead of being re-matched (and possibly flipped) every frame."""
+        and store {frame_idx: [(bbox_centroid, src_index, emb_mean), ...]} for pass 2 to look
+        up by nearest centroid and embedding similarity — so a person keeps the same source
+        for the whole clip instead of being re-matched (and possibly flipped) every frame."""
         import os
         from roop.face_util import get_all_faces
-
-
 
         # 2. Skip frames step (N=3 runs detection on 33% of frames; N=1 scans all)
         TRACK_STEP = 3
 
         # active = tracks seen within STALE frames (candidates for matching);
         # retired = older tracks, kept only for the final source assignment. This
-        # keeps the per-frame match loop small on long clips. emb_mean is a RUNNING
-        # mean (emb_sum / emb_n) — never a np.mean over a growing list, which would
-        # make the persistent main-face track O(N^2) and freeze long videos.
+        # keeps the per-frame match loop small on long clips. emb_mean is updated
+        # via EMA with outlier filtering.
         active, retired = [], []
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
@@ -1230,28 +1227,77 @@ class ProcessMgr():
                 for face in faces:
                     bbox = np.asarray(face.bbox, dtype=np.float32)
                     emb = np.asarray(face.embedding, dtype=np.float32)
-                    best, best_iou = None, IOU_MIN
+                    best, best_score = None, -1.0
                     for t in active:
                         if t['id'] in used:
                             continue
-                        iou = self._bbox_iou(bbox, t['bbox'])
-                        if iou < best_iou:
+                        dt = idx - t['last_seen']
+                        # Predict bbox location using linear velocity
+                        predicted_bbox = t['bbox']
+                        if 0 < dt <= 6 and t['vel'] is not None and np.any(t['vel']):
+                            proj = t['bbox'] + t['vel'] * dt
+                            # Ensure projection is a valid bounding box
+                            if proj[2] > proj[0] and proj[3] > proj[1]:
+                                predicted_bbox = proj
+                        
+                        iou = self._bbox_iou(bbox, predicted_bbox)
+                        if iou < IOU_MIN:
                             continue
-                        if compute_cosine_distance(t['emb_mean'], emb) > EMB_MAX:
+                        
+                        cos_dist = compute_cosine_distance(t['emb_mean'], emb)
+                        if cos_dist > EMB_MAX:
                             continue
-                        best, best_iou = t, iou
+                        
+                        # Score: Higher IoU and lower Cosine Distance is better
+                        score = iou * (1.0 - cos_dist)
+                        if score > best_score:
+                            best, best_score = t, score
+
                     if best is None:
-                        best = {'id': next_id, 'bbox': bbox,
-                                'emb_sum': emb.astype(np.float64).copy(), 'emb_n': 1,
-                                'emb_mean': emb, 'last_seen': idx}
+                        # Re-ID lookup: search retired tracklets for returning faces
+                        best_reid, best_reid_dist = None, 0.45
+                        for t in retired:
+                            dist = compute_cosine_distance(t['emb_mean'], emb)
+                            if dist < best_reid_dist:
+                                best_reid, best_reid_dist = t, dist
+                        
+                        if best_reid is not None:
+                            best = best_reid
+                            retired.remove(best)
+                            active.append(best)
+                            # Reset velocity as the person was gone/occluded
+                            best['vel'] = np.zeros(4, dtype=np.float32)
+                            best['prev_bbox'] = None
+
+                    if best is None:
+                        best = {
+                            'id': next_id,
+                            'bbox': bbox,
+                            'prev_bbox': None,
+                            'vel': np.zeros(4, dtype=np.float32),
+                            'emb_sum': emb.astype(np.float64).copy(),
+                            'emb_n': 1,
+                            'emb_mean': emb.copy(),
+                            'last_seen': idx
+                        }
                         next_id += 1
                         active.append(best)
                     else:
+                        dt = idx - best['last_seen']
+                        if dt > 0:
+                            best['vel'] = (bbox - best['bbox']) / dt
+                            best['prev_bbox'] = best['bbox']
                         best['bbox'] = bbox
-                        best['emb_sum'] += emb
-                        best['emb_n'] += 1
-                        best['emb_mean'] = (best['emb_sum'] / best['emb_n']).astype(np.float32)
                         best['last_seen'] = idx
+                        
+                        # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
+                        dist = compute_cosine_distance(best['emb_mean'], emb)
+                        if dist <= 0.5:
+                            alpha = 0.25
+                            best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
+                            best['emb_sum'] += emb
+                            best['emb_n'] += 1
+
                     used.add(best['id'])
                     centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
                                          (bbox[1] + bbox[3]) * 0.5], np.float32)
@@ -1269,7 +1315,6 @@ class ProcessMgr():
         finally:
             pbar.close()
             cap.release()
-            pass
 
         tracks = active + retired
         # Assign each track to a source (person rank), once, by mean embedding.
@@ -1290,8 +1335,9 @@ class ProcessMgr():
             else:
                 track_src[t['id']] = self.options.selected_index if single_person else rank[groups[best_i]]
 
+        track_map = {t['id']: t for t in tracks}
         self._track_assignments = {
-            f: [(c, track_src.get(tid)) for (c, tid) in lst] for f, lst in per_frame.items()
+            f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
         }
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
@@ -1448,9 +1494,9 @@ class ProcessMgr():
 
             elif self.options.swap_mode == "selected" and getattr(self, '_track_mode', False) and frame_idx is not None:
                 # Identity-lock: use the source assigned to this person's TRACK in
-                # the pre-pass (matched by nearest bbox centroid), so the source
-                # can't flip frame-to-frame as it can with per-frame embedding
-                # matching. Falls through to per-frame matching if untracked.
+                # the pre-pass (matched by combination of spatial distance and embedding cosine similarity),
+                # so the source can't flip frame-to-frame as it can with per-frame embedding matching.
+                # Falls through to per-frame matching if untracked.
                 entries = self._track_assignments.get(frame_idx)
                 if not entries:
                     # Fallback lookup to nearest tracked frame within a 5-frame window
@@ -1463,16 +1509,34 @@ class ProcessMgr():
                             break
                 entries = entries or []
                 if entries:
-                    cents = np.array([e[0] for e in entries], dtype=np.float32)
+                    claimed = set()
                     for face in faces:
                         bb = face.bbox
                         c = np.array([(bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5], np.float32)
-                        j = int(np.argmin(np.hypot(cents[:, 0] - c[0], cents[:, 1] - c[1])))
-                        src_index = entries[j][1]
-                        if src_index is None or src_index >= len(self.input_face_datas):
-                            continue
-                        temp_frame = self.process_face(src_index, face, temp_frame)
-                        num_faces_found += 1
+                        
+                        best_j, best_cost = -1, float('inf')
+                        for j, entry in enumerate(entries):
+                            if j in claimed:
+                                continue
+                            cent, src_index = entry[0], entry[1]
+                            d_spatial = float(np.hypot(cent[0] - c[0], cent[1] - c[1]))
+                            if len(entry) > 2 and entry[2] is not None:
+                                d_cosine = float(compute_cosine_distance(entry[2], face.embedding))
+                            else:
+                                d_cosine = 0.0
+                            
+                            # Combine spatial distance penalized by cosine similarity distance
+                            cost = d_spatial * (1.0 + 2.5 * d_cosine)
+                            if cost < best_cost:
+                                best_cost, best_j = cost, j
+                                
+                        if best_j >= 0:
+                            claimed.add(best_j)
+                            src_index = entries[best_j][1]
+                            if src_index is None or src_index >= len(self.input_face_datas):
+                                continue
+                            temp_frame = self.process_face(src_index, face, temp_frame)
+                            num_faces_found += 1
 
             elif self.options.swap_mode == "selected":
                 # Multi-angle matching: for each detected face, find the target
