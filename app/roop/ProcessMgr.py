@@ -249,9 +249,18 @@ class ProcessMgr():
                 _bt = getattr(options, 'stabilize_beta', 0.02)
                 self._kps_stab_factory = lambda: KpsStabilizer(min_cutoff=_mc, beta=_bt)
             self.kps_stabilizer = self._kps_stab_factory()
+            
+            # Also create 106-point landmark stabilizer to prevent face mask boundaries & mouth restoration from flickering
+            from roop.one_euro import Landmark106Stabilizer
+            _mc = getattr(options, 'stabilize_min_cutoff', 0.05)
+            _bt = getattr(options, 'stabilize_beta', 0.02)
+            self._lm106_stab_factory = lambda: Landmark106Stabilizer(min_cutoff=_mc, beta=_bt)
+            self.lm106_stabilizer = self._lm106_stab_factory()
         else:
             self.kps_stabilizer = None
             self._kps_stab_factory = None
+            self.lm106_stabilizer = None
+            self._lm106_stab_factory = None
         if getattr(options, 'stabilize_enhancer', False):
             from roop.one_euro import EnhancerStabilizer
             _st = getattr(options, 'stabilize_enhancer_strength', 0.5)
@@ -643,11 +652,12 @@ class ProcessMgr():
         self._parallel_stab = False
         _want_kps_stab = self.kps_stabilizer is not None
         _want_enh_stab = self.enh_stabilizer is not None
+        _want_lm106_stab = self.lm106_stabilizer is not None
         _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
-        use_parallel_stab = (_want_kps_stab or _want_enh_stab) and threads > 1 and _parallel_ok
+        use_parallel_stab = (_want_kps_stab or _want_enh_stab or _want_lm106_stab) and threads > 1 and _parallel_ok
         _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
-        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
-        if (_want_kps_stab or _want_enh_stab) and not use_2pass and not use_parallel_stab:
+        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and not _want_lm106_stab and threads > 1 and _two_pass_ok
+        if (_want_kps_stab or _want_enh_stab or _want_lm106_stab) and not use_2pass and not use_parallel_stab:
             if threads != 1:
                 print("[Stabilize] Forcing single thread for temporal smoothing.")
             threads = 1
@@ -657,6 +667,8 @@ class ProcessMgr():
                 self.kps_stabilizer.reset()
             if self.enh_stabilizer is not None:
                 self.enh_stabilizer.reset()
+            if self.lm106_stabilizer is not None:
+                self.lm106_stabilizer.reset()
 
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
@@ -967,6 +979,7 @@ class ProcessMgr():
                     _w0 = time.perf_counter()
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
+                    self._tls.lm106 = self._lm106_stab_factory() if self._lm106_stab_factory else None
                     ca = _base + a
                     for ci in range(max(0, ca - WU), ca):   # warm-up: prime filter, discard
                         if not roop.globals.processing:
@@ -1045,7 +1058,7 @@ class ProcessMgr():
                 pass
             rt.join(timeout=5)
             self._parallel_stab = False
-            for _a in ('kps', 'enh', 't'):
+            for _a in ('kps', 'enh', 'lm106', 't'):
                 if hasattr(self._tls, _a):
                     delattr(self._tls, _a)
             if cap is not None:
@@ -1425,6 +1438,9 @@ class ProcessMgr():
     def _cur_enh_stab(self):
         return getattr(self._tls, 'enh', None) if self._parallel_stab else self.enh_stabilizer
 
+    def _cur_lm106_stab(self):
+        return getattr(self._tls, 'lm106', None) if self._parallel_stab else self.lm106_stabilizer
+
     def _cur_stab_t(self):
         return getattr(self._tls, 't', 0) if self._parallel_stab else self._stab_t
 
@@ -1468,7 +1484,7 @@ class ProcessMgr():
         # Tick once per frame if any stabilizer is active. Parallel path uses a
         # per-thread frame index (TLS) instead of this shared counter.
         if (stabilize and self._stab_active and not self._parallel_stab
-                and (self.kps_stabilizer is not None or self.enh_stabilizer is not None)):
+                and (self.kps_stabilizer is not None or self.enh_stabilizer is not None or self.lm106_stabilizer is not None)):
             self._stab_t += 1
         do_kps_stab = stabilize and self._stab_active and self._cur_kps_stab() is not None
         # 2-pass parallel stabilization: replace kps with the value precomputed
@@ -2113,6 +2129,14 @@ class ProcessMgr():
         mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
+        if face_lm is not None:
+            lms = self._cur_lm106_stab()
+            if lms is not None:
+                try:
+                    face_lm = lms.apply(face_lm, self._cur_stab_t())
+                except Exception:
+                    pass
+
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
             result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
@@ -2125,8 +2149,8 @@ class ProcessMgr():
         else:
             # Automatic inner-mouth (teeth, tongue, cavity) restoration:
             # Keeps the swapped face lips 100% intact, but recovers the original teeth/tongue from target frame when the mouth opens.
-            if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None:
-                landmarks = target_face.landmark_2d_106
+            if face_lm is not None:
+                landmarks = face_lm
                 inner_mouth_pts = landmarks[64:72].astype(np.int32)
                 min_y = np.min(inner_mouth_pts[:, 1])
                 max_y = np.max(inner_mouth_pts[:, 1])

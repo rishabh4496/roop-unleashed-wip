@@ -42,11 +42,7 @@ export default function FaceManager({ notify, registerFileListener }) {
   };
 
   const cut = async () => { const res = await postJSON('/api/facemgr/cut', { frame }); setFaces(res.faces); notify('Faces cut from frame'); };
-  const remove = async () => {
-    const res = await postJSON('/api/facemgr/remove', { index: sel });
-    setFaces(res.faces);
-    setSel((prev) => Math.min(prev, Math.max(0, res.faces.length - 1)));
-  };
+  const remove = async () => { const res = await postJSON('/api/facemgr/remove', { index: sel }); setFaces(res.faces); };
   const clear = async () => { await postJSON('/api/facemgr/clear', {}); setFaces([]); setVideo(null); setBuilt(null); };
   const build = async () => {
     try { const res = await postJSON('/api/facemgr/build', {}); setBuilt(res); notify('Faceset file created'); }

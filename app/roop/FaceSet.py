@@ -17,18 +17,8 @@ class FaceSet:
 
     def AverageEmbeddings(self):
         if len(self.faces) > 1 and self.embeddings_backup is None:
-            first_face = self.faces[0]
-            if hasattr(first_face, 'embedding'):
-                self.embeddings_backup = first_face.embedding
-                embeddings = [face.embedding for face in self.faces]
-            else:
-                self.embeddings_backup = first_face['embedding']
-                embeddings = [face['embedding'] for face in self.faces]
+            self.embeddings_backup = self.faces[0]['embedding']
+            embeddings = [face.embedding for face in self.faces]
 
-            mean_emb = np.mean(embeddings, axis=0)
-            if hasattr(first_face, 'embedding'):
-                first_face.embedding = mean_emb
-            try:
-                first_face['embedding'] = mean_emb
-            except (TypeError, KeyError, AttributeError):
-                pass
+            self.faces[0]['embedding'] = np.mean(embeddings, axis=0)
+            # try median too?

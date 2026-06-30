@@ -73,15 +73,13 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
 
 
 def release_video():
-    global current_capture, current_video_path, current_frame_total
+    global current_capture
 
     # Caller must hold _capture_lock when called from get_video_frame;
     # direct callers (shutdown, etc.) should also acquire it.
     if current_capture is not None:
         current_capture.release()
         current_capture = None
-    current_video_path = None
-    current_frame_total = 0
 
 
 def get_video_frame_total(video_path: str) -> int:

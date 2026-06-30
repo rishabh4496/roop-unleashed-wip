@@ -188,3 +188,44 @@ class EnhancerStabilizer:
         # new / unmatched track — pass through and seed.
         self.tracks.append({'prev': crop.astype(np.float32), 'centroid': centroid, 'last_t': t})
         return crop
+
+
+class Landmark106Stabilizer:
+    """Smooths face 106-point landmarks across frames, with nearest-centroid
+    tracking so each face in a multi-face scene keeps its own filter."""
+
+    def __init__(self, min_cutoff=0.05, beta=0.02, max_missing=8, match_scale=0.6):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.max_missing = int(max_missing)
+        self.match_scale = float(match_scale)
+        self.tracks = []
+
+    def reset(self):
+        self.tracks = []
+
+    def apply(self, landmarks, t):
+        """Return temporally-smoothed (106,2) landmarks for the face at frame `t`."""
+        landmarks = np.asarray(landmarks, dtype=np.float64)
+        if landmarks.shape != (106, 2):
+            return landmarks.astype(np.float32)
+        centroid = landmarks.mean(axis=0)
+        size = max(float(np.ptp(landmarks[:, 0])), float(np.ptp(landmarks[:, 1])), 1.0)
+
+        best, best_d = None, float('inf')
+        for tr in self.tracks:
+            d = float(np.linalg.norm(tr['centroid'] - centroid))
+            if d < best_d:
+                best_d, best = d, tr
+
+        if best is not None and best_d <= self.match_scale * size and (t - best['last_t']) <= self.max_missing:
+            tr = best
+        else:
+            tr = {'filter': OneEuroFilter(self.min_cutoff, self.beta), 'centroid': centroid, 'last_t': t}
+            self.tracks.append(tr)
+
+        smoothed = tr['filter'](landmarks, t)
+        tr['centroid'] = smoothed.mean(axis=0)
+        tr['last_t'] = t
+        self.tracks = [x for x in self.tracks if (t - x['last_t']) <= self.max_missing]
+        return smoothed.astype(np.float32)

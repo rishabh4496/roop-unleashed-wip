@@ -20,7 +20,7 @@ import contextlib
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Body, Request, Form
+from fastapi import FastAPI, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -218,13 +218,11 @@ def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
     targets = []
     for i, entry in enumerate(list_files_process):
-        total = entry.endframe if entry.endframe else 1
         targets.append({
             "name": os.path.basename(entry.filename),
-            "start_frame": max(1, entry.startframe),
-            "end_frame": total,
-            "frames": total,
-            "fps": entry.fps if entry.fps else 25,
+            "startframe": entry.startframe,
+            "endframe": entry.endframe,
+            "frames": entry.endframe if entry.endframe else 1,
         })
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
@@ -327,14 +325,11 @@ def source_select(payload: dict = Body(...)):
 @app.post("/api/target/add")
 async def target_add(files: list[UploadFile] = File(...)):
     global current_video_fps, selected_target_index
-    first_new = len(list_files_process)
     for f in files:
         path = _save_upload(f)
         list_files_process.append(ProcessEntry(path, 0, 0, 0))
-    # Refresh frame counts and FPS for ALL newly added entries
-    for i in range(first_new, len(list_files_process)):
-        _refresh_target_frames(i)
-    selected_target_index = first_new if first_new < len(list_files_process) else 0
+    selected_target_index = 0
+    _refresh_target_frames(0)
     return _target_list_payload()
 
 
@@ -342,24 +337,17 @@ def _refresh_target_frames(idx):
     global current_video_fps
     if idx >= len(list_files_process):
         return
-    entry = list_files_process[idx]
-    filename = entry.filename
+    filename = list_files_process[idx].filename
     if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
         total = get_video_frame_total(filename) or 1
-        fps = 25
         if not filename.lower().endswith(".webp"):
             try:
-                fps = util.detect_fps(filename)
+                current_video_fps = util.detect_fps(filename)
             except Exception:
-                fps = 30
-        current_video_fps = fps
-        entry.fps = fps
+                current_video_fps = 30
     else:
         total = 1
-        entry.fps = 25
-    entry.endframe = total
-    if entry.startframe < 1:
-        entry.startframe = 1
+    list_files_process[idx].endframe = total
 
 
 def _target_list_payload():
@@ -368,10 +356,9 @@ def _target_list_payload():
         total = entry.endframe if entry.endframe else 1
         targets.append({
             "name": os.path.basename(entry.filename),
-            "start_frame": max(1, entry.startframe),
-            "end_frame": total,
+            "startframe": entry.startframe,
+            "endframe": entry.endframe,
             "frames": total,
-            "fps": entry.fps if entry.fps else 25,
         })
     return {"targets": targets, "selected_target_index": selected_target_index,
             "fps": current_video_fps}
@@ -1039,11 +1026,11 @@ def facemgr_build():
 # ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
 @app.post("/api/extras/apply")
 async def extras_apply(file: UploadFile = File(...),
-                       resolution: str = Form("Original"),
-                       rotation: str = Form("None"),
-                       fps: float = Form(30.0),
-                       crop_left: int = Form(0), crop_right: int = Form(0),
-                       crop_top: int = Form(0), crop_bottom: int = Form(0)):
+                       resolution: str = "Original",
+                       rotation: str = "None",
+                       fps: float = 30.0,
+                       crop_left: int = 0, crop_right: int = 0,
+                       crop_top: int = 0, crop_bottom: int = 0):
     from ui.main import prepare_environment
     prepare_environment()
     path = _save_upload(file)
