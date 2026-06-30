@@ -1484,11 +1484,11 @@ class ProcessMgr():
             if face is None:
                 if self.last_target_face is not None and self.num_frames_no_face < 5:
                     self.num_frames_no_face += 1
-                    face = copy.copy(self.last_target_face)
+                    face = self.last_target_face
                 else:
                     return num_faces_found, frame
             else:
-                self.last_target_face = copy.copy(face)
+                self.last_target_face = face
                 self.num_frames_no_face = 0
 
             if precomp:
@@ -1505,11 +1505,11 @@ class ProcessMgr():
             if faces is None or len(faces) == 0:
                 if self.last_detected_faces and self.num_frames_no_face < 5:
                     self.num_frames_no_face += 1
-                    faces = [copy.copy(f) for f in self.last_detected_faces]
+                    faces = self.last_detected_faces
                 else:
                     return num_faces_found, frame
             else:
-                self.last_detected_faces = [copy.copy(f) for f in faces]
+                self.last_detected_faces = faces
                 self.num_frames_no_face = 0
             if precomp:
                 for f in faces:
