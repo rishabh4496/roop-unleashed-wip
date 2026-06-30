@@ -664,7 +664,11 @@ class ProcessMgr():
         _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
         use_parallel_stab = (_want_kps_stab or _want_enh_stab or _want_lm106_stab or _want_color_stab) and threads > 1 and _parallel_ok
         _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
-        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and not _want_lm106_stab and not _want_color_stab and threads > 1 and _two_pass_ok
+        # 2-pass covers kps + lm106 + 'face' color (all precomputable from detection
+        # in pass 1 and looked up in pass 2). Enhancer stabilization smooths the
+        # enhanced OUTPUT, which only exists during the swap, so it still can't be
+        # precomputed → those runs fall back to single-thread.
+        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
         if (_want_kps_stab or _want_enh_stab or _want_lm106_stab or _want_color_stab) and not use_2pass and not use_parallel_stab:
             if threads != 1:
                 print("[Stabilize] Forcing single thread for temporal smoothing.")
@@ -1373,12 +1377,48 @@ class ProcessMgr():
 
     def _precompute_stabilized_kps(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Pass 1 of 2-pass stabilization. Sequentially detect every frame's faces
-        and run their kps through the (order-dependent) kps stabilizer, returning
-        {frame_idx: [(raw_centroid, smoothed_kps), ...]} for pass 2 to look up.
-        Frame indices are 0-based from frame_start, matching the pass-2 reader.
-        Reads through its own capture so the main reader (pass 2) is untouched."""
+        and run their kps (and, when active, the 106-pt landmarks and 'face' color
+        stats) through the order-dependent stabilizers, returning
+        {frame_idx: [entry, ...]} for pass 2 to look up. Each entry is a dict
+        {'rc', 'kps', 'lm106', 'cmean', 'cstd'}. Frame indices are 0-based from
+        frame_start, matching the pass-2 reader. Reads through its own capture so
+        the main reader (pass 2) is untouched.
+
+        lm106 / 'face' color are precomputed here (not run live in pass 2) because
+        pass 2 is multithreaded and the stabilizers hold shared order-dependent
+        state — running them concurrently would race. The 'face' color crop is
+        cut with the SMOOTHED kps and the SAME subsample_size process_face uses, so
+        pass 2's aligned_img is pixel-identical and the injected stats line up."""
+        from roop.face_util import align_crop
         self.kps_stabilizer.reset()
+        if self.lm106_stabilizer is not None:
+            self.lm106_stabilizer.reset()
+        if self.color_stabilizer is not None:
+            self.color_stabilizer.reset()
         precomputed = {}
+
+        # Match process_face's subsample_size so the precomputed 'face' color crop
+        # is identical to the one pass 2 cuts.
+        swap_p = next((p for p in self.processors if p.type == 'swap'), None)
+        model_output_size = getattr(swap_p, 'model_output_size', 128) if swap_p is not None else 128
+        subsample_size = self.options.subsample_size
+        if subsample_size < model_output_size:
+            subsample_size = model_output_size
+
+        def _face_color_stats(frame, smoothed_kps, idx):
+            """LAB mean/std of the smoothed-kps crop, run through the 'face' color
+            EMA. Returns (mean, std) or (None, None) when unavailable/grayscale."""
+            try:
+                aligned, _ = align_crop(frame, smoothed_kps, subsample_size)
+                src_f = aligned.astype(np.float32)
+                if (np.mean(np.abs(src_f[:, :, 0] - src_f[:, :, 1])) < 5 and
+                        np.mean(np.abs(src_f[:, :, 1] - src_f[:, :, 2])) < 5):
+                    return None, None   # grayscale: pass 2 skips color transfer too
+                lab = cv2.cvtColor(aligned, cv2.COLOR_BGR2LAB).astype("float32")
+                tmean, tstd = cv2.meanStdDev(lab)
+                return self.color_stabilizer.apply(tmean, tstd, smoothed_kps, idx, key='face')
+            except Exception:
+                return None, None
 
         def handle(idx, frame):
             with _gpu_guard(pooled=analysis_pooled()):
@@ -1391,8 +1431,20 @@ class ProcessMgr():
                 if kps is None:
                     continue
                 raw_centroid = np.asarray(kps, dtype=np.float64).mean(axis=0)
-                smoothed = self.kps_stabilizer.apply(kps, idx)
-                entries.append((raw_centroid, np.asarray(smoothed, dtype=np.float32)))
+                smoothed = np.asarray(self.kps_stabilizer.apply(kps, idx), dtype=np.float32)
+                lm106 = None
+                if self.lm106_stabilizer is not None:
+                    raw_lm = getattr(f, 'landmark_2d_106', None)
+                    if raw_lm is not None:
+                        try:
+                            lm106 = np.asarray(self.lm106_stabilizer.apply(raw_lm, idx), dtype=np.float32)
+                        except Exception:
+                            lm106 = None
+                cmean = cstd = None
+                if self.color_stabilizer is not None:
+                    cmean, cstd = _face_color_stats(frame, smoothed, idx)
+                entries.append({'rc': raw_centroid, 'kps': smoothed,
+                                'lm106': lm106, 'cmean': cmean, 'cstd': cstd})
             if entries:
                 precomputed[idx] = entries
 
@@ -1421,23 +1473,38 @@ class ProcessMgr():
         return precomputed
 
 
-    def _lookup_precomputed_kps(self, frame_idx, face):
-        """Pass 2: return the smoothed kps precomputed for this face, matched by
-        nearest raw centroid within the frame. Falls back to the face's own kps
-        when there's no precomputed entry (e.g. pass 1 could not decode)."""
+    def _lookup_precomputed_entry(self, frame_idx, face):
+        """Pass 2: return the precomputed stabilizer entry for this face, matched by
+        nearest raw centroid within the frame, or None when there's no entry
+        (e.g. pass 1 could not decode). Must be called BEFORE face.kps is replaced,
+        so the match uses the same raw centroid pass 1 keyed on."""
         kps = getattr(face, 'kps', None)
         if kps is None or not self._precomputed_kps:
-            return kps
+            return None
         entries = self._precomputed_kps.get(frame_idx)
         if not entries:
-            return kps
+            return None
         c = np.asarray(kps, dtype=np.float64).mean(axis=0)
         best, best_d = None, float('inf')
-        for raw_centroid, smoothed in entries:
-            d = float(np.linalg.norm(raw_centroid - c))
+        for e in entries:
+            d = float(np.linalg.norm(e['rc'] - c))
             if d < best_d:
-                best_d, best = d, smoothed
-        return best if best is not None else kps
+                best_d, best = d, e
+        return best
+
+    def _apply_precomputed_stab(self, frame_idx, face):
+        """Pass 2: replace face.kps with the precomputed smoothed kps and stash the
+        precomputed lm106 landmarks + 'face' color stats on the face object so
+        process_face can use them WITHOUT touching the shared (non-thread-safe)
+        live stabilizers. No-op when there's no matching precomputed entry."""
+        e = self._lookup_precomputed_entry(frame_idx, face)
+        if e is None:
+            return
+        if e.get('kps') is not None:
+            face.kps = e['kps']
+        face._stab_lm106 = e.get('lm106')
+        cmean, cstd = e.get('cmean'), e.get('cstd')
+        face._stab_color = (cmean, cstd) if cmean is not None else None
 
 
     # ── Stabilizer accessors: in the parallel path each worker has its own
@@ -1522,7 +1589,7 @@ class ProcessMgr():
                 self.num_frames_no_face = 0
 
             if precomp:
-                face.kps = self._lookup_precomputed_kps(frame_idx, face)
+                self._apply_precomputed_stab(frame_idx, face)
             elif do_kps_stab:
                 self._apply_stab(face)
             num_faces_found += 1
@@ -1543,7 +1610,7 @@ class ProcessMgr():
                 self.num_frames_no_face = 0
             if precomp:
                 for f in faces:
-                    f.kps = self._lookup_precomputed_kps(frame_idx, f)
+                    self._apply_precomputed_stab(frame_idx, f)
             elif do_kps_stab:
                 for f in faces:
                     self._apply_stab(f)
@@ -1992,7 +2059,10 @@ class ProcessMgr():
                 # Dynamic color tone correction: transfer target crop's skin tone
                 # and lighting highlights/shadows to the swapped face.
                 try:
-                    fake_frame = self.apply_color_transfer(fake_frame, aligned_img, target_face.kps)
+                    # 2-pass: use the 'face' color stats smoothed in pass 1 instead
+                    # of the shared live stabilizer (which would race in pass 2).
+                    _pc = getattr(target_face, '_stab_color', None) if self._precomputed_mode else None
+                    fake_frame = self.apply_color_transfer(fake_frame, aligned_img, target_face.kps, key='face', precomputed_stats=_pc)
                 except Exception as e:
                     print(f"[ProcessMgr] Face color transfer failed: {e}")
                 
@@ -2144,12 +2214,20 @@ class ProcessMgr():
 
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
         if face_lm is not None:
-            lms = self._cur_lm106_stab()
-            if lms is not None:
-                try:
-                    face_lm = lms.apply(face_lm, self._cur_stab_t())
-                except Exception:
-                    pass
+            if self._precomputed_mode:
+                # 2-pass: use the lm106 smoothed in pass 1 (the live stabilizer is
+                # shared and would race across pass-2 worker threads). No entry →
+                # fall back to the raw landmarks.
+                stashed_lm = getattr(target_face, '_stab_lm106', None)
+                if stashed_lm is not None:
+                    face_lm = stashed_lm
+            else:
+                lms = self._cur_lm106_stab()
+                if lms is not None:
+                    try:
+                        face_lm = lms.apply(face_lm, self._cur_stab_t())
+                    except Exception:
+                        pass
 
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
@@ -2527,7 +2605,7 @@ class ProcessMgr():
             print(f'Error in apply_mouth_area: {e}')
         return frame
 
-    def apply_color_transfer(self, source, target, kps=None, key='face'):
+    def apply_color_transfer(self, source, target, kps=None, key='face', precomputed_stats=None):
         # If source is effectively grayscale (B&W media), skip color transfer.
         # Chrominance std ≈ 0 causes division explosion → blue artifact.
         src_f = source.astype(np.float32)
@@ -2538,9 +2616,14 @@ class ProcessMgr():
         target = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype("float32")
         source_mean, source_std = cv2.meanStdDev(source)
         target_mean, target_std = cv2.meanStdDev(target)
-        
-        # Apply color stabilization to avoid frame-to-frame skin tone/brightness flicker
-        if kps is not None:
+
+        # Temporal stabilization of the target stats to avoid frame-to-frame skin
+        # tone/brightness flicker.
+        if precomputed_stats is not None:
+            # 2-pass: use the stats smoothed sequentially in pass 1. Never touch the
+            # shared live stabilizer here — pass 2 is multithreaded and would race.
+            target_mean, target_std = precomputed_stats
+        elif kps is not None and not self._precomputed_mode:
             cs = self._cur_color_stab()
             if cs is not None:
                 try:
