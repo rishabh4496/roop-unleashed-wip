@@ -229,3 +229,55 @@ class Landmark106Stabilizer:
         tr['last_t'] = t
         self.tracks = [x for x in self.tracks if (t - x['last_t']) <= self.max_missing]
         return smoothed.astype(np.float32)
+
+
+class ColorStabilizer:
+    """Smooths LAB color transfer stats (mean and std dev) across frames using an EMA filter,
+    with spatial centroid tracking to support multi-face scenes.
+
+    Tracks are partitioned by ``key`` so that distinct color-transfer purposes
+    (full face, mouth area, inner mouth, ...) never share an EMA track. These
+    regions have very different LAB statistics, and because they all carry the
+    same face keypoints (centroid), sharing tracks would cross-contaminate their
+    means/stds every frame — tinting the face with mouth color and vice versa."""
+
+    def __init__(self, alpha=0.15, max_missing=8, match_scale=0.6):
+        self.alpha = float(alpha)
+        self.max_missing = int(max_missing)
+        self.match_scale = float(match_scale)
+        self.tracks_by_key = {}  # key -> [{mean, std, centroid, last_t}]
+
+    def reset(self):
+        self.tracks_by_key = {}
+
+    def apply(self, target_mean, target_std, kps, t, key='face'):
+        """Return smoothed target mean and standard deviation for the given region ``key``."""
+        if kps is None:
+            return target_mean, target_std
+        kps = np.asarray(kps, dtype=np.float64)
+        centroid = kps.mean(axis=0)
+        size = max(float(np.ptp(kps[:, 0])), float(np.ptp(kps[:, 1])), 1.0)
+
+        tracks = self.tracks_by_key.setdefault(key, [])
+        best, best_d = None, float('inf')
+        for tr in tracks:
+            d = float(np.linalg.norm(tr['centroid'] - centroid))
+            if d < best_d:
+                best_d, best = d, tr
+
+        if best is not None and best_d <= self.match_scale * size and (t - best['last_t']) <= self.max_missing:
+            tr = best
+            smoothed_mean = self.alpha * target_mean + (1.0 - self.alpha) * tr['mean']
+            smoothed_std = self.alpha * target_std + (1.0 - self.alpha) * tr['std']
+            tr['mean'] = smoothed_mean
+            tr['std'] = smoothed_std
+        else:
+            smoothed_mean = target_mean
+            smoothed_std = target_std
+            tr = {'mean': target_mean, 'std': target_std, 'centroid': centroid, 'last_t': t}
+            tracks.append(tr)
+
+        tr['centroid'] = centroid
+        tr['last_t'] = t
+        self.tracks_by_key[key] = [x for x in tracks if (t - x['last_t']) <= self.max_missing]
+        return smoothed_mean, smoothed_std

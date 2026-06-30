@@ -256,11 +256,18 @@ class ProcessMgr():
             _bt = getattr(options, 'stabilize_beta', 0.02)
             self._lm106_stab_factory = lambda: Landmark106Stabilizer(min_cutoff=_mc, beta=_bt)
             self.lm106_stabilizer = self._lm106_stab_factory()
+
+            # Create color stabilizer to prevent lighting/brightness/skin-tone flickering
+            from roop.one_euro import ColorStabilizer
+            self._color_stab_factory = lambda: ColorStabilizer(alpha=0.15)
+            self.color_stabilizer = self._color_stab_factory()
         else:
             self.kps_stabilizer = None
             self._kps_stab_factory = None
             self.lm106_stabilizer = None
             self._lm106_stab_factory = None
+            self.color_stabilizer = None
+            self._color_stab_factory = None
         if getattr(options, 'stabilize_enhancer', False):
             from roop.one_euro import EnhancerStabilizer
             _st = getattr(options, 'stabilize_enhancer_strength', 0.5)
@@ -653,11 +660,12 @@ class ProcessMgr():
         _want_kps_stab = self.kps_stabilizer is not None
         _want_enh_stab = self.enh_stabilizer is not None
         _want_lm106_stab = self.lm106_stabilizer is not None
+        _want_color_stab = self.color_stabilizer is not None
         _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
-        use_parallel_stab = (_want_kps_stab or _want_enh_stab or _want_lm106_stab) and threads > 1 and _parallel_ok
+        use_parallel_stab = (_want_kps_stab or _want_enh_stab or _want_lm106_stab or _want_color_stab) and threads > 1 and _parallel_ok
         _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
-        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and not _want_lm106_stab and threads > 1 and _two_pass_ok
-        if (_want_kps_stab or _want_enh_stab or _want_lm106_stab) and not use_2pass and not use_parallel_stab:
+        use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and not _want_lm106_stab and not _want_color_stab and threads > 1 and _two_pass_ok
+        if (_want_kps_stab or _want_enh_stab or _want_lm106_stab or _want_color_stab) and not use_2pass and not use_parallel_stab:
             if threads != 1:
                 print("[Stabilize] Forcing single thread for temporal smoothing.")
             threads = 1
@@ -669,6 +677,8 @@ class ProcessMgr():
                 self.enh_stabilizer.reset()
             if self.lm106_stabilizer is not None:
                 self.lm106_stabilizer.reset()
+            if self.color_stabilizer is not None:
+                self.color_stabilizer.reset()
 
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
@@ -980,6 +990,7 @@ class ProcessMgr():
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
                     self._tls.lm106 = self._lm106_stab_factory() if self._lm106_stab_factory else None
+                    self._tls.color = self._color_stab_factory() if self._color_stab_factory else None
                     ca = _base + a
                     for ci in range(max(0, ca - WU), ca):   # warm-up: prime filter, discard
                         if not roop.globals.processing:
@@ -1058,7 +1069,7 @@ class ProcessMgr():
                 pass
             rt.join(timeout=5)
             self._parallel_stab = False
-            for _a in ('kps', 'enh', 'lm106', 't'):
+            for _a in ('kps', 'enh', 'lm106', 'color', 't'):
                 if hasattr(self._tls, _a):
                     delattr(self._tls, _a)
             if cap is not None:
@@ -1441,6 +1452,9 @@ class ProcessMgr():
     def _cur_lm106_stab(self):
         return getattr(self._tls, 'lm106', None) if self._parallel_stab else self.lm106_stabilizer
 
+    def _cur_color_stab(self):
+        return getattr(self._tls, 'color', None) if self._parallel_stab else self.color_stabilizer
+
     def _cur_stab_t(self):
         return getattr(self._tls, 't', 0) if self._parallel_stab else self._stab_t
 
@@ -1484,7 +1498,7 @@ class ProcessMgr():
         # Tick once per frame if any stabilizer is active. Parallel path uses a
         # per-thread frame index (TLS) instead of this shared counter.
         if (stabilize and self._stab_active and not self._parallel_stab
-                and (self.kps_stabilizer is not None or self.enh_stabilizer is not None or self.lm106_stabilizer is not None)):
+                and (self.kps_stabilizer is not None or self.enh_stabilizer is not None or self.lm106_stabilizer is not None or self.color_stabilizer is not None)):
             self._stab_t += 1
         do_kps_stab = stabilize and self._stab_active and self._cur_kps_stab() is not None
         # 2-pass parallel stabilization: replace kps with the value precomputed
@@ -1978,7 +1992,7 @@ class ProcessMgr():
                 # Dynamic color tone correction: transfer target crop's skin tone
                 # and lighting highlights/shadows to the swapped face.
                 try:
-                    fake_frame = self.apply_color_transfer(fake_frame, aligned_img)
+                    fake_frame = self.apply_color_transfer(fake_frame, aligned_img, target_face.kps)
                 except Exception as e:
                     print(f"[ProcessMgr] Face color transfer failed: {e}")
                 
@@ -2145,7 +2159,7 @@ class ProcessMgr():
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], kps=target_face.kps)
         else:
             # Automatic inner-mouth (teeth, tongue, cavity) restoration:
             # Keeps the swapped face lips 100% intact, but recovers the original teeth/tongue from target frame when the mouth opens.
@@ -2172,7 +2186,7 @@ class ProcessMgr():
                             inner_cutout = frame[min_y_m:max_y_m, min_x_m:max_x_m].copy()
                             roi = result[min_y_m:max_y_m, min_x_m:max_x_m]
                             resized_inner = cv2.resize(inner_cutout, (roi.shape[1], roi.shape[0]))
-                            color_corrected = self.apply_color_transfer(resized_inner, roi)
+                            color_corrected = self.apply_color_transfer(resized_inner, roi, target_face.kps, key='inner_mouth')
                             
                             local_pts = inner_mouth_pts - np.array([min_x_m, min_y_m], dtype=np.int32)
                             scale_x = roi.shape[1] / max(1, inner_cutout.shape[1])
@@ -2458,7 +2472,7 @@ class ProcessMgr():
         max_val = np.max(mask)
         return mask / max_val if max_val > 0 else mask
 
-    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0) -> np.ndarray:
+    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0, kps=None) -> np.ndarray:
         min_x, min_y, max_x, max_y = mouth_box
         box_width = max_x - min_x
         box_height = max_y - min_y
@@ -2469,7 +2483,7 @@ class ProcessMgr():
             roi = frame[min_y:max_y, min_x:max_x]
             if roi.shape != resized_mouth_cutout.shape:
                 resized_mouth_cutout = cv2.resize(resized_mouth_cutout, (roi.shape[1], roi.shape[0]))
-            color_corrected_mouth = self.apply_color_transfer(resized_mouth_cutout, roi)
+            color_corrected_mouth = self.apply_color_transfer(resized_mouth_cutout, roi, kps, key='mouth')
 
             if mouth_polygon is not None:
                 # Scale polygon from original cutout coords to the resized box
@@ -2513,7 +2527,7 @@ class ProcessMgr():
             print(f'Error in apply_mouth_area: {e}')
         return frame
 
-    def apply_color_transfer(self, source, target):
+    def apply_color_transfer(self, source, target, kps=None, key='face'):
         # If source is effectively grayscale (B&W media), skip color transfer.
         # Chrominance std ≈ 0 causes division explosion → blue artifact.
         src_f = source.astype(np.float32)
@@ -2524,6 +2538,16 @@ class ProcessMgr():
         target = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype("float32")
         source_mean, source_std = cv2.meanStdDev(source)
         target_mean, target_std = cv2.meanStdDev(target)
+        
+        # Apply color stabilization to avoid frame-to-frame skin tone/brightness flicker
+        if kps is not None:
+            cs = self._cur_color_stab()
+            if cs is not None:
+                try:
+                    target_mean, target_std = cs.apply(target_mean, target_std, kps, self._cur_stab_t(), key=key)
+                except Exception:
+                    pass
+
         source_mean = source_mean.reshape(1, 1, 3)
         source_std  = np.maximum(source_std.reshape(1, 1, 3), 1.0)  # guard near-zero
         target_mean = target_mean.reshape(1, 1, 3)
