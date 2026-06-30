@@ -40,7 +40,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [faceMapping, setFaceMapping] = useState({});
 
   const getFaceMappingArray = () => {
-    const uniqPersons = Array.from(new Set(targetGroups)).sort((a, b) => a - b);
+    const uniqPersons = Array.from(new Set(targetGroups))
+      .filter(x => typeof x === 'number')
+      .sort((a, b) => a - b);
     return uniqPersons.map(pId => {
       const mappedSrc = faceMapping[pId];
       return mappedSrc !== undefined ? mappedSrc : pId;
@@ -302,7 +304,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [hoverFrame, setHoverFrame] = useState(null);
   const timelineRef = useRef(null);
   const playIntervalRef = useRef(null);
-  const playbackStartRef = useRef({ time: 0, frame: 1 });
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
 
@@ -713,31 +714,27 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     catch (e) { notify(e.message, 'error'); }
   };
 
-  // Playback timer effect - uses 100ms tick and real elapsed time with frame drops
-  // to avoid backend overloading while maintaining accurate 1.0x real-time speed.
+  // Playback timer effect
   useEffect(() => {
     if (isPlaying) {
-      playbackStartRef.current = { time: Date.now(), frame: frame };
       const fps = targets[selTarget]?.fps || 25;
+      const intervalMs = 1000 / fps;
       playIntervalRef.current = setInterval(() => {
-        const { time: startTime, frame: startFrame } = playbackStartRef.current;
-        const elapsed = (Date.now() - startTime) / 1000;
-        const start = targets[selTarget]?.start_frame ?? 1;
-        const end = targets[selTarget]?.end_frame ?? maxFrames;
-        
-        let next = startFrame + Math.round(elapsed * fps);
-        if (next > end) {
-          if (isLooping) {
-            playbackStartRef.current = { time: Date.now(), frame: start };
-            setFrame(start);
-          } else {
-            setIsPlaying(false);
-            setFrame(end);
+        setFrame((f) => {
+          const start = targets[selTarget]?.start_frame ?? 1;
+          const end = targets[selTarget]?.end_frame ?? maxFrames;
+          let next = f + 1;
+          if (next > end) {
+            if (isLooping) {
+              next = start;
+            } else {
+              setIsPlaying(false);
+              return f;
+            }
           }
-        } else {
-          setFrame(next);
-        }
-      }, 100); // 10 ticks per second (perfectly smooth seek-sampling, no server lockups)
+          return next;
+        });
+      }, intervalMs);
     } else {
       if (playIntervalRef.current) {
         clearInterval(playIntervalRef.current);
@@ -789,7 +786,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   };
 
   const handleTimelinePointerMove = (e) => {
-    if (isPlaying) return; // Disable hover updates during active play to save bandwidth
     if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
     const clientX = e.clientX ?? e.touches?.[0]?.clientX;
@@ -797,13 +793,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const pct = x / rect.width;
     const f = Math.max(1, Math.min(Math.round(pct * maxFrames), maxFrames));
-    
-    // Snap to 10-second boundaries to prevent backend seeking bottlenecks
-    const fps = targets[selTarget]?.fps || 25;
-    const interval = Math.max(1, Math.round(10 * fps));
-    const snapped = Math.max(1, Math.min(Math.round(f / interval) * interval, maxFrames));
-    
-    setHoverFrame(snapped);
+    setHoverFrame(f);
   };
 
   const handleTimelinePointerLeave = () => {
@@ -1137,7 +1127,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     </div>
 
       {/* COLUMN 2 & 3 WRAPPER: Media asset managers on left and large active workspace on right */}
-      <div className="flex-1 w-full space-y-6 flex flex-col 4xl:flex-row gap-6">
+      <div className="flex-1 w-full space-y-6 flex flex-col 2xl:flex-row gap-6">
         
         {/* COLUMN 2: Media Asset Manager */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
@@ -1407,7 +1397,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </div>
 
                 {/* Cinematic Timeline Controls Toolbar */}
-                <div className="flex flex-wrap items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
                   {/* Left Side: Timecode / Frame Info */}
                   <div className="text-xs text-[var(--text-muted)] font-mono flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
                     <div className="flex items-center gap-1.5">
@@ -1561,7 +1551,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   ? 'No jobs in queue. Configure settings & click "Add Current to Queue".' 
                   : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-2">
                 <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add Current to Queue</Button>
                 {queue.length > 0 && (
                   <>

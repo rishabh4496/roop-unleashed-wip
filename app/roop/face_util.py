@@ -271,7 +271,7 @@ def rotate_clockwise(frame):
 
 
 def rotate_image_180(image):
-    return np.flip(image, 0)
+    return np.rot90(image, 2)
 
 
 # alignment code from insightface https://github.com/deepinsight/insightface/blob/master/python-package/insightface/utils/face_align.py
