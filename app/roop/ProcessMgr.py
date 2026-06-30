@@ -1,4 +1,5 @@
 import os
+import copy
 import cv2
 import time
 import numpy as np
@@ -105,7 +106,7 @@ class eNoFaceAction():
     USE_ORIGINAL_FRAME = 0
     RETRY_ROTATED = 1
     SKIP_FRAME = 2
-    SKIP_FRAME_IF_DISSIMILAR = 3,
+    SKIP_FRAME_IF_DISSIMILAR = 3
     USE_LAST_SWAPPED = 4
 
 
@@ -228,6 +229,8 @@ class ProcessMgr():
             self.target_face_groups = list(range(len(target_faces)))
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
+        self.last_target_face = None
+        self.last_detected_faces = []
         self.options = options
         devicename = get_device()
 
@@ -1458,7 +1461,15 @@ class ProcessMgr():
             with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
                 face = get_first_face(frame)
             if face is None:
-                return num_faces_found, frame
+                if self.last_target_face is not None and self.num_frames_no_face < 5:
+                    self.num_frames_no_face += 1
+                    face = copy.copy(self.last_target_face)
+                else:
+                    return num_faces_found, frame
+            else:
+                self.last_target_face = copy.copy(face)
+                self.num_frames_no_face = 0
+
             if precomp:
                 face.kps = self._lookup_precomputed_kps(frame_idx, face)
             elif do_kps_stab:
@@ -1470,8 +1481,15 @@ class ProcessMgr():
         else:
             with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
                 faces = get_all_faces(frame)
-            if faces is None:
-                return num_faces_found, frame
+            if faces is None or len(faces) == 0:
+                if self.last_detected_faces and self.num_frames_no_face < 5:
+                    self.num_frames_no_face += 1
+                    faces = [copy.copy(f) for f in self.last_detected_faces]
+                else:
+                    return num_faces_found, frame
+            else:
+                self.last_detected_faces = [copy.copy(f) for f in faces]
+                self.num_frames_no_face = 0
             if precomp:
                 for f in faces:
                     f.kps = self._lookup_precomputed_kps(frame_idx, f)
@@ -2228,15 +2246,16 @@ class ProcessMgr():
             left_x  = int(np.min(pts[:, 0]))
             right_x = int(np.max(pts[:, 0]))
 
-        forehead_pts = np.array([
-            [left_x,                    forehead_y],
-            [(left_x + right_x) // 2,  forehead_y],
-            [right_x,                   forehead_y],
-        ], dtype=np.int32)
-
-        all_pts = np.vstack([pts, forehead_pts])
-        hull    = cv2.convexHull(all_pts)
-        cv2.fillConvexPoly(mask, hull, 255)
+        # Contour (left temple to right temple) is indices 0 to 32.
+        # We construct a boundary polygon to allow concave shapes (jaw contours on profiles).
+        # left temple (pts[0]) -> forehead points -> right temple (pts[32]) -> jaw contour -> left temple.
+        boundary = np.vstack([
+            pts[0:33],
+            [forehead_pts[2]], # right forehead
+            [forehead_pts[1]], # mid forehead
+            [forehead_pts[0]], # left forehead
+        ])
+        cv2.fillPoly(mask, [boundary.astype(np.int32)], 255)
 
         # Dilate slightly so the hull doesn't clip skin right at the landmark
         # boundary — especially at jaw/temple edges.
