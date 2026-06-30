@@ -47,7 +47,12 @@ def _rate_control(codec: str, quality) -> List[str]:
         preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
         if preset not in {f'p{i}' for i in range(1, 8)}:
             preset = 'p5'
-        return ['-rc', 'vbr', '-cq', str(quality), '-preset', preset, '-tune', 'hq']
+        try:
+            val = int(quality)
+        except (ValueError, TypeError):
+            val = 14
+        nvenc_cq = min(51, val + 6)
+        return ['-rc', 'vbr', '-cq', str(nvenc_cq), '-b:v', '0', '-preset', preset, '-tune', 'hq']
     return ['-crf', str(quality)]
 
 

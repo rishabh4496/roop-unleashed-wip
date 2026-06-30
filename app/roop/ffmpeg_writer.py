@@ -109,14 +109,20 @@ class FFMPEG_VideoWriter:
         is_nvenc = codec in ('h264_nvenc', 'hevc_nvenc')
         if is_nvenc:
             # NVENC has no -crf; -cq is the constant-quality equivalent (same 0-51
-            # scale), so reuse the configured quality directly. Preset p1(fastest)
-            # ..p7(slowest/best); p5 + "-tune hq" under VBR is a balanced default.
+            # scale), so apply a +6 offset for comparable size/quality, and add -b:v 0
+            # to enable true quality-based VBR. Preset p1(fastest)..p7(slowest/best);
+            # p5 + "-tune hq" under VBR is a balanced default.
             # Encoding runs on the GPU's dedicated NVENC engine — off the CPU and
             # separate from CUDA inference. Override the preset with ROOP_NVENC_PRESET.
             nvenc_preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
             if nvenc_preset not in {f'p{i}' for i in range(1, 8)}:
                 nvenc_preset = 'p5'
-            cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-preset', nvenc_preset, '-tune', 'hq'])
+            try:
+                val = int(crf)
+            except (ValueError, TypeError):
+                val = 14
+            nvenc_cq = min(51, val + 6)
+            cmd.extend(['-rc', 'vbr', '-cq', str(nvenc_cq), '-b:v', '0', '-preset', nvenc_preset, '-tune', 'hq'])
         else:
             cmd.extend(['-crf', str(crf)])
 
