@@ -1562,6 +1562,14 @@ class ProcessMgr():
         # (set here because every worker thread enters swap_faces once per frame).
         self._tls.frame_idx = frame_idx
 
+        # Per-call gate for the LIVE in-process_face stabilizers (lm106, color,
+        # enhancer). Like do_kps_stab, this honors the `stabilize` flag so the
+        # retry_rotated path (called with stabilize=False, rotated coordinates)
+        # and non-video paths (images/preview: _stab_active False) never feed the
+        # shared stabilizer tracks. The 2-pass path leaves _stab_active False and
+        # uses precomputed values instead, so this is False there too.
+        self._tls.do_stab = bool(stabilize and self._stab_active)
+
         # Tick once per frame if any stabilizer is active. Parallel path uses a
         # per-thread frame index (TLS) instead of this shared counter.
         if (stabilize and self._stab_active and not self._parallel_stab
@@ -1838,6 +1846,17 @@ class ProcessMgr():
                     frame = rotcutframe
                     target_face = rotface
 
+        # Whether the LIVE lm106/color/enhancer stabilizers may run for this face:
+        # only in an in-order video stabilization pass (do_stab), not on an
+        # autorotated re-detection (rotated coords, like the enhancer always
+        # required), and not in 2-pass mode (which injects precomputed values).
+        # Stashed in TLS so apply_color_transfer (called deep in apply_mouth_area)
+        # can read it without threading the flag through.
+        live_stab_ok = (getattr(self._tls, 'do_stab', False)
+                        and rotation_action is None
+                        and not self._precomputed_mode)
+        self._tls.live_stab_ok = live_stab_ok
+
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
         model_output_size = getattr(swap_p, 'model_output_size', 128)
@@ -2093,8 +2112,7 @@ class ProcessMgr():
         # without ghosting on movement. Skipped when autorotate rebound the face
         # (rotated crop space is inconsistent frame-to-frame).
         _es = self._cur_enh_stab()
-        if (self._stab_active and _es is not None
-                and enhanced_frame is not None and rotation_action is None):
+        if (live_stab_ok and _es is not None and enhanced_frame is not None):
             enhanced_frame = _es.apply(enhanced_frame, target_face.kps, self._cur_stab_t())
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
@@ -2221,7 +2239,7 @@ class ProcessMgr():
                 stashed_lm = getattr(target_face, '_stab_lm106', None)
                 if stashed_lm is not None:
                     face_lm = stashed_lm
-            else:
+            elif live_stab_ok:
                 lms = self._cur_lm106_stab()
                 if lms is not None:
                     try:
@@ -2623,7 +2641,9 @@ class ProcessMgr():
             # 2-pass: use the stats smoothed sequentially in pass 1. Never touch the
             # shared live stabilizer here — pass 2 is multithreaded and would race.
             target_mean, target_std = precomputed_stats
-        elif kps is not None and not self._precomputed_mode:
+        elif kps is not None and getattr(self._tls, 'live_stab_ok', False):
+            # Live smoothing only in an in-order video stabilization pass; the
+            # flag excludes image batches, preview, retry_rotated and 2-pass.
             cs = self._cur_color_stab()
             if cs is not None:
                 try:
