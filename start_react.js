@@ -34,7 +34,7 @@ module.exports = {
       params: {
         path: "react-ui",
         message: [
-          "npm run dev"
+          "npm run dev -- --force"
         ],
         on: [{
           "event": "/(http:\\/\\/localhost:[0-9]+)/",
