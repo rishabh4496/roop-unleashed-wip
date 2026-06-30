@@ -232,49 +232,51 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     }
 
     const job = queue[currentQueueIndex];
-
-    if (job.status === 'Pending') {
-      const executeJob = async () => {
-        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
-        
-        try {
-          await postJSON('/api/target/select', { index: job.targetIndex });
-          setSelTarget(job.targetIndex);
-          
-          await postJSON('/api/source/select', { index: job.sourceIndex });
-          setSelSource(job.sourceIndex);
-
-          await postJSON('/api/settings', job.params);
-          setSettings(job.params);
-          
-          await postJSON('/api/swap', {
-            ...job.params,
-            enhancer: job.params.selected_enhancer,
-            detection: job.params.face_detection_mode,
-            output_method: job.params.output_method,
-            video_method: job.params.video_swapping_method,
-            upscale: job.params.subsample_upscale,
-            mask_engine: job.params.mask_engine,
-            clip_text: job.params.mask_clip_text,
-            sam2_model_size: job.params.sam2_model_size,
-            track_identities: job.params.track_identities,
-            face_distance: num(job.params.max_face_distance, 0.85),
-            blend_ratio: num(job.params.blend_ratio, 0.8),
-            num_swap_steps: num(job.params.num_swap_steps, 1),
-            face_mapping: job.faceMapping || [],
-          });
-
-          startTimeRef.current = Date.now();
-          setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
-          startPolling();
-        } catch (e) {
-          notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
-          setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
-          setCurrentQueueIndex((idx) => idx + 1);
-        }
-      };
-      executeJob();
+    if (job.status !== 'Pending') {
+      setCurrentQueueIndex((idx) => idx + 1);
+      return;
     }
+
+    const executeJob = async () => {
+      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
+      
+      try {
+        await postJSON('/api/target/select', { index: job.targetIndex });
+        setSelTarget(job.targetIndex);
+        
+        await postJSON('/api/source/select', { index: job.sourceIndex });
+        setSelSource(job.sourceIndex);
+
+        await postJSON('/api/settings', job.params);
+        setSettings(job.params);
+        
+        await postJSON('/api/swap', {
+          ...job.params,
+          enhancer: job.params.selected_enhancer,
+          detection: job.params.face_detection_mode,
+          output_method: job.params.output_method,
+          video_method: job.params.video_swapping_method,
+          upscale: job.params.subsample_upscale,
+          mask_engine: job.params.mask_engine,
+          clip_text: job.params.mask_clip_text,
+          sam2_model_size: job.params.sam2_model_size,
+          track_identities: job.params.track_identities,
+          face_distance: num(job.params.max_face_distance, 0.85),
+          blend_ratio: num(job.params.blend_ratio, 0.8),
+          num_swap_steps: num(job.params.num_swap_steps, 1),
+          face_mapping: job.faceMapping || [],
+        });
+
+        startTimeRef.current = Date.now();
+        setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
+        startPolling();
+      } catch (e) {
+        notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
+        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
+        setCurrentQueueIndex((idx) => idx + 1);
+      }
+    };
+    executeJob();
   }, [isQueueRunning, currentQueueIndex]);
 
   // Monitor job progress to move to next queue item
@@ -285,7 +287,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
     if (!progress.processing) {
       const isFailed = progress.error || (progress.desc && progress.desc.toLowerCase().includes('fail'));
-      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: isFailed ? 'Failed' : 'Completed' } : j));
+      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: isFailed ? 'Failed' : 'Finished' } : j));
       setCurrentQueueIndex((idx) => idx + 1);
     }
   }, [progress.processing]);
@@ -1130,19 +1132,43 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
             ) : (
               <div className="space-y-1.5 max-h-40 overflow-auto">
-                {targets.map((t, i) => (
-                  <div key={i}
-                    className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
-                    onClick={() => selectTarget(i)}>
-                    <div className="flex-1 min-w-0">
-                      <span className="truncate block">{t.name}</span>
-                      <span className="text-xs text-[var(--text-muted)]">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
+                {targets.map((t, i) => {
+                  const job = queue.find(j => j.targetName === t.name || j.targetIndex === i);
+                  let statusLabel = null;
+                  let badgeColor = '';
+                  if (job) {
+                    if (job.status === 'Running') {
+                      statusLabel = 'Running';
+                      badgeColor = 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 animate-pulse';
+                    } else if (job.status === 'Finished') {
+                      statusLabel = 'Finished';
+                      badgeColor = 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
+                    } else if (job.status === 'Failed') {
+                      statusLabel = 'Failed';
+                      badgeColor = 'text-red-400 border-red-500/30 bg-red-500/10';
+                    }
+                  }
+                  return (
+                    <div key={i}
+                      className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
+                      onClick={() => selectTarget(i)}>
+                      <div className="flex-1 min-w-0">
+                        <span className="truncate block font-semibold text-white">{t.name}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-[var(--text-muted)]">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
+                          {statusLabel && (
+                            <span className={`text-[8px] uppercase tracking-wider px-1 rounded border font-bold ${badgeColor}`}>
+                              {statusLabel}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <button type="button" title="Remove this target"
+                        onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
+                        className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
                     </div>
-                    <button type="button" title="Remove this target"
-                      onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                      className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>}
@@ -1456,7 +1482,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <div className="text-xs text-white/50">
                 {queue.length === 0 
                   ? 'No jobs in queue. Configure settings & click "Add Current to Queue".' 
-                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Completed').length} done`}
+                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
               </div>
               <div className="flex gap-2">
                 <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add Current to Queue</Button>
@@ -1477,7 +1503,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   const statusColors = {
                     Pending: 'text-white/60 bg-white/5 border-white/5',
                     Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
-                    Completed: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+                    Finished: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
                     Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
                   };
                   return (
