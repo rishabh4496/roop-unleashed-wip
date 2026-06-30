@@ -678,9 +678,22 @@ def _run_swap(payload):
             return
 
         roop_globals.processing = True
+        target_idx = payload.get("target_index")
+        if target_idx is not None:
+            try:
+                target_idx = int(target_idx)
+                if 0 <= target_idx < len(list_files_process):
+                    files_to_process = [list_files_process[target_idx]]
+                else:
+                    files_to_process = list_files_process
+            except Exception:
+                files_to_process = list_files_process
+        else:
+            files_to_process = list_files_process
+
         with temp_mapped_facesets(payload.get("face_mapping")):
             batch_process_regular(
-                output_method, list_files_process, mask_engine, clip_text,
+                output_method, files_to_process, mask_engine, clip_text,
                 processing_method == "In-Memory processing", None,
                 bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
                 int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),

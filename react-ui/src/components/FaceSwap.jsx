@@ -265,6 +265,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           blend_ratio: num(job.params.blend_ratio, 0.8),
           num_swap_steps: num(job.params.num_swap_steps, 1),
           face_mapping: job.faceMapping || [],
+          target_index: job.targetIndex,
         });
 
         startTimeRef.current = Date.now();
