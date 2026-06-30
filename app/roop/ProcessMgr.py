@@ -7,7 +7,7 @@ import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, clamp_cut_values, analysis_pooled
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -1609,6 +1609,12 @@ class ProcessMgr():
 
 
     def rotation_action(self, original_face:Face, frame:Frame):
+        if hasattr(original_face, 'kps') and original_face.kps is not None and len(original_face.kps) == 5:
+            eye_y = (original_face.kps[0][1] + original_face.kps[1][1]) / 2.0
+            mouth_y = (original_face.kps[3][1] + original_face.kps[4][1]) / 2.0
+            if eye_y > mouth_y:
+                return "rotate_180"
+
         (height, width) = frame.shape[:2]
 
         bounding_box_width = original_face.bbox[2] - original_face.bbox[0]
@@ -1644,6 +1650,8 @@ class ProcessMgr():
             frame = rotate_anticlockwise(frame)
         elif rotation_action == "rotate_clockwise":
             frame = rotate_clockwise(frame)
+        elif rotation_action == "rotate_180":
+            frame = rotate_image_180(frame)
         return target_face, frame, rotation_action
 
 
@@ -1652,6 +1660,8 @@ class ProcessMgr():
             return rotate_clockwise(frame)
         elif rotation_action == "rotate_clockwise":
             return rotate_anticlockwise(frame)
+        elif rotation_action == "rotate_180":
+            return rotate_image_180(frame)
         return frame
 
 
@@ -1681,6 +1691,8 @@ class ProcessMgr():
                     rotcutframe = rotate_anticlockwise(rotcutframe)
                 elif rotation_action == "rotate_clockwise":
                     rotcutframe = rotate_clockwise(rotcutframe)
+                elif rotation_action == "rotate_180":
+                    rotcutframe = rotate_image_180(rotcutframe)
                 with _gpu_guard(pooled=analysis_pooled()):  # autorotate re-detection: lock-free when pooled
                     rotface = get_first_face(rotcutframe)
                 if rotface is None:

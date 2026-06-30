@@ -331,12 +331,17 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     """
     import base64 as _b64
     import cv2 as _cv2
-    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
+    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise, rotate_image_180
 
     if frame_bgr is None:
         return ""
 
     def _rotation_action(face, frame):
+        if hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
+            eye_y = (face.kps[0][1] + face.kps[1][1]) / 2.0
+            mouth_y = (face.kps[3][1] + face.kps[4][1]) / 2.0
+            if eye_y > mouth_y:
+                return "rotate_180"
         bbox_w = face.bbox[2] - face.bbox[0]
         bbox_h = face.bbox[3] - face.bbox[1]
         if bbox_w <= bbox_h:
@@ -367,8 +372,10 @@ def get_face_crop_from_frame(frame_bgr) -> str:
             cut = frame[y0m:y1m, x0m:x1m]
             if action == "rotate_anticlockwise":
                 cut = rotate_anticlockwise(cut)
-            else:
+            elif action == "rotate_clockwise":
                 cut = rotate_clockwise(cut)
+            elif action == "rotate_180":
+                cut = rotate_image_180(cut)
             rotface = get_first_face(cut)
             if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
                 face  = rotface
