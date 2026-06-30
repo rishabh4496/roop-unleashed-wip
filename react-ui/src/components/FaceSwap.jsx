@@ -1125,7 +1125,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     </div>
 
       {/* COLUMN 2 & 3 WRAPPER: Media asset managers on left and large active workspace on right */}
-      <div className="flex-1 w-full space-y-6 flex flex-col 2xl:flex-row gap-6">
+      <div className="flex-1 w-full space-y-6 flex flex-col 4xl:flex-row gap-6">
         
         {/* COLUMN 2: Media Asset Manager */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
@@ -1395,7 +1395,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </div>
 
                 {/* Cinematic Timeline Controls Toolbar */}
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
                   {/* Left Side: Timecode / Frame Info */}
                   <div className="text-xs text-[var(--text-muted)] font-mono flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
                     <div className="flex items-center gap-1.5">
@@ -1549,7 +1549,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   ? 'No jobs in queue. Configure settings & click "Add Current to Queue".' 
                   : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add Current to Queue</Button>
                 {queue.length > 0 && (
                   <>
