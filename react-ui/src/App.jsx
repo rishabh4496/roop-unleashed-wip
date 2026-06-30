@@ -5,11 +5,13 @@ import FaceSwap from './components/FaceSwap';
 import Settings from './components/Settings';
 import FaceManager from './components/FaceManager';
 import Extras from './components/Extras';
+import Gallery from './components/Gallery';
 
 const TABS = [
   { id: 'faceswap', label: '🎭 Face Swap' },
   { id: 'facemgr', label: '👥 Face Manager' },
   { id: 'extras', label: '✏️ Editor' },
+  { id: 'gallery', label: '📂 Outputs' },
   { id: 'settings', label: '⚙️ Settings' },
 ];
 
@@ -165,6 +167,7 @@ export default function App() {
             {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
             {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
             {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
+            {tab === 'gallery' && <Gallery notify={notify} />}
             {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
           </div>
         )}

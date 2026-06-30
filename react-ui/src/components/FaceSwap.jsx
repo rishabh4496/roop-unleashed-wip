@@ -36,6 +36,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   // Telemetry HUD State
   const [telemetry, setTelemetry] = useState(null);
 
+  // Target-to-Source visual mapping state
+  const [faceMapping, setFaceMapping] = useState({});
+
+  const getFaceMappingArray = () => {
+    const uniqPersons = Array.from(new Set(targetGroups)).sort((a, b) => a - b);
+    return uniqPersons.map(pId => {
+      const mappedSrc = faceMapping[pId];
+      return mappedSrc !== undefined ? mappedSrc : pId;
+    });
+  };
+
   // Profile Management
   const [profiles, setProfiles] = useState(() => {
     try {
@@ -183,6 +194,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       sourceIndex: selSource,
       sourceName: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected Face',
       params: { ...p },
+      faceMapping: getFaceMappingArray(),
       status: 'Pending'
     };
     setQueue((prev) => [...prev, newJob]);
@@ -249,6 +261,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             face_distance: num(job.params.max_face_distance, 0.85),
             blend_ratio: num(job.params.blend_ratio, 0.8),
             num_swap_steps: num(job.params.num_swap_steps, 1),
+            face_mapping: job.faceMapping || [],
           });
 
           startTimeRef.current = Date.now();
@@ -308,6 +321,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
     dds: p.default_det_size,
+    fm: faceMapping,
   });
 
   // One-click speed/quality profiles. Each bundles the core levers (detection
@@ -400,6 +414,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
+        face_mapping: getFaceMappingArray(),
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewSrc(res.image || '');
@@ -466,6 +481,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
+          face_mapping: getFaceMappingArray(),
         });
         if (!activeCheck()) return;
         if (res.image) {
@@ -532,13 +548,36 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     if (!files || !files.length) return;
     setUploadingTgt(true);
     try {
+      const beforeCount = targets.length;
       const res = await postFiles('/api/target/add', files);
-      setTargets(res.targets);
+      const newTargetsList = res.targets || [];
+      setTargets(newTargetsList);
       setSelTarget(res.selected_target_index || 0);
-      const mf = res.targets[res.selected_target_index || 0]?.frames || 1;
+      const mf = newTargetsList[res.selected_target_index || 0]?.frames || 1;
       setMaxFrames(mf); setFrame(1);
       refreshPreview({ index: res.selected_target_index || 0, frame: 1 });
-      notify(`Added ${res.targets.length} target(s)`);
+      notify(`Added ${newTargetsList.length - beforeCount} target(s)`);
+
+      // Automatically add videos to batch queue if more than 1 video is uploaded
+      const newTargets = newTargetsList.slice(beforeCount);
+      const newVideos = newTargets.filter(t => t.frames > 1);
+      if (newVideos.length > 1) {
+        const jobs = newVideos.map((t, idx) => {
+          const absoluteIndex = beforeCount + newTargets.indexOf(t);
+          return {
+            id: Date.now() + Math.random().toString(36).substr(2, 9) + '_' + idx,
+            targetIndex: absoluteIndex,
+            targetName: t.name || 'Unknown',
+            sourceIndex: selSource,
+            sourceName: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected Face',
+            params: { ...p },
+            faceMapping: getFaceMappingArray(),
+            status: 'Pending'
+          };
+        });
+        setQueue((prev) => [...prev, ...jobs]);
+        notify(`Automatically queued ${jobs.length} uploaded videos`, 'success');
+      }
     } catch (err) { notify(err.message, 'error'); }
     finally { setUploadingTgt(false); }
   };
@@ -612,6 +651,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
+        face_mapping: getFaceMappingArray(),
       });
       startTimeRef.current = Date.now();
       // Optimistically flag processing so the old "Latest output" clears
@@ -994,22 +1034,64 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         <div className="3xl:col-span-2">
           <Section title="Live Telemetry & Diagnostics">
             {telemetry ? (
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                <div className="bg-black/20 p-2 rounded border border-white/5 flex flex-col">
-                  <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">GPU / VRAM</span>
-                  <span className="truncate text-white font-semibold">{telemetry.gpu}</span>
+              <div className="space-y-4 text-xs font-mono">
+                {/* GPU & VRAM */}
+                <div className="bg-black/25 p-3 rounded-xl border border-white/5 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">GPU</span>
+                    <span className="text-white font-semibold truncate max-w-[200px]">{telemetry.gpu}</span>
+                  </div>
                   {telemetry.vram_total > 0 && (
-                    <span className="text-emerald-400 font-semibold">{telemetry.vram_used} GB / {telemetry.vram_total} GB</span>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px]">
+                        <span className="text-white/40">VRAM Usage</span>
+                        <span className="text-emerald-400 font-bold">{telemetry.vram_used} GB / {telemetry.vram_total} GB</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div 
+                          className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${Math.min(100, (telemetry.vram_used / telemetry.vram_total) * 100)}%` }} 
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
-                <div className="bg-black/20 p-2 rounded border border-white/5 flex flex-col">
-                  <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">CPU / Memory</span>
-                  <span className="text-white font-semibold">Usage: {telemetry.cpu_percent}%</span>
-                  <span className="text-blue-300 font-semibold">{telemetry.ram_used} GB / {telemetry.ram_total} GB</span>
+
+                {/* CPU & Memory */}
+                <div className="bg-black/25 p-3 rounded-xl border border-white/5 space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="text-white/40 uppercase font-bold tracking-wider">CPU Utilization</span>
+                      <span className="text-orange-400 font-bold">{telemetry.cpu_percent}%</span>
+                    </div>
+                    <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                      <div 
+                        className="bg-orange-500 h-full rounded-full transition-all duration-500" 
+                        style={{ width: `${Math.min(100, telemetry.cpu_percent)}%` }} 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="text-white/40 uppercase font-bold tracking-wider">System RAM</span>
+                      <span className="text-blue-300 font-bold">{telemetry.ram_used} GB / {telemetry.ram_total} GB</span>
+                    </div>
+                    {telemetry.ram_total > 0 && (
+                      <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div 
+                          className="bg-blue-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${Math.min(100, (telemetry.ram_used / telemetry.ram_total) * 100)}%` }} 
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="col-span-2 bg-black/20 px-2 py-1 rounded border border-white/5 flex items-center justify-between">
-                  <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider">Active Python Threads:</span>
-                  <span className="text-orange-300 font-bold text-xs">{telemetry.threads}</span>
+
+                {/* Active threads info */}
+                <div className="bg-black/25 px-3 py-2 rounded-xl border border-white/5 flex items-center justify-between">
+                  <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider">Active Python Threads</span>
+                  <span className="text-pink-400 font-bold text-xs bg-pink-500/10 px-2 py-0.5 rounded-md border border-pink-500/20">{telemetry.threads}</span>
                 </div>
               </div>
             ) : (
@@ -1063,7 +1145,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 ))}
               </div>
             )}
-            {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setPreviewSrc(''); }}>Clear targets</Button>}
+            {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>}
           </Section>
 
           <Section title="Target faces">
@@ -1084,6 +1166,48 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <p className="text-[11px] text-[var(--text-muted)] leading-snug">
                   Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
                 </p>
+
+                {/* Target-to-Source Mapping Panel */}
+                {sourceFaces.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
+                    <h4 className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">🎯 Swap Target Mapping</h4>
+                    <div className="space-y-2">
+                      {Array.from(new Set(targetGroups)).sort((a, b) => a - b).map((pId) => {
+                        const idx = targetGroups.indexOf(pId);
+                        const thumb = targetFaces[idx];
+                        const currentMap = faceMapping[pId] !== undefined ? faceMapping[pId] : pId;
+                        const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
+                        const color = PERSON_COLORS[pId % PERSON_COLORS.length];
+                        
+                        return (
+                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/25 p-2 rounded-xl border border-white/5 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {thumb && <img src={thumb} alt={`p ${pId}`} className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />}
+                              <span className="font-bold truncate" style={{ color }}>Person {pId + 1}</span>
+                            </div>
+                            <span className="text-white/30 text-[10px]">➔</span>
+                            <select
+                              value={currentMap}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value);
+                                setFaceMapping(prev => ({ ...prev, [pId]: val }));
+                                clearPreviewCache();
+                              }}
+                              className="px-2 py-1 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[120px] shrink-0"
+                            >
+                              <option value={-1} className="bg-[#121420]">❌ Skip (Keep)</option>
+                              {sourceFaces.map((sf, sfIdx) => (
+                                <option key={sfIdx} value={sfIdx} className="bg-[#121420]">
+                                  🎭 Face {sfIdx + 1}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </Section>

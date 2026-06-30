@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import threading
 import traceback
+import contextlib
 
 import cv2
 import numpy as np
@@ -33,6 +34,29 @@ import ui.globals as ui_globals
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@contextlib.contextmanager
+def temp_mapped_facesets(mapping):
+    if not isinstance(mapping, list) or len(mapping) == 0:
+        yield
+        return
+    orig_facesets = list(roop_globals.INPUT_FACESETS)
+    mapped = []
+    for x in mapping:
+        try:
+            src_idx = int(x)
+        except (ValueError, TypeError):
+            src_idx = -1
+        if 0 <= src_idx < len(orig_facesets):
+            mapped.append(orig_facesets[src_idx])
+        else:
+            mapped.append(FaceSet())
+    roop_globals.INPUT_FACESETS = mapped
+    try:
+        yield
+    finally:
+        roop_globals.INPUT_FACESETS = orig_facesets
 
 API_TEMP = os.path.join(os.getcwd(), "temp", "api_uploads")
 os.makedirs(API_TEMP, exist_ok=True)
@@ -495,6 +519,20 @@ def target_remove_face(payload: dict = Body(...)):
     return _target_faces_payload()
 
 
+@app.post("/api/target/group")
+def target_group(payload: dict = Body(...)):
+    groups = payload.get("groups")
+    if isinstance(groups, list):
+        parsed = []
+        for x in groups[:len(roop_globals.TARGET_FACES)]:
+            try:
+                parsed.append(int(x))
+            except (ValueError, TypeError):
+                parsed.append(0)
+        roop_globals.TARGET_FACE_GROUP = parsed
+    return _target_faces_payload()
+
+
 # ── Live preview swap ────────────────────────────────────────────────────────
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
@@ -568,7 +606,8 @@ def preview(payload: dict = Body(...)):
             stabilize_method=payload.get("stabilize_method", "one_euro"),
             stabilize_face=bool(payload.get("stabilize_face", False)))
 
-        swapped = live_swap(current_frame, options)
+        with temp_mapped_facesets(payload.get("face_mapping")):
+            swapped = live_swap(current_frame, options)
         if swapped is None:
             return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list}
         return {"image": _bgr_to_dataurl(swapped), "faces": faces_list}
@@ -639,24 +678,25 @@ def _run_swap(payload):
             return
 
         roop_globals.processing = True
-        batch_process_regular(
-            output_method, list_files_process, mask_engine, clip_text,
-            processing_method == "In-Memory processing", None,
-            bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
-            int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
-            ApiProgress(), selected_input_face_index,
-            use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
-            mask_per_frame_json="",
-            use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
-            use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
-            frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
-            swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
-            stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
-            stabilize_method=payload.get("stabilize_method", roop_globals.CFG.stabilize_method),
-            stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
-            stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
-            stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
-            stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)))
+        with temp_mapped_facesets(payload.get("face_mapping")):
+            batch_process_regular(
+                output_method, list_files_process, mask_engine, clip_text,
+                processing_method == "In-Memory processing", None,
+                bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
+                int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
+                ApiProgress(), selected_input_face_index,
+                use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
+                mask_per_frame_json="",
+                use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
+                use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
+                frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
+                swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
+                stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
+                stabilize_method=payload.get("stabilize_method", roop_globals.CFG.stabilize_method),
+                stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
+                stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
+                stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
+                stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)))
 
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"
@@ -727,6 +767,26 @@ def list_output():
                 kind = "video" if util.is_video(full) else ("image" if util.is_image(full) else "file")
                 items.append({"name": f, "kind": kind, "mtime": os.path.getmtime(full)})
     return {"output_path": out, "files": items[:50]}
+
+
+@app.post("/api/output/delete")
+def delete_output(payload: dict = Body(...)):
+    filename = payload.get("name")
+    out = getattr(roop_globals, "output_path", None)
+    if not filename or not out or not os.path.isdir(out):
+        return JSONResponse(status_code=400, content={"message": "invalid parameters"})
+    filename = os.path.basename(filename)
+    full_path = os.path.join(out, filename)
+    if os.path.isfile(full_path):
+        try:
+            os.remove(full_path)
+            global _last_output
+            if _last_output.get("path") == full_path:
+                _last_output.update({"path": "", "kind": ""})
+            return {"status": "success"}
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": f"failed to delete file: {e}"})
+    return JSONResponse(status_code=404, content={"message": "file not found"})
 
 
 @app.post("/api/reveal")

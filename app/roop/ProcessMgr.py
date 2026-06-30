@@ -1731,9 +1731,10 @@ class ProcessMgr():
         # ── Option 1: Multi-angle source bank ────────────────────────────────
         # Select the source face whose pose best matches this target frame.
         # Falls back to faces[0] when the feature is off or poses are absent.
-        if len(self.input_face_datas) > 0:
+        if 0 <= face_index < len(self.input_face_datas):
             fs = self.input_face_datas[face_index]
-            inputface = fs.faces[0]   # default
+            if len(fs.faces) > 0:
+                inputface = fs.faces[0]   # default
             if (getattr(self.options, 'use_source_bank', False)
                     and len(fs.faces) > 1
                     and fs.face_poses is not None):
@@ -1776,6 +1777,9 @@ class ProcessMgr():
                                 best_dist = dist
                                 best_idx = idx
                         inputface = fs.faces[best_idx]
+
+        if inputface is None:
+            return frame
 
         # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
         if (getattr(self.options, 'use_3d_recon', False)
