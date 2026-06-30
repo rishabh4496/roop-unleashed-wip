@@ -1937,9 +1937,9 @@ class ProcessMgr():
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
-                    fake_frame = self.process_mask(p, aligned_img, fake_frame)
+                    fake_frame = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M)
                     if enhanced_frame is not None:
-                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame)
+                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M)
             else:
                 # Pooled (no global lock) ONLY when this enhancer built its own
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool
@@ -2281,17 +2281,95 @@ class ProcessMgr():
         final_frame = final_frame.transpose(2, 0, 3, 1, 4).reshape(pixel_boost_size, pixel_boost_size, 3)
         return final_frame
 
-    def process_mask(self, processor, frame:Frame, target:Frame):
+    def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None):
         # SAM2 is temporally tracked: instead of running per-crop inference it warps
         # its precomputed full-frame mask into this crop via the affine M stashed in
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
-        if getattr(processor, 'processorname', None) == 'mask_sam2':
-            img_mask = processor.get_crop_mask(
-                getattr(self._tls, 'frame_idx', None),
-                getattr(self._tls, 'cur_M', None),
-                frame.shape)
+        p_name = getattr(processor, 'processorname', None)
+        
+        # Check if face is in lateral/side profile position
+        is_lateral = False
+        if target_face is not None and getattr(target_face, 'kps', None) is not None:
+            kps = target_face.kps
+            if len(kps) == 5:
+                lex, rex = kps[0][0], kps[1][0]
+                nx = kps[2][0]
+                d_le = abs(nx - lex)
+                d_re = abs(nx - rex)
+                if d_le + d_re > 1e-5:
+                    asymmetry = abs(d_le - d_re) / (d_le + d_re)
+                    if asymmetry > 0.35:
+                        is_lateral = True
+
+        dense_maskers = ['mask_occluder', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
+        
+        if is_lateral and orig_frame is not None and M is not None and p_name in dense_maskers:
+            # Run on unwarped bounding box crop to prevent stretching of the face and foreign objects
+            h_frame, w_frame = orig_frame.shape[:2]
+            xmin, ymin, xmax, ymax = target_face.bbox
+            
+            w_box = xmax - xmin
+            h_box = ymax - ymin
+            cx = xmin + w_box / 2.0
+            cy = ymin + h_box / 2.0
+            
+            box_size = max(w_box, h_box)
+            # Add 50% padding on all sides to cover face + hair + background/occluders
+            crop_size = box_size * 2.0
+            
+            x0 = int(cx - crop_size / 2.0)
+            y0 = int(cy - crop_size / 2.0)
+            x1 = int(cx + crop_size / 2.0)
+            y1 = int(cy + crop_size / 2.0)
+            
+            crop_x0 = max(0, x0)
+            crop_y0 = max(0, y0)
+            crop_x1 = min(w_frame, x1)
+            crop_y1 = min(h_frame, y1)
+            
+            cropped = orig_frame[crop_y0:crop_y1, crop_x0:crop_x1].copy()
+            
+            pad_left = crop_x0 - x0
+            pad_right = x1 - crop_x1
+            pad_top = crop_y0 - y0
+            pad_bottom = y1 - crop_y1
+            
+            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                cropped = cv2.copyMakeBorder(cropped, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)
+            
+            # Run the mask processor on the unwarped square crop
+            mask_crop = processor.Run(cropped, self.options.masking_text)
+            
+            # Resize the mask back to the crop box size
+            mask_resized = cv2.resize(mask_crop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
+            
+            # Crop the valid region
+            slice_x0 = crop_x0 - x0
+            slice_y0 = crop_y0 - y0
+            slice_x1 = (x1 - x0) - (x1 - crop_x1)
+            slice_y1 = (y1 - y0) - (y1 - crop_y1)
+            
+            # Paste back to a full frame mask of ones (1.0 = keep original)
+            full_frame_mask = np.ones((h_frame, w_frame), dtype=np.float32)
+            full_frame_mask[crop_y0:crop_y1, crop_x0:crop_x1] = mask_resized[slice_y0:slice_y1, slice_x0:slice_x1]
+            
+            # Warp the full frame mask to the aligned crop space using M (borderValue=1.0)
+            ch, cw = frame.shape[:2]
+            img_mask = cv2.warpAffine(full_frame_mask, M, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)
         else:
-            img_mask = processor.Run(frame, self.options.masking_text)
+            if p_name == 'mask_sam2':
+                img_mask = processor.get_crop_mask(
+                    getattr(self._tls, 'frame_idx', None),
+                    getattr(self._tls, 'cur_M', None),
+                    frame.shape)
+            else:
+                img_mask = processor.Run(frame, self.options.masking_text)
+
+        # Specific improvement for mask_occluder: threshold and blur to prevent ghosting
+        if p_name == 'mask_occluder':
+            binary_mask = (img_mask > 0.35).astype(np.float32)
+            img_mask = cv2.GaussianBlur(binary_mask, (5, 5), 0)
+
         img_mask = cv2.resize(img_mask, (target.shape[1], target.shape[0]))
         img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
 
