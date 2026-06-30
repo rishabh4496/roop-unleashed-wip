@@ -218,11 +218,13 @@ def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
     targets = []
     for i, entry in enumerate(list_files_process):
+        total = entry.endframe if entry.endframe else 1
         targets.append({
             "name": os.path.basename(entry.filename),
-            "startframe": entry.startframe,
-            "endframe": entry.endframe,
-            "frames": entry.endframe if entry.endframe else 1,
+            "start_frame": max(1, entry.startframe),
+            "end_frame": total,
+            "frames": total,
+            "fps": entry.fps if entry.fps else 25,
         })
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
@@ -325,11 +327,14 @@ def source_select(payload: dict = Body(...)):
 @app.post("/api/target/add")
 async def target_add(files: list[UploadFile] = File(...)):
     global current_video_fps, selected_target_index
+    first_new = len(list_files_process)
     for f in files:
         path = _save_upload(f)
         list_files_process.append(ProcessEntry(path, 0, 0, 0))
-    selected_target_index = 0
-    _refresh_target_frames(0)
+    # Refresh frame counts and FPS for ALL newly added entries
+    for i in range(first_new, len(list_files_process)):
+        _refresh_target_frames(i)
+    selected_target_index = first_new if first_new < len(list_files_process) else 0
     return _target_list_payload()
 
 
@@ -337,17 +342,24 @@ def _refresh_target_frames(idx):
     global current_video_fps
     if idx >= len(list_files_process):
         return
-    filename = list_files_process[idx].filename
+    entry = list_files_process[idx]
+    filename = entry.filename
     if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
         total = get_video_frame_total(filename) or 1
+        fps = 25
         if not filename.lower().endswith(".webp"):
             try:
-                current_video_fps = util.detect_fps(filename)
+                fps = util.detect_fps(filename)
             except Exception:
-                current_video_fps = 30
+                fps = 30
+        current_video_fps = fps
+        entry.fps = fps
     else:
         total = 1
-    list_files_process[idx].endframe = total
+        entry.fps = 25
+    entry.endframe = total
+    if entry.startframe < 1:
+        entry.startframe = 1
 
 
 def _target_list_payload():
@@ -356,9 +368,10 @@ def _target_list_payload():
         total = entry.endframe if entry.endframe else 1
         targets.append({
             "name": os.path.basename(entry.filename),
-            "startframe": entry.startframe,
-            "endframe": entry.endframe,
+            "start_frame": max(1, entry.startframe),
+            "end_frame": total,
             "frames": total,
+            "fps": entry.fps if entry.fps else 25,
         })
     return {"targets": targets, "selected_target_index": selected_target_index,
             "fps": current_video_fps}
