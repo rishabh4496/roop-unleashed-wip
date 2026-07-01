@@ -1010,10 +1010,25 @@ class ProcessMgr():
                     _bts = list(_block_times.values())
                     _imbal = (max(_bts) - min(_bts)) if _bts else 0.0
                     _fps = len(chunk) / _t_proc if _t_proc > 0 else 0.0
-                    print(f"[STAB chunk {_chunk_no:3d}] frames={len(chunk):4d} "
-                          f"read_wait={_t_get*1000:6.0f}ms  proc={_t_proc:6.2f}s ({_fps:5.1f} fps)  "
-                          f"write_stall={_t_put*1000:6.0f}ms  block_imbalance={_imbal:5.2f}s "
-                          f"(slowest {max(_bts) if _bts else 0:.2f}s / fastest {min(_bts) if _bts else 0:.2f}s)",
+                    
+                    reset = "\033[0m"
+                    bold = "\033[1m"
+                    cyan = "\033[96m"
+                    green = "\033[92m"
+                    yellow = "\033[93m"
+                    magenta = "\033[95m"
+                    
+                    fps_color = green if _fps >= 30 else (yellow if _fps >= 15 else "\033[91m")
+                    stall_color = yellow if (_t_put * 1000) > 100 else cyan
+                    wait_color = yellow if (_t_get * 1000) > 100 else cyan
+                    
+                    print(f"{magenta}{bold}[STAB CHUNK {_chunk_no:3d}]{reset} "
+                          f"frames={bold}{green}{len(chunk):4d}{reset} | "
+                          f"read_wait={wait_color}{_t_get*1000:6.0f}ms{reset} | "
+                          f"proc={bold}{fps_color}{_t_proc:6.2f}s ({_fps:5.1f} FPS){reset} | "
+                          f"write_stall={stall_color}{_t_put*1000:6.0f}ms{reset} | "
+                          f"imbalance={yellow}{_imbal:5.2f}s{reset} "
+                          f"(slow={max(_bts) if _bts else 0:.2f}s / fast={min(_bts) if _bts else 0:.2f}s)",
                           flush=True)
                 _chunk_no += 1
 
@@ -1064,7 +1079,12 @@ class ProcessMgr():
         })
         progress.update(1)
         if self.progress_gradio is not None:
-            self.progress_gradio((progress.n, self.total_frames), desc='Processing', total=self.total_frames, unit='frames')
+            n = progress.n
+            total = self.total_frames
+            rate = progress.format_dict.get('rate', 0.0) if hasattr(progress, 'format_dict') else 0.0
+            fps_str = f" ({rate:.1f} FPS)" if rate and rate > 0 else ""
+            desc = f"Processing frame {n} / {total}{fps_str}"
+            self.progress_gradio((n, total), desc=desc, total=total, unit='frames')
 
 
     def process_frame(self, frame:Frame, frame_idx=None):

@@ -103,28 +103,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     clearPreviewCache();
   }, [sourceFaces.length, targetFaces.length, selSource, selTargetFace]);
 
-  // Keyboard Escape and Shortcuts HUD
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-      if (e.key === '?' || e.key === 'h' || e.key === 'H') {
-        e.preventDefault();
-        setShowShortcutHUD((prev) => !prev);
-      }
-    };
-    const handleEsc = (e) => {
-      if (e.key === 'Escape') {
-        setShowShortcutHUD(false);
-        setPastedFiles(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keydown', handleEsc);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keydown', handleEsc);
-    };
-  }, []);
 
   // Telemetry Polling Effect
   useEffect(() => {
@@ -172,6 +150,55 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     setProfiles(updated);
     localStorage.setItem('roop_profiles', JSON.stringify(updated));
     notify(`Deleted profile: ${name}`);
+  };
+
+  // Export profiles
+  const exportProfiles = () => {
+    try {
+      const dataStr = localStorage.getItem('roop_profiles') || '[]';
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'roop_unleashed_presets.json';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      notify('Exported presets successfully!');
+    } catch (e) {
+      notify('Failed to export presets: ' + e.message, 'error');
+    }
+  };
+
+  // Import profiles
+  const importProfiles = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target.result);
+        if (!Array.isArray(imported)) {
+          throw new Error('Presets file must be a JSON array of profiles.');
+        }
+        const existing = JSON.parse(localStorage.getItem('roop_profiles') || '[]');
+        const existingMap = new Map(existing.map(p => [p.name, p]));
+        imported.forEach(p => {
+          if (p.name && p.settings) {
+            existingMap.set(p.name, p);
+          }
+        });
+        const merged = Array.from(existingMap.values());
+        localStorage.setItem('roop_profiles', JSON.stringify(merged));
+        setProfiles(merged);
+        notify('Imported presets successfully!');
+      } catch (err) {
+        notify('Failed to import presets: ' + err.message, 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // Register clipboard & drop listener with global App registry
@@ -327,6 +354,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
     dds: p.default_det_size,
+    fds: p.face_detector_size,
+    fdt: p.face_detector_threshold,
     fm: faceMapping,
   });
 
@@ -334,9 +363,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
   // engine, target selection, etc.) are left as-is. Pure UI — no runtime cost.
   const PRESETS = {
-    Fast:     { default_det_size: false, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
-    Balanced: { default_det_size: true,  subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
-    Quality:  { default_det_size: true,  subsample_upscale: '512px', selected_enhancer: 'Restoreformer++', num_swap_steps: 2 },
+    Fast:     { default_det_size: false, face_detector_size: '320', face_detector_threshold: 0.60, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
+    Balanced: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.60, subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
+    Quality:  { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '512px', selected_enhancer: 'Restoreformer++', num_swap_steps: 2 },
   };
   const activePreset = Object.keys(PRESETS).find((name) =>
     Object.entries(PRESETS[name]).every(([k, v]) =>
@@ -420,6 +449,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
+        face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_mapping: getFaceMappingArray(),
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
@@ -467,6 +497,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
         dds: localParams.default_det_size,
+        fds: localParams.face_detector_size,
+        fdt: localParams.face_detector_threshold,
       })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
       
       if (previewCacheRef.current[cacheKey]) {
@@ -487,6 +519,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
+          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_mapping: getFaceMappingArray(),
         });
         if (!activeCheck()) return;
@@ -928,6 +961,140 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     }
   }, [progress.processing, isGeneratingPreviewClip, origStartEnd]);
 
+  // Keyboard Escape, Shortcuts HUD, & Global Productivity Hotkeys
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ignore key events if the user is typing in form controls
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+
+      // Toggle shortcuts HUD: '?' or 'h'
+      if (e.key === '?' || e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        setShowShortcutHUD((prev) => !prev);
+        return;
+      }
+
+      // Play/Pause: Space
+      if (e.key === ' ') {
+        e.preventDefault();
+        if (maxFrames > 1 && setIsPlaying) {
+          setIsPlaying((p) => !p);
+        } else if (setCompare) {
+          setCompare((c) => !c);
+        }
+        return;
+      }
+
+      // Step frames left/right: Left/Right Arrow
+      if (e.key === 'ArrowLeft' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame((f) => Math.max(1, f - (e.shiftKey ? 10 : 1)));
+        return;
+      }
+      if (e.key === 'ArrowRight' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame((f) => Math.min(maxFrames, f + (e.shiftKey ? 10 : 1)));
+        return;
+      }
+
+      // Jump to start/end: Home / End
+      if (e.key === 'Home' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame(1);
+        return;
+      }
+      if (e.key === 'End' && maxFrames > 1 && setFrame) {
+        e.preventDefault();
+        setFrame(maxFrames);
+        return;
+      }
+
+      // Range Trim Markers: '[' to set start, ']' to set end, 'R' to reset range
+      if (e.key === '[') {
+        e.preventDefault();
+        setFrameMarkerVal('start', frame);
+        return;
+      }
+      if (e.key === ']') {
+        e.preventDefault();
+        setFrameMarkerVal('end', frame);
+        return;
+      }
+      if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setFrameMarkerVal('start', 1);
+        setFrameMarkerVal('end', maxFrames);
+        return;
+      }
+
+      // Comparison modes: 'C' to compare, 'S' to toggle split view
+      if (e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        setCompare((prev) => {
+          const nextVal = !prev;
+          if (nextVal) setComparingEnhancers(false);
+          return nextVal;
+        });
+        return;
+      }
+      if (e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setSplitView((prev) => !prev);
+        return;
+      }
+
+      // Add to batch queue: 'Q'
+      if (e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        addToQueue();
+        return;
+      }
+
+      // Swapping execution: Ctrl + Enter
+      if (e.key === 'Enter' && e.ctrlKey) {
+        e.preventDefault();
+        if (isQueueRunning) return;
+        if (queue.length > 0) {
+          startQueue();
+        } else {
+          start();
+        }
+        return;
+      }
+    };
+
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') {
+        setShowShortcutHUD(false);
+        setPastedFiles(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [
+    frame,
+    maxFrames,
+    isPlaying,
+    compare,
+    splitView,
+    queue,
+    isQueueRunning,
+    setFrame,
+    setIsPlaying,
+    setCompare,
+    setComparingEnhancers,
+    setSplitView,
+    setFrameMarkerVal,
+    addToQueue,
+    start,
+    startQueue
+  ]);
+
   const startFrame = targets[selTarget]?.start_frame || 1;
   const endFrame = targets[selTarget]?.end_frame || maxFrames;
   const startPct = maxFrames > 1 ? ((startFrame - 1) / (maxFrames - 1)) * 100 : 0;
@@ -958,7 +1125,25 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Select label="Swap model" info="inswapper 128 · reswapper 256 · hyperswap 256 (downloads on first use)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
-          <Toggle label="High-accuracy detection (640px)" info="On = 640px (accurate, default). Off = 320px: ~4× faster face detection, but may miss small or distant faces. Leave on for far/multi-face shots; turn off to speed up close-up swaps." checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
+          <Select 
+            label="Face detection resolution" 
+            info="Higher resolution improves detection of small/distant faces, but runs slower. 640px is standard." 
+            value={p.face_detector_size || '640'} 
+            onChange={(v) => {
+              set('face_detector_size', v);
+              set('default_det_size', v === '640' || v === '960' || v === '1280');
+            }} 
+            options={['320', '640', '960', '1280']} 
+          />
+          <Slider 
+            label="Face detection threshold" 
+            info="Lower values (e.g. 0.40) detect angled, profile, or hard-to-see faces. Higher values avoid false detections. Default 0.60" 
+            min={0.10} 
+            max={0.90} 
+            step={0.05} 
+            value={num(p.face_detector_threshold, 0.60)} 
+            onChange={(v) => set('face_detector_threshold', v)} 
+          />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face similarity" info="0=identical 1=any" min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />
@@ -1049,6 +1234,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
               </div>
             )}
+            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
+              <Button size="xs" variant="secondary" onClick={exportProfiles}>📤 Export Presets</Button>
+              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
+                📥 Import Presets
+                <input type="file" accept=".json" onChange={importProfiles} className="hidden" />
+              </label>
+            </div>
           </Section>
         </div>
 
@@ -1300,15 +1492,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </div>
             )}
             
-            <div className="flex items-center flex-wrap gap-3">
-              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
-              {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
-              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
-              <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
-            </div>
-
             {/* CINEMATIC TIMELINE SLIDER */}
             {maxFrames > 1 && (
               <div className="space-y-3 pt-3 border-t border-white/5 select-none">
@@ -1521,6 +1704,18 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
               </div>
             )}
+
+            <div className={`flex items-center gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
+              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
+              <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
+            </div>
+
+            <div className="flex items-center flex-wrap gap-3">
+              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
+              {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
+            </div>
           </Section>
 
           <Section title="Output settings & renders">
@@ -1594,17 +1789,106 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
           {/* run bar */}
           <div className="sticky bottom-0 py-3 z-30">
-            <div className="rounded-2xl glass-panel p-4 flex items-center gap-4 shadow-2xl">
-              {progress.processing ? (
-                <div className="flex items-center gap-2">
-                  {progress.paused ? (
-                    <Button variant="primary" size="lg" onClick={resume}>▶ Resume</Button>
-                  ) : (
-                    <Button variant="secondary" size="lg" onClick={pause}>⏸ Pause</Button>
-                  )}
-                  <Button variant="stop" size="lg" onClick={stop}>⏹ Stop</Button>
+            {progress.processing ? (() => {
+              const radius = 21;
+              const circumference = radius * 2 * Math.PI;
+              const strokeDashoffset = circumference - prog * circumference;
+              return (
+                <div className="rounded-2xl glass-panel p-4 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                  {/* Left: Circular Progress Ring & Info */}
+                  <div className="flex items-center gap-4">
+                    <div className={`relative flex items-center justify-center h-16 w-16 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_15px_var(--accent-glow)] animate-pulse' : ''}`}>
+                      <svg className="transform -rotate-90 w-12 h-12" viewBox="0 0 48 48">
+                        <circle
+                          stroke="rgba(255, 255, 255, 0.08)"
+                          fill="transparent"
+                          strokeWidth={3}
+                          r={radius}
+                          cx={24}
+                          cy={24}
+                        />
+                        <circle
+                          className="transition-all duration-300 ease-out"
+                          stroke="var(--accent)"
+                          fill="transparent"
+                          strokeWidth={3}
+                          strokeDasharray={`${circumference} ${circumference}`}
+                          style={{ strokeDashoffset }}
+                          r={radius}
+                          cx={24}
+                          cy={24}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <span className="absolute text-xs font-black text-white tabular-nums">
+                        {Math.round(prog * 100)}%
+                      </span>
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-ping" />
+                        <span className="text-[10px] font-black uppercase tracking-wider text-[var(--accent)]">
+                          {progress.paused ? 'Paused' : 'Processing'}
+                        </span>
+                      </div>
+                      <div className="text-xs font-semibold text-white truncate max-w-[280px]">
+                        {progress.desc || 'Swapping faces…'}
+                      </div>
+                      {progress.error && <div className="text-[10px] text-red-400 font-medium">{progress.error}</div>}
+                    </div>
+                  </div>
+
+                  {/* Center: Live Telemetry HUD */}
+                  <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono bg-black/20 px-4 py-2 rounded-xl border border-white/5">
+                    <div className="flex flex-col">
+                      <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
+                      <span className="text-white font-bold tabular-nums">{fmtTime(elapsedMs)}</span>
+                    </div>
+                    <div className="h-6 w-px bg-white/10" />
+                    <div className="flex flex-col">
+                      <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
+                      <span className="text-emerald-400 font-bold tabular-nums">
+                        {etaMs > 0 ? fmtTime(etaMs) : '--:--'}
+                      </span>
+                    </div>
+                    {telemetry && (
+                      <>
+                        <div className="h-6 w-px bg-white/10" />
+                        <div className="flex flex-col relative group/telemetry cursor-help">
+                          <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">VRAM</span>
+                          <span className="text-blue-300 font-bold tabular-nums">
+                            {telemetry.vram_used} / {telemetry.vram_total} GB
+                          </span>
+                          
+                          {/* Hardware diagnostics tooltip hover card */}
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover/telemetry:block z-50 w-64 p-4 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-left font-sans">
+                            <h4 className="text-[9px] font-bold text-[var(--accent)] uppercase tracking-widest mb-2 border-b border-white/10 pb-1">System Telemetry</h4>
+                            <div className="space-y-1.5 text-xs text-white/80">
+                              <div className="flex justify-between gap-2"><span className="text-white/40">GPU:</span><span className="font-semibold text-white truncate max-w-[130px]" title={telemetry.gpu}>{telemetry.gpu}</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">RAM Used:</span><span className="font-semibold text-white">{telemetry.ram_used} / {telemetry.ram_total} GB</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">CPU Load:</span><span className="font-semibold text-white">{telemetry.cpu_percent}%</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">Active Threads:</span><span className="font-semibold text-white">{telemetry.threads}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Right: Actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {progress.paused ? (
+                      <Button variant="primary" size="sm" onClick={resume}>▶ Resume</Button>
+                    ) : (
+                      <Button variant="secondary" size="sm" onClick={pause}>⏸ Pause</Button>
+                    )}
+                    <Button variant="stop" size="sm" onClick={stop}>⏹ Stop</Button>
+                  </div>
                 </div>
-              ) : (
+              );
+            })() : (
+              <div className="rounded-2xl glass-panel p-4 flex items-center justify-between gap-4 shadow-2xl border border-white/5 w-full">
                 <div className="flex items-center gap-2">
                   <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
                   {maxFrames > 1 && (
@@ -1613,23 +1897,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     </Button>
                   )}
                 </div>
-              )}
-              <div className="flex-1">
-                <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
-                  <span>{progress.desc || (progress.processing ? 'Processing…' : 'Idle')}</span>
-                  <span className="flex items-center gap-2 tabular-nums">
-                    {progress.processing && (
-                      <span className="text-[var(--text-muted)] opacity-70">⏱ {fmtTime(elapsedMs)}{etaMs > 0 ? ` · ETA ${fmtTime(etaMs)}` : ''}</span>
-                    )}
-                    <span className="font-bold text-[var(--text-main)]">{Math.round(prog * 100)}%</span>
-                  </span>
+                <div className="text-xs text-[var(--text-muted)] italic max-w-xs truncate text-right">
+                  {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
                 </div>
-                <div className="h-2.5 rounded-full bg-black/40 overflow-hidden relative shadow-inner">
-                  <div className={`absolute top-0 bottom-0 left-0 bg-[var(--accent)] transition-all duration-300 ${progress.processing ? 'progress-bar-animated shadow-[0_0_10px_var(--accent-glow)]' : ''}`} style={{ width: `${(progress.progress || 0) * 100}%` }} />
-                </div>
-                {progress.error && <div className="text-xs text-red-400 mt-1">{progress.error}</div>}
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -1660,19 +1932,30 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <h3 className="text-lg font-bold text-white flex items-center gap-2">⌨️ Pro Keyboard Shortcuts</h3>
               <Button size="sm" variant="ghost" onClick={() => setShowShortcutHUD(false)}>✕</Button>
             </div>
-            <div className="grid grid-cols-2 gap-4 py-2 text-sm text-white/80">
-              <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-x-8 gap-y-5 py-2 text-sm text-white/80">
+              <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Playback & Nav</h4>
                 <div className="flex items-center justify-between"><span className="text-white/60">Play / Pause</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Space</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Prev / Next Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">← / →</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Step 10 Frames</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Shift + ← / →</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Jump to Start/End</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Home / End</kbd></div>
               </div>
-              <div className="space-y-3">
-                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">View & Zoom</h4>
+              <div className="space-y-2.5">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Timeline Trimming</h4>
+                <div className="flex items-center justify-between"><span className="text-white/60">Set Start Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">[</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Set End Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">]</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Reset Range</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">R</kbd></div>
+              </div>
+              <div className="space-y-2.5">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Compare & Zoom</h4>
                 <div className="flex items-center justify-between"><span className="text-white/60">Zoom In / Out</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">+ / -</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Toggle Comparison</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">C</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Toggle Split View</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">S</kbd></div>
+              </div>
+              <div className="space-y-2.5">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Queue & Process</h4>
+                <div className="flex items-center justify-between"><span className="text-white/60">Add to Batch Queue</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Q</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Run Swapper / Queue</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Ctrl + Enter</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Toggle Shortcuts HUD</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">?</kbd></div>
               </div>
             </div>
@@ -1699,7 +1982,7 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
       onDrop={onDrop}
       className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer group'}`}
     >
-      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[var(--accent)]/60 bg-[var(--accent)]/[0.06]' : drag ? 'border-[var(--accent)] bg-[var(--accent)]/[0.1] scale-[0.98]' : 'border-white/15 hover:border-[var(--accent)]/50 hover:bg-white/[0.02]'}`}>
+      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[var(--accent)]/60 bg-[var(--accent)]/[0.06]' : drag ? 'bg-[var(--accent)]/[0.1] scale-[0.98] animate-drag-pulse' : 'border-white/15 hover:border-[var(--accent)]/50 hover:bg-white/[0.02]'}`}>
         {busy ? (
           <span className="inline-flex items-center gap-2 text-sm font-medium text-white/80">
             <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
@@ -1757,6 +2040,28 @@ function FloatingEmojis() {
   );
 }
 
+function AIScannerOverlay() {
+  return (
+    <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
+      {/* Dynamic Laser Line Sweep */}
+      <div className="absolute w-full h-0.5 bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent opacity-85 shadow-[0_0_12px_var(--accent)] animate-scanner-sweep" />
+
+      {/* Grid Overlay */}
+      <div className="absolute inset-0 opacity-[0.04] bg-[linear-gradient(rgba(255,255,255,0.15)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.15)_1px,transparent_1px)] bg-[size:20px_20px] animate-pulse" />
+
+      {/* Corner HUD Brackets */}
+      <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
+      <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
+      <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
+      <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
+
+      {/* Subtle Digital Telemetry Labels */}
+      <div className="absolute top-4 left-10 text-[8px] font-mono text-[var(--accent)]/45 uppercase tracking-widest select-none font-bold animate-pulse">SYSTEM SWAP SEARCHING: TARGET</div>
+      <div className="absolute bottom-4 right-10 text-[8px] font-mono text-[var(--accent)]/45 uppercase tracking-widest select-none font-bold animate-pulse">GRID OVERLAY: ACTIVE</div>
+    </div>
+  );
+}
+
 function InteractivePreview({ 
   beforeSrc, 
   afterSrc, 
@@ -1803,32 +2108,13 @@ function InteractivePreview({
     };
   }, []);
 
-  // Keyboard Navigation: arrow keys step frames, spacebar toggles play/compare
+  // Keyboard Navigation: Zoom controls
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ignore if user is typing in input fields
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
 
-      if (e.key === 'ArrowLeft' && maxFrames > 1 && setFrame) {
-        e.preventDefault();
-        setFrame((f) => Math.max(1, f - (e.shiftKey ? 10 : 1)));
-      } else if (e.key === 'ArrowRight' && maxFrames > 1 && setFrame) {
-        e.preventDefault();
-        setFrame((f) => Math.min(maxFrames, f + (e.shiftKey ? 10 : 1)));
-      } else if (e.key === 'Home' && maxFrames > 1 && setFrame) {
-        e.preventDefault();
-        setFrame(1);
-      } else if (e.key === 'End' && maxFrames > 1 && setFrame) {
-        e.preventDefault();
-        setFrame(maxFrames);
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        if (maxFrames > 1 && setIsPlaying) {
-          setIsPlaying((p) => !p);
-        } else if (setCompare) {
-          setCompare((c) => !c);
-        }
-      } else if (e.key === '=' || e.key === '+') {
+      if (e.key === '=' || e.key === '+') {
         e.preventDefault();
         setZoom((z) => Math.min(z + 0.5, 5));
       } else if (e.key === '-') {
@@ -1842,7 +2128,7 @@ function InteractivePreview({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [maxFrames, setFrame, setCompare, setIsPlaying]);
+  }, []);
 
   const handleWheel = (e) => {
     e.preventDefault();
@@ -1966,7 +2252,7 @@ function InteractivePreview({
       className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
       ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
     >
-      {previewing && <FloatingEmojis />}
+      {previewing && <AIScannerOverlay />}
       {previewing && (
         <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md text-xs font-bold text-white/95 tabular-nums border border-white/10 shadow-2xl">

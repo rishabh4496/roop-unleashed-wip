@@ -164,6 +164,19 @@ class ApiProgress:
         if desc:
             _progress["desc"] = desc
 
+        # Dynamic VRAM Safety Guard & Memory Flush
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free_bytes, _ = torch.cuda.mem_get_info(0)
+                free_gb = free_bytes / (1024 ** 3)
+                if free_gb < 0.8:
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def tqdm(self, iterable=None, *a, **k):
         return iterable if iterable is not None else []
 
@@ -186,6 +199,22 @@ def save_settings(settings: dict = Body(...)):
     return {"status": "success"}
 
 
+def _get_git_version() -> str:
+    import subprocess
+    try:
+        # Get active branch name
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL).decode("ascii").strip()
+        # Get tag or short commit
+        version = subprocess.check_output(["git", "describe", "--tags", "--always"], stderr=subprocess.DEVNULL).decode("ascii").strip()
+        return f"{branch}@{version}"
+    except Exception:
+        try:
+            version = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode("ascii").strip()
+            return f"main@{version}"
+        except Exception:
+            return "main"
+
+
 @app.get("/api/meta")
 def get_meta():
     """Choice lists + current galleries for the React UI to render."""
@@ -195,6 +224,7 @@ def get_meta():
     except Exception:
         providers = ["cpu"]
     return {
+        "git_version": _get_git_version(),
         "providers": providers,
         "trt_precisions": ["fp32", "fp16", "mixed"],
         "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"],
@@ -225,6 +255,8 @@ def get_state():
             "name": os.path.basename(entry.filename),
             "startframe": entry.startframe,
             "endframe": entry.endframe,
+            "start_frame": entry.startframe,
+            "end_frame": entry.endframe,
             "frames": entry.endframe if entry.endframe else 1,
         })
     return {
@@ -361,6 +393,8 @@ def _target_list_payload():
             "name": os.path.basename(entry.filename),
             "startframe": entry.startframe,
             "endframe": entry.endframe,
+            "start_frame": entry.startframe,
+            "end_frame": entry.endframe,
             "frames": total,
         })
     return {"targets": targets, "selected_target_index": selected_target_index,
@@ -559,6 +593,8 @@ def preview(payload: dict = Body(...)):
     # Apply detection resolution before any detection so the face-box overlay and
     # the swap both use the chosen det_size (640 accurate / 320 fast).
     roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
+    roop_globals.face_detector_size = str(payload.get("face_detector_size", roop_globals.CFG.face_detector_size))
+    roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
 
     faces_list = []
     try:
@@ -663,6 +699,8 @@ def _run_swap(payload):
         roop_globals.skip_audio = bool(payload.get("skip_audio", roop_globals.CFG.skip_audio))
         roop_globals.face_swap_mode = translate_swap_mode(detection)
         roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
+        roop_globals.face_detector_size = str(payload.get("face_detector_size", roop_globals.CFG.face_detector_size))
+        roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
         roop_globals.sam2_model_size = payload.get("sam2_model_size", getattr(roop_globals.CFG, "sam2_model_size", "tiny"))
         roop_globals.track_identities = bool(payload.get("track_identities", getattr(roop_globals.CFG, "track_identities", False)))
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", roop_globals.CFG.no_face_action))
@@ -693,6 +731,16 @@ def _run_swap(payload):
                 files_to_process = list_files_process
         else:
             files_to_process = list_files_process
+
+        # Flush VRAM and Python garbage collector before starting execution to ensure max headroom
+        try:
+            import torch
+            if torch.cuda.is_available():
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
         with temp_mapped_facesets(payload.get("face_mapping")):
             batch_process_regular(
@@ -1109,8 +1157,13 @@ def get_telemetry():
         import torch
         if torch.cuda.is_available():
             telemetry["gpu"] = torch.cuda.get_device_name(0)
-            telemetry["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
-            telemetry["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+                telemetry["vram_total"] = round(total_bytes / (1024 ** 3), 2)
+                telemetry["vram_used"] = round((total_bytes - free_bytes) / (1024 ** 3), 2)
+            except Exception:
+                telemetry["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
+                telemetry["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
     except Exception:
         pass
 

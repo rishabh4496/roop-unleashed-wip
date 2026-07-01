@@ -279,7 +279,28 @@ def set_display_ui(function):
 def update_status(message: str) -> None:
     global call_display_ui
 
-    print(message)
+    # Format terminal color dynamically based on message contents/keywords
+    color_msg = message
+    try:
+        reset = "\033[0m"
+        bold = "\033[1m"
+        lower_msg = message.lower()
+        if any(kw in lower_msg for kw in ["failed", "error", "stopped", "cannot", "warning"]):
+            # Red color for warnings/errors/stops
+            color_msg = f"\033[91m{bold}[ERROR] {message}{reset}"
+        elif any(kw in lower_msg for kw in ["finished", "success", "completed", "took"]):
+            # Green color for successes/completions
+            color_msg = f"\033[92m{bold}[SUCCESS] {message}{reset}"
+        elif any(kw in lower_msg for kw in ["creating", "extracting", "restoring", "building", "downloading", "processing"]):
+            # Yellow/Amber for progression tasks
+            color_msg = f"\033[93m{bold}[ACTION] {message}{reset}"
+        else:
+            # Cyan for standard tracking logs
+            color_msg = f"\033[96m[STATUS] {message}{reset}"
+    except Exception:
+        pass
+
+    print(color_msg)
     if call_display_ui is not None:
         call_display_ui(message)
 
@@ -760,6 +781,63 @@ def destroy() -> None:
     sys.exit()
 
 
+def print_startup_banner() -> None:
+    import psutil
+    import platform
+    import torch
+    import onnxruntime as ort
+    
+    cfg = roop.globals.CFG
+    if not cfg:
+        return
+        
+    print("=" * 75)
+    print("      ⚡ ROOP UNLEASHED PRO - CORE INITIALIZATION GATEWAY ⚡")
+    print("=" * 75)
+    print(f"  [System Host] OS: {platform.system()} {platform.release()} ({platform.machine()})")
+    print(f"  [Environment] Python: {sys.version.split()[0]} | PyTorch: {torch.__version__} | ONNX Runtime: {ort.__version__}")
+    
+    # CPU Diagnostics
+    logical_cores = psutil.cpu_count(logical=True)
+    physical_cores = psutil.cpu_count(logical=False)
+    cpu_freq = psutil.cpu_freq()
+    freq_str = f" @ {cpu_freq.current/1000:.2f}GHz" if cpu_freq else ""
+    virtual_mem = psutil.virtual_memory()
+    total_ram_gb = virtual_mem.total / (1024 ** 3)
+    free_ram_gb = virtual_mem.available / (1024 ** 3)
+    print(f"  [CPU Hardware] {physical_cores} Cores ({logical_cores} Threads){freq_str} | Total RAM: {total_ram_gb:.2f} GB (Available: {free_ram_gb:.2f} GB)")
+    
+    # GPU Diagnostics
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(roop.globals.cuda_device_id)
+        try:
+            total_vram_bytes, free_vram_bytes = torch.cuda.mem_get_info(roop.globals.cuda_device_id)
+            total_vram_gb = total_vram_bytes / (1024 ** 3)
+            free_vram_gb = free_vram_bytes / (1024 ** 3)
+            vram_str = f"Total VRAM: {total_vram_gb:.2f} GB | Free VRAM: {free_vram_gb:.2f} GB"
+        except Exception:
+            vram_str = "VRAM: Detection Failed (driver context conflict)"
+        print(f"  [GPU Hardware] Active CUDA Device: ID {roop.globals.cuda_device_id} - '{gpu_name}'")
+        print(f"                 {vram_str}")
+    else:
+        print("  [GPU Hardware] Active CUDA Device: None (CPU Only)")
+        
+    print(f"  [ONNX Backend] Available Providers: {ort.get_available_providers()}")
+    
+    # Session Configuration Settings
+    print("-" * 75)
+    print(f"  [Active Configuration]")
+    print(f"   - Max Processing Threads : {cfg.max_threads}")
+    print(f"   - Memory Cap Limit (GB) : {cfg.memory_limit if cfg.memory_limit > 0 else 'Unlimited'}")
+    print(f"   - Default Swap Model     : {cfg.swap_model}")
+    print(f"   - Face Detection Grid    : {getattr(cfg, 'face_detector_size', '640')}px")
+    print(f"   - Face Detector Threshold: {getattr(cfg, 'face_detector_threshold', 0.60):.2f}")
+    print(f"   - Temp Folder Location   : {'System OS Temp' if cfg.use_os_temp_folder else 'Local Project Root'}")
+    print("=" * 75)
+    print("  Booting local FastAPI Swapping Gateway daemon thread...")
+    print("=" * 75)
+
+
 def run() -> None:
     parse_args()
     if not pre_check():
@@ -772,4 +850,5 @@ def run() -> None:
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
     if roop.globals.startup_args.server_share:
         roop.globals.CFG.server_share = True
+    print_startup_banner()
     main.run()

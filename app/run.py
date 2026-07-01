@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+import os
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+os.environ["AV_LOG_LEVEL"] = "error"
+
 # Windows asyncio fix: Python 3.10 on Windows raises ConnectionResetError
 # (WinError 10054) in asyncio ProactorEventLoop when a subprocess pipe closes.
 # This is a known CPython bug fixed in 3.11. Patch swallows the spurious error.

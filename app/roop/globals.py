@@ -26,13 +26,15 @@ max_memory = None
 execution_providers: List[str] = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 execution_threads = None
 headless = None
-log_level = 'debug'
+log_level = 'error'
 selected_enhancer = None
 subsample_size = 256
 face_swap_mode = 'DFL XSeg'
 blend_ratio = 0.80
 distance_threshold = 1
 default_det_size = True
+face_detector_size = '640'
+face_detector_threshold = 0.60
 sam2_model_size = 'tiny'   # SAM2 tracked-mask checkpoint: tiny|small|base_plus|large
 track_identities = False   # video: lock each tracked person to one source (anti identity-flip)
 

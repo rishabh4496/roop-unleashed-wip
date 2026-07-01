@@ -44,7 +44,23 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate" value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
           )}
           <Toggle label="Force CPU for face analyser" checked={!!p.force_cpu} onChange={(v) => set('force_cpu', v)} />
-          <Toggle label="Use default Det-Size" checked={p.default_det_size !== false} onChange={(v) => set('default_det_size', v)} />
+          <Select 
+            label="Face detection resolution" 
+            value={p.face_detector_size || '640'} 
+            onChange={(v) => {
+              set('face_detector_size', v);
+              set('default_det_size', v === '640' || v === '960' || v === '1280');
+            }} 
+            options={['320', '640', '960', '1280']} 
+          />
+          <Slider 
+            label="Face detection threshold" 
+            min={0.10} 
+            max={0.90} 
+            step={0.05} 
+            value={p.face_detector_threshold ?? 0.60} 
+            onChange={(v) => set('face_detector_threshold', v)} 
+          />
           <Slider label="Max threads" info="default 3" min={1} max={32} step={1} value={p.max_threads ?? 3} onChange={(v) => set('max_threads', v)} />
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} value={p.memory_limit ?? 0} onChange={(v) => set('memory_limit', v)} />
         </Section>
