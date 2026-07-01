@@ -98,6 +98,22 @@ from roop import session_pool
 from roop import swap_batcher
 import roop.globals
 
+# ANSI escape codes for terminal coloring
+COLOR_RESET = "\033[0m"
+COLOR_ACCENT = "\033[38;5;205m"  # Pink/Red matching UI #E94560
+COLOR_CYAN = "\033[36m"          # Cyan for counts
+COLOR_GREEN = "\033[32m"         # Green for times
+COLOR_GRAY = "\033[90m"          # Gray for separators
+COLOR_YELLOW = "\033[33m"        # Yellow for stats
+
+PROGRESS_BAR_FORMAT = (
+    f"{COLOR_ACCENT}{{desc}}{COLOR_RESET}: "
+    f"{COLOR_GRAY}|{{bar}}|{COLOR_RESET} "
+    f"{COLOR_CYAN}{{n_fmt}}/{{total_fmt}}{COLOR_RESET} "
+    f"[{COLOR_GREEN}{{elapsed}}<{COLOR_GREEN}{{remaining}}{COLOR_RESET}, "
+    f"{COLOR_YELLOW}{{rate_fmt}}{COLOR_RESET}{{postfix}}]"
+)
+
 
 
 # Poor man's enum to be able to compare to int
@@ -446,7 +462,7 @@ class ProcessMgr():
 
 
     def run_batch(self, source_files, target_files, threads:int = 1):
-        progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        progress_bar_format = PROGRESS_BAR_FORMAT
         self.total_frames = len(source_files)
         self.num_threads = threads
         with tqdm(total=self.total_frames, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
@@ -745,7 +761,7 @@ class ProcessMgr():
                 print(f'[Track] identity pre-pass failed ({e}); using per-frame matching')
                 self._track_mode = False
 
-        progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        progress_bar_format = PROGRESS_BAR_FORMAT
         try:
             if use_parallel_stab:
                 print(f"[Stabilize] parallel stabilization ON (threads={threads}, warm-up overlap) — "
@@ -1073,9 +1089,11 @@ class ProcessMgr():
         if process is None:
             process = self._psutil_proc = psutil.Process(os.getpid())
         memory_usage = process.memory_info().rss / 1024 / 1024 / 1024
+        mem_str = f"{COLOR_CYAN}{memory_usage:.2f}GB{COLOR_RESET}"
+        thread_str = f"{COLOR_YELLOW}{self.num_threads}{COLOR_RESET}"
         progress.set_postfix({
-            'memory_usage': '{:.2f}'.format(memory_usage).zfill(5) + 'GB',
-            'execution_threads': self.num_threads
+            'memory_usage': mem_str,
+            'execution_threads': thread_str
         })
         progress.update(1)
         if self.progress_gradio is not None:
@@ -1213,7 +1231,7 @@ class ProcessMgr():
 
         # Terminal progress bar (same style as the swap phase) so the pre-pass is
         # visible in the console too, not just the web UI.
-        _bar_fmt = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        _bar_fmt = PROGRESS_BAR_FORMAT
         pbar = tqdm(total=frame_count or 0, desc='Tracking identities', unit='frames',
                     dynamic_ncols=True, bar_format=_bar_fmt)
 
