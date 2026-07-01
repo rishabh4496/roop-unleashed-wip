@@ -257,6 +257,7 @@
 /* Custom Webkit range input styling to match Apple Sliders */
 input[type="range"] {
   -webkit-appearance: none;
+  width: 100%;
   background: rgba(255, 255, 255, 0.12);
   border-radius: 99px;
   outline: none;
