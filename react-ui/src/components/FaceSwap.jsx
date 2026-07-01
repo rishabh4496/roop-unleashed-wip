@@ -1772,6 +1772,7 @@ function InteractivePreview({
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
+  const imageRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   
   const [zoom, setZoom] = useState(1);
@@ -1784,8 +1785,9 @@ function InteractivePreview({
   const [imgDim, setImgDim] = useState(null);
 
   const handleSliderMove = (clientX) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
+    const target = imageRef.current || containerRef.current;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const percent = Math.max(0, Math.min((x / rect.width) * 100, 100));
     setSliderPosition(percent);
@@ -1989,7 +1991,7 @@ function InteractivePreview({
       <div className="absolute inset-0 transition-transform duration-75 flex items-center justify-center" style={transformStyle}>
         
         {/* Before Image & Bounding Boxes Wrapper */}
-        <div className="relative z-10" style={aspectStyle}>
+        <div className="relative z-10" style={aspectStyle} ref={imageRef}>
           <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none" 
                onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
           <div className="absolute inset-0 pointer-events-none z-30">{renderFaces()}</div>
@@ -1999,6 +2001,17 @@ function InteractivePreview({
                style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
             <img src={afterSrc} alt="After" className="w-full h-full object-contain" draggable={false} />
           </div>
+
+          {/* Slider Line & Handle (only when compare) */}
+          {compare && (
+            <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+                   onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
@@ -2006,17 +2019,6 @@ function InteractivePreview({
       {compare && <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>}
       <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
             style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
-
-      {/* Slider Line & Handle (only when compare) */}
-      {compare && (
-        <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
-               onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-          </div>
-        </div>
-      )}
 
       {/* HUD control bar overlays */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/5 shadow-2xl opacity-40 group-hover:opacity-100 hover:opacity-100 transition-opacity duration-300 z-50">
