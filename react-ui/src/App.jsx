@@ -123,7 +123,13 @@ export default function App() {
   }, [settings]);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col relative overflow-hidden">
+      {/* Floating Ambient Background Glows */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <div className="absolute top-[-25%] left-[-15%] w-[55%] h-[55%] rounded-full bg-[var(--accent)]/[0.04] blur-[150px] animate-float-1" />
+        <div className="absolute bottom-[-20%] right-[-15%] w-[60%] h-[60%] rounded-full bg-[var(--accent)]/[0.03] blur-[170px] animate-float-2" />
+      </div>
+
       {/* Floating Header Capsule */}
       <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
         <div className="flex items-center gap-3">
@@ -158,7 +164,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4">
+      <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
           <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
             ⚠️ {error}
