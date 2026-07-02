@@ -11,12 +11,27 @@ from roop import session_pool
 
 
 # ── Per-model swap contract ───────────────────────────────────────────────────
-# Every swapper here consumes the same ArcFace (buffalo_l / w600k_r50) identity
-# embedding, but each differs in resolution, input normalization, identity
-# projection (emap) and output range. ProcessMgr reads the published attributes
-# (model_output_size / model_mean / model_standard_deviation / model_denormalize)
-# to drive align/normalize. Model files download lazily into app/models/ on the
-# first run that selects them.
+# Every swapper here consumes the buffalo_l / w600k_r50 ArcFace identity
+# embedding, but each differs in resolution, alignment template, input
+# normalization, identity projection and output range. ProcessMgr reads the
+# published attributes (model_output_size / model_mean / model_standard_deviation
+# / model_denormalize / model_template) to drive align/normalize. Model files
+# download lazily into app/models/ on the first run that selects them.
+#
+# "embedding" selects how the 512-d identity vector is prepared (specs match
+# FaceFusion's prepare_source_embedding):
+#   normed_emap    — normed_embedding @ emap, re-normalized (inswapper family)
+#   normed         — normed_embedding used directly (hyperswap)
+#   converted_raw  — RAW embedding through the crossface converter, no norm (ghost)
+#   converted_norm — RAW embedding through the converter, then normalized
+#                    (simswap / hififace)
+# "template" is the 5-point alignment the model was trained on ('arcface' =
+# the existing insightface alignment; others live in face_util.WARP_TEMPLATES).
+_FF30 = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/"
+_FF31 = "https://huggingface.co/facefusion/models-3.1.0/resolve/main/"
+_FF33 = "https://huggingface.co/facefusion/models-3.3.0/resolve/main/"
+_FF34 = "https://huggingface.co/facefusion/models-3.4.0/resolve/main/"
+
 SWAP_MODELS = {
     # inswapper_128 — the original. arcface align, [0,1] input, identity =
     # normed_embedding @ emap, [0,1] output.
@@ -27,7 +42,8 @@ SWAP_MODELS = {
         "mean": [0.0, 0.0, 0.0],
         "standard_deviation": [1.0, 1.0, 1.0],
         "denormalize": False,
-        "use_emap": True,
+        "embedding": "normed_emap",
+        "template": "arcface",
     },
     # ReSwapper 256 — open reproduction of inswapper at 2x resolution. Same
     # identity pipeline (emap), near drop-in.
@@ -38,19 +54,123 @@ SWAP_MODELS = {
         "mean": [0.0, 0.0, 0.0],
         "standard_deviation": [1.0, 1.0, 1.0],
         "denormalize": False,
-        "use_emap": True,
+        "embedding": "normed_emap",
+        "template": "arcface",
     },
-    # HyperSwap 256 (FaceFusion) — 256px. [-1,1] input (mean/std 0.5), identity =
-    # normed_embedding directly (NO emap), de-normalized output. The model emits
-    # (image, mask); we use the image output.
+    # HyperSwap 1a/1b/1c (FaceFusion) — 256px. [-1,1] input (mean/std 0.5),
+    # identity = normed_embedding directly (NO emap), de-normalized output.
+    # The model emits (image, mask); we use the image output. The three
+    # checkpoints trade identity likeness vs blending differently — offered
+    # side by side for A/B.
     "hyperswap": {
         "file": "hyperswap_1a_256.onnx",
-        "url": "https://huggingface.co/facefusion/models-3.3.0/resolve/main/hyperswap_1a_256.onnx",
+        "url": _FF33 + "hyperswap_1a_256.onnx",
         "output_size": 256,
         "mean": [0.5, 0.5, 0.5],
         "standard_deviation": [0.5, 0.5, 0.5],
         "denormalize": True,
-        "use_emap": False,
+        "embedding": "normed",
+        "template": "arcface",
+    },
+    "hyperswap_1b": {
+        "file": "hyperswap_1b_256.onnx",
+        "url": _FF33 + "hyperswap_1b_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "normed",
+        "template": "arcface",
+    },
+    "hyperswap_1c": {
+        "file": "hyperswap_1c_256.onnx",
+        "url": _FF33 + "hyperswap_1c_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "normed",
+        "template": "arcface",
+    },
+    # Ghost 1/2/3 (sberbank GHOST, FaceFusion export) — 256px, arcface_112_v1
+    # alignment, [-1,1] in/out, identity = RAW embedding through the crossface
+    # converter (un-normalized). Different generator depths; 3 = newest.
+    "ghost_1": {
+        "file": "ghost_1_256.onnx",
+        "url": _FF30 + "ghost_1_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "converted_raw",
+        "template": "arcface_112_v1",
+        "converter_file": "crossface_ghost.onnx",
+        "converter_url": _FF34 + "crossface_ghost.onnx",
+    },
+    "ghost_2": {
+        "file": "ghost_2_256.onnx",
+        "url": _FF30 + "ghost_2_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "converted_raw",
+        "template": "arcface_112_v1",
+        "converter_file": "crossface_ghost.onnx",
+        "converter_url": _FF34 + "crossface_ghost.onnx",
+    },
+    "ghost_3": {
+        "file": "ghost_3_256.onnx",
+        "url": _FF30 + "ghost_3_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "converted_raw",
+        "template": "arcface_112_v1",
+        "converter_file": "crossface_ghost.onnx",
+        "converter_url": _FF34 + "crossface_ghost.onnx",
+    },
+    # SimSwap 256 — arcface_112_v1 alignment, ImageNet mean/std input, [0,1]
+    # output (no denorm), identity = converted + normalized embedding.
+    "simswap": {
+        "file": "simswap_256.onnx",
+        "url": _FF30 + "simswap_256.onnx",
+        "output_size": 256,
+        "mean": [0.485, 0.456, 0.406],
+        "standard_deviation": [0.229, 0.224, 0.225],
+        "denormalize": False,
+        "embedding": "converted_norm",
+        "template": "arcface_112_v1",
+        "converter_file": "crossface_simswap.onnx",
+        "converter_url": _FF34 + "crossface_simswap.onnx",
+    },
+    # SimSwap 512 (unofficial) — native 512px decoder, plain [0,1] in/out.
+    "simswap_512": {
+        "file": "simswap_unofficial_512.onnx",
+        "url": _FF30 + "simswap_unofficial_512.onnx",
+        "output_size": 512,
+        "mean": [0.0, 0.0, 0.0],
+        "standard_deviation": [1.0, 1.0, 1.0],
+        "denormalize": False,
+        "embedding": "converted_norm",
+        "template": "arcface_112_v1",
+        "converter_file": "crossface_simswap.onnx",
+        "converter_url": _FF34 + "crossface_simswap.onnx",
+    },
+    # HifiFace (unofficial) — 256px, mtcnn_512 alignment, [-1,1] in/out,
+    # identity = converted + normalized embedding.
+    "hififace": {
+        "file": "hififace_unofficial_256.onnx",
+        "url": _FF31 + "hififace_unofficial_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "converted_norm",
+        "template": "mtcnn_512",
+        "converter_file": "crossface_hififace.onnx",
+        "converter_url": _FF34 + "crossface_hififace.onnx",
     },
 }
 
@@ -111,6 +231,9 @@ class FaceSwapInsightFace():
         self.plugin_options = None
         self.model_swap_insightface = None
         self.emap = None
+        self.converter = None            # crossface embedding converter session
+        self.converter_input = "input"
+        self.embedding_mode = "normed_emap"
         self.image_input_name = "target"
         self.embed_input_name = "source"
         self.loaded_model_key = None
@@ -121,6 +244,7 @@ class FaceSwapInsightFace():
         self.model_mean = [0.0, 0.0, 0.0]
         self.model_standard_deviation = [1.0, 1.0, 1.0]
         self.model_denormalize = False
+        self.model_template = "arcface"
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
@@ -143,8 +267,26 @@ class FaceSwapInsightFace():
             conditional_download(model_dir, [spec["url"]])
             model_path = os.path.join(model_dir, spec["file"])
 
-            graph = onnx.load(model_path).graph
-            self.emap = self._find_emap(graph) if spec["use_emap"] else None
+            self.embedding_mode = spec.get("embedding", "normed_emap")
+            if self.embedding_mode == "normed_emap":
+                graph = onnx.load(model_path).graph
+                self.emap = self._find_emap(graph)
+            else:
+                self.emap = None
+
+            # crossface embedding converter (ghost / simswap / hififace): a tiny
+            # MLP that maps the buffalo_l ArcFace embedding into the identity
+            # space the swap net was trained with. CPU is plenty for it — the
+            # result is cached per source face, so it runs once per face per
+            # model, not per frame.
+            if spec.get("converter_url"):
+                conditional_download(model_dir, [spec["converter_url"]])
+                self.converter = onnxruntime.InferenceSession(
+                    os.path.join(model_dir, spec["converter_file"]),
+                    None, providers=["CPUExecutionProvider"])
+                self.converter_input = self.converter.get_inputs()[0].name
+            else:
+                self.converter = None
 
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
 
@@ -184,6 +326,7 @@ class FaceSwapInsightFace():
             self.model_mean = spec["mean"]
             self.model_standard_deviation = spec["standard_deviation"]
             self.model_denormalize = spec["denormalize"]
+            self.model_template = spec.get("template", "arcface")
             self.loaded_model_key = swap_model
 
     @staticmethod
@@ -196,11 +339,38 @@ class FaceSwapInsightFace():
         # Fallback: inswapper_128 stores emap as the last initializer.
         return onnx.numpy_helper.to_array(graph.initializer[-1])
 
-    def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+    def _compute_latent(self, source_face: Face) -> np.ndarray:
+        """Prepare the (1, 512) identity vector per the loaded model's contract.
+        Converter results are cached on the Face object (keyed by model) so the
+        crossface MLP runs once per source face, not once per frame."""
+        mode = self.embedding_mode
+        if mode == "normed":
+            return source_face.normed_embedding.reshape((1, -1)).astype(np.float32)
+        if mode in ("converted_raw", "converted_norm"):
+            cache_key = f"_latent_{self.loaded_model_key}"
+            cached = source_face.get(cache_key) if hasattr(source_face, 'get') else None
+            if cached is not None:
+                return cached
+            emb = np.asarray(source_face.embedding, dtype=np.float32).reshape(-1, 512)
+            converted = self.converter.run(None, {self.converter_input: emb})[0]
+            converted = converted.ravel()
+            if mode == "converted_norm":
+                converted = converted / np.linalg.norm(converted)
+            latent = converted.reshape(1, -1).astype(np.float32)
+            try:
+                source_face[cache_key] = latent
+            except Exception:
+                pass
+            return latent
+        # Default: inswapper-family normed_embedding @ emap.
         latent = source_face.normed_embedding.reshape((1, -1)).astype(np.float32)
         if self.emap is not None:
             latent = np.dot(latent, self.emap)
             latent /= np.linalg.norm(latent)
+        return latent
+
+    def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+        latent = self._compute_latent(source_face)
         # Use the standard run() API rather than io_binding.  io_binding with
         # bind_output() (no device_type) leaves output placement to TensorRT,
         # which registers a device type that copy_outputs_to_cpu() has no
@@ -223,10 +393,7 @@ class FaceSwapInsightFace():
         [3,H,W] outputs, one per crop — numerically identical to calling Run on
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
-        latent = source_face.normed_embedding.reshape((1, -1)).astype(np.float32)
-        if self.emap is not None:
-            latent = np.dot(latent, self.emap)
-            latent /= np.linalg.norm(latent)
+        latent = self._compute_latent(source_face)
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
         latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
@@ -243,13 +410,7 @@ class FaceSwapInsightFace():
         cross-frame coalescing where different faces batch together).
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
-        latents = []
-        for src, _tgt, _blob in requests:
-            lat = src.normed_embedding.reshape((1, -1)).astype(np.float32)
-            if self.emap is not None:
-                lat = np.dot(lat, self.emap)
-                lat /= np.linalg.norm(lat)
-            latents.append(lat)
+        latents = [self._compute_latent(src) for src, _tgt, _blob in requests]
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
@@ -268,4 +429,5 @@ class FaceSwapInsightFace():
         del self.model_swap_insightface
         self.model_swap_insightface = None
         self.emap = None
+        self.converter = None
         self.loaded_model_key = None

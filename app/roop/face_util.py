@@ -300,9 +300,54 @@ arcface_dst = np.array(
     dtype=np.float32,
 )
 
+# Normalized (0-1) 5-point warp templates for swap models NOT trained on the
+# insightface arcface alignment. Values from FaceFusion face_helper.py
+# WARP_TEMPLATE_SET; multiplied by the crop size at estimation time.
+#   arcface_112_v1 — ghost_* and simswap_* training alignment
+#   mtcnn_512      — hififace training alignment
+#   ffhq_512       — uniface/blendswap training alignment (FFHQ-style)
+WARP_TEMPLATES = {
+    "arcface_112_v1": np.array(
+        [
+            [0.35473214, 0.45658929],
+            [0.64526786, 0.45658929],
+            [0.50000000, 0.61154464],
+            [0.37913393, 0.77687500],
+            [0.62086607, 0.77687500],
+        ],
+        dtype=np.float32,
+    ),
+    "mtcnn_512": np.array(
+        [
+            [0.36562865, 0.46733799],
+            [0.63305391, 0.46585885],
+            [0.50019127, 0.61942959],
+            [0.39032951, 0.77598822],
+            [0.61178945, 0.77476328],
+        ],
+        dtype=np.float32,
+    ),
+    "ffhq_512": np.array(
+        [
+            [0.37691676, 0.46864664],
+            [0.62285697, 0.46912813],
+            [0.50123859, 0.61331904],
+            [0.39308822, 0.72541100],
+            [0.61150205, 0.72490465],
+        ],
+        dtype=np.float32,
+    ),
+}
 
-def estimate_norm(lmk, image_size=112):
+
+def estimate_norm(lmk, image_size=112, mode="arcface"):
     assert lmk.shape == (5, 2)
+    if mode in WARP_TEMPLATES:
+        dst = WARP_TEMPLATES[mode] * float(image_size)
+        tform = trans.SimilarityTransform()
+        tform.estimate(lmk, dst)
+        return tform.params[0:2, :]
+
     if image_size % 112 == 0:
         ratio = float(image_size) / 112.0
         diff_x = 0
@@ -330,7 +375,7 @@ def estimate_norm(lmk, image_size=112):
 
 # aligned, M = norm_crop2(f[1], face.kps, 512)
 def align_crop(img, landmark, image_size=112, mode="arcface"):
-    M = estimate_norm(landmark, image_size)
+    M = estimate_norm(landmark, image_size, mode)
     warped = cv2.warpAffine(img, M, (image_size, image_size), borderValue=0.0)
     return warped, M
 

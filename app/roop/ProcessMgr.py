@@ -155,6 +155,8 @@ class ProcessMgr():
         'faceswap'          : 'FaceSwapInsightFace',
         'mask_clip2seg'     : 'Mask_Clip2Seg',
         'mask_xseg'         : 'Mask_XSeg',
+        'mask_xseg3'        : 'Mask_XSeg3',
+        'mask_occluder'     : 'Mask_Occluder',
         'mask_faceparser'   : 'Mask_FaceParser',
         'mask_mobilesam'    : 'Mask_MobileSAM',
         'mask_fastsam'      : 'Mask_FastSAM',
@@ -1750,7 +1752,12 @@ class ProcessMgr():
             subsample_size = model_output_size
         subsample_total = subsample_size // model_output_size
 
-        aligned_img, M = align_crop(frame, target_face.kps, subsample_size)
+        # Align with the swap model's training template (ghost/simswap use
+        # arcface_112_v1, hififace uses mtcnn_512; inswapper family = arcface).
+        # M is carried through masks/paste/mouth-restore generically, so the
+        # rest of the pipeline is template-agnostic.
+        swap_template = getattr(swap_p, 'model_template', 'arcface')
+        aligned_img, M = align_crop(frame, target_face.kps, subsample_size, mode=swap_template)
         fake_frame = aligned_img
         target_face.matrix = M
         # Stash the crop affine per-thread so the SAM2 mask engine can warp its
@@ -2339,7 +2346,7 @@ class ProcessMgr():
                     if asymmetry > 0.35:
                         is_lateral = True
 
-        dense_maskers = ['mask_occluder', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
+        dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
         
         if is_lateral and orig_frame is not None and M is not None and p_name in dense_maskers:
             # Run on unwarped bounding box crop to prevent stretching of the face and foreign objects
@@ -2403,8 +2410,9 @@ class ProcessMgr():
             else:
                 img_mask = processor.Run(frame, self.options.masking_text)
 
-        # Specific improvement for mask_occluder: threshold and blur to prevent ghosting
-        if p_name == 'mask_occluder':
+        # Specific improvement for the occluder family: threshold and blur to
+        # prevent ghosting (xseg_3 shares the face_occluder output convention).
+        if p_name in ('mask_occluder', 'mask_xseg3'):
             binary_mask = (img_mask > 0.35).astype(np.float32)
             img_mask = cv2.GaussianBlur(binary_mask, (5, 5), 0)
 

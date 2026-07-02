@@ -204,6 +204,8 @@ def map_mask_engine(selected_mask_engine, clip_text):
         return "mask_faceparser"
     if selected_mask_engine == "Face Occluder":
         return "mask_occluder"
+    if selected_mask_engine == "Face Occluder v3 (XSeg-3)":
+        return "mask_xseg3"
     if selected_mask_engine == "Segment Anything (MobileSAM)":
         return "mask_mobilesam"
     if selected_mask_engine == "Segment Anything (FastSAM)":
@@ -290,12 +292,15 @@ def get_meta():
         "git_version": _get_git_version(),
         "providers": providers,
         "trt_precisions": ["fp32", "fp16", "mixed"],
-        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"],
-        "swap_models": ["inswapper", "reswapper", "hyperswap"],
+        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN",
+                       "GPEN 1024", "GPEN 2048", "Restoreformer++"],
+        "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
+                         "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
+                         "simswap", "simswap_512", "hififace"],
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
         "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "Face Parser (BiSeNet)",
-                          "Face Occluder",
+                          "Face Occluder", "Face Occluder v3 (XSeg-3)",
                           "Segment Anything (MobileSAM)", "Segment Anything (FastSAM)",
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
