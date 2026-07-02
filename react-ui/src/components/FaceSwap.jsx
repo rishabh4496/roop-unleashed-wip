@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery } from './ui';
+import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card } from './ui';
 
 const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
 
@@ -865,7 +865,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     if (clientX === undefined) return;
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const pct = x / rect.width;
-    const f = Math.max(1, Math.min(Math.round(pct * maxFrames), maxFrames));
+    const f = Math.max(1, Math.min(Math.round(pct * (maxFrames - 1)) + 1, maxFrames));
     setHoverFrame(f);
   };
 
@@ -966,8 +966,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
+        face_mapping: getFaceMappingArray(),
+        target_index: selTarget,
       });
-      
+
       startTimeRef.current = Date.now();
       notify('Generating 5-second preview clip...');
       startPolling();
@@ -1384,7 +1386,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             ) : (
               <div className="space-y-1.5 max-h-40 overflow-auto">
                 {targets.map((t, i) => {
-                  const job = queue.find(j => j.targetName === t.name || j.targetIndex === i);
+                  const job = queue.find(j => j.targetName === t.name && j.targetIndex === i);
                   let statusLabel = null;
                   let badgeColor = '';
                   if (job) {
@@ -1548,7 +1550,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   {hoverFrame !== null && (
                     <div 
                       className="absolute bottom-[66px] z-50 bg-[#121420]/95 backdrop-blur-md p-1.5 rounded-xl border border-white/10 flex flex-col items-center gap-1 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
-                      style={{ left: `${(hoverFrame / maxFrames) * 100}%` }}
+                      style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
                     >
                       <img 
                         src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}`} 

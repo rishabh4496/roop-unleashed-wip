@@ -1,7 +1,7 @@
 import React from 'react';
 
-export const Card = ({ children, className = '' }) => (
-  <div className={`rounded-2xl glass-panel apple-transition ${className}`}>
+export const Card = ({ children, className = '', ...rest }) => (
+  <div className={`rounded-2xl glass-panel apple-transition ${className}`} {...rest}>
     {children}
   </div>
 );

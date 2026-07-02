@@ -20,7 +20,7 @@ import contextlib
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Body, Request
+from fastapi import FastAPI, UploadFile, File, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -86,7 +86,15 @@ def _save_upload(file: UploadFile) -> str:
     # Recreate the upload dir every time — the Gradio "clean temp" action and
     # prepare_environment() can delete the whole temp/ tree out from under us.
     os.makedirs(API_TEMP, exist_ok=True)
-    path = os.path.join(API_TEMP, os.path.basename(file.filename))
+    base = os.path.basename(file.filename)
+    path = os.path.join(API_TEMP, base)
+    # Never overwrite an earlier upload with the same name — existing target
+    # entries keep pointing at the old path, so clobbering it corrupts them.
+    stem, ext = os.path.splitext(base)
+    n = 1
+    while os.path.exists(path):
+        path = os.path.join(API_TEMP, f"{stem}_{n}{ext}")
+        n += 1
     with open(path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     return path
@@ -126,12 +134,17 @@ def _update_mask_offsets_from_payload(payload: dict):
             "face_mask_blend", "mouth_mask_blend",
             "mouth_top_scale", "mouth_bottom_scale", "mouth_left_scale", "mouth_right_scale"]
     
-    # Update CFG so they are persisted
+    # Update CFG so they are persisted. Only hit the disk when a value actually
+    # changed — /api/preview calls this on every scrub/slider debounce.
     if roop_globals.CFG:
+        cfg_changed = False
         for k in keys:
             if k in payload and payload[k] is not None:
-                setattr(roop_globals.CFG, k, payload[k])
-        roop_globals.CFG.save()
+                if getattr(roop_globals.CFG, k, None) != payload[k]:
+                    setattr(roop_globals.CFG, k, payload[k])
+                    cfg_changed = True
+        if cfg_changed:
+            roop_globals.CFG.save()
 
     # Update current faceset face offsets
     face_index = selected_input_face_index
@@ -299,16 +312,7 @@ def get_meta():
 @app.get("/api/state")
 def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
-    targets = []
-    for i, entry in enumerate(list_files_process):
-        targets.append({
-            "name": os.path.basename(entry.filename),
-            "startframe": entry.startframe,
-            "endframe": entry.endframe,
-            "start_frame": entry.startframe,
-            "end_frame": entry.endframe,
-            "frames": entry.endframe if entry.endframe else 1,
-        })
+    targets = [_target_entry_dict(entry) for entry in list_files_process]
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
@@ -410,11 +414,15 @@ def source_select(payload: dict = Body(...)):
 @app.post("/api/target/add")
 async def target_add(files: list[UploadFile] = File(...)):
     global current_video_fps, selected_target_index
+    first_new = len(list_files_process)
     for f in files:
         path = _save_upload(f)
         list_files_process.append(ProcessEntry(path, 0, 0, 0))
-    selected_target_index = 0
-    _refresh_target_frames(0)
+    # Refresh every new entry (not just index 0) so videos report their real
+    # frame count/fps immediately — the UI's auto-queue and labels rely on it.
+    for i in range(first_new, len(list_files_process)):
+        _refresh_target_frames(i)
+    selected_target_index = first_new if first_new < len(list_files_process) else 0
     return _target_list_payload()
 
 
@@ -422,7 +430,8 @@ def _refresh_target_frames(idx):
     global current_video_fps
     if idx >= len(list_files_process):
         return
-    filename = list_files_process[idx].filename
+    entry = list_files_process[idx]
+    filename = entry.filename
     if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
         total = get_video_frame_total(filename) or 1
         if not filename.lower().endswith(".webp"):
@@ -430,23 +439,34 @@ def _refresh_target_frames(idx):
                 current_video_fps = util.detect_fps(filename)
             except Exception:
                 current_video_fps = 30
+        entry.fps = current_video_fps
     else:
         total = 1
-    list_files_process[idx].endframe = total
+        entry.fps = 0
+    entry.total_frames = total
+    # Keep the user's trim markers on re-select; only (re)initialise when unset
+    # or out of range.
+    if not entry.endframe or entry.endframe > total:
+        entry.endframe = total
+    if entry.startframe > total:
+        entry.startframe = 0
+
+
+def _target_entry_dict(entry):
+    total = getattr(entry, "total_frames", 0) or entry.endframe or 1
+    return {
+        "name": os.path.basename(entry.filename),
+        "startframe": entry.startframe,
+        "endframe": entry.endframe,
+        "start_frame": entry.startframe,
+        "end_frame": entry.endframe,
+        "frames": total,
+        "fps": entry.fps or 0,
+    }
 
 
 def _target_list_payload():
-    targets = []
-    for entry in list_files_process:
-        total = entry.endframe if entry.endframe else 1
-        targets.append({
-            "name": os.path.basename(entry.filename),
-            "startframe": entry.startframe,
-            "endframe": entry.endframe,
-            "start_frame": entry.startframe,
-            "end_frame": entry.endframe,
-            "frames": total,
-        })
+    targets = [_target_entry_dict(entry) for entry in list_files_process]
     return {"targets": targets, "selected_target_index": selected_target_index,
             "fps": current_video_fps}
 
@@ -492,9 +512,12 @@ def target_set_frame(payload: dict = Body(...)):
     frame = int(payload.get("frame", 1))
     if idx < len(list_files_process):
         entry = list_files_process[idx]
+        total = getattr(entry, "total_frames", 0) or entry.endframe or 0
         if which == "start":
             entry.startframe = min(frame, entry.endframe or frame)
         else:
+            if total:
+                frame = min(frame, total)
             entry.endframe = max(frame, entry.startframe)
     return _target_list_payload()
 
@@ -1129,11 +1152,11 @@ def facemgr_build():
 # ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
 @app.post("/api/extras/apply")
 async def extras_apply(file: UploadFile = File(...),
-                       resolution: str = "Original",
-                       rotation: str = "None",
-                       fps: float = 30.0,
-                       crop_left: int = 0, crop_right: int = 0,
-                       crop_top: int = 0, crop_bottom: int = 0):
+                       resolution: str = Form("Original"),
+                       rotation: str = Form("None"),
+                       fps: float = Form(30.0),
+                       crop_left: int = Form(0), crop_right: int = Form(0),
+                       crop_top: int = Form(0), crop_bottom: int = Form(0)):
     from ui.main import prepare_environment
     prepare_environment()
     path = _save_upload(file)

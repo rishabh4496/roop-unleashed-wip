@@ -135,6 +135,8 @@ class Settings:
         self.output_method = self.default_get(data, 'output_method', 'File')
         self.mask_engine = self.default_get(data, 'mask_engine', 'DFL XSeg')
         self.mask_clip_text = self.default_get(data, 'mask_clip_text', 'cup,hands,hair,banana')
+        self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
+        self.track_identities = self.default_get(data, 'track_identities', False)
         self.show_mask_offsets = self.default_get(data, 'show_mask_offsets', False)
         self.restore_original_mouth = self.default_get(data, 'restore_original_mouth', False)
         self.mask_top = self.default_get(data, 'mask_top', 0.0)
@@ -207,6 +209,8 @@ class Settings:
             'output_method': self.output_method,
             'mask_engine': self.mask_engine,
             'mask_clip_text': self.mask_clip_text,
+            'sam2_model_size': self.sam2_model_size,
+            'track_identities': self.track_identities,
             'show_mask_offsets': self.show_mask_offsets,
             'restore_original_mouth': self.restore_original_mouth,
             'mask_top': self.mask_top,

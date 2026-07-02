@@ -110,7 +110,7 @@ PROGRESS_BAR_FORMAT = (
     f"{COLOR_ACCENT}{{desc}}{COLOR_RESET}: "
     f"{COLOR_GRAY}|{{bar}}|{COLOR_RESET} "
     f"{COLOR_CYAN}{{n_fmt}}/{{total_fmt}}{COLOR_RESET} "
-    f"[{COLOR_GREEN}{{elapsed}}<{COLOR_GREEN}{{remaining}}{COLOR_RESET}, "
+    f"[{COLOR_GREEN}{{elapsed}}{COLOR_RESET}<{COLOR_GREEN}{{remaining}}{COLOR_RESET}, "
     f"{COLOR_YELLOW}{{rate_fmt}}{COLOR_RESET}{{postfix}}]"
 )
 
