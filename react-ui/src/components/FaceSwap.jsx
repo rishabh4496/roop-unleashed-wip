@@ -357,6 +357,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     fds: p.face_detector_size,
     fdt: p.face_detector_threshold,
     fm: faceMapping,
+    mask_top: p.mask_top,
+    mask_bottom: p.mask_bottom,
+    mask_left: p.mask_left,
+    mask_right: p.mask_right,
+    face_mask_blend: p.face_mask_blend,
+    mouth_mask_blend: p.mouth_mask_blend,
+    mouth_top_scale: p.mouth_top_scale,
+    mouth_bottom_scale: p.mouth_bottom_scale,
+    mouth_left_scale: p.mouth_left_scale,
+    mouth_right_scale: p.mouth_right_scale,
   });
 
   // One-click speed/quality profiles. Each bundles the core levers (detection
@@ -451,6 +461,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_mapping: getFaceMappingArray(),
+        mask_top: p.mask_top,
+        mask_bottom: p.mask_bottom,
+        mask_left: p.mask_left,
+        mask_right: p.mask_right,
+        face_mask_blend: p.face_mask_blend,
+        mouth_mask_blend: p.mouth_mask_blend,
+        mouth_top_scale: p.mouth_top_scale,
+        mouth_bottom_scale: p.mouth_bottom_scale,
+        mouth_left_scale: p.mouth_left_scale,
+        mouth_right_scale: p.mouth_right_scale,
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewSrc(res.image || '');
@@ -499,6 +519,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
+        mask_top: localParams.mask_top,
+        mask_bottom: localParams.mask_bottom,
+        mask_left: localParams.mask_left,
+        mask_right: localParams.mask_right,
+        face_mask_blend: localParams.face_mask_blend,
+        mouth_mask_blend: localParams.mouth_mask_blend,
+        mouth_top_scale: localParams.mouth_top_scale,
+        mouth_bottom_scale: localParams.mouth_bottom_scale,
+        mouth_left_scale: localParams.mouth_left_scale,
+        mouth_right_scale: localParams.mouth_right_scale,
       })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
       
       if (previewCacheRef.current[cacheKey]) {
@@ -521,6 +551,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_mapping: getFaceMappingArray(),
+          mask_top: p.mask_top,
+          mask_bottom: p.mask_bottom,
+          mask_left: p.mask_left,
+          mask_right: p.mask_right,
+          face_mask_blend: p.face_mask_blend,
+          mouth_mask_blend: p.mouth_mask_blend,
+          mouth_top_scale: p.mouth_top_scale,
+          mouth_bottom_scale: p.mouth_bottom_scale,
+          mouth_left_scale: p.mouth_left_scale,
+          mouth_right_scale: p.mouth_right_scale,
         });
         if (!activeCheck()) return;
         if (res.image) {

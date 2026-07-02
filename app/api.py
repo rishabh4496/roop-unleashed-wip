@@ -120,6 +120,55 @@ def _mask_offsets_from_cfg():
             c.mouth_left_scale, c.mouth_right_scale]
 
 
+def _update_mask_offsets_from_payload(payload: dict):
+    global selected_input_face_index
+    keys = ["mask_top", "mask_bottom", "mask_left", "mask_right",
+            "face_mask_blend", "mouth_mask_blend",
+            "mouth_top_scale", "mouth_bottom_scale", "mouth_left_scale", "mouth_right_scale"]
+    
+    # Update CFG so they are persisted
+    if roop_globals.CFG:
+        for k in keys:
+            if k in payload and payload[k] is not None:
+                setattr(roop_globals.CFG, k, payload[k])
+        roop_globals.CFG.save()
+
+    # Update current faceset face offsets
+    face_index = selected_input_face_index
+    if len(roop_globals.INPUT_FACESETS) > face_index:
+        faceset = roop_globals.INPUT_FACESETS[face_index]
+        if faceset.faces:
+            face = faceset.faces[0]
+            if not hasattr(face, "mask_offsets") or face.mask_offsets is None:
+                face.mask_offsets = _mask_offsets_from_cfg()
+            offs = list(face.mask_offsets)
+            while len(offs) < 10:
+                offs.append(1.0)
+            
+            mapping = {
+                "mask_top": 0,
+                "mask_bottom": 1,
+                "mask_left": 2,
+                "mask_right": 3,
+                "face_mask_blend": 4,
+                "mouth_mask_blend": 5,
+                "mouth_top_scale": 6,
+                "mouth_bottom_scale": 7,
+                "mouth_left_scale": 8,
+                "mouth_right_scale": 9
+            }
+            updated = False
+            for k, idx in mapping.items():
+                if k in payload and payload[k] is not None:
+                    try:
+                        offs[idx] = float(payload[k])
+                        updated = True
+                    except (ValueError, TypeError):
+                        pass
+            if updated:
+                face.mask_offsets = offs
+
+
 def translate_swap_mode(text):
     return {"Selected face": "selected", "First found": "first",
             "All input faces": "all_input", "All female": "all_female",
@@ -191,6 +240,7 @@ def get_settings():
 
 @app.post("/api/settings")
 def save_settings(settings: dict = Body(...)):
+    _update_mask_offsets_from_payload(settings)
     if roop_globals.CFG:
         for k, v in settings.items():
             if hasattr(roop_globals.CFG, k):
@@ -575,6 +625,7 @@ def target_group(payload: dict = Body(...)):
 def preview(payload: dict = Body(...)):
     """Render the selected target frame, optionally with a live face swap."""
     global selected_target_index
+    _update_mask_offsets_from_payload(payload)
     idx = int(payload.get("index", selected_target_index))
     frame = int(payload.get("frame", 1))
     fake = bool(payload.get("fake_preview", False))
@@ -674,6 +725,7 @@ def _run_swap(payload):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
 
+    _update_mask_offsets_from_payload(payload)
     roop_globals.pause = False
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     try:
