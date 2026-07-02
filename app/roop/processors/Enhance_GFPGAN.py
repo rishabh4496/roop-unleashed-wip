@@ -35,6 +35,7 @@ class Enhance_GFPGAN():
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
 
         self.name = self.model_gfpgan.get_inputs()[0].name
+        self.output_name = self.model_gfpgan.get_outputs()[0].name
 
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
         # preprocess
@@ -46,9 +47,9 @@ class Enhance_GFPGAN():
         temp_frame = (temp_frame - 0.5) / 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
 
-        io_binding = self.model_gfpgan.io_binding()           
-        io_binding.bind_cpu_input("input", temp_frame)
-        io_binding.bind_output("1288", self.devicename)
+        io_binding = self.model_gfpgan.io_binding()
+        io_binding.bind_cpu_input(self.name, temp_frame)
+        io_binding.bind_output(self.output_name, self.devicename)
         self.model_gfpgan.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]

@@ -179,17 +179,21 @@ def suggest_execution_providers() -> List[str]:
 
 
 def suggest_execution_threads() -> int:
-    if 'DmlExecutionProvider' in roop.globals.execution_providers:
+    # decode_execution_providers() wraps CUDA/TensorRT entries as (name, opts)
+    # tuples, so compare against the extracted names, not the raw list.
+    provider_names = [p[0] if isinstance(p, (list, tuple)) else p
+                      for p in roop.globals.execution_providers]
+    if 'DmlExecutionProvider' in provider_names:
         return 1
-    if 'ROCMExecutionProvider' in roop.globals.execution_providers:
+    if 'ROCMExecutionProvider' in provider_names:
         return 1
-    
+
     suggested = 8
     try:
-        if any(p in roop.globals.execution_providers for p in ['CUDAExecutionProvider', 'TensorrtExecutionProvider']):
+        if any(p in provider_names for p in ['CUDAExecutionProvider', 'TensorrtExecutionProvider']):
             import torch
             if torch.cuda.is_available():
-                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                vram_gb = torch.cuda.get_device_properties(roop.globals.cuda_device_id).total_memory / (1024**3)
                 import psutil
                 cores = psutil.cpu_count(logical=False) or 4
                 suggested = int(min(max(2, cores - 1), max(2, vram_gb / 1.5)))
@@ -727,8 +731,10 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 return
             
             video_file_name = v.finalname
+            # Defined before the isfile() branch: the failure path below falls
+            # through to the status line that references it.
+            destination = ''
             if os.path.isfile(video_file_name):
-                destination = ''
                 if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
                     gifname = util.get_destfilename_from_path(v.filename, roop.globals.output_path, '.gif')
                     destination = util.replace_template(gifname, index=index)
@@ -756,7 +762,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 update_status(f'Failed processing {os.path.basename(v.finalname)}!')
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time
-            update_status(f'\nProcessing {os.path.basename(destination)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
+            update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
             import gc
             gc.collect()
             try:
@@ -811,7 +817,7 @@ def print_startup_banner() -> None:
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(roop.globals.cuda_device_id)
         try:
-            total_vram_bytes, free_vram_bytes = torch.cuda.mem_get_info(roop.globals.cuda_device_id)
+            free_vram_bytes, total_vram_bytes = torch.cuda.mem_get_info(roop.globals.cuda_device_id)
             total_vram_gb = total_vram_bytes / (1024 ** 3)
             free_vram_gb = free_vram_bytes / (1024 ** 3)
             vram_str = f"Total VRAM: {total_vram_gb:.2f} GB | Free VRAM: {free_vram_gb:.2f} GB"

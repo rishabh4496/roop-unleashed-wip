@@ -87,8 +87,9 @@ class Settings:
             pass
 
         saved_threads = self.default_get(data, 'max_threads', -1)
-        # Upgrade legacy default '2' to the auto-scaled value to fix CPU bottlenecks for existing users
-        if saved_threads == 2 or saved_threads == -1:
+        # Auto-scale only when nothing is saved. A saved value — including 2 —
+        # is a deliberate user choice and must stick across restarts.
+        if saved_threads == -1:
             self.max_threads = default_threads
         else:
             self.max_threads = saved_threads
@@ -240,8 +241,13 @@ class Settings:
             'stabilize_enhancer': self.stabilize_enhancer,
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
         }
-        with open(self.config_file, 'w') as f:
+        # Atomic write: dump to a temp file and replace. Writing config.yaml in
+        # place means a crash mid-write truncates it, and load()'s fallback then
+        # silently resets every setting to defaults.
+        tmp_file = self.config_file + '.tmp'
+        with open(tmp_file, 'w') as f:
             yaml.dump(data, f)
+        os.replace(tmp_file, self.config_file)
 
 
 

@@ -418,16 +418,33 @@ def conditional_download(download_directory_path: str, urls: List[str]) -> None:
             download_directory_path, os.path.basename(url)
         )
         if not os.path.exists(download_file_path):
-            request = urllib.request.urlopen(url)  # type: ignore[attr-defined]
-            total = int(request.headers.get("Content-Length", 0))
-            with tqdm(
-                total=total,
-                desc=f"Downloading {url}",
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as progress:
-                urllib.request.urlretrieve(url, download_file_path, reporthook=lambda count, block_size, total_size: progress.update(block_size))  # type: ignore[attr-defined]
+            # Download to a .part file and rename only on success. Writing the
+            # final filename directly means an interrupted download leaves a
+            # truncated file that the exists() check above then treats as a
+            # complete model forever (cryptic ONNX load error until the user
+            # deletes it by hand).
+            partial_path = download_file_path + ".part"
+            try:
+                request = urllib.request.urlopen(url)  # type: ignore[attr-defined]
+                total = int(request.headers.get("Content-Length", 0))
+                with tqdm(
+                    total=total,
+                    desc=f"Downloading {url}",
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                ) as progress:
+                    urllib.request.urlretrieve(url, partial_path, reporthook=lambda count, block_size, total_size: progress.update(block_size))  # type: ignore[attr-defined]
+                if total and os.path.getsize(partial_path) < total:
+                    raise IOError(f"Incomplete download: got {os.path.getsize(partial_path)} of {total} bytes")
+                os.replace(partial_path, download_file_path)
+            except Exception:
+                if os.path.exists(partial_path):
+                    try:
+                        os.remove(partial_path)
+                    except OSError:
+                        pass
+                raise
 
 
 def get_local_files_from_folder(folder: str) -> List[str]:

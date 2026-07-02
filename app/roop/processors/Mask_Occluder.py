@@ -6,10 +6,15 @@ import threading
 import roop.globals
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, conditional_download
 from roop import session_pool
 
 THREAD_LOCK_OCCLUDER = threading.Lock()
+
+# FaceFusion 2.x face_occluder.onnx. The original facefusion-assets release was
+# taken down, so the weight is mirrored on the project's own release (same host
+# as the MobileSAM/FastSAM weights).
+_MODEL_URL = 'https://github.com/rishabh4496/roop-sam-weights/releases/download/v1/face_occluder.onnx'
 
 
 class Mask_Occluder():
@@ -47,7 +52,9 @@ class Mask_Occluder():
 
         self.plugin_options = plugin_options
         if self.model_occluder is None:
-            model_path = resolve_relative_path('../models/face_occluder.onnx')
+            model_dir = resolve_relative_path('../models')
+            conditional_download(model_dir, [_MODEL_URL])
+            model_path = os.path.join(model_dir, 'face_occluder.onnx')
             onnxruntime.set_default_logger_severity(3)
 
             def _build(_i=0):

@@ -39,9 +39,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         </Section>
 
         <Section title="Performance">
-          <Select label="Provider" value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
+          <Select label="Provider" info="Inference sessions are built at startup — provider and precision changes take effect after restarting the app." value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
           {p.provider === 'tensorrt' && (
-            <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate" value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
+            <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
           )}
           <Toggle label="Force CPU for face analyser" checked={!!p.force_cpu} onChange={(v) => set('force_cpu', v)} />
           <Select 

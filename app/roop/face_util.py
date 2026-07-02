@@ -312,6 +312,12 @@ def estimate_norm(lmk, image_size=112):
     elif image_size % 512 == 0:
         ratio = float(image_size) / 512.0
         diff_x = 32.0 * ratio
+    else:
+        # Generic fallback so a swap model with an unusual output size (e.g.
+        # 320/384) can't hit an UnboundLocalError here — scale like the 112
+        # template with no x-shift, matching insightface's base alignment.
+        ratio = float(image_size) / 112.0
+        diff_x = 0
 
     dst = arcface_dst * ratio
     dst[:, 0] += diff_x

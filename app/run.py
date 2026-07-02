@@ -27,7 +27,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--execution-provider', default='cuda', help='Execution provider: cpu or cuda')
 args = parser.parse_args()
 from roop import globals
-globals.execution_providers = [args.execution_provider + 'ExecutionProvider']
+# Normalize to onnxruntime's exact provider names — naive concatenation makes
+# 'cudaExecutionProvider' (wrong case), which get_device() and the GPU guard
+# would not recognize during the window before ui.main overwrites this.
+_PROVIDER_NAMES = {
+    'cpu': 'CPUExecutionProvider',
+    'cuda': 'CUDAExecutionProvider',
+    'tensorrt': 'TensorrtExecutionProvider',
+    'rocm': 'ROCMExecutionProvider',
+    'dml': 'DmlExecutionProvider',
+}
+globals.execution_providers = [_PROVIDER_NAMES.get(
+    args.execution_provider.lower(), args.execution_provider + 'ExecutionProvider')]
 
 if __name__ == '__main__':
     import threading
