@@ -12,6 +12,7 @@ const fmtTime = (ms) => {
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
+  const [sourceFacesInfo, setSourceFacesInfo] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
   const [targetGroups, setTargetGroups] = useState([]);
   const [targets, setTargets] = useState([]);
@@ -392,6 +393,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   useEffect(() => {
     getJSON('/api/state').then((st) => {
       setSourceFaces(st.source_faces || []);
+      if (st.source_faces_info) setSourceFacesInfo(st.source_faces_info);
       setTargetFaces(st.target_faces || []);
       setTargetGroups(st.target_groups || []);
       const tg = st.targets || [];
@@ -616,6 +618,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     try {
       const res = await postFiles('/api/source/add', files);
       setSourceFaces(res.source_faces);
+      if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
       const added = res.source_faces.length - before;
       if (added > 0) notify(`Loaded ${added} face(s) — ${res.faceset_count} faceset(s) total`);
       else notify('No face detected in the uploaded file(s)', 'error');
@@ -682,6 +685,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const sourceAction = async (path, body) => {
     const res = await postJSON(path, body);
     if (res.source_faces) setSourceFaces(res.source_faces);
+    if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
   };
 
   const selectSource = async (i) => { setSelSource(i); await postJSON('/api/source/select', { index: i }); };
@@ -1368,13 +1372,51 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Section title="Source images / facesets">
             <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
             <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
-              onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" />
+              onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
             {sourceFaces.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
-                <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
+                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
+                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
+                  <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
+                </div>
+                
+                {sourceFacesInfo[selSource] && (
+                  <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
+                    <div className="flex items-center justify-between">
+                      <span className="font-extrabold text-[10px] uppercase tracking-widest text-white/50">📁 Selected Source Details</span>
+                      <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
+                        {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
+                      </span>
+                    </div>
+                    
+                    <div className="space-y-1.5 pt-1">
+                      {sourceFacesInfo[selSource].count > 1 ? (
+                        <>
+                          <div className="text-[10px] font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {Object.entries(
+                              sourceFacesInfo[selSource].poses.reduce((acc, p) => {
+                                acc[p] = (acc[p] || 0) + 1;
+                                return acc;
+                              }, {})
+                            ).map(([pose, cnt]) => (
+                              <span key={pose} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-[10px] text-white/70">
+                                {pose} <span className="text-[var(--accent)] font-extrabold">({cnt})</span>
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-center justify-between text-white/60">
+                          <span>Detected Pose:</span>
+                          <span className="font-bold text-white">{sourceFacesInfo[selSource].poses[0] || 'Front'}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </Section>
@@ -1382,9 +1424,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Section title="Target file(s)">
             <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here" />
             {targets.length === 0 ? (
-              <div className="h-24 flex items-center justify-center rounded-lg border border-dashed border-white/10 text-xs text-white/30">No targets yet</div>
+              <div className="h-24 flex items-center justify-center rounded-xl border border-dashed border-white/10 text-xs text-white/35 bg-black/10 select-none">No target media loaded</div>
             ) : (
-              <div className="space-y-1.5 max-h-40 overflow-auto">
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                 {targets.map((t, i) => {
                   const job = queue.find(j => j.targetName === t.name && j.targetIndex === i);
                   let statusLabel = null;
@@ -1401,16 +1443,24 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       badgeColor = 'text-red-400 border-red-500/30 bg-red-500/10';
                     }
                   }
+                  const isVideo = t.frames > 1;
+                  const duration = isVideo && t.fps ? (t.frames / t.fps).toFixed(1) : null;
+                  const typeIcon = isVideo ? '🎥' : '🖼️';
                   return (
                     <div key={i}
-                      className={`group flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 shadow-[0_0_10px_var(--accent-glow)]' : 'bg-black/20 border-white/5 hover:border-white/20'}`}
+                      className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-300 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40 shadow-[0_0_15px_var(--accent-glow)] scale-[0.99]' : 'bg-black/30 border-white/5 hover:border-white/15 hover:bg-white/[0.01]'}`}
                       onClick={() => selectTarget(i)}>
+                      <div className="text-base shrink-0 opacity-75">{typeIcon}</div>
                       <div className="flex-1 min-w-0">
-                        <span className="truncate block font-semibold text-white">{t.name}</span>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs text-[var(--text-muted)]">{t.frames > 1 ? `${t.frames} frames` : 'image'}</span>
+                        <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
+                        <div className="flex items-center gap-2 mt-0.5 text-[10px] font-medium text-white/40">
+                          {isVideo ? (
+                            <span>{t.frames} frames · {t.fps} FPS{duration ? ` · ${duration}s` : ''}</span>
+                          ) : (
+                            <span>Static Image</span>
+                          )}
                           {statusLabel && (
-                            <span className={`text-[8px] uppercase tracking-wider px-1 rounded border font-bold ${badgeColor}`}>
+                            <span className={`text-[8px] uppercase tracking-widest px-1.5 py-0.5 rounded border font-black ${badgeColor}`}>
                               {statusLabel}
                             </span>
                           )}
@@ -1418,13 +1468,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       </div>
                       <button type="button" title="Remove this target"
                         onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                        className="h-6 w-6 shrink-0 rounded-full bg-black/40 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-opacity flex items-center justify-center">✕</button>
+                        className="h-6 w-6 shrink-0 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center">✕</button>
                     </div>
                   );
                 })}
               </div>
             )}
-            {targets.length > 0 && <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>}
+            {targets.length > 0 && (
+              <div className="pt-2 border-t border-white/5 flex justify-end">
+                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>
+              </div>
+            )}
           </Section>
 
           <Section title="Target faces">
@@ -1433,24 +1487,29 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
               empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
             {targetFaces.length > 0 && (
-              <div className="mt-3 space-y-2">
-                <Button size="sm" variant="primary" className="w-full justify-center" onClick={addAngle}>
-                  ➕ Add angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
+              <div className="mt-4 space-y-4">
+                <Button size="sm" variant="primary" className="w-full justify-center text-xs tracking-wider" onClick={addAngle}>
+                  ➕ Add Angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
                 </Button>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
-                  <Button size="sm" variant="secondary" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
-                  <Button size="sm" variant="stop" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
+                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
+                  <Button size="sm" variant="stop" className="px-2 justify-center text-[10px]" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
                 </div>
-                <p className="text-[11px] text-[var(--text-muted)] leading-snug">
-                  Capture profile / side / upside-down views of the selected person across frames — matching uses the closest angle, so the swap doesn't drop out when the head turns. Each colored group = one person → one source faceset.
-                </p>
+                
+                <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 text-[10px] text-white/50 leading-relaxed space-y-1">
+                  <span className="font-extrabold uppercase text-[9px] tracking-wider text-[var(--accent)] block">💡 Multi-Angle Tracking</span>
+                  <span>Capture profile, side, or tilted views of the selected target. Each color group defines one person, mapping to a single source faceset. Matching resolves to the closest angle, preventing swaps from dropping out.</span>
+                </div>
 
                 {/* Target-to-Source Mapping Panel */}
                 {sourceFaces.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
-                    <h4 className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">🎯 Swap Target Mapping</h4>
-                    <div className="space-y-2">
+                  <div className="mt-5 pt-4 border-t border-white/5 space-y-3">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-3 flex items-center gap-1.5">
+                      <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
+                      🎯 Target Swap Mapping
+                    </h4>
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                       {Array.from(new Set(targetGroups)).sort((a, b) => a - b).map((pId) => {
                         const idx = targetGroups.indexOf(pId);
                         const thumb = targetFaces[idx];
@@ -1459,12 +1518,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         const color = PERSON_COLORS[pId % PERSON_COLORS.length];
                         
                         return (
-                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/25 p-2 rounded-xl border border-white/5 text-xs">
+                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/40 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors text-xs">
                             <div className="flex items-center gap-2 min-w-0">
                               {thumb && <img src={thumb} alt={`p ${pId}`} className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />}
-                              <span className="font-bold truncate" style={{ color }}>Person {pId + 1}</span>
+                              <span className="font-extrabold truncate" style={{ color }}>Person {pId + 1}</span>
                             </div>
-                            <span className="text-white/30 text-[10px]">➔</span>
+                            <span className="text-white/20 text-[9px]">➔</span>
                             <select
                               value={currentMap}
                               onChange={(e) => {
@@ -1472,7 +1531,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                                 setFaceMapping(prev => ({ ...prev, [pId]: val }));
                                 clearPreviewCache();
                               }}
-                              className="px-2 py-1 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[120px] shrink-0"
+                              className="px-2 py-1.5 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[125px] shrink-0 font-bold"
                             >
                               <option value={-1} className="bg-[#121420]">❌ Skip (Keep)</option>
                               {sourceFaces.map((sf, sfIdx) => (
@@ -1549,17 +1608,19 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <div className="relative">
                   {hoverFrame !== null && (
                     <div 
-                      className="absolute bottom-[66px] z-50 bg-[#121420]/95 backdrop-blur-md p-1.5 rounded-xl border border-white/10 flex flex-col items-center gap-1 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
+                      className="absolute bottom-[66px] z-50 hud-glass p-2 rounded-xl border border-white/10 flex flex-col items-center gap-1.5 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
                       style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
                     >
                       <img 
                         src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}`} 
                         alt="Hover Preview" 
-                        className="w-20 h-12 object-cover rounded-lg border border-white/10 bg-black/50"
+                        className="w-24 h-13 object-cover rounded-lg border border-white/10 bg-black/50"
                       />
-                      <span className="text-[9px] font-mono font-bold text-white/80 whitespace-nowrap">
-                        Frame {hoverFrame} ({((hoverFrame) / (targets[selTarget]?.fps || 25)).toFixed(2)}s)
+                      <span className="text-[10px] font-mono font-extrabold text-[#C5A880] tracking-wider whitespace-nowrap">
+                        FRAME {hoverFrame} · {((hoverFrame) / (targets[selTarget]?.fps || 25)).toFixed(2)}s
                       </span>
+                      {/* Triangle indicator anchor pointer */}
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 w-2.5 h-2.5 rotate-45 hud-glass border-b border-r border-white/10" />
                     </div>
                   )}
 
@@ -1568,11 +1629,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     onPointerDown={handleTimelinePointerDown}
                     onPointerMove={handleTimelinePointerMove}
                     onPointerLeave={handleTimelinePointerLeave}
-                    className="relative h-14 w-full rounded-xl bg-black/60 border border-white/10 overflow-hidden cursor-ew-resize select-none shadow-inner"
+                    className="relative h-14 w-full rounded-xl bg-black/75 border border-white/10 overflow-hidden cursor-ew-resize select-none timeline-ticks timeline-glow-track shadow-2xl"
                   >
                   {/* Storyboard Thumbnails strip */}
                   {storyboardThumbs.length > 0 && (
-                    <div className="absolute inset-0 flex opacity-30 pointer-events-none">
+                    <div className="absolute inset-0 flex opacity-25 pointer-events-none">
                       {storyboardThumbs.map((url, i) => (
                         <img 
                           key={i} 
@@ -1587,36 +1648,36 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
                   {/* Active Track Highlight */}
                   <div 
-                    className="absolute top-0 bottom-0 bg-[var(--accent)]/15 border-l border-r border-[var(--accent)]/30 z-10 pointer-events-none"
+                    className="absolute top-0 bottom-0 bg-[var(--accent)]/8 border-l-2 border-r-2 border-[var(--accent)]/30 z-10 pointer-events-none shadow-[inset_0_0_10px_rgba(233,69,96,0.15)]"
                     style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
                   />
 
                   {/* Start Marker Handle */}
                   <div 
-                    className="absolute top-0 bottom-0 w-1.5 bg-emerald-500 hover:bg-emerald-400 z-25 transition-colors"
+                    className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 to-teal-500 hover:from-emerald-300 hover:to-teal-400 z-25 transition-all"
                     style={{ left: `${startPct}%` }}
                   >
-                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-emerald-500 border border-white/20 shadow-md pointer-events-none" />
+                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-white border-2 border-emerald-400 shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none" />
                     {/* Visual marker bracket */}
-                    <div className="absolute top-1/2 left-0 w-2 h-4 -translate-y-1/2 border-t-2 border-b-2 border-r-2 border-emerald-500 rounded-r pointer-events-none" />
+                    <div className="absolute top-1/2 left-0 w-2.5 h-5 -translate-y-1/2 border-t-2 border-b-2 border-r-2 border-emerald-400 rounded-r pointer-events-none" />
                   </div>
 
                   {/* End Marker Handle */}
                   <div 
-                    className="absolute top-0 bottom-0 w-1.5 bg-orange-500 hover:bg-orange-400 z-25 transition-colors"
+                    className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 z-25 transition-all"
                     style={{ left: `${endPct}%` }}
                   >
-                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-orange-500 border border-white/20 shadow-md pointer-events-none" />
+                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-white border-2 border-orange-400 shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none" />
                     {/* Visual marker bracket */}
-                    <div className="absolute top-1/2 right-0 w-2 h-4 -translate-y-1/2 border-t-2 border-b-2 border-l-2 border-orange-500 rounded-l pointer-events-none" />
+                    <div className="absolute top-1/2 right-0 w-2.5 h-5 -translate-y-1/2 border-t-2 border-b-2 border-l-2 border-orange-400 rounded-l pointer-events-none" />
                   </div>
 
                   {/* Red Playhead Line & Top diamond */}
                   <div 
-                    className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-30 pointer-events-none shadow-[0_0_8px_rgba(239,68,68,0.8)]"
+                    className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[#ff3366] to-[#E94560] z-30 pointer-events-none shadow-[0_0_12px_rgba(233,69,96,1)]"
                     style={{ left: `${currentPct}%` }}
                   >
-                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-red-500 border border-white/20 shadow-md" />
+                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-gradient-to-br from-[#ff5588] to-[#E94560] border border-white/35 shadow-[0_2px_6px_rgba(233,69,96,0.6)]" />
                   </div>
                 </div>
               </div>
@@ -2274,13 +2335,13 @@ function InteractivePreview({
         </div>
 
         {/* HUD control bar overlays */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/5 shadow-2xl opacity-40 hover:opacity-100 transition-opacity duration-300 z-50">
-          <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom In">+</button>
-          <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom Out">-</button>
-          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-white/70 hover:text-white text-[10px] font-bold hover:bg-white/10 rounded-lg apple-transition" title="Reset view">FIT</button>
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 hover:opacity-100 transition-all duration-300 z-50">
+          <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
+          <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
+          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
           <div className="w-px h-4 bg-white/10 mx-1" />
-          <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>BOXES</button>
-          <button onClick={triggerFullscreen} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg apple-transition" title="Toggle Fullscreen">
+          <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
+          <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
           </button>
         </div>
@@ -2332,8 +2393,8 @@ function InteractivePreview({
 
           {/* Slider Line & Handle (only when compare) */}
           {compare && (
-            <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.4)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+            <div className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_8px_rgba(233,69,96,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-black/60 backdrop-blur border border-white/20 rounded-full flex items-center justify-center shadow-[0_4px_15px_rgba(0,0,0,0.5)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
                    onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
@@ -2349,13 +2410,13 @@ function InteractivePreview({
             style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
 
       {/* HUD control bar overlays */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/5 shadow-2xl opacity-40 group-hover:opacity-100 hover:opacity-100 transition-opacity duration-300 z-50">
-        <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom In">+</button>
-        <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-white/70 hover:text-white text-xs font-bold font-mono hover:bg-white/10 rounded-lg apple-transition" title="Zoom Out">-</button>
-        <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-white/70 hover:text-white text-[10px] font-bold hover:bg-white/10 rounded-lg apple-transition" title="Reset view">FIT</button>
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
+        <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
+        <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
+        <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
         <div className="w-px h-4 bg-white/10 mx-1" />
-        <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>BOXES</button>
-        <button onClick={triggerFullscreen} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg apple-transition" title="Toggle Fullscreen">
+        <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
+        <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         </button>
       </div>

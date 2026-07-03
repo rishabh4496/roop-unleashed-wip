@@ -7,9 +7,16 @@ export const Card = ({ children, className = '', ...rest }) => (
 );
 
 export const Section = ({ title, children, className = '' }) => (
-  <Card className={`p-5 shadow-sm hover:shadow-md ${className}`}>
-    {title && <h3 className="text-xs font-bold uppercase tracking-widest text-white/40 mb-4">{title}</h3>}
-    <div className="space-y-4">{children}</div>
+  <Card className={`p-6 shadow-xl hover:shadow-2xl border-white/5 border hover:border-white/10 ${className}`}>
+    {title && (
+      <div className="flex items-center justify-between mb-5 border-b border-white/5 pb-3">
+        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/45 flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+          {title}
+        </h3>
+      </div>
+    )}
+    <div className="space-y-5">{children}</div>
   </Card>
 );
 
@@ -60,9 +67,9 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
 );
 
 export const Toggle = ({ label, info, checked, onChange }) => (
-  <label className="flex items-center justify-between w-full text-left cursor-pointer group/toggle">
+  <label className="flex items-center justify-between w-full text-left cursor-pointer group/toggle select-none">
     <div className="flex items-center gap-2">
-      <span className="text-sm text-white/80">{label}</span>
+      <span className="text-sm font-semibold tracking-wide text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
       {info && (
         <div className="relative group inline-flex items-center">
           <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
@@ -72,8 +79,8 @@ export const Toggle = ({ label, info, checked, onChange }) => (
         </div>
       )}
     </div>
-    <div className={`relative shrink-0 w-10.5 h-6 rounded-full transition-all duration-300 ml-3 ${checked ? 'bg-[#E94560] shadow-[0_0_10px_rgba(233,69,96,0.3)]' : 'bg-white/10'}`}>
-      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-all duration-300 cubic-bezier(0.16, 1, 0.3, 1) ${checked ? 'translate-x-4.5' : ''}`} />
+    <div className={`relative shrink-0 w-10.5 h-6 rounded-full transition-all duration-300 ml-3 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'bg-black/30 border-white/5'}`}>
+      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-[0_2px_4px_rgba(0,0,0,0.4)] transition-all duration-300 cubic-bezier(0.16, 1, 0.3, 1) ${checked ? 'translate-x-4.5' : ''}`} />
     </div>
     <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
   </label>
@@ -93,18 +100,22 @@ export const TextInput = ({ label, info, value, onChange, placeholder, type = 't
 
 export const Button = ({ children, onClick, variant = 'primary', disabled, className = '', size = 'md' }) => {
   const variants = {
-    primary: 'bg-[#E94560] hover:bg-[#eb5068] text-white shadow-[0_4px_20px_rgba(233,69,96,0.3)] hover:shadow-[0_6px_25px_rgba(233,69,96,0.45)]',
-    secondary: 'bg-white/10 hover:bg-white/15 text-white border border-white/5 backdrop-blur-md',
-    stop: 'bg-transparent hover:bg-red-500/10 text-red-400 border border-red-500/30 hover:border-red-500/60',
+    primary: 'bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] text-white shadow-[0_4px_20px_rgba(233,69,96,0.35)] hover:shadow-[0_8px_30px_rgba(233,69,96,0.5)] border border-white/10 shimmer-sweep',
+    secondary: 'bg-white/5 hover:bg-white/10 text-white/90 border border-white/5 backdrop-blur-md hover:border-white/10 shimmer-sweep',
+    stop: 'bg-red-500/5 hover:bg-red-500/15 text-red-400 border border-red-500/20 hover:border-red-500/40 shimmer-sweep',
     ghost: 'bg-transparent hover:bg-white/5 text-white/60 hover:text-white',
   };
-  const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm', lg: 'px-6 py-3.5 text-base' };
+  const sizes = { 
+    sm: 'px-3 py-1.5 text-[10px] tracking-wider uppercase', 
+    md: 'px-5 py-3 text-xs tracking-wider uppercase', 
+    lg: 'px-7 py-4 text-sm tracking-widest uppercase' 
+  };
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-xl font-bold apple-transition apple-spring-active disabled:opacity-30 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`rounded-xl font-extrabold text-center apple-transition apple-spring-active disabled:opacity-30 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
     </button>
@@ -114,7 +125,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 // Gallery of face thumbnails with selection + move/remove controls.
 const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
 
-export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false }) => {
+export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [] }) => {
   const personCount = groups && groups.length ? new Set(groups).size : 0;
   return (
     <div>
@@ -135,6 +146,8 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           {faces.map((src, i) => {
             const person = groups && i < groups.length ? groups[i] : null;
             const color = person != null ? PERSON_COLORS[person % PERSON_COLORS.length] : null;
+            const itemInfo = info && info[i];
+            const hasMultiFaces = itemInfo && itemInfo.count > 1;
             return (
               <div
                 key={i}
@@ -161,6 +174,11 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                 ) : (
                   <>
                     <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
+                    {hasMultiFaces && (
+                      <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-[8px] font-black text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
+                        {itemInfo.count}F
+                      </span>
+                    )}
                     {person != null && (
                       <span className="absolute bottom-1 left-1 px-1.5 rounded-md text-[9px] font-bold leading-tight text-white shadow-sm"
                         style={{ backgroundColor: color }}>P{person + 1}</span>

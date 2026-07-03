@@ -74,7 +74,7 @@ export default function Extras({ notify, registerFileListener }) {
 
           {file && fileUrlSrc && (
             <div className="relative overflow-hidden rounded-xl bg-black/45 border border-white/10 aspect-video flex items-center justify-center mb-4 max-h-[300px]">
-              {file.type?.startsWith('video') ? (
+              {file.type?.startsWith('video') || /\.(mp4|mkv|mov|avi|webm|gif)$/i.test(fileName) ? (
                 <video src={fileUrlSrc} muted loop autoPlay className="max-w-full max-h-full object-contain pointer-events-none" />
               ) : (
                 <img src={fileUrlSrc} alt="Input source" className="max-w-full max-h-full object-contain pointer-events-none" />

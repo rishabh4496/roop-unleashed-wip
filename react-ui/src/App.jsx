@@ -123,40 +123,40 @@ export default function App() {
   }, [settings]);
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    <div className="min-h-screen flex flex-col relative overflow-hidden select-none">
       {/* Floating Ambient Background Glows */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute top-[-25%] left-[-15%] w-[55%] h-[55%] rounded-full bg-[var(--accent)]/[0.04] blur-[150px] animate-float-1" />
-        <div className="absolute bottom-[-20%] right-[-15%] w-[60%] h-[60%] rounded-full bg-[var(--accent)]/[0.03] blur-[170px] animate-float-2" />
+        <div className="absolute top-[-25%] left-[-15%] w-[60%] h-[60%] rounded-full bg-[var(--accent)]/[0.06] blur-[150px] animate-float-1" />
+        <div className="absolute bottom-[-20%] right-[-15%] w-[65%] h-[65%] rounded-full bg-[#C5A880]/[0.04] blur-[170px] animate-float-2" />
       </div>
-
+ 
       {/* Floating Header Capsule */}
-      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-6 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl border-white/10">
         <div className="flex items-center gap-3">
-          <span className="text-2xl">⚡</span>
+          <span className="text-2xl animate-pulse">⚡</span>
           <div>
-            <h1 className="text-lg font-black tracking-wider uppercase text-white/90 flex items-center gap-2">
-              Roop Unleashed <span className="bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] bg-clip-text text-transparent">Pro</span>
+            <h1 className="text-lg font-black tracking-widest uppercase text-white/95 flex items-center gap-2">
+              Roop Unleashed <span className="bg-gradient-to-r from-[#C5A880] to-[var(--accent)] bg-clip-text text-transparent font-black">Studio Pro</span>
             </h1>
             {meta?.git_version && (
-              <span className="text-[9px] font-mono text-white/30 tracking-widest block uppercase mt-0.5">
-                Installed: {meta.git_version}
+              <span className="text-[9px] font-mono text-white/40 tracking-widest block uppercase mt-0.5">
+                Engine: {meta.git_version}
               </span>
             )}
           </div>
         </div>
-        <nav className="flex gap-1 bg-black/20 p-1.5 rounded-xl border border-white/5 w-full md:w-auto overflow-x-auto">
+        <nav className="flex gap-1 bg-black/40 p-1 rounded-2xl border border-white/5 w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold tracking-wide whitespace-nowrap transition-all duration-300 apple-transition apple-spring-active flex items-center gap-1.5 ${
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all duration-300 apple-transition apple-spring-active flex items-center gap-1.5 ${
                 tab === t.id
-                  ? 'bg-[var(--accent)] text-white shadow-[0_4px_20px_var(--accent-glow)] scale-[1.03]'
-                  : 'text-white/60 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
+                  ? 'bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] text-white shadow-[0_4px_15px_var(--accent-glow)] scale-[1.03]'
+                  : 'text-white/50 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
               }`}
             >
-              {tab === t.id && <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+              {tab === t.id && <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />}
               {t.label}
             </button>
           ))}

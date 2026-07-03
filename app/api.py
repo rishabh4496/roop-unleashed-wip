@@ -314,12 +314,75 @@ def get_meta():
     }
 
 
+def estimate_face_pose_from_kps(kps):
+    try:
+        left_eye_x, left_eye_y = kps[0]
+        right_eye_x, right_eye_y = kps[1]
+        nose_x, nose_y = kps[2]
+        left_mouth_x, left_mouth_y = kps[3]
+        right_mouth_x, right_mouth_y = kps[4]
+        
+        dx_left = abs(nose_x - left_eye_x)
+        dx_right = abs(right_eye_x - nose_x)
+        ratio = dx_left / (dx_right + 1e-6)
+        
+        yaw_label = "Front"
+        if ratio < 0.65:
+            yaw_label = "Left Profile"
+        elif ratio > 1.55:
+            yaw_label = "Right Profile"
+            
+        eye_y = (left_eye_y + right_eye_y) * 0.5
+        mouth_y = (left_mouth_y + right_mouth_y) * 0.5
+        dy_eyes = abs(nose_y - eye_y)
+        dy_mouth = abs(mouth_y - nose_y)
+        v_ratio = dy_eyes / (dy_mouth + 1e-6)
+        
+        pitch_label = ""
+        if v_ratio < 0.65:
+            pitch_label = "Up Tilt"
+        elif v_ratio > 1.45:
+            pitch_label = "Down Tilt"
+            
+        if pitch_label:
+            if yaw_label == "Front":
+                return pitch_label
+            return f"{yaw_label} + {pitch_label}"
+        return yaw_label
+    except Exception:
+        return "Front"
+
+def _get_source_faces_info():
+    source_faces_info = []
+    for fs in roop_globals.INPUT_FACESETS:
+        faces_poses = []
+        for face in fs.faces:
+            kps = getattr(face, 'kps', None)
+            if kps is None and isinstance(face, dict) and 'kps' in face:
+                kps = face['kps']
+            poses_str = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
+            faces_poses.append(poses_str)
+        source_faces_info.append({
+            "count": len(fs.faces),
+            "poses": faces_poses
+        })
+    return source_faces_info
+
+def _source_faces_payload():
+    return {
+        "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+        "source_faces_info": _get_source_faces_info(),
+        "faceset_count": len(roop_globals.INPUT_FACESETS),
+    }
+
+
 @app.get("/api/state")
 def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
     targets = [_target_entry_dict(entry) for entry in list_files_process]
     return {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+        "source_faces_info": _get_source_faces_info(),
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
         "target_groups": _target_groups_ranked(),
         "targets": targets,
@@ -348,8 +411,7 @@ async def source_add(files: list[UploadFile] = File(...)):
                     roop_globals.INPUT_FACESETS.append(fs)
         except Exception:
             traceback.print_exc()
-    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
-            "faceset_count": len(roop_globals.INPUT_FACESETS)}
+    return _source_faces_payload()
 
 
 def _ingest_faceset(path):
@@ -384,8 +446,7 @@ def source_remove(payload: dict = Body(...)):
         roop_globals.INPUT_FACESETS.pop(idx)
     if 0 <= idx < len(ui_globals.ui_input_thumbs):
         ui_globals.ui_input_thumbs.pop(idx)
-    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
-            "faceset_count": len(roop_globals.INPUT_FACESETS)}
+    return _source_faces_payload()
 
 
 @app.post("/api/source/move")
@@ -398,14 +459,14 @@ def source_move(payload: dict = Body(...)):
         for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
             item = arr.pop(idx)
             arr.insert(new_idx, item)
-    return {"source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs]}
+    return _source_faces_payload()
 
 
 @app.post("/api/source/clear")
 def source_clear():
     ui_globals.ui_input_thumbs.clear()
     roop_globals.INPUT_FACESETS.clear()
-    return {"source_faces": [], "faceset_count": 0}
+    return {"source_faces": [], "source_faces_info": [], "faceset_count": 0}
 
 
 @app.post("/api/source/select")

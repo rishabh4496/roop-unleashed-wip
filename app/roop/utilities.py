@@ -425,8 +425,12 @@ def conditional_download(download_directory_path: str, urls: List[str]) -> None:
             # deletes it by hand).
             partial_path = download_file_path + ".part"
             try:
-                request = urllib.request.urlopen(url)  # type: ignore[attr-defined]
-                total = int(request.headers.get("Content-Length", 0))
+                total = 0
+                try:
+                    with urllib.request.urlopen(url) as response:
+                        total = int(response.headers.get("Content-Length", 0))
+                except Exception:
+                    pass
                 with tqdm(
                     total=total,
                     desc=f"Downloading {url}",

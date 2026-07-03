@@ -14,17 +14,17 @@
 
 /* ── Theme Definitions ────────────────────────────────────────────────── */
 :root {
-  /* Default: Glass Dark */
-  --bg-gradient: linear-gradient(135deg, #090a0f, #12131b, #0c111c, #160a12);
-  --card-bg: rgba(22, 24, 36, 0.55);
-  --text-main: #ffffff;
-  --text-muted: rgba(255, 255, 255, 0.6);
+  /* Default: Obsidian & Crimson Gold */
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(233, 69, 96, 0.07) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(197, 168, 128, 0.06) 0px, transparent 50%), linear-gradient(140deg, #040508, #0B0C12 45%, #06070B);
+  --card-bg: rgba(12, 14, 20, 0.45);
+  --text-main: #F8F9FA;
+  --text-muted: rgba(248, 249, 250, 0.6);
   --accent: #E94560;
-  --accent-hover: #f05a74;
-  --accent-glow: rgba(233, 69, 96, 0.25);
-  --border-color: rgba(255, 255, 255, 0.06);
-  --input-bg: rgba(0, 0, 0, 0.3);
-  --input-focus: rgba(233, 69, 96, 0.2);
+  --accent-hover: #f15872;
+  --accent-glow: rgba(233, 69, 96, 0.22);
+  --border-color: rgba(255, 255, 255, 0.05);
+  --input-bg: rgba(3, 3, 5, 0.6);
+  --input-focus: rgba(233, 69, 96, 0.15);
   --scrollbar-thumb: rgba(255, 255, 255, 0.15);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
 }
@@ -140,8 +140,12 @@
     color: var(--text-main);
     min-height: 100vh;
     background-attachment: fixed;
-    /* Ambient radial glow at top */
-    background: radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 45%), var(--bg-gradient);
+    /* Ambient radial glow, architect dot-mesh grid, and dark obsidian backdrop */
+    background: 
+      radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 45%),
+      radial-gradient(var(--border-color) 1.5px, transparent 1.5px),
+      var(--bg-gradient);
+    background-size: 100% 100%, 28px 28px, 100% 100%;
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     transition: background 0.6s cubic-bezier(0.16, 1, 0.3, 1), color 0.6s cubic-bezier(0.16, 1, 0.3, 1);
@@ -228,17 +232,47 @@
 /* Glassmorphism improvements */
 .glass-panel {
   background: var(--card-bg);
-  backdrop-filter: blur(30px) saturate(210%);
-  -webkit-backdrop-filter: blur(30px) saturate(210%);
+  backdrop-filter: blur(32px) saturate(220%);
+  -webkit-backdrop-filter: blur(32px) saturate(220%);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
-  transition: background 0.6s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.6s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.18), inset 0 1px 1px rgba(255, 255, 255, 0.05);
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .glass-panel:hover {
-  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.25), 0 0 15px var(--accent-glow);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 20px var(--accent-glow);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+.shimmer-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: -100%;
+  width: 50%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 30%,
+    rgba(255, 255, 255, 0.16) 50%,
+    rgba(255, 255, 255, 0.06) 70%,
+    transparent 100%
+  );
+  transform: skewX(-20deg);
+  transition: all 0.75s ease;
+  pointer-events: none;
+}
+
+.shimmer-sweep:hover::after {
+  left: 150%;
 }
 
 .glass-input {
@@ -388,4 +422,40 @@ input[type="range"]::-webkit-slider-thumb:active {
 
 .animate-float-2 {
   animation: float-ambient-2 18s ease-in-out infinite;
+}
+
+/* Cinematic Timeline ticks and lines */
+.timeline-ticks {
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 12px);
+  background-size: 100% 100%;
+}
+
+.timeline-glow-track {
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.7);
+}
+
+.hud-glass {
+  background: rgba(10, 10, 15, 0.75) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5) !important;
+}
+
+.hud-glass-button {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hud-glass-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.hud-glass-button:active {
+  transform: translateY(1px);
 }

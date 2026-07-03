@@ -136,18 +136,21 @@ def get_first_face(frame: Frame) -> Any:
     try:
         with lease_face_analyser() as fa:
             faces = fa.get(frame)
-        return min(faces, key=lambda x: x.bbox[0])
-    #   return sorted(faces, reverse=True, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))[0]
-    except:
-        return None
+        if faces:
+            return min(faces, key=lambda x: x.bbox[0])
+    except Exception:
+        pass
+    return None
 
 
 def get_all_faces(frame: Frame) -> Any:
     try:
         with lease_face_analyser() as fa:
             faces = fa.get(frame)
-        return sorted(faces, key=lambda x: x.bbox[0])
-    except:
+        if faces:
+            return sorted(faces, key=lambda x: x.bbox[0])
+        return []
+    except Exception:
         return None
 
 

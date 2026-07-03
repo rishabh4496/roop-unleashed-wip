@@ -63,11 +63,11 @@ class Frame_Filter():
             img_color = cv2.bilateralFilter(img_color, 9, 9, 7)
         for _ in range(numDownSamples):
             img_color = cv2.pyrUp(img_color)
-        img_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         img_blur = cv2.medianBlur(img_gray, 7)
         img_edge = cv2.adaptiveThreshold(img_blur, 255,
             cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 2)
-        img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2RGB)
+        img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)
         if img_color.shape != image.shape:
             img_color = cv2.resize(img_color, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)        
         if img_color.shape != img_edge.shape:
