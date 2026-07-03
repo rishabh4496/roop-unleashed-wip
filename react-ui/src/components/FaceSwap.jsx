@@ -35,6 +35,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(['None', 'GPEN', 'Restoreformer++', 'GFPGAN']);
   const [enhancerPreviews, setEnhancerPreviews] = useState({});
   const [enhancerTimes, setEnhancerTimes] = useState({});
+  const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
+  const activeIntervalsRef = useRef({});
 
   // Telemetry HUD State
   const [telemetry, setTelemetry] = useState(null);
@@ -514,6 +516,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       }
       return reset;
     });
+    setLiveRenderingTimers((prev) => {
+      const reset = {};
+      for (const enh of available) {
+        if (prev[enh]) reset[enh] = prev[enh];
+      }
+      return reset;
+    });
 
     for (const enh of available) {
       if (!activeCheck()) return;
@@ -550,6 +559,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
       try {
         const start = Date.now();
+        setLiveRenderingTimers(prev => ({ ...prev, [enh]: '0.0s' }));
+        activeIntervalsRef.current[enh] = setInterval(() => {
+          setLiveRenderingTimers(prev => ({
+            ...prev,
+            [enh]: ((Date.now() - start) / 1000).toFixed(1) + 's'
+          }));
+        }, 100);
+
         const res = await postJSON('/api/preview', {
           index: selTarget, frame: frame, fake_preview: fakePreview,
           enhancer: enh, detection: p.face_detection_mode,
@@ -575,13 +592,23 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           mouth_right_scale: p.mouth_right_scale,
         });
         const duration = ((Date.now() - start) / 1000).toFixed(2);
+        if (activeIntervalsRef.current[enh]) {
+          clearInterval(activeIntervalsRef.current[enh]);
+          delete activeIntervalsRef.current[enh];
+        }
         if (!activeCheck()) return;
         if (res.image) {
           setEnhancerPreviews((prev) => ({ ...prev, [enh]: res.image }));
           setEnhancerTimes((prev) => ({ ...prev, [enh]: `${duration}s` }));
+          setLiveRenderingTimers((prev) => ({ ...prev, [enh]: null }));
           previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
         }
       } catch (err) {
+        if (activeIntervalsRef.current[enh]) {
+          clearInterval(activeIntervalsRef.current[enh]);
+          delete activeIntervalsRef.current[enh];
+        }
+        setLiveRenderingTimers((prev) => ({ ...prev, [enh]: null }));
         // Fail silently
       }
     }
@@ -593,6 +620,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     loadEnhancerPreviews(() => active);
     return () => {
       active = false;
+      if (activeIntervalsRef.current) {
+        Object.values(activeIntervalsRef.current).forEach(clearInterval);
+        activeIntervalsRef.current = {};
+      }
     };
   }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
 
@@ -1612,7 +1643,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                           ) : (
                             <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
                               <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
-                              Rendering {enh}…
+                              <span className="font-semibold">Rendering {enh}…</span>
+                              {liveRenderingTimers[enh] && (
+                                <span className="text-[10px] text-white/30 font-mono">
+                                  Elapsed: {liveRenderingTimers[enh]}
+                                </span>
+                              )}
                             </div>
                           )}
                           <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase">{enh}</span>
