@@ -34,7 +34,7 @@ class Enhance_CodeFormer():
             self.model_inputs = self.model_codeformer.get_inputs()
             model_outputs = self.model_codeformer.get_outputs()
             self.io_binding = self.model_codeformer.io_binding()           
-            self.io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([0.5], dtype=np.float32))
+            self.io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([0.5], dtype=np.float64))
             self.io_binding.bind_output(model_outputs[0].name, self.devicename)
 
 
