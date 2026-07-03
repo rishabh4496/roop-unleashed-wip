@@ -3,6 +3,7 @@
 import os
 import sys
 import shutil
+import threading as _threading
 import time as _time
 # single thread doubles cuda performance - needs to be set before torch import
 if any(arg.startswith('--execution-provider') for arg in sys.argv):
@@ -56,6 +57,12 @@ def _remove_file_retry(path, attempts=5, delay=0.3):
 
 process_mgr = None
 _preview_process_mgr = None   # dedicated instance for live_swap — never shared with batch
+# live_swap re-initializes the shared _preview_process_mgr on every call (releasing
+# and rebuilding processors), so overlapping /api/preview requests — e.g. the
+# enhancer comparison grid firing while a regular preview is in flight — release
+# ONNX sessions out from under a running inference (NoneType io_binding crashes,
+# NaN → black face output). All preview swaps must run one at a time.
+_preview_lock = _threading.Lock()
 
 
 if 'ROCMExecutionProvider' in roop.globals.execution_providers:
@@ -228,9 +235,10 @@ def release_resources() -> None:
     if process_mgr is not None:
         process_mgr.release_resources()
         process_mgr = None
-    if _preview_process_mgr is not None:
-        _preview_process_mgr.release_resources()
-        _preview_process_mgr = None
+    with _preview_lock:
+        if _preview_process_mgr is not None:
+            _preview_process_mgr.release_resources()
+            _preview_process_mgr = None
 
     gc.collect()
     if torch is not None:
@@ -423,11 +431,12 @@ def live_swap(frame, options):
     if frame is None:
         return frame
 
-    if _preview_process_mgr is None:
-        _preview_process_mgr = ProcessMgr(None)
+    with _preview_lock:
+        if _preview_process_mgr is None:
+            _preview_process_mgr = ProcessMgr(None)
 
-    _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
-    newframe = _preview_process_mgr.process_frame(frame)
+        _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+        newframe = _preview_process_mgr.process_frame(frame)
     if newframe is None:
         return frame
     return newframe

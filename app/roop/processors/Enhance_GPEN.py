@@ -39,7 +39,12 @@ class Enhance_GPEN():
 
     def __init__(self):
         self.model_size = 512
-        self.loaded_size = None
+        # One live session per resolution. Sessions are kept resident instead of
+        # released on size switch: the enhancer comparison grid renders 512/1024/
+        # 2048 back-to-back, and releasing mid-cycle both thrashes TensorRT
+        # engine loads and yanks the session out from under a Run() in flight
+        # (NoneType io_binding / NaN → black face).
+        self.sessions = {}
 
     def Initialize(self, plugin_options:dict):
         if self.plugin_options is not None:
@@ -51,22 +56,19 @@ class Enhance_GPEN():
         size = int(plugin_options.get("size", 512))
         if size not in GPEN_MODELS:
             size = 512
-        # Reload when the user switched GPEN resolutions (processor instances
-        # are reused across runs via reuseOldProcessor).
-        if self.model_gpen is not None and self.loaded_size != size:
-            self.Release()
 
-        if self.model_gpen is None:
+        if size not in self.sessions:
             spec = GPEN_MODELS[size]
             model_dir = resolve_relative_path('../models')
             conditional_download(model_dir, [spec["url"]])
             model_path = f"{model_dir}/{spec['file']}"
-            self.model_gpen = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
-            # replace Mac mps with cpu for the moment
-            self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
-            self.model_size = size
-            self.loaded_size = size
+            session = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.sessions[size] = session
 
+        # replace Mac mps with cpu for the moment
+        self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
+        self.model_size = size
+        self.model_gpen = self.sessions[size]
         self.name = self.model_gpen.get_inputs()[0].name
         self.output_name = self.model_gpen.get_outputs()[0].name
 
@@ -98,6 +100,5 @@ class Enhance_GPEN():
 
 
     def Release(self):
-        del self.model_gpen
+        self.sessions.clear()
         self.model_gpen = None
-        self.loaded_size = None
