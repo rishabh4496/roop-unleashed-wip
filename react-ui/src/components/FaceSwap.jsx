@@ -32,7 +32,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [compare, setCompare] = useState(false);
   const [splitView, setSplitView] = useState(false);
   const [comparingEnhancers, setComparingEnhancers] = useState(false);
+  const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(['None', 'GPEN', 'Restoreformer++', 'GFPGAN']);
   const [enhancerPreviews, setEnhancerPreviews] = useState({});
+  const [enhancerTimes, setEnhancerTimes] = useState({});
 
   // Telemetry HUD State
   const [telemetry, setTelemetry] = useState(null);
@@ -496,10 +498,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   const loadEnhancerPreviews = async (activeCheck) => {
     if (targets.length === 0) return;
-    const list = ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'];
-    const available = list.filter(e => meta.enhancers?.includes(e));
+    const available = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
 
     setEnhancerPreviews((prev) => {
+      const reset = {};
+      for (const enh of available) {
+        if (prev[enh]) reset[enh] = prev[enh];
+      }
+      return reset;
+    });
+    setEnhancerTimes((prev) => {
       const reset = {};
       for (const enh of available) {
         if (prev[enh]) reset[enh] = prev[enh];
@@ -536,10 +544,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
         setEnhancerPreviews((prev) => ({ ...prev, [enh]: previewCacheRef.current[cacheKey].image }));
+        setEnhancerTimes((prev) => ({ ...prev, [enh]: 'Cached' }));
         continue;
       }
 
       try {
+        const start = Date.now();
         const res = await postJSON('/api/preview', {
           index: selTarget, frame: frame, fake_preview: fakePreview,
           enhancer: enh, detection: p.face_detection_mode,
@@ -564,9 +574,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           mouth_left_scale: p.mouth_left_scale,
           mouth_right_scale: p.mouth_right_scale,
         });
+        const duration = ((Date.now() - start) / 1000).toFixed(2);
         if (!activeCheck()) return;
         if (res.image) {
           setEnhancerPreviews((prev) => ({ ...prev, [enh]: res.image }));
+          setEnhancerTimes((prev) => ({ ...prev, [enh]: `${duration}s` }));
           previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
         }
       } catch (err) {
@@ -582,7 +594,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     return () => {
       active = false;
     };
-  }, [comparingEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
@@ -1555,23 +1567,66 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         <div className="flex-1 min-w-0 space-y-6">
           <Section title="Preview">
             {previewSrc ? (
-              comparingEnhancers ? (
-                <div className="grid grid-cols-2 gap-3 aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2">
-                  {['None', 'GPEN', 'Restoreformer++', 'GFPGAN'].filter(e => meta.enhancers?.includes(e)).map((enh) => (
-                    <div key={enh} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center">
-                      {enhancerPreviews[enh] ? (
-                        <img src={enhancerPreviews[enh]} alt={enh} className="max-w-full max-h-full object-contain" />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
-                          <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
-                          Rendering {enh}…
-                        </div>
-                      )}
-                      <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase">{enh}</span>
+              comparingEnhancers ? (() => {
+                const activeList = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
+                const gridColsClass = activeList.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
+                return (
+                  <div className="space-y-4">
+                    {/* Enhancer selector row */}
+                    <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
+                      <div className="flex flex-wrap gap-2">
+                        {meta.enhancers?.map((enh) => {
+                          const isSelected = selectedGridEnhancers.includes(enh);
+                          return (
+                            <button
+                              key={enh}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  if (selectedGridEnhancers.length > 1) {
+                                    setSelectedGridEnhancers(prev => prev.filter(x => x !== enh));
+                                  }
+                                } else {
+                                  if (selectedGridEnhancers.length >= 4) {
+                                    notify('You can select a maximum of 4 enhancers for grid comparison.', 'warning');
+                                  } else {
+                                    setSelectedGridEnhancers(prev => [...prev, enh]);
+                                  }
+                                }
+                              }}
+                              className={`px-3 py-1.5 rounded-xl text-[11px] font-bold border transition-all duration-300 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white shadow-[0_0_12px_var(--accent-glow)]' : 'bg-white/[0.02] border-white/5 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                            >
+                              {enh}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
+
+                    <div className={`grid ${gridColsClass} gap-3 aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2`}>
+                      {activeList.map((enh) => (
+                        <div key={enh} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center">
+                          {enhancerPreviews[enh] ? (
+                            <img src={enhancerPreviews[enh]} alt={enh} className="max-w-full max-h-full object-contain" />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
+                              <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
+                              Rendering {enh}…
+                            </div>
+                          )}
+                          <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase">{enh}</span>
+                          {enhancerTimes[enh] && (
+                            <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white/60 font-mono">
+                              ⏱️ {enhancerTimes[enh]}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })() : (
                 <InteractivePreview 
                   beforeSrc={rawUrl} 
                   afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)} 
