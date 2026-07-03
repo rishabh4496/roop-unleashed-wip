@@ -32,7 +32,18 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [compare, setCompare] = useState(false);
   const [splitView, setSplitView] = useState(false);
   const [comparingEnhancers, setComparingEnhancers] = useState(false);
-  const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(['None', 'GPEN', 'Restoreformer++', 'GFPGAN']);
+  const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('roop_grid_enhancers') || 'null');
+      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
+        return saved;
+      }
+    } catch { /* fall through to default */ }
+    return ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'];
+  });
+  useEffect(() => {
+    localStorage.setItem('roop_grid_enhancers', JSON.stringify(selectedGridEnhancers));
+  }, [selectedGridEnhancers]);
   const [enhancerPreviews, setEnhancerPreviews] = useState({});
   const [enhancerTimes, setEnhancerTimes] = useState({});
   const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
