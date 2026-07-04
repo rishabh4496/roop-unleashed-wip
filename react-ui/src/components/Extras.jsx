@@ -1,9 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { postFile, fileUrl } from '../api';
+import { postFile, fileUrl, getJSON } from '../api';
 import { Section, Select, Slider, Button } from './ui';
 
 const RESOLUTIONS = ['Original', '3840x', '2560x', '1920x', '1280x', '1024x', '640x'];
 const ROTATIONS = ['None', '90° Clockwise', '90° Counter-Clockwise', '180°'];
+
+// Human labels for the frame post-processor subtypes.
+const OP_LABELS = {
+  upscale: { esrganx2: 'Real-ESRGAN ×2', esrganx4: 'Real-ESRGAN ×4', lsdirx4: 'LSDIR ×4' },
+  colorize: { deoldify_artistic: 'DeOldify (Artistic)', deoldify_stable: 'DeOldify (Stable)' },
+  filter: { stylize: 'Stylize', detailenhance: 'Detail Enhance', pencil: 'Pencil Sketch', cartoon: 'Cartoon', C64: 'C64 Palette' },
+};
+const OP_TITLES = { upscale: '🔎 AI Upscale', colorize: '🎨 Colorize (B&W → color)', filter: '🖌️ Stylize Filter' };
 
 export default function Extras({ notify, registerFileListener }) {
   const [file, setFile] = useState(null);
@@ -13,6 +21,35 @@ export default function Extras({ notify, registerFileListener }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const set = (k, v) => setOpts((o) => ({ ...o, [k]: v }));
+
+  // Frame post-processor (AI upscale / colorize / stylize) state
+  const [frameOps, setFrameOps] = useState(null);
+  const [operation, setOperation] = useState('upscale');
+  const [subtype, setSubtype] = useState('esrganx2');
+  const [enhBusy, setEnhBusy] = useState(false);
+  const [enhResult, setEnhResult] = useState(null);
+
+  useEffect(() => {
+    getJSON('/api/extras/frame_ops').then(setFrameOps).catch(() => {});
+  }, []);
+
+  // Keep subtype valid whenever the operation changes.
+  useEffect(() => {
+    if (!frameOps) return;
+    const list = frameOps[operation] || [];
+    if (!list.includes(subtype)) setSubtype(list[0] || '');
+  }, [operation, frameOps]);
+
+  const runEnhance = async () => {
+    if (!file) { notify('Pick a file first', 'error'); return; }
+    setEnhBusy(true);
+    setEnhResult(null);
+    try {
+      const res = await postFile('/api/extras/enhance', file, { operation, subtype });
+      setEnhResult(res);
+      notify('Done');
+    } catch (e) { notify(e.message, 'error'); } finally { setEnhBusy(false); }
+  };
 
   const onPick = (e) => {
     const f = e.target?.files?.[0] || e;
@@ -104,7 +141,42 @@ export default function Extras({ notify, registerFileListener }) {
           <Slider label="Bottom" min={0} max={49} step={1} value={opts.crop_bottom} onChange={(v) => set('crop_bottom', v)} />
           <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'Processing…' : 'Apply'}</Button>
         </Section>
+
+        <Section title="AI frame post-processing">
+          <p className="text-xs text-white/40 -mt-2">Runs on the file picked above. Works on images and videos (video is processed frame-by-frame — can be slow).</p>
+          <Select label="Operation" value={operation} onChange={setOperation}
+            options={frameOps ? Object.keys(frameOps) : ['upscale', 'colorize', 'filter']} />
+          {frameOps && (frameOps[operation] || []).length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-white/70 mb-1.5">{OP_TITLES[operation] || 'Model'}</div>
+              <select
+                value={subtype}
+                onChange={(e) => setSubtype(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none cursor-pointer"
+              >
+                {(frameOps[operation] || []).map((s) => (
+                  <option key={s} value={s} className="bg-[#121420]">
+                    {(OP_LABELS[operation] && OP_LABELS[operation][s]) || s}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <Button variant="primary" onClick={runEnhance} disabled={enhBusy || !file}>
+            {enhBusy ? 'Processing…' : 'Run'}
+          </Button>
+          {operation === 'upscale' && <p className="text-[10px] text-white/30">First run downloads the model (~65 MB). ×4 on video is heavy.</p>}
+        </Section>
       </div>
+
+      {enhResult?.path && (
+        <Section title="AI post-processing output">
+          {enhResult.kind === 'video'
+            ? <video src={fileUrl(enhResult.path)} controls className="w-full rounded-lg border border-white/10" />
+            : <img src={fileUrl(enhResult.path)} alt="output" className="max-w-full rounded-lg border border-white/10" />}
+          <a href={fileUrl(enhResult.path)} download className="inline-block mt-2 text-sm text-[var(--accent)] underline">⬇ Download</a>
+        </Section>
+      )}
 
       {result?.path && (
         <Section title="Output">
@@ -117,8 +189,9 @@ export default function Extras({ notify, registerFileListener }) {
 
       <Section>
         <p className="text-xs text-white/40">
-          The Gradio "Frame Editor" (per-frame canvas painting, tracked re-swap, MP4/GIF compile) is not yet ported to React.
-          Use the legacy Gradio UI for that workflow.
+          AI upscale, colorize and stylize filters are available above. The Gradio "Frame Editor"
+          (per-frame canvas painting, tracked re-swap, MP4/GIF compile) is not yet ported to React —
+          use the legacy Gradio UI for that workflow.
         </p>
       </Section>
     </div>

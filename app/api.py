@@ -1360,6 +1360,105 @@ async def extras_apply(file: UploadFile = File(...),
     return {"path": outpath, "kind": "video"}
 
 
+# ── Extras: frame post-processors (AI upscale / colorize / stylize filters) ──
+# These reuse the roop frame processors that the swap pipeline never wired in.
+_FRAME_FILTERS = ["stylize", "detailenhance", "pencil", "cartoon", "C64"]
+_FRAME_UPSCALERS = ["esrganx2", "esrganx4", "lsdirx4"]
+_FRAME_COLORIZERS = ["deoldify_artistic", "deoldify_stable"]
+
+
+def _make_frame_processor(operation: str, subtype: str):
+    """Instantiate + initialize the requested frame processor. Returns a class
+    whose Run(frame)->frame does the work."""
+    from roop.utilities import get_device
+    devicename = get_device()
+    if operation == "upscale":
+        from roop.processors.Frame_Upscale import Frame_Upscale
+        proc = Frame_Upscale()
+    elif operation == "colorize":
+        from roop.processors.Frame_Colorizer import Frame_Colorizer
+        proc = Frame_Colorizer()
+    elif operation == "filter":
+        from roop.processors.Frame_Filter import Frame_Filter
+        proc = Frame_Filter()
+    else:
+        raise ValueError(f"unknown operation {operation}")
+    proc.Initialize({"devicename": devicename, "subtype": subtype})
+    return proc
+
+
+@app.get("/api/extras/frame_ops")
+def get_frame_ops():
+    return {"upscale": _FRAME_UPSCALERS, "colorize": _FRAME_COLORIZERS, "filter": _FRAME_FILTERS}
+
+
+@app.post("/api/extras/enhance")
+async def extras_enhance(file: UploadFile = File(...),
+                         operation: str = Form("upscale"),
+                         subtype: str = Form("esrganx2")):
+    """Run a frame post-processor (AI upscale / colorize / stylize) over an
+    uploaded image or video and write the result to the output folder."""
+    from ui.main import prepare_environment
+    prepare_environment()   # ensures the Frame/* models are downloaded
+
+    valid = {"upscale": _FRAME_UPSCALERS, "colorize": _FRAME_COLORIZERS, "filter": _FRAME_FILTERS}
+    if operation not in valid or subtype not in valid[operation]:
+        return JSONResponse(status_code=400, content={"message": "invalid operation/subtype"})
+
+    path = _save_upload(file)
+    is_video = util.is_video(path) or path.lower().endswith("gif")
+    out_dir = roop_globals.output_path
+    stem = os.path.splitext(os.path.basename(path))[0]
+
+    try:
+        proc = _make_frame_processor(operation, subtype)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": f"failed to load model: {e}"})
+
+    try:
+        if not is_video:
+            img = get_image_frame(path)
+            if img is None:
+                return JSONResponse(status_code=400, content={"message": "could not read image"})
+            out = proc.Run(img)
+            outpath = os.path.join(out_dir, f"{operation}_{subtype}_{stem}.png")
+            cv2.imwrite(outpath, out)
+            return {"path": outpath, "kind": "image"}
+
+        total = get_video_frame_total(path) or 1
+        first = get_video_frame(path, 1)
+        if first is None:
+            return JSONResponse(status_code=400, content={"message": "could not read the video's first frame"})
+        out_first = proc.Run(first)
+        oh, ow = out_first.shape[:2]
+        outpath = os.path.join(out_dir, f"{operation}_{subtype}_{stem}.mp4")
+        try:
+            fps = util.detect_fps(path)
+        except Exception:
+            fps = 30
+        writer = cv2.VideoWriter(outpath, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))
+        writer.write(out_first)
+        for i in range(2, total + 1):
+            fr = get_video_frame(path, i)
+            if fr is None:
+                continue
+            res = proc.Run(fr)
+            if res.shape[:2] != (oh, ow):
+                res = cv2.resize(res, (ow, oh))
+            writer.write(res)
+        writer.release()
+        return {"path": outpath, "kind": "video"}
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": f"processing failed: {e}"})
+    finally:
+        try:
+            proc.Release()
+        except Exception:
+            pass
+
+
 @app.get("/api/system/telemetry")
 def get_telemetry():
     telemetry = {
