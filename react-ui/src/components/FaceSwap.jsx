@@ -380,6 +380,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
+    ctm: p.color_transfer_mode,
     dds: p.default_det_size,
     fds: p.face_detector_size,
     fdt: p.face_detector_threshold,
@@ -488,6 +489,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+        color_transfer_mode: p.color_transfer_mode,
         face_mapping: getFaceMappingArray(),
         mask_top: p.mask_top,
         mask_bottom: p.mask_bottom,
@@ -557,6 +559,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
+        ctm: localParams.color_transfer_mode,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
@@ -601,6 +604,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+          color_transfer_mode: p.color_transfer_mode,
           face_mapping: getFaceMappingArray(),
           mask_top: p.mask_top,
           mask_bottom: p.mask_bottom,
@@ -1265,6 +1269,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face similarity" info="0=identical 1=any" min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />
           <Select label="Subsample upscale" value={p.subsample_upscale} onChange={(v) => set('subsample_upscale', v)} options={meta.upscale} />
+          <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
         </Section>
 

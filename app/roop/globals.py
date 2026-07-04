@@ -37,6 +37,11 @@ face_detector_size = '640'
 face_detector_threshold = 0.60
 sam2_model_size = 'tiny'   # SAM2 tracked-mask checkpoint: tiny|small|base_plus|large
 track_identities = False   # video: lock each tracked person to one source (anti identity-flip)
+# Skin-tone / lighting match of the swapped crop to the original crop.
+# 'rct' = LAB mean/std (Reinhard, legacy default), 'lct' = LAB covariance
+# whitening (handles color casts RCT can't), 'mkl' = Monge-Kantorovitch linear
+# (fuller distribution match), 'none' = off.
+color_transfer_mode = 'rct'
 
 no_face_action = 1
 

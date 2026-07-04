@@ -316,6 +316,7 @@ def get_meta():
                           "Segment Anything (MobileSAM)", "Segment Anything (FastSAM)",
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
+        "color_transfer_modes": ["none", "rct", "lct", "mkl"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
         "video_methods": ["Extract Frames to media", "In-Memory processing"],
@@ -793,6 +794,7 @@ def preview(payload: dict = Body(...)):
         roop_globals.autorotate_faces = bool(payload.get("autorotate", True))
         roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
+        roop_globals.color_transfer_mode = payload.get("color_transfer_mode", getattr(roop_globals.CFG, "color_transfer_mode", "rct"))
 
         swap_model = payload.get("swap_model", "inswapper")
         mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))
@@ -891,6 +893,7 @@ def _run_swap(payload):
         roop_globals.autorotate_faces = bool(payload.get("autorotate", roop_globals.CFG.autorotate_faces))
         roop_globals.subsample_size = int(str(upsample)[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
+        roop_globals.color_transfer_mode = payload.get("color_transfer_mode", roop_globals.CFG.color_transfer_mode)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

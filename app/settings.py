@@ -165,6 +165,8 @@ class Settings:
         self.stabilize_beta = self.default_get(data, 'stabilize_beta', 0.02)
         self.stabilize_enhancer = self.default_get(data, 'stabilize_enhancer', False)
         self.stabilize_enhancer_strength = self.default_get(data, 'stabilize_enhancer_strength', 0.5)
+        # Skin-tone / lighting match of swapped crop → original: none|rct|lct|mkl
+        self.color_transfer_mode = self.default_get(data, 'color_transfer_mode', 'rct')
 
 
 
@@ -240,6 +242,7 @@ class Settings:
             'stabilize_beta': self.stabilize_beta,
             'stabilize_enhancer': self.stabilize_enhancer,
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
+            'color_transfer_mode': self.color_transfer_mode,
         }
         # Atomic write: dump to a temp file and replace. Writing config.yaml in
         # place means a crash mid-write truncates it, and load()'s fallback then
