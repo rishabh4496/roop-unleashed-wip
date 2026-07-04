@@ -1561,7 +1561,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         alt=""
                         loading="lazy"
                         className="w-12 h-9 shrink-0 rounded-lg object-cover bg-black/40 border border-white/10"
-                        onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+                        onError={(e) => { e.target.style.display = 'none'; if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'block'; }}
                       />
                       <div className="text-base shrink-0 opacity-75 hidden">{typeIcon}</div>
                       <div className="flex-1 min-w-0">
