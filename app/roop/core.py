@@ -434,6 +434,7 @@ def live_swap(frame, options):
     with _preview_lock:
         if _preview_process_mgr is None:
             _preview_process_mgr = ProcessMgr(None)
+            _preview_process_mgr.is_preview = True
 
         _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
         newframe = _preview_process_mgr.process_frame(frame)

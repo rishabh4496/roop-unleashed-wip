@@ -552,7 +552,10 @@ def _target_list_payload():
 @app.post("/api/target/select")
 def target_select(payload: dict = Body(...)):
     global selected_target_index
-    selected_target_index = int(payload.get("index", 0))
+    idx = int(payload.get("index", 0))
+    # Clamp: a negative index would silently wrap to the last entry via
+    # Python list indexing in downstream helpers.
+    selected_target_index = max(0, min(idx, max(0, len(list_files_process) - 1)))
     _refresh_target_frames(selected_target_index)
     return _target_list_payload()
 
@@ -817,6 +820,10 @@ def trigger_swap(payload: dict = Body(...)):
     if len(roop_globals.INPUT_FACESETS) < 1:
         return JSONResponse(status_code=400, content={"message": "no source faces"})
 
+    # Claim the processing flag synchronously — the worker thread also sets it,
+    # but only after it starts, so two rapid POSTs could otherwise both pass
+    # the guard above and run concurrently.
+    _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     threading.Thread(target=_run_swap, args=(payload,), daemon=True).start()
     return {"status": "started"}
 
@@ -826,7 +833,6 @@ def _run_swap(payload):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
 
-    _update_mask_offsets_from_payload(payload)
     roop_globals.pause = False
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     if hasattr(roop_globals, "latest_swapped_frame"):
@@ -835,6 +841,9 @@ def _run_swap(payload):
         except Exception:
             pass
     try:
+        # Inside the try so any failure (e.g. CFG.save() I/O error) still hits
+        # the finally block and clears the processing flag.
+        _update_mask_offsets_from_payload(payload)
         prepare_environment()
         if roop_globals.CFG.clear_output:
             shutil.rmtree(roop_globals.output_path, ignore_errors=True)
@@ -1087,10 +1096,23 @@ def get_file(path: str, request: Request):
     so the finished video can be moved out of the output folder while it's still
     showing in the player.
     """
-    allowed = [os.path.abspath(getattr(roop_globals, "output_path", "") or ""),
-               os.path.abspath(API_TEMP), os.path.abspath(os.path.join(os.getcwd(), "temp"))]
+    roots = [API_TEMP, os.path.join(os.getcwd(), "temp")]
+    out_dir = getattr(roop_globals, "output_path", "") or ""
+    if out_dir:
+        roots.append(out_dir)
+    allowed = [os.path.normcase(os.path.abspath(r)) for r in roots]
     ap = os.path.abspath(path)
-    if not any(ap.startswith(a) and a for a in allowed) or not os.path.isfile(ap):
+    ap_n = os.path.normcase(ap)
+
+    def _within(child, parent):
+        # commonpath (unlike startswith) can't be fooled by sibling dirs that
+        # share a prefix, e.g. "output_evil" vs "output".
+        try:
+            return os.path.commonpath([child, parent]) == parent
+        except ValueError:
+            return False
+
+    if not any(_within(ap_n, a) for a in allowed) or not os.path.isfile(ap):
         return JSONResponse(status_code=403, content={"message": "forbidden"})
 
     import mimetypes
@@ -1282,7 +1304,10 @@ async def extras_apply(file: UploadFile = File(...),
         return {"path": outpath, "kind": "image"}
 
     total = get_video_frame_total(path) or 1
-    first = _process_frame(get_video_frame(path, 1))
+    first_frame = get_video_frame(path, 1)
+    if first_frame is None:
+        return JSONResponse(status_code=400, content={"message": "could not read the video's first frame"})
+    first = _process_frame(first_frame)
     oh, ow = first.shape[:2]
     outpath = os.path.join(out_dir, "edited_" + os.path.splitext(os.path.basename(path))[0] + ".mp4")
     writer = cv2.VideoWriter(outpath, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))

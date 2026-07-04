@@ -193,6 +193,9 @@ class ProcessMgr():
         self.streamwriter = None
         self.progress_gradio = None
         self.total_frames = 0
+        # Set by core.live_swap on the shared preview ProcessMgr: preview
+        # renders must not be published to the batch live-view frame.
+        self.is_preview = False
         self._psutil_proc = None       # cached psutil.Process for the progress bar
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
@@ -1107,6 +1110,12 @@ class ProcessMgr():
             self.progress_gradio((n, total), desc=desc, total=total, unit='frames')
 
 
+    def _publish_live(self, frame):
+        # Feed the UI's live view during batch processing only — the preview
+        # ProcessMgr shares this code path and must not leak preview renders.
+        if not self.is_preview and frame is not None:
+            roop.globals.latest_swapped_frame = frame.copy()
+
     def process_frame(self, frame:Frame, frame_idx=None):
         # ── Pause support ────────────────────────────────────────────────────
         # Spin-wait while the user has paused. Checks every 50 ms so the UI
@@ -1124,25 +1133,24 @@ class ProcessMgr():
                     return None
             self.num_frames_no_face = 0
             self.last_swapped_frame = temp_frame.copy()
-            roop.globals.latest_swapped_frame = temp_frame.copy()
+            self._publish_live(temp_frame)
             return temp_frame
         if roop.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
             if self.last_swapped_frame is not None and self.num_frames_no_face < self.options.max_num_reuse_frame:
                 self.num_frames_no_face += 1
                 ret = self.last_swapped_frame.copy()
-                roop.globals.latest_swapped_frame = ret.copy()
+                self._publish_live(ret)
                 return ret
-            roop.globals.latest_swapped_frame = frame.copy()
+            self._publish_live(frame)
             return frame
         elif roop.globals.no_face_action == eNoFaceAction.USE_ORIGINAL_FRAME:
-            roop.globals.latest_swapped_frame = frame.copy()
+            self._publish_live(frame)
             return frame
         if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME:
             return None
         else:
             ret = self.retry_rotated(frame)
-            if ret is not None:
-                roop.globals.latest_swapped_frame = ret.copy()
+            self._publish_live(ret)
             return ret
 
     def retry_rotated(self, frame):

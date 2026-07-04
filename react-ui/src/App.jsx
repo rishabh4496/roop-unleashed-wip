@@ -46,13 +46,15 @@ export default function App() {
     const handleDrop = (e) => {
       e.preventDefault();
       setIsDraggingOver(false);
+      // A dedicated dropzone (FileDrop) already handled this drop.
+      if (e.roopConsumed) return;
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
         fileListenersRef.current.forEach((listener) => listener(files));
       }
     };
     const handlePaste = (e) => {
-      if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
       const items = e.clipboardData?.items;
       if (!items) return;
       const files = [];
@@ -77,9 +79,13 @@ export default function App() {
     };
   }, []);
 
+  const toastTimerRef = useRef(null);
   const notify = useCallback((message, type = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+    // Reset the dismiss timer, otherwise an earlier toast's timeout hides a
+    // newer toast prematurely.
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
   useEffect(() => {

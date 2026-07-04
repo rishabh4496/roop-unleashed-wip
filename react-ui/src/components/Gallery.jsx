@@ -236,6 +236,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, onDelete, onReveal, onReuseTarg
             muted
             loop
             playsInline
+            preload="metadata"
             className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-102"
           />
         ) : (

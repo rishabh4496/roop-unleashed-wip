@@ -1065,7 +1065,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ignore key events if the user is typing in form controls
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
 
       // Toggle shortcuts HUD: '?' or 'h'
       if (e.key === '?' || e.key === 'h' || e.key === 'H') {
@@ -1080,7 +1080,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         if (maxFrames > 1 && setIsPlaying) {
           setIsPlaying((p) => !p);
         } else if (setCompare) {
-          setCompare((c) => !c);
+          // Match the 'C' shortcut and the UI toggle: compare and the
+          // enhancer grid are mutually exclusive.
+          setCompare((c) => {
+            const nextVal = !c;
+            if (nextVal) setComparingEnhancers(false);
+            return nextVal;
+          });
         }
         return;
       }
@@ -2158,6 +2164,10 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
   const [drag, setDrag] = useState(false);
   const onDrop = (e) => {
     e.preventDefault(); setDrag(false);
+    // Mark the native event as consumed so App.jsx's global drop handler
+    // doesn't ALSO route these files (which popped the Source/Target dialog
+    // on top of a drop that this zone already handled).
+    e.nativeEvent.roopConsumed = true;
     if (busy) return;
     if (e.dataTransfer.files && e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
   };
@@ -2414,7 +2424,7 @@ function InteractivePreview({
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ignore if user is typing in input fields
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
 
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
