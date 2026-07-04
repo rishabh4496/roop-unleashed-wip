@@ -65,6 +65,15 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} value={p.memory_limit ?? 0} onChange={(v) => set('memory_limit', v)} />
         </Section>
 
+        <Section title="Advanced performance (restart to apply)">
+          <p className="text-xs text-white/40 -mt-2">These override the launcher env and the VRAM auto-tuner. Leave on "auto" unless you know what you're tuning. Changes take effect after restarting the app.</p>
+          <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — number of TensorRT contexts for the swapper (higher = more concurrency on big GPUs). auto = size by VRAM." value={p.perf_trt_pool || 'auto'} onChange={(v) => set('perf_trt_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4']} />
+          <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for detection + masking. auto = size by VRAM." value={p.perf_detmask_pool || 'auto'} onChange={(v) => set('perf_detmask_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4']} />
+          <Select label="Encoder preset" info="ROOP_ENCODER_PRESET — x264/x265 speed preset. Faster = quicker encode at the same CRF quality. auto = launcher default." value={p.perf_encoder_preset || 'auto'} onChange={(v) => set('perf_encoder_preset', v)} options={meta.encoder_presets || ['auto', 'faster', 'fast', 'medium']} />
+          <Select label="Batched swap" info="ROOP_BATCH_SWAP — batch pixel-boost tiles through one inference. auto = launcher default." value={p.perf_batch_swap || 'auto'} onChange={(v) => set('perf_batch_swap', v)} options={meta.tristate || ['auto', 'on', 'off']} />
+          <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — print per-stage timing to the terminal after each run. auto = launcher default." value={p.perf_profile || 'auto'} onChange={(v) => set('perf_profile', v)} options={meta.tristate || ['auto', 'on', 'off']} />
+        </Section>
+
         <Section title="Output">
           <Select label="Image format" value={p.output_image_format} onChange={(v) => set('output_image_format', v)} options={meta.image_formats} />
           <Select label="Video format" value={p.output_video_format} onChange={(v) => set('output_video_format', v)} options={meta.video_formats} />

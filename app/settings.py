@@ -171,6 +171,14 @@ class Settings:
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
         self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
         self.detector_engine = self.default_get(data, 'detector_engine', 'scrfd')
+        # Advanced perf knobs (env-backed; 'auto' = leave launcher/auto-tune
+        # behaviour untouched). Applied to os.environ at startup by run.py, so
+        # changes take effect after an app restart.
+        self.perf_trt_pool = self.default_get(data, 'perf_trt_pool', 'auto')
+        self.perf_detmask_pool = self.default_get(data, 'perf_detmask_pool', 'auto')
+        self.perf_encoder_preset = self.default_get(data, 'perf_encoder_preset', 'auto')
+        self.perf_profile = self.default_get(data, 'perf_profile', 'auto')       # auto|on|off
+        self.perf_batch_swap = self.default_get(data, 'perf_batch_swap', 'auto')  # auto|on|off
 
 
 
@@ -250,6 +258,11 @@ class Settings:
             'refine_landmarks': self.refine_landmarks,
             'rescue_small_faces': self.rescue_small_faces,
             'detector_engine': self.detector_engine,
+            'perf_trt_pool': self.perf_trt_pool,
+            'perf_detmask_pool': self.perf_detmask_pool,
+            'perf_encoder_preset': self.perf_encoder_preset,
+            'perf_profile': self.perf_profile,
+            'perf_batch_swap': self.perf_batch_swap,
         }
         # Atomic write: dump to a temp file and replace. Writing config.yaml in
         # place means a crash mid-write truncates it, and load()'s fallback then

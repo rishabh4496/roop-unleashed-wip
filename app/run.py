@@ -4,6 +4,37 @@ import os
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 os.environ["AV_LOG_LEVEL"] = "error"
 
+# Apply the advanced perf knobs from config.yaml to os.environ BEFORE any roop
+# module is imported (ProcessMgr reads ROOP_PROFILE/ROOP_BATCH_SWAP at import
+# time). 'auto'/blank means "leave it alone" so the launcher's env and the
+# VRAM auto-tuner keep working; an explicit value overrides them.
+def _apply_perf_env():
+    try:
+        import yaml
+        with open('config.yaml', 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return
+
+    def _set(var, val):
+        if val is None:
+            return
+        s = str(val).strip()
+        if s and s.lower() != 'auto':
+            os.environ[var] = s
+
+    _set('ROOP_TRT_POOL', cfg.get('perf_trt_pool'))
+    _set('ROOP_DETMASK_POOL', cfg.get('perf_detmask_pool'))
+    _set('ROOP_ENCODER_PRESET', cfg.get('perf_encoder_preset'))
+    for var, key in (('ROOP_PROFILE', 'perf_profile'), ('ROOP_BATCH_SWAP', 'perf_batch_swap')):
+        v = str(cfg.get(key, 'auto')).strip().lower()
+        if v == 'on':
+            os.environ[var] = '1'
+        elif v == 'off':
+            os.environ[var] = '0'
+
+_apply_perf_env()
+
 # Windows asyncio fix: Python 3.10 on Windows raises ConnectionResetError
 # (WinError 10054) in asyncio ProactorEventLoop when a subprocess pipe closes.
 # This is a known CPython bug fixed in 3.11. Patch swallows the spurious error.
