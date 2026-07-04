@@ -1115,6 +1115,9 @@ class ProcessMgr():
         # ProcessMgr shares this code path and must not leak preview renders.
         if not self.is_preview and frame is not None:
             roop.globals.latest_swapped_frame = frame.copy()
+            # Version stamp so /api/progress can skip re-encoding an unchanged
+            # frame (approximate under threads is fine — it only gates a cache).
+            roop.globals.latest_swapped_seq = getattr(roop.globals, 'latest_swapped_seq', 0) + 1
 
     def process_frame(self, frame:Frame, frame_idx=None):
         # ── Pause support ────────────────────────────────────────────────────

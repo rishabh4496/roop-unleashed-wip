@@ -604,8 +604,13 @@ def target_set_frame(payload: dict = Body(...)):
 
 
 @app.get("/api/target/preview")
-def target_preview(index: int = 0, frame: int = 1):
-    """Return the raw target frame (no swap) as PNG."""
+def target_preview(index: int = 0, frame: int = 1, width: int = 0, fmt: str = "jpg"):
+    """Return the raw target frame (no swap).
+
+    Defaults to JPEG — PNG encode of an HD/4K frame is 5-10x slower and much
+    larger, which made timeline scrubbing feel sluggish. Pass fmt=png for a
+    lossless frame, width=N for a server-side downscale (storyboard / hover
+    thumbnails don't need full-resolution frames)."""
     if index >= len(list_files_process):
         return JSONResponse(status_code=404, content={"message": "no target"})
     filename = list_files_process[index].filename
@@ -615,8 +620,18 @@ def target_preview(index: int = 0, frame: int = 1):
         frame_img = get_image_frame(filename)
     if frame_img is None:
         return JSONResponse(status_code=404, content={"message": "no frame"})
-    ok, buf = cv2.imencode(".png", frame_img)
-    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
+    if width and width > 0 and frame_img.shape[1] > width:
+        h = max(1, round(frame_img.shape[0] * width / frame_img.shape[1]))
+        frame_img = cv2.resize(frame_img, (width, h), interpolation=cv2.INTER_AREA)
+    if fmt == "png":
+        ok, buf = cv2.imencode(".png", frame_img)
+        media = "image/png"
+    else:
+        ok, buf = cv2.imencode(".jpg", frame_img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        media = "image/jpeg"
+    if not ok:
+        return JSONResponse(status_code=500, content={"message": "encode failed"})
+    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type=media)
 
 
 def _target_groups_ranked():
@@ -840,6 +855,7 @@ def _run_swap(payload):
             delattr(roop_globals, "latest_swapped_frame")
         except Exception:
             pass
+    _live_cache.update({"seq": -1, "data": ""})
     try:
         # Inside the try so any failure (e.g. CFG.save() I/O error) still hits
         # the finally block and clears the processing flag.
@@ -982,14 +998,25 @@ def resume_swap():
     return {"status": "resumed"}
 
 
+# Cache of the last encoded live frame, keyed by its publish sequence number,
+# so a 1 Hz poll doesn't re-encode a frame that hasn't changed.
+_live_cache = {"seq": -1, "data": ""}
+
+
 @app.get("/api/progress")
 def get_progress():
     live_frame = ""
+    live_seq = 0
     if _progress["processing"] and hasattr(roop_globals, "latest_swapped_frame"):
         frame = getattr(roop_globals, "latest_swapped_frame", None)
+        live_seq = getattr(roop_globals, "latest_swapped_seq", 0)
         if frame is not None:
-            live_frame = _bgr_to_jpg_dataurl(frame)
-    return {**_progress, "output": _last_output, "live_frame": live_frame}
+            if _live_cache["seq"] == live_seq and _live_cache["data"]:
+                live_frame = _live_cache["data"]
+            else:
+                live_frame = _bgr_to_jpg_dataurl(frame)
+                _live_cache.update({"seq": live_seq, "data": live_frame})
+    return {**_progress, "output": _last_output, "live_frame": live_frame, "live_seq": live_seq}
 
 
 @app.get("/api/output")
@@ -1001,7 +1028,8 @@ def list_output():
             full = os.path.join(out, f)
             if os.path.isfile(full) and not f.startswith("."):
                 kind = "video" if util.is_video(full) else ("image" if util.is_image(full) else "file")
-                items.append({"name": f, "kind": kind, "mtime": os.path.getmtime(full)})
+                items.append({"name": f, "kind": kind, "mtime": os.path.getmtime(full),
+                              "size": os.path.getsize(full)})
     return {"output_path": out, "files": items[:50]}
 
 

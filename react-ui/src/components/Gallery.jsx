@@ -117,6 +117,13 @@ export default function Gallery({ notify }) {
     }
   };
 
+  const fmtSize = (bytes) => {
+    if (!bytes && bytes !== 0) return '';
+    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  };
+
   return (
     <div className="space-y-6">
       {/* Upper header action bar */}
@@ -191,6 +198,7 @@ export default function Gallery({ notify }) {
                 file={file}
                 srcUrl={srcUrl}
                 dateStr={getFormatDate(file.mtime)}
+                sizeStr={fmtSize(file.size)}
                 onDelete={() => deleteFile(file.name)}
                 onReveal={() => revealFile(file.name)}
                 onReuseTarget={() => reuseAsTarget(file.name)}
@@ -205,7 +213,7 @@ export default function Gallery({ notify }) {
   );
 }
 
-function VideoHoverCard({ file, srcUrl, dateStr, onDelete, onReveal, onReuseTarget, onReuseSource, isBusy }) {
+function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, isBusy }) {
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef(null);
 
@@ -308,7 +316,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, onDelete, onReveal, onReuseTarg
           >
             {file.name}
           </h4>
-          <span className="text-[10px] font-mono text-white/40 block mt-0.5">{dateStr}</span>
+          <span className="text-[10px] font-mono text-white/40 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
         </div>
         <div className="flex justify-between items-center shrink-0">
           <span className="text-[10px] uppercase font-bold tracking-widest text-[#E94560]/80">

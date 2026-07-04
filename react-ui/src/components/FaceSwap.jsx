@@ -284,10 +284,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
     const executeJob = async () => {
       setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
-      
+
+      // Resolve the target by NAME at run time — stored indices go stale when
+      // targets are removed after the job was queued, which made a queued job
+      // silently swap the wrong file.
+      const resolvedIndex = targets.findIndex(t => t.name === job.targetName);
+      if (resolvedIndex === -1) {
+        notify(`Job "${job.targetName}" skipped: target no longer loaded`, 'error');
+        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
+        setCurrentQueueIndex((idx) => idx + 1);
+        return;
+      }
+
       try {
-        await postJSON('/api/target/select', { index: job.targetIndex });
-        setSelTarget(job.targetIndex);
+        await postJSON('/api/target/select', { index: resolvedIndex });
+        setSelTarget(resolvedIndex);
         
         await postJSON('/api/source/select', { index: job.sourceIndex });
         setSelSource(job.sourceIndex);
@@ -310,7 +321,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           blend_ratio: num(job.params.blend_ratio, 0.8),
           num_swap_steps: num(job.params.num_swap_steps, 1),
           face_mapping: job.faceMapping || [],
-          target_index: job.targetIndex,
+          target_index: resolvedIndex,
         });
 
         startTimeRef.current = Date.now();
@@ -888,7 +899,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     const urls = [];
     for (let i = 0; i < numThumbs; i++) {
       const f = Math.min(maxFrames, Math.round(1 + i * step));
-      urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}`);
+      urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}&width=200`);
     }
     setStoryboardThumbs(urls);
   }, [selTarget, maxFrames, targets.length]);
@@ -1501,7 +1512,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             ) : (
               <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                 {targets.map((t, i) => {
-                  const job = queue.find(j => j.targetName === t.name && j.targetIndex === i);
+                  const job = queue.find(j => j.targetName === t.name);
                   let statusLabel = null;
                   let badgeColor = '';
                   if (job) {
@@ -1523,7 +1534,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <div key={i}
                       className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-300 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40 shadow-[0_0_15px_var(--accent-glow)] scale-[0.99]' : 'bg-black/30 border-white/5 hover:border-white/15 hover:bg-white/[0.01]'}`}
                       onClick={() => selectTarget(i)}>
-                      <div className="text-base shrink-0 opacity-75">{typeIcon}</div>
+                      {/* v=name busts the browser cache: the URL is index-based, so
+                          after a removal the same index can point at another file. */}
+                      <img
+                        src={`${API}/api/target/preview?index=${i}&frame=1&width=96&v=${encodeURIComponent(t.name)}`}
+                        alt=""
+                        loading="lazy"
+                        className="w-12 h-9 shrink-0 rounded-lg object-cover bg-black/40 border border-white/10"
+                        onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+                      />
+                      <div className="text-base shrink-0 opacity-75 hidden">{typeIcon}</div>
                       <div className="flex-1 min-w-0">
                         <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
                         <div className="flex items-center gap-2 mt-0.5 text-[10px] font-medium text-white/40">
@@ -1791,6 +1811,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   setIsPlaying={setIsPlaying}
                   processing={progress.processing}
                   liveFrame={progress.live_frame}
+                  liveSeq={progress.live_seq || 0}
                 />
               )
             ) : (
@@ -1817,9 +1838,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       className="absolute bottom-[66px] z-50 hud-glass p-2 rounded-xl border border-white/10 flex flex-col items-center gap-1.5 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
                       style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
                     >
-                      <img 
-                        src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}`} 
-                        alt="Hover Preview" 
+                      <img
+                        src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=240`}
+                        alt="Hover Preview"
                         className="w-24 h-13 object-cover rounded-lg border border-white/10 bg-black/50"
                       />
                       <span className="text-[10px] font-mono font-extrabold text-[#C5A880] tracking-wider whitespace-nowrap">
@@ -2385,7 +2406,8 @@ function InteractivePreview({
   previewSecs = 0,
   setIsPlaying,
   processing = false,
-  liveFrame = null
+  liveFrame = null,
+  liveSeq = 0
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -2418,6 +2440,14 @@ function InteractivePreview({
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('touchend', handleMouseUp);
     };
+  }, []);
+
+  // Keep isFullscreen in sync when the user exits fullscreen via Esc (the
+  // browser fires no click on our toggle in that case).
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
   // Keyboard Navigation: Zoom controls
@@ -2577,7 +2607,7 @@ function InteractivePreview({
         <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-black tracking-widest text-white border border-[var(--accent)]/30 shadow-2xl animate-pulse uppercase">
             <span className="h-2 w-2 rounded-full bg-white animate-ping" />
-            Live Swapping
+            Live Swapping{liveSeq > 0 ? ` · ${liveSeq} frames` : ''}
           </div>
         </div>
       )}
