@@ -132,11 +132,81 @@ def lease_face_analyser():
         yield FACE_ANALYSER
 
 
+def _refine_kps_from_68(face) -> None:
+    """Replace the detector's 5 arcface keypoints with ones derived from the
+    68-point landmarks (eye centers, nose tip, mouth corners). The 68-point
+    model is more stable than the 5-point regressor at angles, so this reduces
+    residual alignment wobble. No-op when the 68-point landmarks are absent.
+
+    Standard dlib/300-W ordering: left eye 36-41, right eye 42-47, nose tip 30,
+    left/right mouth corners 48/54 (all image-left/right, matching the arcface
+    template's kps order)."""
+    lm = getattr(face, 'landmark_3d_68', None)
+    if lm is None:
+        return
+    try:
+        pts = np.asarray(lm)[:, :2].astype(np.float32)
+        if pts.shape[0] < 68:
+            return
+        refined = np.array([
+            pts[36:42].mean(axis=0),   # left eye center
+            pts[42:48].mean(axis=0),   # right eye center
+            pts[30],                    # nose tip
+            pts[48],                    # left mouth corner
+            pts[54],                    # right mouth corner
+        ], dtype=np.float32)
+        face.kps = refined
+    except Exception:
+        pass
+
+
+def _scale_face_coords(face, inv_scale: float) -> None:
+    """Scale a Face's spatial fields by inv_scale in place (used to map faces
+    detected on an upscaled frame back to original-frame coordinates)."""
+    for attr in ('bbox', 'kps', 'landmark_2d_106'):
+        v = getattr(face, attr, None)
+        if v is not None:
+            try:
+                setattr(face, attr, np.asarray(v, dtype=np.float32) * inv_scale)
+            except Exception:
+                pass
+    lm68 = getattr(face, 'landmark_3d_68', None)
+    if lm68 is not None:
+        try:
+            lm68 = np.asarray(lm68, dtype=np.float32).copy()
+            lm68[:, :2] *= inv_scale   # only x,y are pixel coords; z is depth
+            face.landmark_3d_68 = lm68
+        except Exception:
+            pass
+
+
+def _rescue_upscaled(frame: Frame):
+    """Retry detection on a 2x upscale of the frame, mapping any faces back to
+    the original coordinate space. For frames where the face is too small for
+    the current det size to catch."""
+    try:
+        up = cv2.resize(frame, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+        with lease_face_analyser() as fa:
+            faces = fa.get(up)
+        if faces:
+            for f in faces:
+                _scale_face_coords(f, 0.5)
+            return faces
+    except Exception:
+        pass
+    return None
+
+
 def get_first_face(frame: Frame) -> Any:
     try:
         with lease_face_analyser() as fa:
             faces = fa.get(frame)
+        if not faces and getattr(roop.globals, 'rescue_small_faces', False):
+            faces = _rescue_upscaled(frame)
         if faces:
+            if getattr(roop.globals, 'refine_landmarks', False):
+                for f in faces:
+                    _refine_kps_from_68(f)
             return min(faces, key=lambda x: x.bbox[0])
     except Exception:
         pass
@@ -147,7 +217,12 @@ def get_all_faces(frame: Frame) -> Any:
     try:
         with lease_face_analyser() as fa:
             faces = fa.get(frame)
+        if not faces and getattr(roop.globals, 'rescue_small_faces', False):
+            faces = _rescue_upscaled(frame)
         if faces:
+            if getattr(roop.globals, 'refine_landmarks', False):
+                for f in faces:
+                    _refine_kps_from_68(f)
             return sorted(faces, key=lambda x: x.bbox[0])
         return []
     except Exception:

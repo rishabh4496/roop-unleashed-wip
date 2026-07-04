@@ -167,6 +167,9 @@ class Settings:
         self.stabilize_enhancer_strength = self.default_get(data, 'stabilize_enhancer_strength', 0.5)
         # Skin-tone / lighting match of swapped crop → original: none|rct|lct|mkl
         self.color_transfer_mode = self.default_get(data, 'color_transfer_mode', 'rct')
+        # Detection refinements
+        self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
+        self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
 
 
 
@@ -243,6 +246,8 @@ class Settings:
             'stabilize_enhancer': self.stabilize_enhancer,
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
             'color_transfer_mode': self.color_transfer_mode,
+            'refine_landmarks': self.refine_landmarks,
+            'rescue_small_faces': self.rescue_small_faces,
         }
         # Atomic write: dump to a temp file and replace. Writing config.yaml in
         # place means a crash mid-write truncates it, and load()'s fallback then

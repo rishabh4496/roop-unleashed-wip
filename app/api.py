@@ -766,6 +766,8 @@ def preview(payload: dict = Body(...)):
     roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
     roop_globals.face_detector_size = str(payload.get("face_detector_size", roop_globals.CFG.face_detector_size))
     roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
+    roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
+    roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
 
     faces_list = []
     try:
@@ -795,6 +797,8 @@ def preview(payload: dict = Body(...)):
         roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", getattr(roop_globals.CFG, "color_transfer_mode", "rct"))
+        roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
+        roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
 
         swap_model = payload.get("swap_model", "inswapper")
         mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))

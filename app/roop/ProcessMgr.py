@@ -290,7 +290,8 @@ class ProcessMgr():
         modules = ["landmark_2d_106", "detection", "recognition"]
         if (getattr(options, 'use_3d_recon', False)
                 or getattr(options, 'use_source_bank', False)
-                or getattr(options, 'use_frontalization', False)):
+                or getattr(options, 'use_frontalization', False)
+                or getattr(roop.globals, 'refine_landmarks', False)):
             modules.insert(0, "landmark_3d_68")
         roop.globals.g_desired_face_analysis = modules
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":

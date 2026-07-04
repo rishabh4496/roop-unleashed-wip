@@ -42,6 +42,12 @@ track_identities = False   # video: lock each tracked person to one source (anti
 # whitening (handles color casts RCT can't), 'mkl' = Monge-Kantorovitch linear
 # (fuller distribution match), 'none' = off.
 color_transfer_mode = 'rct'
+# Alignment refinement: derive the 5 arcface keypoints from the 68-point
+# landmarks (more stable at angles than the detector's raw 5 kps).
+refine_landmarks = False
+# Small-face rescue: when a frame yields no detections, retry on a 2x upscale
+# so tiny/distant faces get picked up (without raising the global det size).
+rescue_small_faces = False
 
 no_face_action = 1
 
