@@ -139,10 +139,17 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 | Setting | Description |
 |---|---|
 | Provider | `cuda` (default), `tensorrt` (fastest NVIDIA), `cpu` |
-| Enhancer | Post-processing: GPEN, GFPGAN, CodeFormer, DMDNet, RestoreFormer++ |
+| Swap model | `inswapper` (default) · reswapper · hyperswap 1a/1b/1c · ghost 1/2/3 · simswap / simswap_512 · hififace · **blendswap** · **uniface** (each downloads on first use) |
+| Detector engine | `scrfd` (default) or `yoloface` (better on steep profiles / occluded faces) |
+| Color/lighting match | Match the swapped face's tone & lighting to the scene: `rct` (default) · `lct` (fixes hue casts) · `mkl` (fullest match) · `none` |
+| Refine alignment (68-pt) | Derives alignment keypoints from the 68-point landmarks — steadier on angled faces |
+| Rescue small faces | Retries detection on a 2× upscale when a frame has no face |
+| Enhancer | Post-processing: GPEN (512/1024/2048), GFPGAN, CodeFormer, DMDNet, RestoreFormer++ |
 | Restore original mouth | Composites the target's original mouth back over the swap |
 | Video swapping method | **In-Memory** (fast, more RAM) or **Extract Frames** (large videos) |
 | Subsample upscale | Internal face resolution: 128 → 256 → 512 px |
+
+The **Editor** tab also offers AI post-processing on any image/video: Real-ESRGAN / LSDIR upscaling, DeOldify colorization, and stylize filters (cartoon, pencil, C64, …). Advanced performance knobs (TensorRT pool sizes, encoder preset, profiling) live under **Settings → Advanced performance** and apply after an app restart.
 
 ---
 
