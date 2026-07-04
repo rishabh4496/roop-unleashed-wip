@@ -308,7 +308,7 @@ def get_meta():
                        "GPEN 1024", "GPEN 2048", "Restoreformer++"],
         "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
                          "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
-                         "simswap", "simswap_512", "hififace"],
+                         "simswap", "simswap_512", "hififace", "blendswap", "uniface"],
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
         "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "Face Parser (BiSeNet)",

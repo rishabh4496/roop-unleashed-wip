@@ -263,6 +263,23 @@ def get_all_faces(frame: Frame) -> Any:
         return None
 
 
+def _attach_source_crops(face, img):
+    """Pre-warp and cache the aligned source-face crops the image-source swap
+    models (BlendSwap / UniFace) consume. Cheap (a couple of small warps) and
+    tiny to keep (112² + 256²), so we don't retain the full source image.
+    `img` must be the frame `face.kps` are expressed in."""
+    try:
+        kps = getattr(face, 'kps', None)
+        if kps is None:
+            return
+        crop112, _ = align_crop(img, kps, 112, mode='arcface_112_v2')
+        crop256, _ = align_crop(img, kps, 256, mode='ffhq_512')
+        face['_src_crop_arcface_112_v2'] = crop112
+        face['_src_crop_ffhq_256'] = crop256
+    except Exception:
+        pass
+
+
 def extract_face_images(source_filename, video_info, extra_padding=-1.0):
     face_data = []
     source_image = None
@@ -287,6 +304,7 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0):
         if extra_padding > 0.0:
             if source_image.shape[:2] == (512, 512):
                 i += 1
+                _attach_source_crops(face, source_image)
                 face_data.append([face, source_image])
                 continue
 
@@ -315,6 +333,7 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0):
                 testfaces = get_all_faces(face_temp)
                 if testfaces is not None and len(testfaces) > 0:
                     i += 1
+                    _attach_source_crops(testfaces[0], face_temp)
                     face_data.append([testfaces[0], face_temp])
                     found = True
                     break
@@ -327,6 +346,9 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0):
         if face_temp.size < 1:
             continue
 
+        # face.kps are in source_image coords (not the bbox crop), so warp the
+        # source crops from source_image.
+        _attach_source_crops(face, source_image)
         i += 1
         face_data.append([face, face_temp])
     return face_data
@@ -426,6 +448,17 @@ WARP_TEMPLATES = {
             [0.50000000, 0.61154464],
             [0.37913393, 0.77687500],
             [0.62086607, 0.77687500],
+        ],
+        dtype=np.float32,
+    ),
+    # blendswap source alignment (FaceFusion face_helper WARP_TEMPLATE_SET)
+    "arcface_112_v2": np.array(
+        [
+            [0.34191607, 0.46157411],
+            [0.65653393, 0.45983393],
+            [0.50022500, 0.64050536],
+            [0.37097589, 0.82469196],
+            [0.63151696, 0.82325089],
         ],
         dtype=np.float32,
     ),

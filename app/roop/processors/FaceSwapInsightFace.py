@@ -158,6 +158,33 @@ SWAP_MODELS = {
         "converter_file": "crossface_simswap.onnx",
         "converter_url": _FF34 + "crossface_simswap.onnx",
     },
+    # BlendSwap 256 — image-source swapper (NOT embedding-based). The source is
+    # an aligned face IMAGE crop (arcface_112_v2 @ 112), the target crop uses
+    # the ffhq_512 template. [0,1] in/out. Model inputs named 'source'/'target'.
+    "blendswap": {
+        "file": "blendswap_256.onnx",
+        "url": _FF30 + "blendswap_256.onnx",
+        "output_size": 256,
+        "mean": [0.0, 0.0, 0.0],
+        "standard_deviation": [1.0, 1.0, 1.0],
+        "denormalize": False,
+        "embedding": "image",
+        "template": "ffhq_512",
+        "source_crop_key": "_src_crop_arcface_112_v2",
+    },
+    # UniFace 256 — image-source swapper. Source = ffhq_512 @ 256 image crop,
+    # target = ffhq_512 template, [-1,1] in, de-normalized out.
+    "uniface": {
+        "file": "uniface_256.onnx",
+        "url": _FF30 + "uniface_256.onnx",
+        "output_size": 256,
+        "mean": [0.5, 0.5, 0.5],
+        "standard_deviation": [0.5, 0.5, 0.5],
+        "denormalize": True,
+        "embedding": "image",
+        "template": "ffhq_512",
+        "source_crop_key": "_src_crop_ffhq_256",
+    },
     # HifiFace (unofficial) — 256px, mtcnn_512 alignment, [-1,1] in/out,
     # identity = converted + normalized embedding.
     "hififace": {
@@ -234,6 +261,7 @@ class FaceSwapInsightFace():
         self.converter = None            # crossface embedding converter session
         self.converter_input = "input"
         self.embedding_mode = "normed_emap"
+        self.source_crop_key = None      # image-source models: which pre-warped crop
         self.image_input_name = "target"
         self.embed_input_name = "source"
         self.loaded_model_key = None
@@ -268,6 +296,7 @@ class FaceSwapInsightFace():
             model_path = os.path.join(model_dir, spec["file"])
 
             self.embedding_mode = spec.get("embedding", "normed_emap")
+            self.source_crop_key = spec.get("source_crop_key")
             if self.embedding_mode == "normed_emap":
                 graph = onnx.load(model_path).graph
                 self.emap = self._find_emap(graph)
@@ -311,6 +340,13 @@ class FaceSwapInsightFace():
                     self.image_input_name = inp.name
                 elif rank == 2:
                     self.embed_input_name = inp.name
+            # Image-source models (BlendSwap/UniFace) have TWO rank-4 inputs, so
+            # rank alone can't tell target from source — resolve by the names the
+            # models expose ('target' / 'source').
+            if self.embedding_mode == "image":
+                names = [inp.name for inp in self.model_swap_insightface.get_inputs()]
+                self.image_input_name = "target" if "target" in names else self.image_input_name
+                self.embed_input_name = "source" if "source" in names else self.embed_input_name
 
             # Optional TensorRT multi-context pool: the primary session plus
             # (N-1) independent extras so up to N worker threads can swap
@@ -369,8 +405,40 @@ class FaceSwapInsightFace():
             latent /= np.linalg.norm(latent)
         return latent
 
+    def _prepare_source_crop(self, source_face: Face) -> np.ndarray:
+        """Image-source models (BlendSwap/UniFace): build the (1,3,H,W) source
+        blob from the pre-warped aligned source crop (BGR→RGB, /255 — no
+        mean/std, matching FaceFusion's prepare_source_frame). Cached per source
+        face + model. Returns None when the crop is absent (source ingested
+        before crops were attached — caller falls back to a no-op swap)."""
+        cache_key = f"_srcblob_{self.loaded_model_key}"
+        cached = source_face.get(cache_key) if hasattr(source_face, 'get') else None
+        if cached is not None:
+            return cached
+        crop = source_face.get(self.source_crop_key) if hasattr(source_face, 'get') else None
+        if crop is None:
+            return None
+        blob = crop[:, :, ::-1] / 255.0
+        blob = blob.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
+        try:
+            source_face[cache_key] = blob
+        except Exception:
+            pass
+        return blob
+
+    def _compute_source_input(self, source_face: Face):
+        """Return whatever the loaded model feeds into its source input: an
+        image blob for image-source models, else the identity latent vector."""
+        if self.embedding_mode == "image":
+            return self._prepare_source_crop(source_face)
+        return self._compute_latent(source_face)
+
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
-        latent = self._compute_latent(source_face)
+        latent = self._compute_source_input(source_face)
+        if latent is None:
+            # Image-source model but no source crop available → return the target
+            # crop unchanged (no swap) rather than crashing.
+            return temp_frame[0]
         # Use the standard run() API rather than io_binding.  io_binding with
         # bind_output() (no device_type) leaves output placement to TensorRT,
         # which registers a device type that copy_outputs_to_cpu() has no
@@ -393,9 +461,9 @@ class FaceSwapInsightFace():
         [3,H,W] outputs, one per crop — numerically identical to calling Run on
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
-        latent = self._compute_latent(source_face)
+        latent = self._compute_source_input(source_face)
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
-        latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512]
+        latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512] or [B,3,Hs,Ws]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
         if self.pool is not None:
             with self.pool.lease() as sess:
@@ -410,7 +478,7 @@ class FaceSwapInsightFace():
         cross-frame coalescing where different faces batch together).
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
-        latents = [self._compute_latent(src) for src, _tgt, _blob in requests]
+        latents = [self._compute_source_input(src) for src, _tgt, _blob in requests]
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
