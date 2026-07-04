@@ -1423,51 +1423,64 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         
         {/* COLUMN 2: Media Asset Manager */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
-          <Section title="Source images / facesets">
-            <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
-            <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
-              onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
-            {sourceFaces.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
-                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
-                  <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
-                  <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
+          <Section title="Target faces">
+            <FaceGallery title="" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
+              groups={targetGroups} vertical={true}
+              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
+              empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
+            {targetFaces.length > 0 && (
+              <div className="mt-4 space-y-4">
+                <Button size="sm" variant="primary" className="w-full justify-center text-xs tracking-wider" onClick={addAngle}>
+                  ➕ Add Angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
+                </Button>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
+                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
+                  <Button size="sm" variant="stop" className="px-2 justify-center text-[10px]" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
                 </div>
                 
-                {sourceFacesInfo[selSource] && (
-                  <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
-                    <div className="flex items-center justify-between">
-                      <span className="font-extrabold text-[10px] uppercase tracking-widest text-white/50">📁 Selected Source Details</span>
-                      <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
-                        {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
-                      </span>
-                    </div>
-                    
-                    <div className="space-y-1.5 pt-1">
-                      {sourceFacesInfo[selSource].count > 1 ? (
-                        <>
-                          <div className="text-[10px] font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {Object.entries(
-                              sourceFacesInfo[selSource].poses.reduce((acc, p) => {
-                                acc[p] = (acc[p] || 0) + 1;
-                                return acc;
-                              }, {})
-                            ).map(([pose, cnt]) => (
-                              <span key={pose} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-[10px] text-white/70">
-                                {pose} <span className="text-[var(--accent)] font-extrabold">({cnt})</span>
-                              </span>
-                            ))}
+
+                {/* Target-to-Source Mapping Panel */}
+                {sourceFaces.length > 0 && (
+                  <div className="mt-5 pt-4 border-t border-white/5 space-y-3">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-3 flex items-center gap-1.5">
+                      <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
+                      🎯 Target Swap Mapping
+                    </h4>
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                      {Array.from(new Set(targetGroups)).sort((a, b) => a - b).map((pId) => {
+                        const idx = targetGroups.indexOf(pId);
+                        const thumb = targetFaces[idx];
+                        const currentMap = faceMapping[pId] !== undefined ? faceMapping[pId] : pId;
+                        const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
+                        const color = PERSON_COLORS[pId % PERSON_COLORS.length];
+                        
+                        return (
+                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/40 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {thumb && <img src={thumb} alt={`p ${pId}`} className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />}
+                              <span className="font-extrabold truncate" style={{ color }}>Person {pId + 1}</span>
+                            </div>
+                            <span className="text-white/20 text-[9px]">➔</span>
+                            <select
+                              value={currentMap}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value);
+                                setFaceMapping(prev => ({ ...prev, [pId]: val }));
+                                clearPreviewCache();
+                              }}
+                              className="px-2 py-1.5 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[125px] shrink-0 font-bold"
+                            >
+                              <option value={-1} className="bg-[#121420]">❌ Skip (Keep)</option>
+                              {sourceFaces.map((sf, sfIdx) => (
+                                <option key={sfIdx} value={sfIdx} className="bg-[#121420]">
+                                  🎭 Face {sfIdx + 1}
+                                </option>
+                              ))}
+                            </select>
                           </div>
-                        </>
-                      ) : (
-                        <div className="flex items-center justify-between text-white/60">
-                          <span>Detected Pose:</span>
-                          <span className="font-bold text-white">{sourceFacesInfo[selSource].poses[0] || 'Front'}</span>
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1534,79 +1547,180 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </div>
             )}
           </Section>
-
-          <Section title="Target faces">
-            <FaceGallery title="" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-              groups={targetGroups} vertical={true}
-              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
-              empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
-            {targetFaces.length > 0 && (
-              <div className="mt-4 space-y-4">
-                <Button size="sm" variant="primary" className="w-full justify-center text-xs tracking-wider" onClick={addAngle}>
-                  ➕ Add Angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
-                </Button>
-                <div className="grid grid-cols-3 gap-2">
-                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
-                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
-                  <Button size="sm" variant="stop" className="px-2 justify-center text-[10px]" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
-                </div>
-                
-                <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 text-[10px] text-white/50 leading-relaxed space-y-1">
-                  <span className="font-extrabold uppercase text-[9px] tracking-wider text-[var(--accent)] block">💡 Multi-Angle Tracking</span>
-                  <span>Capture profile, side, or tilted views of the selected target. Each color group defines one person, mapping to a single source faceset. Matching resolves to the closest angle, preventing swaps from dropping out.</span>
-                </div>
-
-                {/* Target-to-Source Mapping Panel */}
-                {sourceFaces.length > 0 && (
-                  <div className="mt-5 pt-4 border-t border-white/5 space-y-3">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-3 flex items-center gap-1.5">
-                      <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
-                      🎯 Target Swap Mapping
-                    </h4>
-                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                      {Array.from(new Set(targetGroups)).sort((a, b) => a - b).map((pId) => {
-                        const idx = targetGroups.indexOf(pId);
-                        const thumb = targetFaces[idx];
-                        const currentMap = faceMapping[pId] !== undefined ? faceMapping[pId] : pId;
-                        const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
-                        const color = PERSON_COLORS[pId % PERSON_COLORS.length];
-                        
-                        return (
-                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/40 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors text-xs">
-                            <div className="flex items-center gap-2 min-w-0">
-                              {thumb && <img src={thumb} alt={`p ${pId}`} className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />}
-                              <span className="font-extrabold truncate" style={{ color }}>Person {pId + 1}</span>
-                            </div>
-                            <span className="text-white/20 text-[9px]">➔</span>
-                            <select
-                              value={currentMap}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value);
-                                setFaceMapping(prev => ({ ...prev, [pId]: val }));
-                                clearPreviewCache();
-                              }}
-                              className="px-2 py-1.5 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[125px] shrink-0 font-bold"
-                            >
-                              <option value={-1} className="bg-[#121420]">❌ Skip (Keep)</option>
-                              {sourceFaces.map((sf, sfIdx) => (
-                                <option key={sfIdx} value={sfIdx} className="bg-[#121420]">
-                                  🎭 Face {sfIdx + 1}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+          
+          <Section title="Source images / facesets">
+          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
+          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
+            onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
+          {sourceFaces.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
+                <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
               </div>
-            )}
-          </Section>
-        </div>
+              
+              {sourceFacesInfo[selSource] && (
+                <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
+                  <div className="flex items-center justify-between">
+                    <span className="font-extrabold text-[10px] uppercase tracking-widest text-white/50">📁 Selected Source Details</span>
+                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
+                      {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-1.5 pt-1">
+                    {sourceFacesInfo[selSource].count > 1 ? (
+                      <>
+                        <div className="text-[10px] font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {Object.entries(
+                            sourceFacesInfo[selSource].poses.reduce((acc, p) => {
+                              acc[p] = (acc[p] || 0) + 1;
+                              return acc;
+                            }, {})
+                          ).map(([pose, cnt]) => (
+                            <span key={pose} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-[10px] text-white/70">
+                              {pose} <span className="text-[var(--accent)] font-extrabold">({cnt})</span>
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex items-center justify-between text-white/60">
+                        <span>Detected Pose:</span>
+                        <span className="font-bold text-white">{sourceFacesInfo[selSource].poses[0] || 'Front'}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
+      </div>
 
         {/* COLUMN 3: Active Canvas, Timeline & Outputs */}
         <div className="flex-1 min-w-0 space-y-6">
+          {/* run bar */}
+          <div className="sticky top-20 z-30 pb-3 bg-[#0c0e14]/90 backdrop-blur-md">
+            {progress.processing ? (() => {
+              const radius = 21;
+              const circumference = radius * 2 * Math.PI;
+              const strokeDashoffset = circumference - prog * circumference;
+              return (
+                <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                  {/* Left: Circular Progress Ring & Info */}
+                  <div className="flex items-center gap-5">
+                    <div className={`relative flex items-center justify-center h-20 w-20 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_15px_var(--accent-glow)] animate-pulse' : ''}`}>
+                      <svg className="transform -rotate-90 w-16 h-16" viewBox="0 0 48 48">
+                        <circle
+                          stroke="rgba(255, 255, 255, 0.08)"
+                          fill="transparent"
+                          strokeWidth={3}
+                          r={radius}
+                          cx={24}
+                          cy={24}
+                        />
+                        <circle
+                          className="transition-all duration-300 ease-out"
+                          stroke="var(--accent)"
+                          fill="transparent"
+                          strokeWidth={3}
+                          strokeDasharray={`${circumference} ${circumference}`}
+                          style={{ strokeDashoffset }}
+                          r={radius}
+                          cx={24}
+                          cy={24}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <span className="absolute text-sm font-extrabold text-white tabular-nums">
+                        {Math.round(prog * 100)}%
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-[var(--accent)] animate-ping" />
+                        <span className="text-xs font-black uppercase tracking-widest text-[var(--accent)]">
+                          {progress.paused ? 'Paused' : 'Processing'}
+                        </span>
+                      </div>
+                      <div className="text-sm font-extrabold text-white truncate max-w-[360px]">
+                        {progress.desc || 'Swapping faces…'}
+                      </div>
+                      {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
+                    </div>
+                  </div>
+
+                  {/* Center: Live Telemetry HUD */}
+                  <div className="flex flex-wrap items-center gap-4 text-xs font-mono bg-black/20 px-5 py-2.5 rounded-xl border border-white/5">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
+                      <span className="text-white font-bold tabular-nums">{fmtTime(elapsedMs)}</span>
+                    </div>
+                    <div className="h-6 w-px bg-white/10" />
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
+                      <span className="text-emerald-400 font-bold tabular-nums">
+                        {etaMs > 0 ? fmtTime(etaMs) : '--:--'}
+                      </span>
+                    </div>
+                    {telemetry && (
+                      <>
+                        <div className="h-6 w-px bg-white/10" />
+                        <div className="flex flex-col relative group/telemetry cursor-help">
+                          <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">VRAM</span>
+                          <span className="text-blue-300 font-bold tabular-nums">
+                            {telemetry.vram_used} / {telemetry.vram_total} GB
+                          </span>
+                          
+                          {/* Hardware diagnostics tooltip hover card */}
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover/telemetry:block z-50 w-64 p-4 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-left font-sans">
+                            <h4 className="text-[9px] font-bold text-[var(--accent)] uppercase tracking-widest mb-2 border-b border-white/10 pb-1">System Telemetry</h4>
+                            <div className="space-y-1.5 text-xs text-white/80">
+                              <div className="flex justify-between gap-2"><span className="text-white/40">GPU:</span><span className="font-semibold text-white truncate max-w-[130px]" title={telemetry.gpu}>{telemetry.gpu}</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">RAM Used:</span><span className="font-semibold text-white">{telemetry.ram_used} / {telemetry.ram_total} GB</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">CPU Load:</span><span className="font-semibold text-white">{telemetry.cpu_percent}%</span></div>
+                              <div className="flex justify-between"><span className="text-white/40">Active Threads:</span><span className="font-semibold text-white">{telemetry.threads}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Right: Actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {progress.paused ? (
+                      <Button variant="primary" size="md" onClick={resume}>▶ Resume</Button>
+                    ) : (
+                      <Button variant="secondary" size="md" onClick={pause}>⏸ Pause</Button>
+                    )}
+                    <Button variant="stop" size="md" onClick={stop}>⏹ Stop</Button>
+                  </div>
+                </div>
+              );
+            })() : (
+              <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
+                  {maxFrames > 1 && (
+                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
+                      ⚡ Render 5s Preview
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
+                  <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
+                  {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                </div>
+              </div>
+            )}
+          </div>
+
           <Section title="Preview">
             {previewSrc ? (
               comparingEnhancers ? (() => {
@@ -1658,7 +1772,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               })() : (
                 <InteractivePreview 
                   beforeSrc={rawUrl} 
-                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)} 
+                  afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))} 
                   faces={previewFaces}
                   splitView={splitView}
                   compare={compare}
@@ -1669,6 +1783,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   previewing={previewing}
                   previewSecs={previewSecs}
                   setIsPlaying={setIsPlaying}
+                  processing={progress.processing}
+                  liveFrame={progress.live_frame}
                 />
               )
             ) : (
@@ -1905,27 +2021,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             </div>
           </Section>
 
-          <Section title="Output settings & renders">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-              <div className="space-y-4">
-                <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
-              </div>
-              {out?.path && (
-                <div className="space-y-2">
-                  <div className="text-xs text-[var(--text-muted)]">Latest output</div>
-                  {out.kind === 'video'
-                    ? <video src={outUrl} controls className="w-full rounded-xl border border-white/5" />
-                    : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
-                  <div className="flex flex-wrap gap-2">
-                    <a href={outUrl} download
-                      className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
-                    <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </Section>
-
           <Section title="Batch Swapping Queue">
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs text-white/50">
@@ -1974,124 +2069,28 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             )}
           </Section>
 
-          {/* run bar */}
-          <div className="sticky bottom-0 py-3 z-30">
-            {progress.processing ? (() => {
-              const radius = 21;
-              const circumference = radius * 2 * Math.PI;
-              const strokeDashoffset = circumference - prog * circumference;
-              return (
-                <div className="rounded-2xl glass-panel p-4 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
-                  {/* Left: Circular Progress Ring & Info */}
-                  <div className="flex items-center gap-4">
-                    <div className={`relative flex items-center justify-center h-16 w-16 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_15px_var(--accent-glow)] animate-pulse' : ''}`}>
-                      <svg className="transform -rotate-90 w-12 h-12" viewBox="0 0 48 48">
-                        <circle
-                          stroke="rgba(255, 255, 255, 0.08)"
-                          fill="transparent"
-                          strokeWidth={3}
-                          r={radius}
-                          cx={24}
-                          cy={24}
-                        />
-                        <circle
-                          className="transition-all duration-300 ease-out"
-                          stroke="var(--accent)"
-                          fill="transparent"
-                          strokeWidth={3}
-                          strokeDasharray={`${circumference} ${circumference}`}
-                          style={{ strokeDashoffset }}
-                          r={radius}
-                          cx={24}
-                          cy={24}
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <span className="absolute text-xs font-black text-white tabular-nums">
-                        {Math.round(prog * 100)}%
-                      </span>
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-ping" />
-                        <span className="text-[10px] font-black uppercase tracking-wider text-[var(--accent)]">
-                          {progress.paused ? 'Paused' : 'Processing'}
-                        </span>
-                      </div>
-                      <div className="text-xs font-semibold text-white truncate max-w-[280px]">
-                        {progress.desc || 'Swapping faces…'}
-                      </div>
-                      {progress.error && <div className="text-[10px] text-red-400 font-medium">{progress.error}</div>}
-                    </div>
-                  </div>
-
-                  {/* Center: Live Telemetry HUD */}
-                  <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono bg-black/20 px-4 py-2 rounded-xl border border-white/5">
-                    <div className="flex flex-col">
-                      <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
-                      <span className="text-white font-bold tabular-nums">{fmtTime(elapsedMs)}</span>
-                    </div>
-                    <div className="h-6 w-px bg-white/10" />
-                    <div className="flex flex-col">
-                      <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
-                      <span className="text-emerald-400 font-bold tabular-nums">
-                        {etaMs > 0 ? fmtTime(etaMs) : '--:--'}
-                      </span>
-                    </div>
-                    {telemetry && (
-                      <>
-                        <div className="h-6 w-px bg-white/10" />
-                        <div className="flex flex-col relative group/telemetry cursor-help">
-                          <span className="text-[9px] uppercase tracking-wider text-white/40 font-bold">VRAM</span>
-                          <span className="text-blue-300 font-bold tabular-nums">
-                            {telemetry.vram_used} / {telemetry.vram_total} GB
-                          </span>
-                          
-                          {/* Hardware diagnostics tooltip hover card */}
-                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover/telemetry:block z-50 w-64 p-4 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-left font-sans">
-                            <h4 className="text-[9px] font-bold text-[var(--accent)] uppercase tracking-widest mb-2 border-b border-white/10 pb-1">System Telemetry</h4>
-                            <div className="space-y-1.5 text-xs text-white/80">
-                              <div className="flex justify-between gap-2"><span className="text-white/40">GPU:</span><span className="font-semibold text-white truncate max-w-[130px]" title={telemetry.gpu}>{telemetry.gpu}</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">RAM Used:</span><span className="font-semibold text-white">{telemetry.ram_used} / {telemetry.ram_total} GB</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">CPU Load:</span><span className="font-semibold text-white">{telemetry.cpu_percent}%</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">Active Threads:</span><span className="font-semibold text-white">{telemetry.threads}</span></div>
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Right: Actions */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    {progress.paused ? (
-                      <Button variant="primary" size="sm" onClick={resume}>▶ Resume</Button>
-                    ) : (
-                      <Button variant="secondary" size="sm" onClick={pause}>⏸ Pause</Button>
-                    )}
-                    <Button variant="stop" size="sm" onClick={stop}>⏹ Stop</Button>
-                  </div>
-                </div>
-              );
-            })() : (
-              <div className="rounded-2xl glass-panel p-4 flex items-center justify-between gap-4 shadow-2xl border border-white/5 w-full">
-                <div className="flex items-center gap-2">
-                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0}>▶ Start Swapping</Button>
-                  {maxFrames > 1 && (
-                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10">
-                      ⚡ Render 5s Preview
-                    </Button>
-                  )}
-                </div>
-                <div className="text-xs text-[var(--text-muted)] italic max-w-xs truncate text-right">
-                  {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
-                </div>
+          <Section title="Output settings & renders">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              <div className="space-y-4">
+                <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />
               </div>
-            )}
-          </div>
-        </div>
+              {out?.path && (
+                <div className="space-y-2">
+                  <div className="text-xs text-[var(--text-muted)]">Latest output</div>
+                  {out.kind === 'video'
+                    ? <video src={outUrl} controls className="w-full rounded-xl border border-white/5" />
+                    : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
+                  <div className="flex flex-wrap gap-2">
+                    <a href={outUrl} download
+                      className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
+                    <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Section>
 
+        </div>
       </div>
 
       {/* Paste routing dialog */}
@@ -2169,24 +2168,24 @@ function FileDrop({ label, accept, multiple, onFiles, busy, hint }) {
       onDrop={onDrop}
       className={`block ${busy ? 'cursor-wait pointer-events-none' : 'cursor-pointer group'}`}
     >
-      <div className={`px-4 py-8 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[var(--accent)]/60 bg-[var(--accent)]/[0.06]' : drag ? 'bg-[var(--accent)]/[0.1] scale-[0.98] animate-drag-pulse' : 'border-white/15 hover:border-[var(--accent)]/50 hover:bg-white/[0.02]'}`}>
+      <div className={`px-4 py-3.5 rounded-xl border-2 border-dashed text-center transition-all duration-300 ${busy ? 'border-[var(--accent)]/60 bg-[var(--accent)]/[0.06]' : drag ? 'bg-[var(--accent)]/[0.1] scale-[0.98]' : 'border-white/15 hover:border-[var(--accent)]/50 hover:bg-white/[0.02]'}`}>
         {busy ? (
-          <span className="inline-flex items-center gap-2 text-sm font-medium text-white/80">
-            <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-white/80">
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
             Uploading & analysing…
           </span>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-3 pointer-events-none">
-            <div className={`p-3.5 rounded-full bg-black/20 ${drag ? 'scale-110 text-[var(--accent)] shadow-[0_0_15px_var(--accent-glow)]' : 'text-white/40 group-hover:text-white/70 group-hover:bg-white/5'} transition-all duration-300`}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <div className="flex items-center justify-center gap-3 pointer-events-none">
+            <div className={`p-2 rounded-xl bg-black/20 ${drag ? 'scale-110 text-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'text-white/40 group-hover:text-white/70 group-hover:bg-white/5'} transition-all duration-300`}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="17 8 12 3 7 8"></polyline>
                 <line x1="12" y1="3" x2="12" y2="15"></line>
               </svg>
             </div>
-            <div>
-              <span className={`text-sm font-semibold tracking-wide ${drag ? 'text-[var(--accent)]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
-              {!drag && hint && <span className="block text-xs text-white/40 mt-1">{hint}</span>}
+            <div className="text-left">
+              <span className={`text-xs font-bold tracking-wide block ${drag ? 'text-[var(--accent)]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
+              {!drag && hint && <span className="block text-[10px] text-white/40 mt-0.5">{hint}</span>}
             </div>
           </div>
         )}
@@ -2374,7 +2373,9 @@ function InteractivePreview({
   maxFrames = 1,
   previewing = false,
   previewSecs = 0,
-  setIsPlaying
+  setIsPlaying,
+  processing = false,
+  liveFrame = null
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -2559,6 +2560,14 @@ function InteractivePreview({
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md text-xs font-bold text-white/95 tabular-nums border border-white/10 shadow-2xl">
             <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
             Rendering… {previewSecs}s
+          </div>
+        </div>
+      )}
+      {processing && liveFrame && (
+        <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-black tracking-widest text-white border border-[var(--accent)]/30 shadow-2xl animate-pulse uppercase">
+            <span className="h-2 w-2 rounded-full bg-white animate-ping" />
+            Live Swapping
           </div>
         </div>
       )}

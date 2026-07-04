@@ -1124,18 +1124,26 @@ class ProcessMgr():
                     return None
             self.num_frames_no_face = 0
             self.last_swapped_frame = temp_frame.copy()
+            roop.globals.latest_swapped_frame = temp_frame.copy()
             return temp_frame
         if roop.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
             if self.last_swapped_frame is not None and self.num_frames_no_face < self.options.max_num_reuse_frame:
                 self.num_frames_no_face += 1
-                return self.last_swapped_frame.copy()
+                ret = self.last_swapped_frame.copy()
+                roop.globals.latest_swapped_frame = ret.copy()
+                return ret
+            roop.globals.latest_swapped_frame = frame.copy()
             return frame
         elif roop.globals.no_face_action == eNoFaceAction.USE_ORIGINAL_FRAME:
+            roop.globals.latest_swapped_frame = frame.copy()
             return frame
         if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME:
             return None
         else:
-            return self.retry_rotated(frame)
+            ret = self.retry_rotated(frame)
+            if ret is not None:
+                roop.globals.latest_swapped_frame = ret.copy()
+            return ret
 
     def retry_rotated(self, frame):
         copyframe = frame.copy()

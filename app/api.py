@@ -120,6 +120,18 @@ def _bgr_to_dataurl(bgr) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
 
 
+def _bgr_to_jpg_dataurl(bgr) -> str:
+    if bgr is None:
+        return ""
+    try:
+        ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+        if not ok:
+            return ""
+        return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        return ""
+
+
 def _mask_offsets_from_cfg():
     c = roop_globals.CFG
     return [c.mask_top, c.mask_bottom, c.mask_left, c.mask_right,
@@ -817,6 +829,11 @@ def _run_swap(payload):
     _update_mask_offsets_from_payload(payload)
     roop_globals.pause = False
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
+    if hasattr(roop_globals, "latest_swapped_frame"):
+        try:
+            delattr(roop_globals, "latest_swapped_frame")
+        except Exception:
+            pass
     try:
         prepare_environment()
         if roop_globals.CFG.clear_output:
@@ -958,7 +975,12 @@ def resume_swap():
 
 @app.get("/api/progress")
 def get_progress():
-    return {**_progress, "output": _last_output}
+    live_frame = ""
+    if _progress["processing"] and hasattr(roop_globals, "latest_swapped_frame"):
+        frame = getattr(roop_globals, "latest_swapped_frame", None)
+        if frame is not None:
+            live_frame = _bgr_to_jpg_dataurl(frame)
+    return {**_progress, "output": _last_output, "live_frame": live_frame}
 
 
 @app.get("/api/output")
