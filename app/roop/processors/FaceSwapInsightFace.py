@@ -462,6 +462,10 @@ class FaceSwapInsightFace():
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
         latent = self._compute_source_input(source_face)
+        if latent is None:
+            # Image-source model with no source crop → no-op (return the input
+            # target crops unchanged), matching Run's fallback.
+            return [t[0] for t in temp_frames]
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
         latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512] or [B,3,Hs,Ws]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
@@ -479,6 +483,9 @@ class FaceSwapInsightFace():
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
         latents = [self._compute_source_input(src) for src, _tgt, _blob in requests]
+        if any(l is None for l in latents):
+            # Image-source model with a crop-less source → no-op passthrough.
+            return [r[2][0] for r in requests]
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
