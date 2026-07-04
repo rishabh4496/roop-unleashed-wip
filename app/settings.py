@@ -170,6 +170,7 @@ class Settings:
         # Detection refinements
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
         self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
+        self.detector_engine = self.default_get(data, 'detector_engine', 'scrfd')
 
 
 
@@ -248,6 +249,7 @@ class Settings:
             'color_transfer_mode': self.color_transfer_mode,
             'refine_landmarks': self.refine_landmarks,
             'rescue_small_faces': self.rescue_small_faces,
+            'detector_engine': self.detector_engine,
         }
         # Atomic write: dump to a temp file and replace. Writing config.yaml in
         # place means a crash mid-write truncates it, and load()'s fallback then

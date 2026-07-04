@@ -48,6 +48,10 @@ refine_landmarks = False
 # Small-face rescue: when a frame yields no detections, retry on a 2x upscale
 # so tiny/distant faces get picked up (without raising the global det size).
 rescue_small_faces = False
+# Face detector engine: 'scrfd' (insightface default) or 'yoloface' (better on
+# steep profiles / occluded faces). yoloface reuses buffalo_l's aux models for
+# identity + landmarks.
+detector_engine = 'scrfd'
 
 no_face_action = 1
 

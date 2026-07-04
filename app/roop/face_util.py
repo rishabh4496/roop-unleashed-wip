@@ -109,6 +109,11 @@ def release_face_analyser():
         FACE_ANALYSER = None
         FACE_ANALYSER_POOL = []
         _ANALYSER_Q = None
+    try:
+        from roop.yoloface import release_detector
+        release_detector()
+    except Exception:
+        pass
 
 
 def get_face_analyser() -> Any:
@@ -197,16 +202,51 @@ def _rescue_upscaled(frame: Frame):
     return None
 
 
+def _hybrid_yolo_faces(frame, fa):
+    """Detect with YOLOFace, then fill identity/landmarks with buffalo_l's aux
+    models — mirrors insightface FaceAnalysis.get but swaps the detector. Lets
+    the alternate detector feed the exact same Face objects the pipeline
+    expects (embedding, landmark_2d_106, optional 68)."""
+    from roop.yoloface import get_detector
+    from insightface.app.common import Face
+    det = get_detector()
+    det_size = _desired_det_size()[0]
+    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
+    bboxes, kpss = det.detect(frame, det_size=det_size, det_thresh=det_thresh)
+    if bboxes.shape[0] == 0:
+        return []
+    ret = []
+    for i in range(bboxes.shape[0]):
+        face = Face(bbox=bboxes[i, 0:4], kps=kpss[i], det_score=bboxes[i, 4])
+        for taskname, model in fa.models.items():
+            if taskname == 'detection':
+                continue
+            model.get(frame, face)
+        ret.append(face)
+    return ret
+
+
+def _detect_faces(frame):
+    """Run the selected detector engine and return raw Face objects (unsorted).
+    Applies the small-face rescue and 68-point refinement options."""
+    engine = getattr(roop.globals, 'detector_engine', 'scrfd')
+    with lease_face_analyser() as fa:
+        if engine == 'yoloface':
+            faces = _hybrid_yolo_faces(frame, fa)
+        else:
+            faces = fa.get(frame)
+    if not faces and getattr(roop.globals, 'rescue_small_faces', False):
+        faces = _rescue_upscaled(frame)
+    if faces and getattr(roop.globals, 'refine_landmarks', False):
+        for f in faces:
+            _refine_kps_from_68(f)
+    return faces or []
+
+
 def get_first_face(frame: Frame) -> Any:
     try:
-        with lease_face_analyser() as fa:
-            faces = fa.get(frame)
-        if not faces and getattr(roop.globals, 'rescue_small_faces', False):
-            faces = _rescue_upscaled(frame)
+        faces = _detect_faces(frame)
         if faces:
-            if getattr(roop.globals, 'refine_landmarks', False):
-                for f in faces:
-                    _refine_kps_from_68(f)
             return min(faces, key=lambda x: x.bbox[0])
     except Exception:
         pass
@@ -215,14 +255,8 @@ def get_first_face(frame: Frame) -> Any:
 
 def get_all_faces(frame: Frame) -> Any:
     try:
-        with lease_face_analyser() as fa:
-            faces = fa.get(frame)
-        if not faces and getattr(roop.globals, 'rescue_small_faces', False):
-            faces = _rescue_upscaled(frame)
+        faces = _detect_faces(frame)
         if faces:
-            if getattr(roop.globals, 'refine_landmarks', False):
-                for f in faces:
-                    _refine_kps_from_68(f)
             return sorted(faces, key=lambda x: x.bbox[0])
         return []
     except Exception:

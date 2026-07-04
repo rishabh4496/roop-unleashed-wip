@@ -381,7 +381,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
     ctm: p.color_transfer_mode,
-    rl: p.refine_landmarks, rsf: p.rescue_small_faces,
+    rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
     dds: p.default_det_size,
     fds: p.face_detector_size,
     fdt: p.face_detector_threshold,
@@ -492,6 +492,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         color_transfer_mode: p.color_transfer_mode,
         refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+        detector_engine: p.detector_engine,
         face_mapping: getFaceMappingArray(),
         mask_top: p.mask_top,
         mask_bottom: p.mask_bottom,
@@ -562,7 +563,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
         ctm: localParams.color_transfer_mode,
-        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces,
+        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
@@ -609,6 +610,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           color_transfer_mode: p.color_transfer_mode,
           refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          detector_engine: p.detector_engine,
           face_mapping: getFaceMappingArray(),
           mask_top: p.mask_top,
           mask_bottom: p.mask_bottom,
@@ -1250,10 +1252,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
-          <Select 
-            label="Face detection resolution" 
-            info="Higher resolution improves detection of small/distant faces, but runs slower. 640px is standard." 
-            value={p.face_detector_size || '640'} 
+          <Select
+            label="Detector engine"
+            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces; it reuses the same identity/landmark models. First YOLOFace use downloads a small model."
+            value={p.detector_engine || 'scrfd'}
+            onChange={(v) => set('detector_engine', v)}
+            options={meta.detector_engines || ['scrfd', 'yoloface']}
+          />
+          <Select
+            label="Face detection resolution"
+            info="Higher resolution improves detection of small/distant faces, but runs slower. 640px is standard."
+            value={p.face_detector_size || '640'}
             onChange={(v) => {
               set('face_detector_size', v);
               set('default_det_size', v === '640' || v === '960' || v === '1280');

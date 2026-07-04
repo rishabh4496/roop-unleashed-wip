@@ -317,6 +317,7 @@ def get_meta():
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
         "color_transfer_modes": ["none", "rct", "lct", "mkl"],
+        "detector_engines": ["scrfd", "yoloface"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
         "video_methods": ["Extract Frames to media", "In-Memory processing"],
@@ -768,6 +769,7 @@ def preview(payload: dict = Body(...)):
     roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
     roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
     roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
+    roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
 
     faces_list = []
     try:
@@ -797,8 +799,8 @@ def preview(payload: dict = Body(...)):
         roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", getattr(roop_globals.CFG, "color_transfer_mode", "rct"))
-        roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
-        roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
+        # refine_landmarks / rescue_small_faces / detector_engine already set
+        # above (before the box-overlay detection) so both paths agree.
 
         swap_model = payload.get("swap_model", "inswapper")
         mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))
@@ -898,6 +900,9 @@ def _run_swap(payload):
         roop_globals.subsample_size = int(str(upsample)[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", roop_globals.CFG.color_transfer_mode)
+        roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", roop_globals.CFG.refine_landmarks))
+        roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", roop_globals.CFG.rescue_small_faces))
+        roop_globals.detector_engine = payload.get("detector_engine", roop_globals.CFG.detector_engine)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None
