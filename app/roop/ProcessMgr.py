@@ -1029,7 +1029,9 @@ class ProcessMgr():
                             return
                         self._tls.t = _base_global + ci
                         try:
-                            self.process_frame(_combined[ci], frame_idx=None)
+                            # Pass the real frame index so the temporal-detection /
+                            # SAM2 / identity-track caches stay usable in this path.
+                            self.process_frame(_combined[ci], frame_idx=_base_global + ci)
                         except Exception:
                             pass
                     for ci in range(ca, _base + b):
@@ -1038,7 +1040,7 @@ class ProcessMgr():
                         gi = _base_global + ci
                         self._tls.t = gi
                         try:
-                            out = self.process_frame(_combined[ci], frame_idx=None)
+                            out = self.process_frame(_combined[ci], frame_idx=gi)
                         except Exception:
                             out = _combined[ci]
                         _results[gi] = out if out is not None else _combined[ci]
