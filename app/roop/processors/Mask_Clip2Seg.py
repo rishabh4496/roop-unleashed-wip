@@ -16,7 +16,10 @@ class Mask_Clip2Seg():
     plugin_options:dict = None
     model_clip = None
 
-    processorname = 'clip2seg'
+    # Must match the ProcessMgr.plugins key ('mask_clip2seg') — otherwise
+    # reuseOldProcessor never matches (CLIP reloads every initialize) and the
+    # dense-masker lateral-profile path in process_mask skips this engine.
+    processorname = 'mask_clip2seg'
     type = 'mask'
 
 

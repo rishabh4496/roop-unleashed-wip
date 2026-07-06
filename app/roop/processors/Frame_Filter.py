@@ -4,7 +4,9 @@ import numpy as np
 from roop.typing import Frame
 
 class Frame_Filter():
-    processorname = 'generic_filter'
+    # Must match the ProcessMgr.plugins key ('filter_generic') so
+    # reuseOldProcessor can find it across initialize calls.
+    processorname = 'filter_generic'
     type = 'frame_processor'
 
     plugin_options:dict = None

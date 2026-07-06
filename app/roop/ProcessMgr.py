@@ -121,7 +121,9 @@ class eNoFaceAction():
     USE_ORIGINAL_FRAME = 0
     RETRY_ROTATED = 1
     SKIP_FRAME = 2
-    SKIP_FRAME_IF_DISSIMILAR = 3,
+    # NB: no trailing comma — `3,` makes this a tuple and every `==` against the
+    # int no_face_action silently fails ("Skip Frame if no similar face" never fired).
+    SKIP_FRAME_IF_DISSIMILAR = 3
     USE_LAST_SWAPPED = 4
 
 
@@ -2135,7 +2137,9 @@ class ProcessMgr():
         upscale = 512
         orig_width = fake_frame.shape[1]
         if orig_width != upscale:
-            fake_frame = cv2.resize(fake_frame, (upscale, upscale), cv2.INTER_CUBIC)
+            # interpolation must be a keyword — positionally it lands in `dst`
+            # and is silently ignored (resize falls back to INTER_LINEAR).
+            fake_frame = cv2.resize(fake_frame, (upscale, upscale), interpolation=cv2.INTER_CUBIC)
         mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
@@ -2224,6 +2228,11 @@ class ProcessMgr():
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
         paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
         if upsk_face is not fake_face:
+            # IM is scaled to upsk_face's resolution — bring fake_face to the same
+            # size first, or the blend layer lands misaligned (quarter-size ghost
+            # with GPEN 1024/2048, whose output is larger than the 512 swap crop).
+            if fake_face.shape[:2] != upsk_face.shape[:2]:
+                fake_face = cv2.resize(fake_face, (upsk_face.shape[1], upsk_face.shape[0]), interpolation=cv2.INTER_CUBIC)
             fake_face = cv2.warpAffine(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
 

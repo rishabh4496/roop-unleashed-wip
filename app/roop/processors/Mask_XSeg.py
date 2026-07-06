@@ -65,7 +65,7 @@ class Mask_XSeg():
 
 
     def Run(self, img1, keywords:str) -> Frame:
-        temp_frame = cv2.resize(img1, (256, 256), cv2.INTER_CUBIC)
+        temp_frame = cv2.resize(img1, (256, 256), interpolation=cv2.INTER_CUBIC)
         temp_frame = temp_frame.astype('float32') / 255.0
         temp_frame = temp_frame[None, ...]
         if self.pool is not None:

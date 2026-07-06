@@ -16,7 +16,12 @@ def parse(text: str, data: dict):
     matches = re.findall(pattern, text)
 
     for match in matches:
-        replacement = template_functions[match](data)
+        # Unknown tokens (e.g. a typo like {index} instead of {i}) are left
+        # verbatim instead of raising KeyError and aborting the whole batch.
+        fn = template_functions.get(match)
+        if fn is None:
+            continue
+        replacement = fn(data)
         if replacement is not False:
             text = text.replace(f"{{{match}}}", replacement)
 

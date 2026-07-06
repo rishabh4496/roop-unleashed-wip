@@ -40,7 +40,7 @@ class Enhance_GFPGAN():
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
         # preprocess
         input_size = temp_frame.shape[1]
-        temp_frame = cv2.resize(temp_frame, (512, 512), cv2.INTER_CUBIC)
+        temp_frame = cv2.resize(temp_frame, (512, 512), interpolation=cv2.INTER_CUBIC)
 
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
         temp_frame = temp_frame.astype('float32') / 255.0

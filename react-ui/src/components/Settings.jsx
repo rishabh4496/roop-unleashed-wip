@@ -26,7 +26,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Toggle label="Clear output folder before each run" checked={!!p.clear_output} onChange={(v) => set('clear_output', v)} />
           <TextInput label="Server name" info="blank = local" value={p.server_name} onChange={(v) => set('server_name', v)} placeholder="127.0.0.1" />
           <TextInput label="Server port" info="0 = default" type="number" value={p.server_port} onChange={(v) => set('server_port', v)} />
-          <TextInput label="Filename output template" info="{file} {time} {index} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
+          <TextInput label="Filename output template" info="{file} {time} {date} {i} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
         </Section>
 
         <Section title="Appearance">

@@ -12,7 +12,9 @@ class Frame_Colorizer():
     devicename = None
     prev_type = None
 
-    processorname = 'deoldify'
+    # Must match the ProcessMgr.plugins key ('colorizer') so reuseOldProcessor
+    # can find it instead of rebuilding the session every initialize.
+    processorname = 'colorizer'
     type = 'frame_colorizer'
     
 

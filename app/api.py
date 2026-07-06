@@ -617,7 +617,7 @@ def target_preview(index: int = 0, frame: int = 1, width: int = 0, fmt: str = "j
     larger, which made timeline scrubbing feel sluggish. Pass fmt=png for a
     lossless frame, width=N for a server-side downscale (storyboard / hover
     thumbnails don't need full-resolution frames)."""
-    if index >= len(list_files_process):
+    if index < 0 or index >= len(list_files_process):
         return JSONResponse(status_code=404, content={"message": "no target"})
     filename = list_files_process[index].filename
     if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
