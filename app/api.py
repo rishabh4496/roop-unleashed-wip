@@ -1505,5 +1505,9 @@ def get_telemetry():
 
 
 def run_api():
-    uvicorn.run(app, host="127.0.0.1", port=8001, log_level="error")
+    try:
+        port = int(os.environ.get("ROOP_API_PORT", 8001))
+    except ValueError:
+        port = 8001
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
 

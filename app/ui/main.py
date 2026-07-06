@@ -481,7 +481,10 @@ def run():
         server_name = roop.globals.CFG.server_name
         if server_name is None or len(server_name) < 1:
             server_name = None
-        server_port = roop.globals.CFG.server_port
+        try:
+            server_port = int(os.environ.get("ROOP_GRADIO_PORT", roop.globals.CFG.server_port))
+        except ValueError:
+            server_port = roop.globals.CFG.server_port
         if server_port <= 0:
             server_port = None
         ssl_verify = True

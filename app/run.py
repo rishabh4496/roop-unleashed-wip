@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 
 import os
+import sys
+
+# Force UTF-8 encoding for standard streams to avoid UnicodeEncodeError on Windows terminals with non-UTF-8 locale
+if sys.platform == 'win32':
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 os.environ["AV_LOG_LEVEL"] = "error"
 

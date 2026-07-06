@@ -1,5 +1,5 @@
-// Thin client for the FastAPI backend (app/api.py) on port 8001.
-export const API = 'http://127.0.0.1:8001';
+// Thin client for the FastAPI backend (app/api.py) proxied via Vite.
+export const API = window.location.origin;
 
 async function handle(res) {
   if (!res.ok) {
