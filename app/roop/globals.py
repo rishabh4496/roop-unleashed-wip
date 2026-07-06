@@ -48,10 +48,16 @@ refine_landmarks = False
 # Small-face rescue: when a frame yields no detections, retry on a 2x upscale
 # so tiny/distant faces get picked up (without raising the global det size).
 rescue_small_faces = False
-# Face detector engine: 'scrfd' (insightface default) or 'yoloface' (better on
-# steep profiles / occluded faces). yoloface reuses buffalo_l's aux models for
-# identity + landmarks.
+# Face detector engine: 'scrfd' (insightface default), 'yoloface' (better on
+# steep profiles / occluded faces) or 'retinaface' (highest recall on hard
+# poses/lighting). The alternates reuse buffalo_l's aux models for identity +
+# landmarks.
 detector_engine = 'scrfd'
+# Temporal detection (video anti-flicker): pre-pass detects+tracks every frame,
+# gap-fills short detection misses (<= ROOP_TEMPORAL_GAP frames) and smooths
+# kps/lm106/bbox per track when stabilization is on; the swap pass then reads
+# the cached faces instead of re-detecting, so the swap can't blink out.
+temporal_detection = False
 
 no_face_action = 1
 

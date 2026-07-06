@@ -1254,10 +1254,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
           <Select
             label="Detector engine"
-            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces; it reuses the same identity/landmark models. First YOLOFace use downloads a small model."
+            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces. RetinaFace has the highest recall on hard poses/lighting (fewest missed detections → less swap blink), slightly slower. All engines reuse the same identity/landmark models; alternates download a small model on first use."
             value={p.detector_engine || 'scrfd'}
             onChange={(v) => set('detector_engine', v)}
-            options={meta.detector_engines || ['scrfd', 'yoloface']}
+            options={meta.detector_engines || ['scrfd', 'yoloface', 'retinaface']}
           />
           <Select
             label="Face detection resolution"
@@ -1322,6 +1322,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         <Section title="Video parameters">
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
+          <Toggle label="🛡️ Temporal detection (anti-flicker)" info="Video (In-Memory method): one tracked detection pre-pass over the clip. Short detection misses (≤10 frames) are gap-filled by interpolating the face's position, so the swap can't blink out; with 'Stabilize face' also on, keypoints AND mask/mouth landmarks are smoothed per person. The swap pass then skips per-frame detection and stays multi-threaded. Includes identity locking when that toggle is on." checked={!!p.temporal_detection} onChange={(v) => set('temporal_detection', v)} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
           <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
           {p.stabilize_face && (

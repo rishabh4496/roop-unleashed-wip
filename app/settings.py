@@ -171,6 +171,9 @@ class Settings:
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
         self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
         self.detector_engine = self.default_get(data, 'detector_engine', 'scrfd')
+        # Temporal detection pre-pass (video anti-flicker): tracked detection with
+        # gap-fill so the swap can't blink out on missed detections.
+        self.temporal_detection = self.default_get(data, 'temporal_detection', False)
         # Advanced perf knobs (env-backed; 'auto' = leave launcher/auto-tune
         # behaviour untouched). Applied to os.environ at startup by run.py, so
         # changes take effect after an app restart.
@@ -258,6 +261,7 @@ class Settings:
             'refine_landmarks': self.refine_landmarks,
             'rescue_small_faces': self.rescue_small_faces,
             'detector_engine': self.detector_engine,
+            'temporal_detection': self.temporal_detection,
             'perf_trt_pool': self.perf_trt_pool,
             'perf_detmask_pool': self.perf_detmask_pool,
             'perf_encoder_preset': self.perf_encoder_preset,

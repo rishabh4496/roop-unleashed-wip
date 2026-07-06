@@ -114,6 +114,11 @@ def release_face_analyser():
         release_detector()
     except Exception:
         pass
+    try:
+        from roop.retinaface import release_detector as _release_retina
+        _release_retina()
+    except Exception:
+        pass
 
 
 def get_face_analyser() -> Any:
@@ -202,17 +207,13 @@ def _rescue_upscaled(frame: Frame):
     return None
 
 
-def _hybrid_yolo_faces(frame, fa):
-    """Detect with YOLOFace, then fill identity/landmarks with buffalo_l's aux
-    models — mirrors insightface FaceAnalysis.get but swaps the detector. Lets
-    the alternate detector feed the exact same Face objects the pipeline
-    expects (embedding, landmark_2d_106, optional 68)."""
-    from roop.yoloface import get_detector
+def _hybrid_detector_faces(frame, fa, bboxes, kpss):
+    """Wrap raw detector output (bbox + 5 kps per face) into full Face objects
+    using buffalo_l's aux models (recognition + 106/68 landmarks) — mirrors
+    insightface FaceAnalysis.get but with the detector swapped out. Lets any
+    alternate detector feed the exact same Face objects the pipeline expects
+    (embedding, landmark_2d_106, optional 68)."""
     from insightface.app.common import Face
-    det = get_detector()
-    det_size = _desired_det_size()[0]
-    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
-    bboxes, kpss = det.detect(frame, det_size=det_size, det_thresh=det_thresh)
     if bboxes.shape[0] == 0:
         return []
     ret = []
@@ -226,6 +227,23 @@ def _hybrid_yolo_faces(frame, fa):
     return ret
 
 
+def _hybrid_yolo_faces(frame, fa):
+    from roop.yoloface import get_detector
+    det = get_detector()
+    det_size = _desired_det_size()[0]
+    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
+    bboxes, kpss = det.detect(frame, det_size=det_size, det_thresh=det_thresh)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+
+
+def _hybrid_retinaface_faces(frame, fa):
+    from roop import retinaface
+    det_size = _desired_det_size()[0]
+    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
+    bboxes, kpss = retinaface.detect(frame, det_size=det_size, det_thresh=det_thresh)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+
+
 def _detect_faces(frame):
     """Run the selected detector engine and return raw Face objects (unsorted).
     Applies the small-face rescue and 68-point refinement options."""
@@ -233,6 +251,8 @@ def _detect_faces(frame):
     with lease_face_analyser() as fa:
         if engine == 'yoloface':
             faces = _hybrid_yolo_faces(frame, fa)
+        elif engine == 'retinaface':
+            faces = _hybrid_retinaface_faces(frame, fa)
         else:
             faces = fa.get(frame)
     if not faces and getattr(roop.globals, 'rescue_small_faces', False):

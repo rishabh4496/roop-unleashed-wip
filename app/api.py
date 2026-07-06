@@ -317,7 +317,7 @@ def get_meta():
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
         "color_transfer_modes": ["none", "rct", "lct", "mkl"],
-        "detector_engines": ["scrfd", "yoloface"],
+        "detector_engines": ["scrfd", "yoloface", "retinaface"],
         "encoder_presets": ["auto", "ultrafast", "superfast", "veryfast", "faster",
                              "fast", "medium", "slow", "slower", "veryslow"],
         "pool_sizes": ["auto", "1", "2", "3", "4"],
@@ -907,6 +907,7 @@ def _run_swap(payload):
         roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", roop_globals.CFG.refine_landmarks))
         roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", roop_globals.CFG.rescue_small_faces))
         roop_globals.detector_engine = payload.get("detector_engine", roop_globals.CFG.detector_engine)
+        roop_globals.temporal_detection = bool(payload.get("temporal_detection", getattr(roop_globals.CFG, "temporal_detection", False)))
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

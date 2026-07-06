@@ -226,6 +226,11 @@ class ProcessMgr():
         self._tls = local()
         self._kps_stab_factory = None
         self._enh_stab_factory = None
+        # Temporal detection (anti-flicker): when active, swap_faces consumes
+        # the pre-pass faces per frame instead of re-detecting.
+        # _temporal_faces: {frame_idx (0-based within trim): [Face, ...]}
+        self._temporal_mode = False
+        self._temporal_faces = None
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -662,6 +667,16 @@ class ProcessMgr():
         self._precomputed_kps = None
         self._stab_active = False
         self._parallel_stab = False
+        # Temporal detection (anti-flicker): its pre-pass gap-fills detection
+        # misses AND applies the kps/lm106 smoothing itself, so the per-frame
+        # kps stabilizer and the kps-only 2-pass become redundant — disable
+        # them here so nothing double-smooths. (Enhancer flicker smoothing is
+        # output-based and unaffected.)
+        self._temporal_mode = bool(getattr(roop.globals, 'temporal_detection', False))
+        self._temporal_faces = None
+        if self._temporal_mode:
+            self.kps_stabilizer = None
+            self._kps_stab_factory = None
         _want_kps_stab = self.kps_stabilizer is not None
         _want_enh_stab = self.enh_stabilizer is not None
         _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
@@ -759,7 +774,25 @@ class ProcessMgr():
         # identities mid-video. Opt-in, only for "selected" mode on real video.
         self._track_mode = False
         self._track_assignments = {}
-        if (roop.globals.track_identities and not is_awebp
+
+        # Temporal detection pre-pass (anti-flicker): detect + track every frame
+        # once, gap-fill short detection misses and smooth kps/lm106/bbox per
+        # track; the (still parallel) swap pass then consumes the cached faces
+        # per frame instead of re-detecting, so the swap can't blink out on a
+        # missed detection. The same scan yields the identity-lock assignments,
+        # so no separate tracking pass is needed when both are enabled.
+        if self._temporal_mode:
+            try:
+                self._precompute_temporal(source_video, awebp_frames, frame_start, frame_end, frame_count)
+                self._track_mode = (roop.globals.track_identities
+                                    and self.options.swap_mode == "selected"
+                                    and len(self.target_face_datas) > 0)
+            except Exception as e:
+                print(f'[Temporal] detection pre-pass failed ({e}); using per-frame detection')
+                self._temporal_mode = False
+                self._temporal_faces = None
+
+        if (not self._temporal_mode and roop.globals.track_identities and not is_awebp
                 and self.options.swap_mode == "selected"
                 and len(self.target_face_datas) > 0):
             try:
@@ -829,6 +862,8 @@ class ProcessMgr():
             self.processed_queue.clear()
             self._precomputed_mode = False
             self._precomputed_kps = None
+            self._temporal_mode = False
+            self._temporal_faces = None
         _prof_report()
 
 
@@ -1231,17 +1266,25 @@ class ProcessMgr():
         ua = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
         return inter / ua if ua > 0 else 0.0
 
-    def _precompute_tracks(self, source_video, frame_start, frame_end, frame_count):
+    def _precompute_tracks(self, source_video, frame_start, frame_end, frame_count,
+                           awebp_frames=None, step=3, collect_obs=False,
+                           desc='Tracking identities'):
         """Identity-lock pass 1: build tracklets (IoU + embedding association)
         across the clip, assign each tracklet to ONE source via its mean embedding,
         and store {frame_idx: [(bbox_centroid, src_index, emb_mean), ...]} for pass 2 to look
         up by nearest centroid and embedding similarity — so a person keeps the same source
-        for the whole clip instead of being re-matched (and possibly flipped) every frame."""
+        for the whole clip instead of being re-matched (and possibly flipped) every frame.
+
+        Also serves as the shared scan for the temporal-detection pre-pass:
+        step=1 detects every frame, collect_obs=True stores each track's Face
+        observations ({frame_idx: Face} under track['obs']), and awebp_frames
+        feeds pre-decoded animated-WebP frames instead of a VideoCapture.
+        Returns the full track list (active + retired)."""
         import os
         from roop.face_util import get_all_faces
 
-        # 2. Skip frames step (N=3 runs detection on 33% of frames; N=1 scans all)
-        TRACK_STEP = 3
+        # Skip-frames step (N=3 runs detection on 33% of frames; N=1 scans all)
+        TRACK_STEP = max(1, int(step))
 
         # active = tracks seen within STALE frames (candidates for matching);
         # retired = older tracks, kept only for the final source assignment. This
@@ -1251,26 +1294,40 @@ class ProcessMgr():
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
         IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
-        print(f'[Track] identity pre-pass: scanning frames (step={TRACK_STEP}, low-res)...')
+        print(f'[Track] {desc}: scanning frames (step={TRACK_STEP})...')
 
         # Terminal progress bar (same style as the swap phase) so the pre-pass is
         # visible in the console too, not just the web UI.
         _bar_fmt = PROGRESS_BAR_FORMAT
-        pbar = tqdm(total=frame_count or 0, desc='Tracking identities', unit='frames',
+        pbar = tqdm(total=frame_count or 0, desc=desc, unit='frames',
                     dynamic_ncols=True, bar_format=_bar_fmt)
 
-        cap = cv2.VideoCapture(source_video)
+        cap = None
+        frame_iter = None
+        if awebp_frames is not None:
+            subset = awebp_frames[frame_start:frame_end] if frame_end > frame_start else awebp_frames[frame_start:]
+            frame_iter = iter(subset)
+        else:
+            cap = cv2.VideoCapture(source_video)
         try:
-            if frame_start and frame_start > 0:
+            if cap is not None and frame_start and frame_start > 0:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
             idx = 0
             while roop.globals.processing:
+                wait_while_paused()
+                if not roop.globals.processing:
+                    break
                 if frame_count and idx >= frame_count:
                     break
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    break
-                
+                if frame_iter is not None:
+                    frame = next(frame_iter, None)
+                    if frame is None:
+                        break
+                else:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        break
+
                 # Skip frames to speed up detection and save memory
                 if idx > 0 and idx % TRACK_STEP != 0:
                     idx += 1
@@ -1361,6 +1418,11 @@ class ProcessMgr():
                             best['emb_n'] += 1
 
                     used.add(best['id'])
+                    if collect_obs:
+                        # Keep the full Face for this frame — the temporal
+                        # pre-pass gap-fills/smooths these and the swap pass
+                        # consumes them directly.
+                        best.setdefault('obs', {})[idx] = face
                     centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
                                          (bbox[1] + bbox[3]) * 0.5], np.float32)
                     entries.append((centroid, best['id']))
@@ -1370,13 +1432,14 @@ class ProcessMgr():
                 # Drive the UI progress bar so the pre-pass isn't a silent black box.
                 if self.progress_gradio is not None and (idx % 10 == 0 or idx == 1):
                     tot = frame_count or idx
-                    self.progress_gradio((idx, tot), desc='Tracking identities',
+                    self.progress_gradio((idx, tot), desc=desc,
                                          total=tot, unit='frames')
                 if frame_count and idx >= frame_count:
                     break
         finally:
             pbar.close()
-            cap.release()
+            if cap is not None:
+                cap.release()
 
         tracks = active + retired
         # Assign each track to a source (person rank), once, by mean embedding.
@@ -1404,6 +1467,124 @@ class ProcessMgr():
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
               f'{matched} matched to a source')
+        return tracks
+
+
+    def _precompute_temporal(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
+        """Temporal detection pre-pass (anti-flicker).
+
+        Runs the tracked scan at step=1 collecting every frame's Face objects,
+        then per track:
+          - gap-fill: linearly interpolate bbox/kps/landmarks across detection
+            misses of up to ROOP_TEMPORAL_GAP frames (default 10), so a face
+            that blinks out of detection for a few frames keeps being swapped;
+          - smoothing: when "Stabilize face" is on, run kps/lm106/bbox through
+            the configured One Euro/EMA filter sequentially over the track
+            (subsumes the kps-only 2-pass, and additionally covers the mask
+            hull + mouth-restore landmarks, so mask/mouth edges stop shimmering).
+
+        swap_faces then reads self._temporal_faces[frame_idx] instead of
+        re-detecting — the swap pass stays fully multi-threaded and per-frame
+        detection cost leaves the hot loop entirely. The scan also fills
+        self._track_assignments, so identity locking rides along for free."""
+        try:
+            gap_max = int(os.environ.get('ROOP_TEMPORAL_GAP', '10') or '10')
+        except ValueError:
+            gap_max = 10
+        tracks = self._precompute_tracks(source_video, frame_start, frame_end, frame_count,
+                                         awebp_frames=awebp_frames, step=1, collect_obs=True,
+                                         desc='Analyzing faces')
+        self._temporal_faces = self._build_temporal_faces(tracks or [], gap_max)
+        n_frames = len(self._temporal_faces)
+        n_faces = sum(len(v) for v in self._temporal_faces.values())
+        n_interp = sum(1 for v in self._temporal_faces.values()
+                       for f in v if f.get('_interpolated'))
+        print(f'[Temporal] {len(tracks or [])} track(s); faces on {n_frames} frames '
+              f'({n_faces} total, {n_interp} gap-filled, gap limit {gap_max}).')
+
+
+    @staticmethod
+    def _interp_face(a, b, w, emb_mean):
+        """Linear blend of two Face observations at fraction w ∈ (0,1) of a→b.
+        NB: copy.copy() crashes on an insightface Face (its __getattr__ returns
+        None for missing dunders), so shallow-copy via the dict constructor."""
+        f = type(a)(a)
+
+        def _lerp(x, y):
+            return (1.0 - w) * np.asarray(x, np.float64) + w * np.asarray(y, np.float64)
+
+        f['bbox'] = _lerp(a.bbox, b.bbox).astype(np.float32)
+        if getattr(a, 'kps', None) is not None and getattr(b, 'kps', None) is not None:
+            f['kps'] = _lerp(a.kps, b.kps).astype(np.float32)
+        for key in ('landmark_2d_106', 'landmark_3d_68'):
+            va, vb = getattr(a, key, None), getattr(b, key, None)
+            if va is not None and vb is not None and np.shape(va) == np.shape(vb):
+                f[key] = _lerp(va, vb).astype(np.float32)
+        # Identity for embedding matching: the track's mean. Set the RAW
+        # embedding — normed_embedding is a read-only property derived from it.
+        f['embedding'] = emb_mean
+        f['det_score'] = np.float32(min(float(getattr(a, 'det_score', 0.6) or 0.6),
+                                        float(getattr(b, 'det_score', 0.6) or 0.6)))
+        f['_interpolated'] = True
+        return f
+
+
+    def _build_temporal_faces(self, tracks, gap_max):
+        """Build {frame_idx: [Face, ...]} from tracked observations: gap-fill
+        detection misses ≤ gap_max frames, then (when stabilize_face is on)
+        smooth kps/lm106/bbox per track with the configured filter. Faces per
+        frame are sorted by x so ordering matches get_all_faces."""
+        from roop.one_euro import OneEuroFilter
+        stab_on = bool(getattr(self.options, 'stabilize_face', False))
+        method = getattr(self.options, 'stabilize_method', 'one_euro')
+        mc = float(getattr(self.options, 'stabilize_min_cutoff', 0.05))
+        bt = float(getattr(self.options, 'stabilize_beta', 0.02))
+        out = {}
+        for t in tracks:
+            obs = t.get('obs') or {}
+            if not obs:
+                continue
+            emb_mean = np.asarray(t['emb_mean'], dtype=np.float32)
+            idxs = sorted(obs)
+            merged = dict(obs)
+            prev = None
+            for i in idxs:
+                if prev is not None and 1 < (i - prev) <= gap_max:
+                    a, b = obs[prev], obs[i]
+                    span = float(i - prev)
+                    for g in range(prev + 1, i):
+                        merged[g] = self._interp_face(a, b, (g - prev) / span, emb_mean)
+                prev = i
+            if stab_on:
+                # Per-track sequential smoothing. The default-arg captures keep
+                # each track's filter state independent of the loop variable.
+                if method == 'ema':
+                    def _smooth(key, val, _t, _state={}):
+                        prev_v = _state.get(key)
+                        cur = val if prev_v is None else 0.3 * val + 0.7 * prev_v
+                        _state[key] = cur
+                        return cur
+                else:
+                    def _smooth(key, val, _t, _filters={}):
+                        flt = _filters.get(key)
+                        if flt is None:
+                            flt = _filters[key] = OneEuroFilter(min_cutoff=mc, beta=bt)
+                        return flt(val, _t)
+                for i in sorted(merged):
+                    f = merged[i]
+                    if getattr(f, 'kps', None) is not None:
+                        f['kps'] = _smooth('kps', np.asarray(f.kps, np.float64), i).astype(np.float32)
+                    lm = getattr(f, 'landmark_2d_106', None)
+                    if lm is not None:
+                        f['landmark_2d_106'] = _smooth('lm106', np.asarray(lm, np.float64), i).astype(np.float32)
+                    bb = getattr(f, 'bbox', None)
+                    if bb is not None:
+                        f['bbox'] = _smooth('bbox', np.asarray(bb, np.float64), i).astype(np.float32)
+            for i, f in merged.items():
+                out.setdefault(i, []).append(f)
+        for i in out:
+            out[i].sort(key=lambda f: f.bbox[0])
+        return out
 
 
     def _precompute_stabilized_kps(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
@@ -1516,9 +1697,19 @@ class ProcessMgr():
         # for this frame in pass 1 instead of running the (stateful) stabilizer.
         precomp = stabilize and self._precomputed_mode and frame_idx is not None
 
+        # Temporal detection: consume the pre-pass faces for this frame instead
+        # of re-detecting (already gap-filled + smoothed; keeps workers parallel
+        # and detection out of the hot loop). None → normal per-frame detection.
+        _tfaces = None
+        if self._temporal_mode and frame_idx is not None and self._temporal_faces is not None:
+            _tfaces = self._temporal_faces.get(frame_idx) or []
+
         if self.options.swap_mode == "first":
-            with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
-                face = get_first_face(frame)
+            if _tfaces is not None:
+                face = min(_tfaces, key=lambda f: f.bbox[0]) if _tfaces else None
+            else:
+                with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
+                    face = get_first_face(frame)
             if face is None:
                 return num_faces_found, frame
             if precomp:
@@ -1530,8 +1721,11 @@ class ProcessMgr():
             del face
 
         else:
-            with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
-                faces = get_all_faces(frame)
+            if _tfaces is not None:
+                faces = list(_tfaces)   # copy — faces.clear() below must not wipe the cache
+            else:
+                with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
+                    faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
             if precomp:
