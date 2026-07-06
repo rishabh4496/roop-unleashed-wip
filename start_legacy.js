@@ -1,6 +1,6 @@
 module.exports = async (kernel) => {
   const GRADIO_PORT = await kernel.port()
-  const API_PORT = await kernel.port()
+  const API_PORT = GRADIO_PORT + 1
 
   return {
     daemon: true,
