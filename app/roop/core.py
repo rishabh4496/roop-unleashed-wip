@@ -274,7 +274,7 @@ def pre_check() -> bool:
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x4.onnx'])
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x2.onnx'])
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/lsdir_x4.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/facefusion/models-3.0.0/resolve/main/real_esrgan_x4_anime.onnx'])
+    util.conditional_download(download_directory_path, ['https://huggingface.co/deepghs/imgutils-models/resolve/main/real_esrgan/RealESRGAN_x4plus_anime_6B.onnx'])
     util.conditional_download(download_directory_path, ['https://huggingface.co/facefusion/models-3.3.0/resolve/main/ultra_sharp_2_x4.onnx'])
 
     print_cuda_info()  # Debug CUDA during pre-check
