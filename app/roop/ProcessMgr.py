@@ -2430,7 +2430,7 @@ class ProcessMgr():
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
 
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
@@ -2784,7 +2784,7 @@ class ProcessMgr():
         max_val = np.max(mask)
         return mask / max_val if max_val > 0 else mask
 
-    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0) -> np.ndarray:
+    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0, yaw:float=0.0, pitch:float=0.0) -> np.ndarray:
         min_x, min_y, max_x, max_y = mouth_box
         box_width = max_x - min_x
         box_height = max_y - min_y
@@ -2821,6 +2821,12 @@ class ProcessMgr():
             else:
                 feather_amount = max(1, min(30, box_width // 15, box_height // 15))
                 mask = self.create_feathered_mask(resized_mouth_cutout.shape, feather_amount)
+
+            # Smoothly fade out mouth restoration on steep angles to prevent double-lip layering artifacts
+            max_angle = max(abs(yaw), abs(pitch))
+            if max_angle > 25.0:
+                fade_factor = max(0.0, min(1.0, (38.0 - max_angle) / 13.0))
+                mask = mask * fade_factor
 
             mask = mask[:, :, np.newaxis]
             blended = (color_corrected_mouth * mask + roi * (1 - mask)).astype(np.uint8)
