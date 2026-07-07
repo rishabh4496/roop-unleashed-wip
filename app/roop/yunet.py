@@ -25,12 +25,12 @@ def get_detector():
             model_path = os.path.join(model_dir, _MODEL_FILE)
             # Create FaceDetectorYN instance. Default size (320, 320) will be dynamically adjusted during detect.
             det = cv2.FaceDetectorYN.create(
-                model=model_path,
-                config="",
-                inputSize=(320, 320),
-                scoreThreshold=0.6,
-                nmsThreshold=0.3,
-                topK=5000
+                model_path,
+                "",
+                (320, 320),
+                0.6,
+                0.3,
+                5000
             )
             _detector = det
     return _detector
@@ -52,7 +52,7 @@ def detect(frame, det_size=640, det_thresh=0.5):
     with _detect_lock:
         det.setInputSize((new_w, new_h))
         det.setScoreThreshold(det_thresh)
-        det.setNmsThreshold(nms_thresh)
+        det.setNMSThreshold(nms_thresh)
         _, faces = det.detect(resized)
         
     if faces is None or len(faces) == 0:
