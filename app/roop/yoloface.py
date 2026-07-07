@@ -98,7 +98,8 @@ class YoloFaceDetector:
 
         kps = kps_raw.reshape(-1, 5, 3)[:, :, :2] * inv
 
-        idx = _nms(boxes, score_raw, iou_thresh=0.4)
+        nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
+        idx = _nms(boxes, score_raw, iou_thresh=nms_thresh)
         boxes, score_raw, kps = boxes[idx], score_raw[idx], kps[idx]
 
         # Clamp to frame bounds.

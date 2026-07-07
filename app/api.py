@@ -317,7 +317,7 @@ def get_meta():
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
         "color_transfer_modes": ["none", "rct", "lct", "mkl"],
-        "detector_engines": ["scrfd", "yoloface", "retinaface"],
+        "detector_engines": ["scrfd", "yoloface", "retinaface", "retinaface_r50", "yunet"],
         "encoder_presets": ["auto", "ultrafast", "superfast", "veryfast", "faster",
                              "fast", "medium", "slow", "slower", "veryslow"],
         "pool_sizes": ["auto", "1", "2", "3", "4"],
@@ -771,6 +771,7 @@ def preview(payload: dict = Body(...)):
     roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
     roop_globals.face_detector_size = str(payload.get("face_detector_size", roop_globals.CFG.face_detector_size))
     roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
+    roop_globals.face_detector_nms = float(payload.get("face_detector_nms", roop_globals.CFG.face_detector_nms))
     roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
     roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
@@ -896,6 +897,7 @@ def _run_swap(payload):
         roop_globals.default_det_size = bool(payload.get("default_det_size", roop_globals.CFG.default_det_size))
         roop_globals.face_detector_size = str(payload.get("face_detector_size", roop_globals.CFG.face_detector_size))
         roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
+        roop_globals.face_detector_nms = float(payload.get("face_detector_nms", roop_globals.CFG.face_detector_nms))
         roop_globals.sam2_model_size = payload.get("sam2_model_size", getattr(roop_globals.CFG, "sam2_model_size", "tiny"))
         roop_globals.track_identities = bool(payload.get("track_identities", getattr(roop_globals.CFG, "track_identities", False)))
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", roop_globals.CFG.no_face_action))
@@ -1368,7 +1370,7 @@ async def extras_apply(file: UploadFile = File(...),
 # ── Extras: frame post-processors (AI upscale / colorize / stylize filters) ──
 # These reuse the roop frame processors that the swap pipeline never wired in.
 _FRAME_FILTERS = ["stylize", "detailenhance", "pencil", "cartoon", "C64"]
-_FRAME_UPSCALERS = ["esrganx2", "esrganx4", "lsdirx4"]
+_FRAME_UPSCALERS = ["esrganx2", "esrganx4", "esrgan_anime_x4", "ultrasharp_x4", "lsdirx4"]
 _FRAME_COLORIZERS = ["deoldify_artistic", "deoldify_stable"]
 
 

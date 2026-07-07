@@ -61,6 +61,14 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             value={p.face_detector_threshold ?? 0.60} 
             onChange={(v) => set('face_detector_threshold', v)} 
           />
+          <Slider 
+            label="Overlap NMS threshold" 
+            min={0.10} 
+            max={0.90} 
+            step={0.05} 
+            value={p.face_detector_nms ?? 0.40} 
+            onChange={(v) => set('face_detector_nms', v)} 
+          />
           <Slider label="Max threads" info="default 3" min={1} max={32} step={1} value={p.max_threads ?? 3} onChange={(v) => set('max_threads', v)} />
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} value={p.memory_limit ?? 0} onChange={(v) => set('memory_limit', v)} />
         </Section>

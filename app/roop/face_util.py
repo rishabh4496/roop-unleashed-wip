@@ -119,6 +119,11 @@ def release_face_analyser():
         _release_retina()
     except Exception:
         pass
+    try:
+        from roop.yunet import release_detector as _release_yunet
+        _release_yunet()
+    except Exception:
+        pass
 
 
 def get_face_analyser() -> Any:
@@ -236,11 +241,19 @@ def _hybrid_yolo_faces(frame, fa):
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
-def _hybrid_retinaface_faces(frame, fa):
+def _hybrid_retinaface_faces(frame, fa, model_type='10g'):
     from roop import retinaface
     det_size = _desired_det_size()[0]
     det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
-    bboxes, kpss = retinaface.detect(frame, det_size=det_size, det_thresh=det_thresh)
+    bboxes, kpss = retinaface.detect(frame, det_size=det_size, det_thresh=det_thresh, model_type=model_type)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+
+
+def _hybrid_yunet_faces(frame, fa):
+    from roop import yunet
+    det_size = _desired_det_size()[0]
+    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
+    bboxes, kpss = yunet.detect(frame, det_size=det_size, det_thresh=det_thresh)
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
@@ -248,11 +261,19 @@ def _detect_faces(frame):
     """Run the selected detector engine and return raw Face objects (unsorted).
     Applies the small-face rescue and 68-point refinement options."""
     engine = getattr(roop.globals, 'detector_engine', 'scrfd')
+    nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
     with lease_face_analyser() as fa:
+        for model in fa.models.values():
+            if hasattr(model, 'nms_thresh'):
+                model.nms_thresh = nms_thresh
         if engine == 'yoloface':
             faces = _hybrid_yolo_faces(frame, fa)
         elif engine == 'retinaface':
-            faces = _hybrid_retinaface_faces(frame, fa)
+            faces = _hybrid_retinaface_faces(frame, fa, model_type='10g')
+        elif engine == 'retinaface_r50':
+            faces = _hybrid_retinaface_faces(frame, fa, model_type='r50')
+        elif engine == 'yunet':
+            faces = _hybrid_yunet_faces(frame, fa)
         else:
             faces = fa.get(frame)
     if not faces and getattr(roop.globals, 'rescue_small_faces', False):

@@ -120,6 +120,7 @@ class Settings:
         self.default_det_size = self.default_get(data, 'default_det_size', True)
         self.face_detector_size = str(self.default_get(data, 'face_detector_size', '640' if self.default_det_size else '320'))
         self.face_detector_threshold = float(self.default_get(data, 'face_detector_threshold', 0.60))
+        self.face_detector_nms = float(self.default_get(data, 'face_detector_nms', 0.40))
         self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
         self.track_identities = self.default_get(data, 'track_identities', False)
         self.num_swap_steps = self.default_get(data, 'num_swap_steps', 1)
@@ -261,6 +262,7 @@ class Settings:
             'refine_landmarks': self.refine_landmarks,
             'rescue_small_faces': self.rescue_small_faces,
             'detector_engine': self.detector_engine,
+            'face_detector_nms': self.face_detector_nms,
             'temporal_detection': self.temporal_detection,
             'perf_trt_pool': self.perf_trt_pool,
             'perf_detmask_pool': self.perf_detmask_pool,

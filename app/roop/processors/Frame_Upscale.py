@@ -37,6 +37,12 @@ class Frame_Upscale():
             elif self.prev_type == "esrganx2":
                 model_path = resolve_relative_path('../models/Frame/real_esrgan_x2.onnx')
                 self.scale = 2
+            elif self.prev_type == "esrgan_anime_x4":
+                model_path = resolve_relative_path('../models/Frame/real_esrgan_x4_anime.onnx')
+                self.scale = 4
+            elif self.prev_type == "ultrasharp_x4":
+                model_path = resolve_relative_path('../models/Frame/ultra_sharp_2_x4.onnx')
+                self.scale = 4
             elif self.prev_type == "lsdirx4":
                 model_path = resolve_relative_path('../models/Frame/lsdir_x4.onnx')
                 self.scale = 4

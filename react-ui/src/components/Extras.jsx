@@ -7,7 +7,7 @@ const ROTATIONS = ['None', '90° Clockwise', '90° Counter-Clockwise', '180°'];
 
 // Human labels for the frame post-processor subtypes.
 const OP_LABELS = {
-  upscale: { esrganx2: 'Real-ESRGAN ×2', esrganx4: 'Real-ESRGAN ×4', lsdirx4: 'LSDIR ×4' },
+  upscale: { esrganx2: 'Real-ESRGAN ×2', esrganx4: 'Real-ESRGAN ×4', esrgan_anime_x4: 'Real-ESRGAN Anime ×4', ultrasharp_x4: 'Ultra-Sharp ×4', lsdirx4: 'LSDIR ×4' },
   colorize: { deoldify_artistic: 'DeOldify (Artistic)', deoldify_stable: 'DeOldify (Stable)' },
   filter: { stylize: 'Stylize', detailenhance: 'Detail Enhance', pencil: 'Pencil Sketch', cartoon: 'Cartoon', C64: 'C64 Palette' },
 };

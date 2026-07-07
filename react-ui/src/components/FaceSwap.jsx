@@ -385,6 +385,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     dds: p.default_det_size,
     fds: p.face_detector_size,
     fdt: p.face_detector_threshold,
+    fdn: p.face_detector_nms,
     fm: faceMapping,
     mask_top: p.mask_top,
     mask_bottom: p.mask_bottom,
@@ -490,6 +491,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+        face_detector_nms: p.face_detector_nms,
         color_transfer_mode: p.color_transfer_mode,
         refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
         detector_engine: p.detector_engine,
@@ -608,6 +610,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+          face_detector_nms: p.face_detector_nms,
           color_transfer_mode: p.color_transfer_mode,
           refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
           detector_engine: p.detector_engine,
@@ -1257,7 +1260,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces. RetinaFace has the highest recall on hard poses/lighting (fewest missed detections → less swap blink), slightly slower. All engines reuse the same identity/landmark models; alternates download a small model on first use."
             value={p.detector_engine || 'scrfd'}
             onChange={(v) => set('detector_engine', v)}
-            options={meta.detector_engines || ['scrfd', 'yoloface', 'retinaface']}
+            options={meta.detector_engines || ['scrfd', 'yoloface', 'retinaface', 'retinaface_r50', 'yunet']}
           />
           <Select
             label="Face detection resolution"
@@ -1277,6 +1280,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             step={0.05}
             value={num(p.face_detector_threshold, 0.60)}
             onChange={(v) => set('face_detector_threshold', v)}
+          />
+          <Slider
+            label="Overlap NMS threshold"
+            info="Lower values (e.g. 0.30) suppress close duplicates. Higher values (e.g. 0.60) allow detecting overlapping faces close to each other. Default 0.40"
+            min={0.10}
+            max={0.90}
+            step={0.05}
+            value={num(p.face_detector_nms, 0.40)}
+            onChange={(v) => set('face_detector_nms', v)}
           />
           <Toggle label="🎯 Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points — more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
           <Toggle label="🔬 Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
