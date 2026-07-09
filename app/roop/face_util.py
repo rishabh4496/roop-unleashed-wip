@@ -528,9 +528,21 @@ WARP_TEMPLATES = {
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):
     assert lmk.shape == (5, 2)
+    
+    # Estimate if face is lateral (turned sideways)
+    d_eye = np.linalg.norm(lmk[1] - lmk[0])
+    eye_center = (lmk[0] + lmk[1]) / 2.0
+    mouth_center = (lmk[3] + lmk[4]) / 2.0
+    d_mouth = np.linalg.norm(eye_center - mouth_center)
+    
+    # Frontal ratio is usually around 1.0-1.2; lower ratio means lateral face.
+    # Using AffineTransform for lateral profiles preserves vertical alignment
+    # by allowing independent scaling of horizontal and vertical axes.
+    use_affine = d_mouth > 0 and (d_eye / d_mouth) < 0.95
+
     if mode in WARP_TEMPLATES:
         dst = WARP_TEMPLATES[mode] * float(image_size)
-        tform = trans.SimilarityTransform()
+        tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
         tform.estimate(lmk, dst)
         return tform.params[0:2, :]
 
@@ -552,7 +564,7 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
 
     dst = arcface_dst * ratio
     dst[:, 0] += diff_x
-    tform = trans.SimilarityTransform()
+    tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
     tform.estimate(lmk, dst)
     M = tform.params[0:2, :]
     return M
