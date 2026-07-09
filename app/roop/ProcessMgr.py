@@ -15,7 +15,7 @@ from typing import Any, List, Callable
 from roop.typing import Frame, Face
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
-from queue import Queue, Full as _QueueFull
+from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
 
 # Serialises GPU inference across worker threads ONLY when required.
 #
@@ -1080,19 +1080,17 @@ class ProcessMgr():
                 base_global = chunk_start - base
                 n = max(1, min(threads, len(chunk)))
                 results = {}
-                _block_times = {}   # per sub-block wall time → barrier imbalance
+                _block_times = {}   # per WORKER wall time → imbalance (see dispatch note below)
 
                 # ── Closure-capture fix ──────────────────────────────────────
-                # _worker is re-defined each loop iteration. Without default-arg
+                # _process_block is re-defined each loop iteration. Without default-arg
                 # capture, every thread closure shares the same `combined`,
                 # `base`, `base_global` and `results` variables — dangerous when
                 # Python advances the outer loop before threads finish reading them.
                 # Binding them as default args freezes the values per chunk.
-                def _worker(a, b, _i=0,
-                            _combined=combined, _base=base,
-                            _base_global=base_global, _results=results,
-                            _bt=_block_times):
-                    _w0 = time.perf_counter()
+                def _process_block(a, b,
+                                    _combined=combined, _base=base,
+                                    _base_global=base_global, _results=results):
                     self._tls.kps = self._kps_stab_factory() if self._kps_stab_factory else None
                     self._tls.enh = self._enh_stab_factory() if self._enh_stab_factory else None
                     ca = _base + a
@@ -1117,20 +1115,51 @@ class ProcessMgr():
                             out = _combined[ci]
                         _results[gi] = out if out is not None else _combined[ci]
                         progress_cb()
-                    _bt[_i] = time.perf_counter() - _w0
 
-                step = len(chunk) / n
-                workers = []
-                for i in range(n):
-                    a = int(round(i * step))
-                    b = len(chunk) if i == n - 1 else int(round((i + 1) * step))
-                    workers.append(Thread(target=_worker, args=(a, b, i), name=f'stab_proc{i}'))
+                # ── Work-stealing block dispatch ──────────────────────────────
+                # Per-frame cost varies a lot (face count/size, masking, close-up
+                # rescue paths) and isn't temporally uniform, so statically handing
+                # each of the n threads one fixed contiguous range let one "unlucky"
+                # thread's range dominate the chunk's wall time while the other
+                # threads sat idle after finishing early (visible as the printed
+                # "imbalance" stat, sometimes >50% of the chunk's proc time). Splitting
+                # into more, smaller blocks and handing them out through a shared
+                # queue to a fixed pool of n workers lets idle workers pick up the
+                # next block instead of idling. Each block still gets its own
+                # WU-frame warm-up (unchanged, seam-free), so this costs more
+                # redundant warm-up compute as granularity increases — tune via
+                # ROOP_STAB_BLOCKS_PER_THREAD (default 1 = one block per thread,
+                # identical boundaries/output to the old static split).
+                try:
+                    _bpt = max(1, int(os.environ.get('ROOP_STAB_BLOCKS_PER_THREAD', '1') or '1'))
+                except ValueError:
+                    _bpt = 1
+                n_blocks = max(1, min(n * _bpt, len(chunk)))
+                bstep = len(chunk) / n_blocks
+                block_q = Queue()
+                for bi in range(n_blocks):
+                    a = int(round(bi * bstep))
+                    b = len(chunk) if bi == n_blocks - 1 else int(round((bi + 1) * bstep))
+                    if b > a:
+                        block_q.put((a, b))
+
+                def _runner(_wi, _bt=_block_times, _q=block_q, _pb=_process_block):
+                    _w0 = time.perf_counter()
+                    while roop.globals.processing:
+                        try:
+                            a, b = _q.get_nowait()
+                        except _QueueEmpty:
+                            break
+                        _pb(a, b)
+                    _bt[_wi] = time.perf_counter() - _w0
+
+                workers = [Thread(target=_runner, args=(i,), name=f'stab_proc{i}') for i in range(n)]
                 _t_proc0 = time.perf_counter()
                 for w in workers:
                     w.start()
                 for w in workers:
                     w.join()
-                _t_proc = time.perf_counter() - _t_proc0   # compute time (slowest block gates this)
+                _t_proc = time.perf_counter() - _t_proc0   # compute time (slowest worker gates this)
 
                 # Queue the chunk for the background write thread.
                 # Blocks only when FFMPEG is slower than frame processing
