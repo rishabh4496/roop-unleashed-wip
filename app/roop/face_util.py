@@ -795,9 +795,27 @@ def find_best_rotation(original_face, frame):
     x1m = min(frame.shape[1], x1 + offs)
     y1m = min(frame.shape[0], y1 + offs)
     cutout = frame[y0m:y1m, x0m:x1m]
-    
+
     if cutout.size < 1:
         return None, original_face, cutout
+
+    # Fast path: the incoming face already carries kps from the main detection,
+    # so measure its roll angle for FREE and skip the 4-rotation probe entirely
+    # when it's already upright. This is the overwhelmingly common case for
+    # normally-oriented video — the old code always ran 4 extra detection probes
+    # per face (in BOTH get_all_faces and process_face), which dominated the
+    # detect stage. A face within the upright tolerance can never be beaten by a
+    # 90°/180° rotation (those push it to ~90°/~180°, far outside tolerance), so
+    # returning "no rotation" here is behaviourally identical to the full probe —
+    # and callers ignore best_face when best_action is None anyway.
+    _okps = getattr(original_face, 'kps', None)
+    if _okps is not None and len(_okps) == 5:
+        _ec = (_okps[0] + _okps[1]) / 2.0
+        _mc = (_okps[3] + _okps[4]) / 2.0
+        _vup = _ec - _mc
+        _orig_angle = abs(math.atan2(_vup[0], -_vup[1]) * 180.0 / math.pi)
+        if _orig_angle < 25.0:
+            return None, original_face, cutout
 
     best_action = None
     best_face = None
