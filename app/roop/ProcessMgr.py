@@ -40,6 +40,7 @@ _DEBUG_POSE_LOG = False
 # cost. Zero overhead when disabled, so it never affects normal runs. A report
 # is printed once per video at the end of run_batch_inmem.
 from collections import defaultdict as _defaultdict
+from collections import deque as _deque
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
@@ -1375,6 +1376,133 @@ class ProcessMgr():
         pbar = tqdm(total=frame_count or 0, desc=desc, unit='frames',
                     dynamic_ncols=True, bar_format=_bar_fmt)
 
+        # Parallelize detection across the FaceAnalysis pool (see analysis_pooled()/
+        # lease_face_analyser() in face_util.py — "detection is ~43% of video time";
+        # each pool worker leases its own independent instance). This pre-pass used
+        # to always call get_all_faces() from this single thread, so ROOP_DETMASK_POOL
+        # never sped it up even when enabled — only the swap phase benefited from it.
+        # Frame decode stays sequential (one VideoCapture can't be read from multiple
+        # threads), but up to pool_workers detections now run concurrently, off the
+        # critical path. _consume() still runs in strict frame order (via the FIFO
+        # in_flight queue below), so the tracking result is bit-identical to the
+        # serial path — only the wall-clock schedule of the GPU calls changes. Falls
+        # back to the exact original single-threaded call when pooling is off.
+        pool_workers = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1
+        det_executor = (ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix='track_det')
+                        if pool_workers > 1 else None)
+
+        def _detect_one(fr):
+            with _gpu_guard(pooled=True):
+                return get_all_faces(fr) or []
+
+        def _consume(f_idx, faces):
+            nonlocal active, retired, next_id
+            # Retire tracks not seen for STALE frames so matching stays O(active).
+            if active:
+                fresh = []
+                for t in active:
+                    (fresh if t['last_seen'] >= f_idx - STALE else retired).append(t)
+                active = fresh
+            entries, used = [], set()
+            for face in faces:
+                bbox = np.asarray(face.bbox, dtype=np.float32)
+                emb = np.asarray(face.embedding, dtype=np.float32)
+                best, best_score = None, -1.0
+                for t in active:
+                    if t['id'] in used:
+                        continue
+                    dt = f_idx - t['last_seen']
+                    # Predict bbox location using linear velocity
+                    predicted_bbox = t['bbox']
+                    if 0 < dt <= 6 and t['vel'] is not None and np.any(t['vel']):
+                        proj = t['bbox'] + t['vel'] * dt
+                        # Ensure projection is a valid bounding box
+                        if proj[2] > proj[0] and proj[3] > proj[1]:
+                            predicted_bbox = proj
+
+                    iou = self._bbox_iou(bbox, predicted_bbox)
+                    if iou < IOU_MIN:
+                        continue
+
+                    cos_dist = compute_cosine_distance(t['emb_mean'], emb)
+                    if cos_dist > EMB_MAX:
+                        continue
+
+                    # Score: Higher IoU and lower Cosine Distance is better
+                    score = iou * (1.0 - cos_dist)
+                    if score > best_score:
+                        best, best_score = t, score
+
+                is_reid = False
+                if best is None:
+                    # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces
+                    best_reid, best_reid_dist = None, 0.45
+                    is_retired = False
+
+                    for t in active:
+                        if t['id'] in used:
+                            continue
+                        dist = compute_cosine_distance(t['emb_mean'], emb)
+                        if dist < best_reid_dist:
+                            best_reid, best_reid_dist = t, dist
+                            is_retired = False
+
+                    for t in retired:
+                        dist = compute_cosine_distance(t['emb_mean'], emb)
+                        if dist < best_reid_dist:
+                            best_reid, best_reid_dist = t, dist
+                            is_retired = True
+
+                    if best_reid is not None:
+                        best = best_reid
+                        if is_retired:
+                            retired.remove(best)
+                            active.append(best)
+                        is_reid = True
+
+                if best is None:
+                    best = {
+                        'id': next_id,
+                        'bbox': bbox,
+                        'prev_bbox': None,
+                        'vel': np.zeros(4, dtype=np.float32),
+                        'emb_sum': emb.astype(np.float64).copy(),
+                        'emb_n': 1,
+                        'emb_mean': emb.copy(),
+                        'last_seen': f_idx
+                    }
+                    next_id += 1
+                    active.append(best)
+                else:
+                    dt = f_idx - best['last_seen']
+                    if dt > 0 and not is_reid:
+                        best['vel'] = (bbox - best['bbox']) / dt
+                        best['prev_bbox'] = best['bbox']
+                    elif is_reid:
+                        best['vel'] = np.zeros(4, dtype=np.float32)
+                        best['prev_bbox'] = None
+                    best['bbox'] = bbox
+                    best['last_seen'] = f_idx
+
+                    # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
+                    dist = compute_cosine_distance(best['emb_mean'], emb)
+                    if dist <= 0.5:
+                        alpha = 0.25
+                        best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
+                        best['emb_sum'] += emb
+                        best['emb_n'] += 1
+
+                used.add(best['id'])
+                if collect_obs:
+                    # Keep the full Face for this frame — the temporal
+                    # pre-pass gap-fills/smooths these and the swap pass
+                    # consumes them directly.
+                    best.setdefault('obs', {})[f_idx] = face
+                centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
+                                     (bbox[1] + bbox[3]) * 0.5], np.float32)
+                entries.append((centroid, best['id']))
+            per_frame[f_idx] = entries
+
         cap = None
         frame_iter = None
         if awebp_frames is not None:
@@ -1382,6 +1510,9 @@ class ProcessMgr():
             frame_iter = iter(subset)
         else:
             cap = cv2.VideoCapture(source_video)
+        # (frame_idx, Future) pairs, oldest-submitted first — bounded to pool_workers
+        # and always drained in this order, so consumption stays in frame order.
+        in_flight = _deque()
         try:
             if cap is not None and frame_start and frame_start > 0:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
@@ -1407,113 +1538,16 @@ class ProcessMgr():
                     pbar.update(1)
                     continue
 
-                # Retire tracks not seen for STALE frames so matching stays O(active).
-                if active:
-                    fresh = []
-                    for t in active:
-                        (fresh if t['last_seen'] >= idx - STALE else retired).append(t)
-                    active = fresh
-                with _gpu_guard(pooled=analysis_pooled()):
-                    faces = get_all_faces(frame) or []
-                entries, used = [], set()
-                for face in faces:
-                    bbox = np.asarray(face.bbox, dtype=np.float32)
-                    emb = np.asarray(face.embedding, dtype=np.float32)
-                    best, best_score = None, -1.0
-                    for t in active:
-                        if t['id'] in used:
-                            continue
-                        dt = idx - t['last_seen']
-                        # Predict bbox location using linear velocity
-                        predicted_bbox = t['bbox']
-                        if 0 < dt <= 6 and t['vel'] is not None and np.any(t['vel']):
-                            proj = t['bbox'] + t['vel'] * dt
-                            # Ensure projection is a valid bounding box
-                            if proj[2] > proj[0] and proj[3] > proj[1]:
-                                predicted_bbox = proj
-                        
-                        iou = self._bbox_iou(bbox, predicted_bbox)
-                        if iou < IOU_MIN:
-                            continue
-                        
-                        cos_dist = compute_cosine_distance(t['emb_mean'], emb)
-                        if cos_dist > EMB_MAX:
-                            continue
-                        
-                        # Score: Higher IoU and lower Cosine Distance is better
-                        score = iou * (1.0 - cos_dist)
-                        if score > best_score:
-                            best, best_score = t, score
+                if det_executor is not None:
+                    in_flight.append((idx, det_executor.submit(_detect_one, frame)))
+                    if len(in_flight) >= pool_workers:
+                        done_idx, done_fut = in_flight.popleft()
+                        _consume(done_idx, done_fut.result())
+                else:
+                    with _gpu_guard(pooled=analysis_pooled()):
+                        faces = get_all_faces(frame) or []
+                    _consume(idx, faces)
 
-                    is_reid = False
-                    if best is None:
-                        # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces
-                        best_reid, best_reid_dist = None, 0.45
-                        is_retired = False
-                        
-                        for t in active:
-                            if t['id'] in used:
-                                continue
-                            dist = compute_cosine_distance(t['emb_mean'], emb)
-                            if dist < best_reid_dist:
-                                best_reid, best_reid_dist = t, dist
-                                is_retired = False
-                                
-                        for t in retired:
-                            dist = compute_cosine_distance(t['emb_mean'], emb)
-                            if dist < best_reid_dist:
-                                best_reid, best_reid_dist = t, dist
-                                is_retired = True
-                        
-                        if best_reid is not None:
-                            best = best_reid
-                            if is_retired:
-                                retired.remove(best)
-                                active.append(best)
-                            is_reid = True
-
-                    if best is None:
-                        best = {
-                            'id': next_id,
-                            'bbox': bbox,
-                            'prev_bbox': None,
-                            'vel': np.zeros(4, dtype=np.float32),
-                            'emb_sum': emb.astype(np.float64).copy(),
-                            'emb_n': 1,
-                            'emb_mean': emb.copy(),
-                            'last_seen': idx
-                        }
-                        next_id += 1
-                        active.append(best)
-                    else:
-                        dt = idx - best['last_seen']
-                        if dt > 0 and not is_reid:
-                            best['vel'] = (bbox - best['bbox']) / dt
-                            best['prev_bbox'] = best['bbox']
-                        elif is_reid:
-                            best['vel'] = np.zeros(4, dtype=np.float32)
-                            best['prev_bbox'] = None
-                        best['bbox'] = bbox
-                        best['last_seen'] = idx
-                        
-                        # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
-                        dist = compute_cosine_distance(best['emb_mean'], emb)
-                        if dist <= 0.5:
-                            alpha = 0.25
-                            best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
-                            best['emb_sum'] += emb
-                            best['emb_n'] += 1
-
-                    used.add(best['id'])
-                    if collect_obs:
-                        # Keep the full Face for this frame — the temporal
-                        # pre-pass gap-fills/smooths these and the swap pass
-                        # consumes them directly.
-                        best.setdefault('obs', {})[idx] = face
-                    centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
-                                         (bbox[1] + bbox[3]) * 0.5], np.float32)
-                    entries.append((centroid, best['id']))
-                per_frame[idx] = entries
                 idx += 1
                 pbar.update(1)   # terminal bar
                 # Drive the UI progress bar so the pre-pass isn't a silent black box.
@@ -1523,8 +1557,14 @@ class ProcessMgr():
                                          total=tot, unit='frames')
                 if frame_count and idx >= frame_count:
                     break
+            # Drain any detections still in flight, in submission (frame) order.
+            while in_flight:
+                done_idx, done_fut = in_flight.popleft()
+                _consume(done_idx, done_fut.result())
         finally:
             pbar.close()
+            if det_executor is not None:
+                det_executor.shutdown(wait=False, cancel_futures=True)
             if cap is not None:
                 cap.release()
 
