@@ -284,9 +284,11 @@ def _detect_faces(frame):
     return faces or []
 
 
+_tls_prober = threading.local()
+
 def get_first_face(frame: Frame) -> Any:
     try:
-        faces = _detect_faces(frame)
+        faces = get_all_faces(frame)
         if faces:
             return min(faces, key=lambda x: x.bbox[0])
     except Exception:
@@ -297,11 +299,27 @@ def get_first_face(frame: Frame) -> Any:
 def get_all_faces(frame: Frame) -> Any:
     try:
         faces = _detect_faces(frame)
-        if faces:
-            return sorted(faces, key=lambda x: x.bbox[0])
-        return []
+        if not faces:
+            return []
+
+        # Perform auto-rotation correction to fix embeddings & landmarks for rotated faces
+        if getattr(roop.globals, 'autorotate_faces', False) and not getattr(_tls_prober, 'in_prober', False):
+            _tls_prober.in_prober = True
+            try:
+                for face in faces:
+                    best_action, best_face, _ = find_best_rotation(face, frame)
+                    if best_action is not None and best_face is not None:
+                        # Copy upright embedding and landmarks to the original face object
+                        for attr in ['embedding', 'normed_embedding', 'landmark_3d_68', 'landmark_2d_106', 'sex']:
+                            if hasattr(best_face, attr):
+                                setattr(face, attr, getattr(best_face, attr))
+                                face[attr] = getattr(best_face, attr)
+            finally:
+                _tls_prober.in_prober = False
+
+        return sorted(faces, key=lambda x: x.bbox[0])
     except Exception:
-        return None
+        return []
 
 
 def _attach_source_crops(face, img):
