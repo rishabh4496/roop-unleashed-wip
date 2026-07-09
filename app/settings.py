@@ -119,7 +119,7 @@ class Settings:
         # False = 320x320 (~4x faster detection, may miss small/distant faces).
         self.default_det_size = self.default_get(data, 'default_det_size', True)
         self.face_detector_size = str(self.default_get(data, 'face_detector_size', '640' if self.default_det_size else '320'))
-        self.face_detector_threshold = float(self.default_get(data, 'face_detector_threshold', 0.60))
+        self.face_detector_threshold = float(self.default_get(data, 'face_detector_threshold', 0.50))
         self.face_detector_nms = float(self.default_get(data, 'face_detector_nms', 0.40))
         self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
         self.track_identities = self.default_get(data, 'track_identities', False)

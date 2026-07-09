@@ -403,8 +403,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
   // engine, target selection, etc.) are left as-is. Pure UI — no runtime cost.
   const PRESETS = {
-    Fast:     { default_det_size: false, face_detector_size: '320', face_detector_threshold: 0.60, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
-    Balanced: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.60, subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
+    Fast:     { default_det_size: false, face_detector_size: '320', face_detector_threshold: 0.50, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
+    Balanced: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
     Quality:  { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '512px', selected_enhancer: 'Restoreformer++', num_swap_steps: 2 },
   };
   const activePreset = Object.keys(PRESETS).find((name) =>
@@ -1274,11 +1274,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           />
           <Slider
             label="Face detection threshold"
-            info="Lower values (e.g. 0.40) detect angled, profile, or hard-to-see faces. Higher values avoid false detections. Default 0.60"
+            info="Lower values (e.g. 0.40) detect angled, profile, or hard-to-see faces. Higher values avoid false detections. Default 0.50"
             min={0.10}
             max={0.90}
             step={0.05}
-            value={num(p.face_detector_threshold, 0.60)}
+            value={num(p.face_detector_threshold, 0.50)}
             onChange={(v) => set('face_detector_threshold', v)}
           />
           <Slider

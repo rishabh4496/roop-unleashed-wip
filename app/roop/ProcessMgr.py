@@ -2682,24 +2682,38 @@ class ProcessMgr():
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
         p_name = getattr(processor, 'processorname', None)
         
-        # Check if face is in lateral/side profile position
-        is_lateral = False
+        # Check if face is in lateral/side profile OR upside-down position.
+        # Lateral: nose x-coordinate is strongly asymmetric relative to the two eyes.
+        # Upside-down: eyes y-coordinate is BELOW mouth y-coordinate.
+        # Both cases cause the standard affine-aligned crop to be distorted, so the
+        # mask model (trained on frontal crops) will mis-label the face region.
+        is_non_frontal = False
         if target_face is not None and getattr(target_face, 'kps', None) is not None:
             kps = target_face.kps
             if len(kps) == 5:
+                # ── Lateral detection ──────────────────────────────────────
                 lex, rex = kps[0][0], kps[1][0]
                 nx = kps[2][0]
                 d_le = abs(nx - lex)
                 d_re = abs(nx - rex)
                 if d_le + d_re > 1e-5:
                     asymmetry = abs(d_le - d_re) / (d_le + d_re)
-                    if asymmetry > 0.35:
-                        is_lateral = True
+                    if asymmetry > 0.25:   # lowered from 0.35: catch more side profiles
+                        is_non_frontal = True
+                # ── Upside-down detection ──────────────────────────────────
+                # Eye centers should be ABOVE (lower y value) than mouth corners.
+                # If not, the face is inverted or severely tilted.
+                eye_y = (kps[0][1] + kps[1][1]) / 2.0
+                mouth_y = (kps[3][1] + kps[4][1]) / 2.0
+                if eye_y > mouth_y + 5.0:   # 5px tolerance for near-horizontal
+                    is_non_frontal = True
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
         
-        if is_lateral and orig_frame is not None and M is not None and p_name in dense_maskers:
-            # Run on unwarped bounding box crop to prevent stretching of the face and foreign objects
+        if is_non_frontal and orig_frame is not None and M is not None and p_name in dense_maskers:
+            # Run mask on the unwarped bounding-box crop so the face appears in its
+            # natural (unwarped) orientation, preventing mask distortion from the
+            # affine alignment that canonical crop space would introduce.
             h_frame, w_frame = orig_frame.shape[:2]
             xmin, ymin, xmax, ymax = target_face.bbox
             
@@ -2724,33 +2738,47 @@ class ProcessMgr():
             
             cropped = orig_frame[crop_y0:crop_y1, crop_x0:crop_x1].copy()
             
-            pad_left = crop_x0 - x0
-            pad_right = x1 - crop_x1
-            pad_top = crop_y0 - y0
+            pad_left   = crop_x0 - x0
+            pad_right  = x1 - crop_x1
+            pad_top    = crop_y0 - y0
             pad_bottom = y1 - crop_y1
             
             if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-                cropped = cv2.copyMakeBorder(cropped, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)
+                cropped = cv2.copyMakeBorder(cropped, pad_top, pad_bottom, pad_left, pad_right,
+                                             cv2.BORDER_CONSTANT, value=0)
             
-            # Run the mask processor on the unwarped square crop
+            # Run the mask processor on the unwarped padded crop
             mask_crop = processor.Run(cropped, self.options.masking_text)
             
-            # Resize the mask back to the crop box size
-            mask_resized = cv2.resize(mask_crop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
+            # Resize mask to padded-crop dimensions
+            padded_w = x1 - x0
+            padded_h = y1 - y0
+            mask_resized = cv2.resize(mask_crop, (padded_w, padded_h), interpolation=cv2.INTER_LINEAR)
             
-            # Crop the valid region
-            slice_x0 = crop_x0 - x0
-            slice_y0 = crop_y0 - y0
-            slice_x1 = (x1 - x0) - (x1 - crop_x1)
-            slice_y1 = (y1 - y0) - (y1 - crop_y1)
+            # Extract only the valid (non-padded) region that corresponds to original frame pixels.
+            valid_x0 = pad_left
+            valid_y0 = pad_top
+            valid_x1 = padded_w - max(0, pad_right)
+            valid_y1 = padded_h - max(0, pad_bottom)
+            valid_mask = mask_resized[valid_y0:valid_y1, valid_x0:valid_x1]
             
-            # Paste back to a full frame mask of ones (1.0 = keep original)
+            # Guard against rounding-induced size mismatch before pasting
+            expected_h = crop_y1 - crop_y0
+            expected_w = crop_x1 - crop_x0
+            if valid_mask.shape[0] != expected_h or valid_mask.shape[1] != expected_w:
+                valid_mask = cv2.resize(valid_mask, (expected_w, expected_h), interpolation=cv2.INTER_LINEAR)
+            
+            # Build a full-frame mask (default 1.0 = restore original) and paste the
+            # face-region result into the correct location.
             full_frame_mask = np.ones((h_frame, w_frame), dtype=np.float32)
-            full_frame_mask[crop_y0:crop_y1, crop_x0:crop_x1] = mask_resized[slice_y0:slice_y1, slice_x0:slice_x1]
+            full_frame_mask[crop_y0:crop_y1, crop_x0:crop_x1] = valid_mask
             
-            # Warp the full frame mask to the aligned crop space using M (borderValue=1.0)
+            # Warp the full-frame mask into the aligned canonical crop space using M.
+            # borderValue=1.0 so out-of-face regions keep the "restore original" default.
             ch, cw = frame.shape[:2]
-            img_mask = cv2.warpAffine(full_frame_mask, M, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)
+            img_mask = cv2.warpAffine(full_frame_mask, M, (cw, ch),
+                                      flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)
         else:
             if p_name == 'mask_sam2':
                 img_mask = processor.get_crop_mask(

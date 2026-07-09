@@ -398,7 +398,17 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0):
                     break
 
             if not found:
-                print("No face found after resizing, this shouldn't happen!")
+                # All padded-crop re-detections failed (can happen when the face is near
+                # an image edge, or the padded 512×512 crop has too much background for
+                # the detector at the current threshold). Fall back to the original
+                # (unpadded) detection — it is valid, just without the wider context.
+                print("Re-detection in padded crop failed — falling back to original unpadded detection.")
+                (startX, startY, endX, endY) = face["bbox"].astype("int")
+                startX, endX, startY, endY = clamp_cut_values(startX, endX, startY, endY, source_image)
+                face_temp = source_image[startY:endY, startX:endX]
+                if face_temp.size > 0:
+                    _attach_source_crops(face, source_image)
+                    face_data.append([face, face_temp])
             continue
 
         face_temp = source_image[startY:endY, startX:endX]
@@ -556,7 +566,7 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
     # Frontal ratio is usually around 1.0-1.2; lower ratio means lateral face.
     # Using AffineTransform for lateral profiles preserves vertical alignment
     # by allowing independent scaling of horizontal and vertical axes.
-    use_affine = d_mouth > 0 and (d_eye / d_mouth) < 0.95
+    use_affine = d_eye > 1.0 and d_mouth > 0 and (d_eye / d_mouth) < 0.50
 
     if mode in WARP_TEMPLATES:
         dst = WARP_TEMPLATES[mode] * float(image_size)
