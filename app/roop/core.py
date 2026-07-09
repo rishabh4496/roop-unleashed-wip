@@ -376,11 +376,24 @@ def get_face_crop_from_frame(frame_bgr) -> str:
         return ""
 
     def _rotation_action(face, frame):
+        import math
         if hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
-            eye_y = (face.kps[0][1] + face.kps[1][1]) / 2.0
-            mouth_y = (face.kps[3][1] + face.kps[4][1]) / 2.0
-            if eye_y > mouth_y:
+            # kps contains: 0: left eye, 1: right eye, 2: nose, 3: left mouth, 4: right mouth
+            eye_center = (face.kps[0] + face.kps[1]) / 2.0
+            mouth_center = (face.kps[3] + face.kps[4]) / 2.0
+            v_up = eye_center - mouth_center
+            angle = math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi
+            
+            if abs(angle) < 30.0:
+                return None
+            elif 30.0 <= angle < 120.0:
+                return "rotate_anticlockwise"
+            elif -120.0 < angle <= -30.0:
+                return "rotate_clockwise"
+            else:
                 return "rotate_180"
+
+        # Fallback to original logic
         bbox_w = face.bbox[2] - face.bbox[0]
         bbox_h = face.bbox[3] - face.bbox[1]
         if bbox_w <= bbox_h:

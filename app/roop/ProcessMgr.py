@@ -1982,14 +1982,25 @@ class ProcessMgr():
 
 
     def rotation_action(self, original_face:Face, frame:Frame):
+        import math
         if hasattr(original_face, 'kps') and original_face.kps is not None and len(original_face.kps) == 5:
-            eye_y = (original_face.kps[0][1] + original_face.kps[1][1]) / 2.0
-            mouth_y = (original_face.kps[3][1] + original_face.kps[4][1]) / 2.0
-            if eye_y > mouth_y:
+            # kps contains: 0: left eye, 1: right eye, 2: nose, 3: left mouth, 4: right mouth
+            eye_center = (original_face.kps[0] + original_face.kps[1]) / 2.0
+            mouth_center = (original_face.kps[3] + original_face.kps[4]) / 2.0
+            v_up = eye_center - mouth_center
+            angle = math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi
+            
+            if abs(angle) < 30.0:
+                return None
+            elif 30.0 <= angle < 120.0:
+                return "rotate_anticlockwise"
+            elif -120.0 < angle <= -30.0:
+                return "rotate_clockwise"
+            else:
                 return "rotate_180"
 
+        # Fallback to original logic if kps is not available
         (height, width) = frame.shape[:2]
-
         bounding_box_width = original_face.bbox[2] - original_face.bbox[0]
         bounding_box_height = original_face.bbox[3] - original_face.bbox[1]
         horizontal_face = bounding_box_width > bounding_box_height
@@ -1999,19 +2010,19 @@ class ProcessMgr():
         end_x = original_face.bbox[2]
         bbox_center_x = start_x + (bounding_box_width // 2.0)
 
-        forehead_x = original_face.landmark_2d_106[72][0]
-        chin_x = original_face.landmark_2d_106[0][0]
+        if hasattr(original_face, 'landmark_2d_106') and original_face.landmark_2d_106 is not None:
+            forehead_x = original_face.landmark_2d_106[72][0]
+            chin_x = original_face.landmark_2d_106[0][0]
 
-        if horizontal_face:
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            elif forehead_x < chin_x:
-                return "rotate_clockwise"
-            if bbox_center_x >= center_x:
-                return "rotate_anticlockwise"
-            if bbox_center_x < center_x:
-                return "rotate_clockwise"
-
+            if horizontal_face:
+                if chin_x < forehead_x:
+                    return "rotate_anticlockwise"
+                elif forehead_x < chin_x:
+                    return "rotate_clockwise"
+                if bbox_center_x >= center_x:
+                    return "rotate_anticlockwise"
+                if bbox_center_x < center_x:
+                    return "rotate_clockwise"
         return None
 
 

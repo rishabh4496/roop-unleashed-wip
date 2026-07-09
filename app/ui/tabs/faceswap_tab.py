@@ -752,6 +752,24 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
 
     def _rotation_action(face, frame):
         """Mirror ProcessMgr.rotation_action — returns direction string or None."""
+        import math
+        if hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
+            # kps contains: 0: left eye, 1: right eye, 2: nose, 3: left mouth, 4: right mouth
+            eye_center = (face.kps[0] + face.kps[1]) / 2.0
+            mouth_center = (face.kps[3] + face.kps[4]) / 2.0
+            v_up = eye_center - mouth_center
+            angle = math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi
+            
+            if abs(angle) < 30.0:
+                return None
+            elif 30.0 <= angle < 120.0:
+                return "rotate_anticlockwise"
+            elif -120.0 < angle <= -30.0:
+                return "rotate_clockwise"
+            else:
+                return "rotate_180"
+
+        # Fallback to original logic
         bbox_w = face.bbox[2] - face.bbox[0]
         bbox_h = face.bbox[3] - face.bbox[1]
         if bbox_w <= bbox_h:
@@ -817,7 +835,13 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                 x0, y0, x1, y1 = face.bbox.astype(int)
                 offs = int(max(x1 - x0, y1 - y0) * 0.25)
                 cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-                rot = rotate_anticlockwise(cut) if action == "rotate_anticlockwise" else rotate_clockwise(cut)
+                if action == "rotate_anticlockwise":
+                    rot = rotate_anticlockwise(cut)
+                elif action == "rotate_clockwise":
+                    rot = rotate_clockwise(cut)
+                elif action == "rotate_180":
+                    from roop.face_util import rotate_image_180
+                    rot = rotate_image_180(cut)
                 rotface = get_first_face(rot)
                 if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
                     # Capture loop variables explicitly so the closure is correct.
@@ -826,8 +850,13 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                                  __offs=_offs, __act=_act):
                         c = _cutout(swp, __x0 - __offs, __y0 - __offs,
                                         __x1 + __offs, __y1 + __offs)
-                        return rotate_anticlockwise(c) if __act == "rotate_anticlockwise" \
-                               else rotate_clockwise(c)
+                        if __act == "rotate_anticlockwise":
+                            return rotate_anticlockwise(c)
+                        elif __act == "rotate_clockwise":
+                            return rotate_clockwise(c)
+                        elif __act == "rotate_180":
+                            from roop.face_util import rotate_image_180
+                            return rotate_image_180(c)
                     return rot, rotface.kps, _swap_fn
         # No rotation — identity transform for the swap frame too.
         return frame, face.kps, lambda swp: swp
