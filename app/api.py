@@ -804,6 +804,7 @@ def preview(payload: dict = Body(...)):
         roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", getattr(roop_globals.CFG, "color_transfer_mode", "rct"))
+        roop_globals.sam2_model_size = payload.get("sam2_model_size", getattr(roop_globals.CFG, "sam2_model_size", "tiny"))
         # refine_landmarks / rescue_small_faces / detector_engine already set
         # above (before the box-overlay detection) so both paths agree.
 

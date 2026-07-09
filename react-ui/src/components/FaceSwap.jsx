@@ -317,6 +317,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           clip_text: job.params.mask_clip_text,
           sam2_model_size: job.params.sam2_model_size,
           track_identities: job.params.track_identities,
+          autorotate: job.params.autorotate_faces,
           face_distance: num(job.params.max_face_distance, 0.85),
           blend_ratio: num(job.params.blend_ratio, 0.8),
           num_swap_steps: num(job.params.num_swap_steps, 1),
@@ -380,7 +381,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
-    ctm: p.color_transfer_mode,
+    ctm: p.color_transfer_mode, s2: p.sam2_model_size,
     rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
     dds: p.default_det_size,
     fds: p.face_detector_size,
@@ -488,11 +489,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
         num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
+        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
-        color_transfer_mode: p.color_transfer_mode,
+        color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
         refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
         detector_engine: p.detector_engine,
         face_mapping: getFaceMappingArray(),
@@ -607,11 +608,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
           num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 25),
+          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
-          color_transfer_mode: p.color_transfer_mode,
+          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
           refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
           detector_engine: p.detector_engine,
           face_mapping: getFaceMappingArray(),
@@ -810,6 +811,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
         sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
+        autorotate: p.autorotate_faces,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
@@ -1046,6 +1048,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         output_method: p.output_method, video_method: p.video_swapping_method,
         upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
         sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
+        autorotate: p.autorotate_faces,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         num_swap_steps: num(p.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
@@ -1327,7 +1330,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Toggle label="🎯 Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
           <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
           {p.use_frontalization && (
-            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 25)} onChange={(v) => set('frontalization_threshold', v)} />
+            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 30)} onChange={(v) => set('frontalization_threshold', v)} />
           )}
         </Section>
 

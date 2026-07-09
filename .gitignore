@@ -2,6 +2,7 @@
 .vs
 .idea
 .vscode
+.claude
 
 # Python
 __pycache__
