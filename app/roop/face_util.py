@@ -212,6 +212,67 @@ def _rescue_upscaled(frame: Frame):
     return None
 
 
+def _rescue_downscaled(frame: Frame):
+    """Retry detection on a 0.5x downscale of the frame. SCRFD anchors are tuned
+    for faces in the 50-200px range; when a close-up face fills most of the frame
+    (400px+ face in a 640px det-size pass) confidence scores drop sharply. At 0.5x
+    the same face looks like a 200px face — well within the anchor sweet-spot.
+    Faces found are scaled back to original coordinates.
+
+    Also lowers the detection threshold slightly for this rescue attempt since
+    close-up faces that partially exit the frame may have lower confidence."""
+    try:
+        h, w = frame.shape[:2]
+        if min(h, w) < 128:
+            return None
+        # Downscale by exactly 0.5x using area interpolation (best for shrinking)
+        down = cv2.resize(frame, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+
+        with lease_face_analyser() as fa:
+            # Temporarily re-prepare at 320px so the anchor scale matches the
+            # downscaled image. Restore original det_size afterward.
+            orig_size = getattr(fa.det_model, 'input_size', (640, 640))
+            orig_thresh = getattr(fa.det_model, 'det_thresh', 0.5)
+            try:
+                fa.det_model.input_size = (320, 320)
+                # Also lower threshold slightly so partially clipped close-ups pass
+                fa.det_model.det_thresh = max(0.30, orig_thresh - 0.15)
+                faces = fa.get(down)
+            finally:
+                fa.det_model.input_size = orig_size
+                fa.det_model.det_thresh = orig_thresh
+
+        if faces:
+            for f in faces:
+                _scale_face_coords(f, 2.0)
+            return faces
+    except Exception:
+        pass
+    return None
+
+
+def _is_close_up(frame: Frame) -> bool:
+    """Return True when the largest detected face bbox covers >50% of the frame
+    area — heuristic for close-up shots where downscale rescue should be tried."""
+    try:
+        h, w = frame.shape[:2]
+        frame_area = h * w
+        with lease_face_analyser() as fa:
+            # Use a small det_size so we can at least get a rough bbox
+            orig_prep = getattr(fa.det_model, 'input_size', None)
+            faces_raw = fa.get(cv2.resize(frame, (320, 320)))
+        if faces_raw:
+            scale = max(h, w) / 320.0
+            for f in faces_raw:
+                b = np.asarray(f.bbox) * scale
+                bw, bh = b[2] - b[0], b[3] - b[1]
+                if bw * bh > frame_area * 0.50:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _hybrid_detector_faces(frame, fa, bboxes, kpss):
     """Wrap raw detector output (bbox + 5 kps per face) into full Face objects
     using buffalo_l's aux models (recognition + 106/68 landmarks) — mirrors
@@ -276,8 +337,12 @@ def _detect_faces(frame):
             faces = _hybrid_yunet_faces(frame, fa)
         else:
             faces = fa.get(frame)
-    if not faces and getattr(roop.globals, 'rescue_small_faces', False):
-        faces = _rescue_upscaled(frame)
+    if not faces:
+        # ── Small-face rescue (upscale 2×) ─────────────────────────────────
+        if getattr(roop.globals, 'rescue_small_faces', False):
+            faces = _rescue_upscaled(frame)
+        if not faces:
+            faces = _rescue_downscaled(frame)
     if faces and getattr(roop.globals, 'refine_landmarks', False):
         for f in faces:
             _refine_kps_from_68(f)
@@ -361,7 +426,19 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0):
         (startX, startY, endX, endY) = face["bbox"].astype("int")
         startX, endX, startY, endY = clamp_cut_values(startX, endX, startY, endY, source_image)
         if extra_padding > 0.0:
-            if source_image.shape[:2] == (512, 512):
+            # ── Close-up shortcut ─────────────────────────────────────────────
+            # When the face bbox covers the majority of the source image there is
+            # no useful room to pad. The padded-crop loop would just reproduce the
+            # same image and the re-detection would fail for the same reason the
+            # initial call nearly failed. Use the original detection directly.
+            img_h, img_w = source_image.shape[:2]
+            img_area = img_h * img_w
+            bbox_arr = face["bbox"].astype("int")
+            bw = max(0, min(bbox_arr[2], img_w) - max(0, bbox_arr[0]))
+            bh = max(0, min(bbox_arr[3], img_h) - max(0, bbox_arr[1]))
+            is_close_up = (bw * bh) > img_area * 0.40
+
+            if is_close_up or source_image.shape[:2] == (512, 512):
                 i += 1
                 _attach_source_crops(face, source_image)
                 face_data.append([face, source_image])
@@ -563,10 +640,12 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
     mouth_center = (lmk[3] + lmk[4]) / 2.0
     d_mouth = np.linalg.norm(eye_center - mouth_center)
     
-    # Frontal ratio is usually around 1.0-1.2; lower ratio means lateral face.
-    # Using AffineTransform for lateral profiles preserves vertical alignment
-    # by allowing independent scaling of horizontal and vertical axes.
-    use_affine = d_eye > 1.0 and d_mouth > 0 and (d_eye / d_mouth) < 0.50
+    # Force SimilarityTransform (use_affine = False) for all faces.
+    # AffineTransform introduces non-uniform scaling and shearing, which causes
+    # severe perspective warping and facial distortion (e.g. stretched foreheads)
+    # on angled/close-up faces. Using SimilarityTransform preserves the face's
+    # natural aspect ratio and matches the training distribution of the models.
+    use_affine = False
 
     if mode in WARP_TEMPLATES:
         dst = WARP_TEMPLATES[mode] * float(image_size)
