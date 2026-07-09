@@ -1445,21 +1445,32 @@ class ProcessMgr():
                         if score > best_score:
                             best, best_score = t, score
 
+                    is_reid = False
                     if best is None:
-                        # Re-ID lookup: search retired tracklets for returning faces
+                        # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces
                         best_reid, best_reid_dist = None, 0.45
+                        is_retired = False
+                        
+                        for t in active:
+                            if t['id'] in used:
+                                continue
+                            dist = compute_cosine_distance(t['emb_mean'], emb)
+                            if dist < best_reid_dist:
+                                best_reid, best_reid_dist = t, dist
+                                is_retired = False
+                                
                         for t in retired:
                             dist = compute_cosine_distance(t['emb_mean'], emb)
                             if dist < best_reid_dist:
                                 best_reid, best_reid_dist = t, dist
+                                is_retired = True
                         
                         if best_reid is not None:
                             best = best_reid
-                            retired.remove(best)
-                            active.append(best)
-                            # Reset velocity as the person was gone/occluded
-                            best['vel'] = np.zeros(4, dtype=np.float32)
-                            best['prev_bbox'] = None
+                            if is_retired:
+                                retired.remove(best)
+                                active.append(best)
+                            is_reid = True
 
                     if best is None:
                         best = {
@@ -1476,9 +1487,12 @@ class ProcessMgr():
                         active.append(best)
                     else:
                         dt = idx - best['last_seen']
-                        if dt > 0:
+                        if dt > 0 and not is_reid:
                             best['vel'] = (bbox - best['bbox']) / dt
                             best['prev_bbox'] = best['bbox']
+                        elif is_reid:
+                            best['vel'] = np.zeros(4, dtype=np.float32)
+                            best['prev_bbox'] = None
                         best['bbox'] = bbox
                         best['last_seen'] = idx
                         
@@ -1849,13 +1863,19 @@ class ProcessMgr():
                         if entries:
                             break
                 entries = entries or []
-                if entries:
-                    claimed = set()
-                    for face in faces:
+                claimed = set()
+                
+                groups = self.target_face_groups
+                uniq = sorted(set(groups)) if groups else []
+                rank = {g: r for r, g in enumerate(uniq)}
+                single_person = len(uniq) <= 1
+                threshold = self.options.face_distance_threshold
+                
+                for face in faces:
+                    best_j, best_cost = -1, float('inf')
+                    if entries:
                         bb = face.bbox
                         c = np.array([(bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5], np.float32)
-                        
-                        best_j, best_cost = -1, float('inf')
                         for j, entry in enumerate(entries):
                             if j in claimed:
                                 continue
@@ -1871,13 +1891,25 @@ class ProcessMgr():
                             if cost < best_cost:
                                 best_cost, best_j = cost, j
                                 
-                        if best_j >= 0:
-                            claimed.add(best_j)
-                            src_index = entries[best_j][1]
-                            if src_index is None or src_index >= len(self.input_face_datas):
-                                continue
-                            temp_frame = self.process_face(src_index, face, temp_frame)
-                            num_faces_found += 1
+                    if best_j >= 0:
+                        claimed.add(best_j)
+                        src_index = entries[best_j][1]
+                        if src_index is None or src_index >= len(self.input_face_datas):
+                            continue
+                        temp_frame = self.process_face(src_index, face, temp_frame)
+                        num_faces_found += 1
+                    else:
+                        # Fallback lookup to per-frame multi-angle matching if untracked
+                        best_i, best_d = -1, threshold
+                        for i, tf in enumerate(self.target_face_datas):
+                            d = compute_cosine_distance(tf.embedding, face.embedding)
+                            if d <= best_d:
+                                best_d, best_i = d, i
+                        if best_i >= 0:
+                            src_index = self.options.selected_index if single_person else rank[groups[best_i]]
+                            if src_index < len(self.input_face_datas):
+                                temp_frame = self.process_face(src_index, face, temp_frame)
+                                num_faces_found += 1
 
             elif self.options.swap_mode == "selected":
                 # Multi-angle matching: for each detected face, find the target
