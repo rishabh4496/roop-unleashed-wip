@@ -353,28 +353,6 @@ def _rescue_padded(frame: Frame):
     return None
 
 
-def _is_close_up(frame: Frame) -> bool:
-    """Return True when the largest detected face bbox covers >50% of the frame
-    area — heuristic for close-up shots where downscale rescue should be tried."""
-    try:
-        h, w = frame.shape[:2]
-        frame_area = h * w
-        with lease_face_analyser() as fa:
-            # Use a small det_size so we can at least get a rough bbox
-            orig_prep = getattr(fa.det_model, 'input_size', None)
-            faces_raw = fa.get(cv2.resize(frame, (320, 320)))
-        if faces_raw:
-            scale = max(h, w) / 320.0
-            for f in faces_raw:
-                b = np.asarray(f.bbox) * scale
-                bw, bh = b[2] - b[0], b[3] - b[1]
-                if bw * bh > frame_area * 0.50:
-                    return True
-    except Exception:
-        pass
-    return False
-
-
 def _detect_faces(frame):
     """Run the selected detector engine and return raw Face objects (unsorted).
     Applies small-face (upscale), close-up scale (downscale), and clipped boundary (padded) rescues."""
@@ -688,13 +666,7 @@ WARP_TEMPLATES = {
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):
     assert lmk.shape == (5, 2)
-    
-    # Estimate if face is lateral (turned sideways)
-    d_eye = np.linalg.norm(lmk[1] - lmk[0])
-    eye_center = (lmk[0] + lmk[1]) / 2.0
-    mouth_center = (lmk[3] + lmk[4]) / 2.0
-    d_mouth = np.linalg.norm(eye_center - mouth_center)
-    
+
     # Force SimilarityTransform (use_affine = False) for all faces.
     # AffineTransform introduces non-uniform scaling and shearing, which causes
     # severe perspective warping and facial distortion (e.g. stretched foreheads)
