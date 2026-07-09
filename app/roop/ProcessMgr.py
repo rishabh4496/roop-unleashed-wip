@@ -2573,9 +2573,18 @@ class ProcessMgr():
         mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
         mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
         mask_size = int(np.sqrt(mask_h * mask_w))
-        # blend_px controls ONLY edge softness — no erosion, mask coverage unchanged
+        
+        # Calculate blend radius (feather size)
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
         blur_size = blend_px * 2 + 1
+        
+        # Improved Blending: Erode the mask before blurring (inner feathering).
+        # This keeps the transition zone inside the face skin and prevents the swap
+        # from bleeding / haloing onto background regions, hair, or ears.
+        erosion_px = max(1, blend_px // 2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_px * 2 + 1, erosion_px * 2 + 1))
+        img_matte = cv2.erode(img_matte, kernel, iterations=1)
+        
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 
 
