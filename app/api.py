@@ -320,7 +320,7 @@ def get_meta():
         "detector_engines": ["scrfd", "yoloface", "retinaface", "retinaface_r50", "yunet"],
         "encoder_presets": ["auto", "ultrafast", "superfast", "veryfast", "faster",
                              "fast", "medium", "slow", "slower", "veryslow"],
-        "pool_sizes": ["auto", "1", "2", "3", "4"],
+        "pool_sizes": ["auto", "1", "2", "3", "4", "5", "6", "7", "8"],
         "tristate": ["auto", "on", "off"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
