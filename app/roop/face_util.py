@@ -195,84 +195,6 @@ def _scale_face_coords(face, inv_scale: float) -> None:
             pass
 
 
-def _rescue_upscaled(frame: Frame):
-    """Retry detection on a 2x upscale of the frame, mapping any faces back to
-    the original coordinate space. For frames where the face is too small for
-    the current det size to catch."""
-    try:
-        up = cv2.resize(frame, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
-        with lease_face_analyser() as fa:
-            faces = fa.get(up)
-        if faces:
-            for f in faces:
-                _scale_face_coords(f, 0.5)
-            return faces
-    except Exception:
-        pass
-    return None
-
-
-def _rescue_downscaled(frame: Frame):
-    """Retry detection on a 0.5x downscale of the frame. SCRFD anchors are tuned
-    for faces in the 50-200px range; when a close-up face fills most of the frame
-    (400px+ face in a 640px det-size pass) confidence scores drop sharply. At 0.5x
-    the same face looks like a 200px face — well within the anchor sweet-spot.
-    Faces found are scaled back to original coordinates.
-
-    Also lowers the detection threshold slightly for this rescue attempt since
-    close-up faces that partially exit the frame may have lower confidence."""
-    try:
-        h, w = frame.shape[:2]
-        if min(h, w) < 128:
-            return None
-        # Downscale by exactly 0.5x using area interpolation (best for shrinking)
-        down = cv2.resize(frame, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
-
-        with lease_face_analyser() as fa:
-            # Temporarily re-prepare at 320px so the anchor scale matches the
-            # downscaled image. Restore original det_size afterward.
-            orig_size = getattr(fa.det_model, 'input_size', (640, 640))
-            orig_thresh = getattr(fa.det_model, 'det_thresh', 0.5)
-            try:
-                fa.det_model.input_size = (320, 320)
-                # Also lower threshold slightly so partially clipped close-ups pass
-                fa.det_model.det_thresh = max(0.30, orig_thresh - 0.15)
-                faces = fa.get(down)
-            finally:
-                fa.det_model.input_size = orig_size
-                fa.det_model.det_thresh = orig_thresh
-
-        if faces:
-            for f in faces:
-                _scale_face_coords(f, 2.0)
-            return faces
-    except Exception:
-        pass
-    return None
-
-
-def _is_close_up(frame: Frame) -> bool:
-    """Return True when the largest detected face bbox covers >50% of the frame
-    area — heuristic for close-up shots where downscale rescue should be tried."""
-    try:
-        h, w = frame.shape[:2]
-        frame_area = h * w
-        with lease_face_analyser() as fa:
-            # Use a small det_size so we can at least get a rough bbox
-            orig_prep = getattr(fa.det_model, 'input_size', None)
-            faces_raw = fa.get(cv2.resize(frame, (320, 320)))
-        if faces_raw:
-            scale = max(h, w) / 320.0
-            for f in faces_raw:
-                b = np.asarray(f.bbox) * scale
-                bw, bh = b[2] - b[0], b[3] - b[1]
-                if bw * bh > frame_area * 0.50:
-                    return True
-    except Exception:
-        pass
-    return False
-
-
 def _hybrid_detector_faces(frame, fa, bboxes, kpss):
     """Wrap raw detector output (bbox + 5 kps per face) into full Face objects
     using buffalo_l's aux models (recognition + 106/68 landmarks) — mirrors
@@ -318,9 +240,8 @@ def _hybrid_yunet_faces(frame, fa):
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
-def _detect_faces(frame):
-    """Run the selected detector engine and return raw Face objects (unsorted).
-    Applies the small-face rescue and 68-point refinement options."""
+def _detect_faces_raw(frame):
+    """Run the selected detector engine and return raw Face objects (unsorted) without rescues."""
     engine = getattr(roop.globals, 'detector_engine', 'scrfd')
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
     with lease_face_analyser() as fa:
@@ -337,12 +258,129 @@ def _detect_faces(frame):
             faces = _hybrid_yunet_faces(frame, fa)
         else:
             faces = fa.get(frame)
+    return faces or []
+
+
+def _rescue_upscaled(frame: Frame):
+    """Retry detection on a 2x upscale of the frame, mapping any faces back to
+    the original coordinate space. For frames where the face is too small for
+    the current det size to catch."""
+    try:
+        up = cv2.resize(frame, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+        faces = _detect_faces_raw(up)
+        if faces:
+            for f in faces:
+                _scale_face_coords(f, 0.5)
+            return faces
+    except Exception:
+        pass
+    return None
+
+
+def _rescue_downscaled(frame: Frame):
+    """Retry detection on a 0.5x downscale of the frame. SCRFD anchors are tuned
+    for faces in the 50-200px range; when a close-up face fills most of the frame
+    (400px+ face in a 640px det-size pass) confidence scores drop sharply. At 0.5x
+    the same face looks like a 200px face — well within the anchor sweet-spot.
+    Faces found are scaled back to original coordinates.
+
+    Also lowers the detection threshold slightly for this rescue attempt since
+    close-up faces that partially exit the frame may have lower confidence."""
+    try:
+        h, w = frame.shape[:2]
+        if min(h, w) < 128:
+            return None
+        # Downscale by exactly 0.5x using area interpolation (best for shrinking)
+        down = cv2.resize(frame, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+
+        # Temporarily override globals to enforce 320px resolution and lower threshold
+        orig_size = getattr(roop.globals, 'face_detector_size', '640')
+        orig_thresh = getattr(roop.globals, 'face_detector_threshold', 0.50)
+        try:
+            roop.globals.face_detector_size = '320'
+            roop.globals.face_detector_threshold = max(0.30, orig_thresh - 0.15)
+            faces = _detect_faces_raw(down)
+        finally:
+            roop.globals.face_detector_size = orig_size
+            roop.globals.face_detector_threshold = orig_thresh
+
+        if faces:
+            for f in faces:
+                _scale_face_coords(f, 2.0)
+            return faces
+    except Exception:
+        pass
+    return None
+
+
+def _rescue_padded(frame: Frame):
+    """Pad the frame by 25% on all sides. When a face is extremely close-up or
+    clipped at the boundaries, anchor-based detectors fail because critical face
+    structure is cut off. Adding padding provides background padding, allowing
+    the detector to lock on."""
+    try:
+        h, w = frame.shape[:2]
+        pad = int(max(h, w) * 0.25)
+        padded = cv2.copyMakeBorder(frame, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+        
+        faces = _detect_faces_raw(padded)
+        if faces:
+            for f in faces:
+                f.bbox[0] -= pad
+                f.bbox[1] -= pad
+                f.bbox[2] -= pad
+                f.bbox[3] -= pad
+                if getattr(f, 'kps', None) is not None:
+                    f.kps -= pad
+                if getattr(f, 'landmark_2d_106', None) is not None:
+                    f.landmark_2d_106 = np.asarray(f.landmark_2d_106) - pad
+                if getattr(f, 'landmark_3d_68', None) is not None:
+                    lm = np.asarray(f.landmark_3d_68)
+                    lm[:, :2] -= pad
+                    f.landmark_3d_68 = lm
+            return faces
+    except Exception:
+        pass
+    return None
+
+
+def _is_close_up(frame: Frame) -> bool:
+    """Return True when the largest detected face bbox covers >50% of the frame
+    area — heuristic for close-up shots where downscale rescue should be tried."""
+    try:
+        h, w = frame.shape[:2]
+        frame_area = h * w
+        with lease_face_analyser() as fa:
+            # Use a small det_size so we can at least get a rough bbox
+            orig_prep = getattr(fa.det_model, 'input_size', None)
+            faces_raw = fa.get(cv2.resize(frame, (320, 320)))
+        if faces_raw:
+            scale = max(h, w) / 320.0
+            for f in faces_raw:
+                b = np.asarray(f.bbox) * scale
+                bw, bh = b[2] - b[0], b[3] - b[1]
+                if bw * bh > frame_area * 0.50:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _detect_faces(frame):
+    """Run the selected detector engine and return raw Face objects (unsorted).
+    Applies small-face (upscale), close-up scale (downscale), and clipped boundary (padded) rescues."""
+    faces = _detect_faces_raw(frame)
     if not faces:
-        # ── Small-face rescue (upscale 2×) ─────────────────────────────────
+        # 1. Small-face rescue
         if getattr(roop.globals, 'rescue_small_faces', False):
             faces = _rescue_upscaled(frame)
+        # 2. Close-up rescue
         if not faces:
             faces = _rescue_downscaled(frame)
+        # 3. Boundary padding rescue
+        if not faces:
+            faces = _rescue_padded(frame)
+
     if faces and getattr(roop.globals, 'refine_landmarks', False):
         for f in faces:
             _refine_kps_from_68(f)

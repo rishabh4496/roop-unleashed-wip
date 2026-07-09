@@ -44,15 +44,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
           )}
           <Toggle label="Force CPU for face analyser" checked={!!p.force_cpu} onChange={(v) => set('force_cpu', v)} />
-          <Select 
-            label="Face detection resolution" 
-            value={p.face_detector_size || '640'} 
-            onChange={(v) => {
-              set('face_detector_size', v);
-              set('default_det_size', v === '640' || v === '960' || v === '1280');
-            }} 
-            options={['320', '640', '960', '1280']} 
-          />
+
           <Slider 
             label="Face detection threshold" 
             min={0.10} 
