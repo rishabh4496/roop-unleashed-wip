@@ -421,11 +421,19 @@ def get_all_faces(frame: Frame) -> Any:
                 for face in faces:
                     best_action, best_face, _ = find_best_rotation(face, frame)
                     if best_action is not None and best_face is not None:
-                        # Copy upright embedding and landmarks to the original face object
-                        for attr in ['embedding', 'normed_embedding', 'landmark_3d_68', 'landmark_2d_106', 'sex']:
-                            if hasattr(best_face, attr):
-                                setattr(face, attr, getattr(best_face, attr))
-                                face[attr] = getattr(best_face, attr)
+                        # Copy the upright embedding and landmarks onto the original face.
+                        # NB: `normed_embedding` and `sex` are read-only @property values
+                        # on the insightface Face (computed from `embedding` / `gender`).
+                        # Assigning them raises AttributeError, which the outer except
+                        # would swallow — dropping ALL faces for the frame. Copy the
+                        # backing fields instead; the properties re-derive automatically.
+                        for attr in ['embedding', 'gender', 'landmark_3d_68', 'landmark_2d_106']:
+                            val = getattr(best_face, attr, None)
+                            if val is not None:
+                                try:
+                                    setattr(face, attr, val)
+                                except Exception:
+                                    pass
             finally:
                 _tls_prober.in_prober = False
 
