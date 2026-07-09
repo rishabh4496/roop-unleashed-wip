@@ -760,11 +760,11 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
             v_up = eye_center - mouth_center
             angle = math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi
             
-            if abs(angle) < 30.0:
+            if abs(angle) < 60.0:
                 return None
-            elif 30.0 <= angle < 120.0:
+            elif 60.0 <= angle < 120.0:
                 return "rotate_anticlockwise"
-            elif -120.0 < angle <= -30.0:
+            elif -120.0 < angle <= -60.0:
                 return "rotate_clockwise"
             else:
                 return "rotate_180"
