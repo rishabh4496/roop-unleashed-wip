@@ -647,3 +647,67 @@ def create_blank_image(width, height):
     img[:] = [0,0,0,0]
     return img
 
+
+def find_best_rotation(original_face, frame):
+    """Probes the face cutout in 4 rotations (0, 90 CW, 90 CCW, 180) to find
+    the rotation that yields the most upright face (where the eye-to-mouth roll
+    angle is minimal / less than 25 degrees). Returns (best_action, best_face, rotated_cut)."""
+    import math
+    
+    (x0, y0, x1, y1) = original_face.bbox.astype(int)
+    offs = int(max(x1 - x0, y1 - y0) * 0.25)
+    x0m = max(0, x0 - offs)
+    y0m = max(0, y0 - offs)
+    x1m = min(frame.shape[1], x1 + offs)
+    y1m = min(frame.shape[0], y1 + offs)
+    cutout = frame[y0m:y1m, x0m:x1m]
+    
+    if cutout.size < 1:
+        return None, original_face, cutout
+
+    best_action = None
+    best_face = None
+    best_score = -1.0
+    best_angle = 180.0
+    best_rotated_cut = cutout
+
+    # We test actions in order of preference: None (unrotated), CCW, CW, 180
+    for action in [None, "rotate_anticlockwise", "rotate_clockwise", "rotate_180"]:
+        if action is None:
+            rot = cutout.copy()
+        elif action == "rotate_anticlockwise":
+            rot = rotate_anticlockwise(cutout)
+        elif action == "rotate_clockwise":
+            rot = rotate_clockwise(cutout)
+        elif action == "rotate_180":
+            rot = rotate_image_180(cutout)
+
+        # Detect face in this rotation
+        face = get_first_face(rot)
+        if face is not None and hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
+            eye_center = (face.kps[0] + face.kps[1]) / 2.0
+            mouth_center = (face.kps[3] + face.kps[4]) / 2.0
+            v_up = eye_center - mouth_center
+            angle = abs(math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi)
+            score = getattr(face, 'det_score', 0.0)
+
+            # Upright condition: face roll angle is less than 25 degrees
+            if angle < 25.0:
+                if score > best_score:
+                    best_score = score
+                    best_action = action
+                    best_face = face
+                    best_angle = angle
+                    best_rotated_cut = rot
+            # Fallback to the face closest to upright
+            elif best_score < 0.0 and angle < best_angle:
+                best_action = action
+                best_face = face
+                best_angle = angle
+                best_rotated_cut = rot
+
+    if best_action is not None and best_face is not None:
+        return best_action, best_face, best_rotated_cut
+    
+    return None, original_face, cutout
+

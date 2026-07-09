@@ -2064,27 +2064,17 @@ class ProcessMgr():
 
         rotation_action = None
         if roop.globals.autorotate_faces:
-            rotation_action = self.rotation_action(target_face, frame)
-            if rotation_action is not None:
-                (startX, startY, endX, endY) = target_face["bbox"].astype("int")
-                width = endX - startX
-                height = endY - startY
-                offs = int(max(width, height) * 0.25)
-                rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
-                if rotation_action == "rotate_anticlockwise":
-                    rotcutframe = rotate_anticlockwise(rotcutframe)
-                elif rotation_action == "rotate_clockwise":
-                    rotcutframe = rotate_clockwise(rotcutframe)
-                elif rotation_action == "rotate_180":
-                    rotcutframe = rotate_image_180(rotcutframe)
-                with _gpu_guard(pooled=analysis_pooled()):  # autorotate re-detection: lock-free when pooled
-                    rotface = get_first_face(rotcutframe)
-                if rotface is None:
-                    rotation_action = None
-                else:
-                    saved_frame = frame.copy()
-                    frame = rotcutframe
-                    target_face = rotface
+            from roop.face_util import find_best_rotation
+            best_action, best_face, rotated_cut = find_best_rotation(target_face, frame)
+            if best_action is not None:
+                rotation_action = best_action
+                (x0, y0, x1, y1) = target_face.bbox.astype(int)
+                offs = int(max(x1 - x0, y1 - y0) * 0.25)
+                startX = max(0, x0 - offs)
+                startY = max(0, y0 - offs)
+                saved_frame = frame.copy()
+                frame = rotated_cut
+                target_face = best_face
 
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)

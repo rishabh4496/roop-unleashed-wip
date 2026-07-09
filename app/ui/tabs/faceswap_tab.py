@@ -750,43 +750,6 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     if faceset_index is None:
         faceset_index = SELECTED_INPUT_FACE_INDEX
 
-    def _rotation_action(face, frame):
-        """Mirror ProcessMgr.rotation_action — returns direction string or None."""
-        import math
-        if hasattr(face, 'kps') and face.kps is not None and len(face.kps) == 5:
-            # kps contains: 0: left eye, 1: right eye, 2: nose, 3: left mouth, 4: right mouth
-            eye_center = (face.kps[0] + face.kps[1]) / 2.0
-            mouth_center = (face.kps[3] + face.kps[4]) / 2.0
-            v_up = eye_center - mouth_center
-            angle = math.atan2(v_up[0], -v_up[1]) * 180.0 / math.pi
-            
-            if abs(angle) < 60.0:
-                return None
-            elif 60.0 <= angle < 120.0:
-                return "rotate_anticlockwise"
-            elif -120.0 < angle <= -60.0:
-                return "rotate_clockwise"
-            else:
-                return "rotate_180"
-
-        # Fallback to original logic
-        bbox_w = face.bbox[2] - face.bbox[0]
-        bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w <= bbox_h:
-            return None  # upright face — no rotation needed
-        # Horizontal face: use chin/forehead landmarks to pick direction
-        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
-            forehead_x = face.landmark_2d_106[72][0]
-            chin_x     = face.landmark_2d_106[0][0]
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            if forehead_x < chin_x:
-                return "rotate_clockwise"
-        # Landmark fallback: use bbox centre vs frame centre
-        fh, fw = frame.shape[:2]
-        bbox_cx = face.bbox[0] + bbox_w / 2.0
-        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
-
     def _cutout(frame, x0, y0, x1, y1):
         x0 = max(0, int(x0)); y0 = max(0, int(y0))
         x1 = min(frame.shape[1], int(x1)); y1 = min(frame.shape[0], int(y1))
@@ -830,34 +793,24 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
         if face is None or not hasattr(face, 'kps') or face.kps is None:
             return None, None, None
         if roop.globals.autorotate_faces:
-            action = _rotation_action(face, frame)
-            if action is not None:
-                x0, y0, x1, y1 = face.bbox.astype(int)
+            from roop.face_util import find_best_rotation
+            best_action, best_face, rotated_cut = find_best_rotation(face, frame)
+            if best_action is not None:
+                (x0, y0, x1, y1) = face.bbox.astype(int)
                 offs = int(max(x1 - x0, y1 - y0) * 0.25)
-                cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-                if action == "rotate_anticlockwise":
-                    rot = rotate_anticlockwise(cut)
-                elif action == "rotate_clockwise":
-                    rot = rotate_clockwise(cut)
-                elif action == "rotate_180":
-                    from roop.face_util import rotate_image_180
-                    rot = rotate_image_180(cut)
-                rotface = get_first_face(rot)
-                if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
-                    # Capture loop variables explicitly so the closure is correct.
-                    _x0, _y0, _x1, _y1, _offs, _act = x0, y0, x1, y1, offs, action
-                    def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,
-                                 __offs=_offs, __act=_act):
-                        c = _cutout(swp, __x0 - __offs, __y0 - __offs,
-                                        __x1 + __offs, __y1 + __offs)
-                        if __act == "rotate_anticlockwise":
-                            return rotate_anticlockwise(c)
-                        elif __act == "rotate_clockwise":
-                            return rotate_clockwise(c)
-                        elif __act == "rotate_180":
-                            from roop.face_util import rotate_image_180
-                            return rotate_image_180(c)
-                    return rot, rotface.kps, _swap_fn
+                _x0, _y0, _x1, _y1, _offs, _act = x0, y0, x1, y1, offs, best_action
+                def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,
+                             __offs=_offs, __act=_act):
+                    c = _cutout(swp, __x0 - __offs, __y0 - __offs,
+                                    __x1 + __offs, __y1 + __offs)
+                    if __act == "rotate_anticlockwise":
+                        return rotate_anticlockwise(c)
+                    elif __act == "rotate_clockwise":
+                        return rotate_clockwise(c)
+                    elif __act == "rotate_180":
+                        from roop.face_util import rotate_image_180
+                        return rotate_image_180(c)
+                return rotated_cut, best_face.kps, _swap_fn
         # No rotation — identity transform for the swap frame too.
         return frame, face.kps, lambda swp: swp
 
