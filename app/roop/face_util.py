@@ -788,6 +788,13 @@ def find_best_rotation(original_face, frame):
     angle is minimal / less than 25 degrees). Returns (best_action, best_face, rotated_cut)."""
     import math
     
+    if getattr(original_face, '_best_face', None) is not None:
+        return (
+            getattr(original_face, '_best_action', None),
+            original_face._best_face,
+            getattr(original_face, '_rotated_cut', None)
+        )
+
     (x0, y0, x1, y1) = original_face.bbox.astype(int)
     offs = int(max(x1 - x0, y1 - y0) * 0.25)
     x0m = max(0, x0 - offs)
@@ -797,6 +804,12 @@ def find_best_rotation(original_face, frame):
     cutout = frame[y0m:y1m, x0m:x1m]
 
     if cutout.size < 1:
+        try:
+            original_face._best_action = None
+            original_face._best_face = original_face
+            original_face._rotated_cut = cutout
+        except Exception:
+            pass
         return None, original_face, cutout
 
     # Fast path: the incoming face already carries kps from the main detection,
@@ -815,6 +828,12 @@ def find_best_rotation(original_face, frame):
         _vup = _ec - _mc
         _orig_angle = abs(math.atan2(_vup[0], -_vup[1]) * 180.0 / math.pi)
         if _orig_angle < 25.0:
+            try:
+                original_face._best_action = None
+                original_face._best_face = original_face
+                original_face._rotated_cut = cutout
+            except Exception:
+                pass
             return None, original_face, cutout
 
     best_action = None
@@ -868,7 +887,19 @@ def find_best_rotation(original_face, frame):
         _tls_prober.in_prober = _prev_in_prober
 
     if best_action is not None and best_face is not None:
+        try:
+            original_face._best_action = best_action
+            original_face._best_face = best_face
+            original_face._rotated_cut = best_rotated_cut
+        except Exception:
+            pass
         return best_action, best_face, best_rotated_cut
 
+    try:
+        original_face._best_action = None
+        original_face._best_face = original_face
+        original_face._rotated_cut = cutout
+    except Exception:
+        pass
     return None, original_face, cutout
 
