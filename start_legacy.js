@@ -11,9 +11,11 @@ module.exports = async (kernel) => {
           venv: "env",
           env: {
             ROOP_PROFILE: "1",
-            ROOP_BATCH_SWAP_XFRAME: "1", 
-            ROOP_BATCH_SWAP: "1", 
+            ROOP_BATCH_SWAP_XFRAME: "1",
+            ROOP_BATCH_SWAP: "1",
             ROOP_STAB_PARALLEL: "1",
+            // Work-stealing granularity for the parallel stabilizer (see start_react.js)
+            ROOP_STAB_BLOCKS_PER_THREAD: "2",
             OMP_NUM_THREADS: "1",
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",
