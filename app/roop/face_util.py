@@ -240,7 +240,7 @@ def _hybrid_yunet_faces(frame, fa):
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
-def _detect_faces_raw(frame):
+def _detect_faces_raw(frame, det_size=None, det_thresh=None):
     """Run the selected detector engine and return raw Face objects (unsorted) without rescues."""
     engine = getattr(roop.globals, 'detector_engine', 'scrfd')
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
@@ -248,16 +248,32 @@ def _detect_faces_raw(frame):
         for model in fa.models.values():
             if hasattr(model, 'nms_thresh'):
                 model.nms_thresh = nms_thresh
-        if engine == 'yoloface':
-            faces = _hybrid_yolo_faces(frame, fa)
-        elif engine == 'retinaface':
-            faces = _hybrid_retinaface_faces(frame, fa, model_type='10g')
-        elif engine == 'retinaface_r50':
-            faces = _hybrid_retinaface_faces(frame, fa, model_type='r50')
-        elif engine == 'yunet':
-            faces = _hybrid_yunet_faces(frame, fa)
-        else:
-            faces = fa.get(frame)
+                
+        # Temporarily override detection size and threshold on the underlying model if requested
+        orig_input_size = getattr(fa.det_model, 'input_size', None)
+        orig_det_thresh = getattr(fa.det_model, 'det_thresh', None)
+        if det_size is not None and orig_input_size is not None:
+            fa.det_model.input_size = (det_size, det_size)
+        if det_thresh is not None and orig_det_thresh is not None:
+            fa.det_model.det_thresh = det_thresh
+            
+        try:
+            if engine == 'yoloface':
+                faces = _hybrid_yolo_faces(frame, fa)
+            elif engine == 'retinaface':
+                faces = _hybrid_retinaface_faces(frame, fa, model_type='10g')
+            elif engine == 'retinaface_r50':
+                faces = _hybrid_retinaface_faces(frame, fa, model_type='r50')
+            elif engine == 'yunet':
+                faces = _hybrid_yunet_faces(frame, fa)
+            else:
+                faces = fa.get(frame)
+        finally:
+            if det_size is not None and orig_input_size is not None:
+                fa.det_model.input_size = orig_input_size
+            if det_thresh is not None and orig_det_thresh is not None:
+                fa.det_model.det_thresh = orig_det_thresh
+                
     return faces or []
 
 
@@ -278,11 +294,12 @@ def _rescue_upscaled(frame: Frame):
 
 
 def _rescue_downscaled(frame: Frame):
-    """Retry detection on a 0.5x downscale of the frame. SCRFD anchors are tuned
-    for faces in the 50-200px range; when a close-up face fills most of the frame
-    (400px+ face in a 640px det-size pass) confidence scores drop sharply. At 0.5x
-    the same face looks like a 200px face — well within the anchor sweet-spot.
-    Faces found are scaled back to original coordinates.
+    """Retry detection with a smaller input_size (320x320) directly on the detector.
+    SCRFD anchors are tuned for faces in the 50-200px range; when a close-up face 
+    fills most of the frame (400px+ face in a 640px det-size pass) confidence scores 
+    drop sharply. By dropping the detector's input size to 320, the image is shrunk 
+    more aggressively before passing through the network, putting the face back 
+    within the anchor sweet-spot.
 
     Also lowers the detection threshold slightly for this rescue attempt since
     close-up faces that partially exit the frame may have lower confidence."""
@@ -290,23 +307,15 @@ def _rescue_downscaled(frame: Frame):
         h, w = frame.shape[:2]
         if min(h, w) < 128:
             return None
-        # Downscale by exactly 0.5x using area interpolation (best for shrinking)
-        down = cv2.resize(frame, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
 
-        # Temporarily override globals to enforce 320px resolution and lower threshold
-        orig_size = getattr(roop.globals, 'face_detector_size', '640')
+        # Temporarily lower the detection threshold
         orig_thresh = getattr(roop.globals, 'face_detector_threshold', 0.50)
-        try:
-            roop.globals.face_detector_size = '320'
-            roop.globals.face_detector_threshold = max(0.30, orig_thresh - 0.15)
-            faces = _detect_faces_raw(down)
-        finally:
-            roop.globals.face_detector_size = orig_size
-            roop.globals.face_detector_threshold = orig_thresh
-
+        lowered_thresh = max(0.30, orig_thresh - 0.15)
+        
+        # Override det_size directly on the model via _detect_faces_raw
+        faces = _detect_faces_raw(frame, det_size=320, det_thresh=lowered_thresh)
+        
         if faces:
-            for f in faces:
-                _scale_face_coords(f, 2.0)
             return faces
     except Exception:
         pass
