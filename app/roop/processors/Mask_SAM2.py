@@ -99,6 +99,7 @@ class Mask_SAM2():
             for obj_id, box in enumerate(boxes):
                 self.predictor.add_new_points_or_box(
                     state, frame_idx=0, obj_id=obj_id, box=np.asarray(box, np.float32))
+            total_frames = len(os.listdir(frames_dir))
             for fidx, _obj_ids, logits in self.predictor.propagate_in_video(state):
                 # logits: (num_objs, 1, H, W). Union the objects → one region mask.
                 m = (logits > 0.0).any(dim=0)[0].detach().cpu().numpy().astype(np.uint8)
@@ -108,6 +109,9 @@ class Mask_SAM2():
                     m = cv2.resize(m, (max(1, int(w * scale)), max(1, int(h * scale))),
                                    interpolation=cv2.INTER_NEAREST)
                 self.precomputed[int(fidx)] = m
+                if fidx % 50 == 0 or fidx == total_frames - 1:
+                    pct = (fidx + 1) / total_frames * 100 if total_frames > 0 else 0.0
+                    print(f'[SAM2] mask propagation: frame {fidx + 1}/{total_frames} ({pct:.1f}%)')
         print(f'[SAM2] precomputed masks for {len(self.precomputed)} frames')
 
     def get_crop_mask(self, frame_idx, M, crop_shape):
