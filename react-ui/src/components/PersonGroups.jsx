@@ -6,9 +6,35 @@ import { PERSON_COLORS } from './ui';
 // backend labels (e.g. "Left Profile + Up Tilt") is matched against these by
 // substring so combos still count toward the base angle.
 const PRIMARY_POSES = ['Front', 'Left Profile', 'Right Profile', 'Up Tilt', 'Down Tilt'];
-const POSE_ICON = {
-  'Front': '😐', 'Left Profile': '◧', 'Right Profile': '◨', 'Up Tilt': '⬆', 'Down Tilt': '⬇',
-};
+
+// Compact pose "compass": center = Front, and L/R/Up/Down points around it.
+// Covered directions glow in the person's color; uncovered are faint rings.
+function PoseCompass({ covered, color }) {
+  const pts = [
+    { key: 'Front', cx: 30, cy: 30, r: 5 },
+    { key: 'Left Profile', cx: 8, cy: 30, r: 4 },
+    { key: 'Right Profile', cx: 52, cy: 30, r: 4 },
+    { key: 'Up Tilt', cx: 30, cy: 8, r: 4 },
+    { key: 'Down Tilt', cx: 30, cy: 52, r: 4 },
+  ];
+  return (
+    <svg viewBox="0 0 60 60" className="w-14 h-14 shrink-0">
+      <line x1="30" y1="8" x2="30" y2="52" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+      <line x1="8" y1="30" x2="52" y2="30" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+      <circle cx="30" cy="30" r="22" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+      {pts.map((pt) => {
+        const on = covered.has(pt.key);
+        return (
+          <circle key={pt.key} cx={pt.cx} cy={pt.cy} r={pt.r}
+            fill={on ? color : 'transparent'}
+            stroke={on ? color : 'rgba(255,255,255,0.2)'}
+            strokeWidth={on ? 0 : 1.4}
+            style={on ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined} />
+        );
+      })}
+    </svg>
+  );
+}
 
 // Group target-face indices by their person rank, preserving rank order.
 function groupByPerson(groups) {
@@ -289,20 +315,26 @@ export default function PersonGroups({
                   })}
                 </div>
 
-                {/* Coverage meter */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-white/30 mr-0.5">Coverage</span>
-                  {PRIMARY_POSES.filter((pp) => covered.has(pp)).map((pp) => (
-                    <span key={pp} className="px-1.5 py-0.5 rounded-md text-[9px] font-bold border" style={{ color, borderColor: `${color}55`, background: `${color}18` }}>
-                      {POSE_ICON[pp]} {pp.replace(' Profile', '').replace(' Tilt', '')}
-                    </span>
-                  ))}
-                  {missing.map((pp) => (
-                    <span key={pp} title={`No ${pp} angle captured yet — add one for steadier swaps`}
-                      className="px-1.5 py-0.5 rounded-md text-[9px] font-semibold border border-dashed border-white/15 text-white/30">
-                      + {pp.replace(' Profile', '')}
-                    </span>
-                  ))}
+                {/* Coverage meter — pose compass + missing-angle hints */}
+                <div className="flex items-center gap-3">
+                  <PoseCompass covered={covered} color={color} />
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-white/30 mb-1">
+                      Angle coverage · {covered.size}/5
+                    </div>
+                    {missing.length === 0 ? (
+                      <span className="text-[10px] font-bold" style={{ color }}>✓ Well covered</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {missing.map((pp) => (
+                          <span key={pp} title={`No ${pp} angle captured yet — add one for steadier swaps`}
+                            className="px-1.5 py-0.5 rounded-md text-[9px] font-semibold border border-dashed border-white/15 text-white/35">
+                            + {pp.replace(' Profile', '')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Grab angle at current frame */}
