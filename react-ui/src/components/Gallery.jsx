@@ -8,6 +8,7 @@ export default function Gallery({ notify }) {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all'); // 'all', 'video', 'image'
+  const [sortBy, setSortBy] = useState('new'); // 'new' | 'old' | 'big' | 'name'
   const [busyFile, setBusyFile] = useState(''); // tracking loading reuse actions
 
   const fetchOutputs = async () => {
@@ -107,7 +108,14 @@ export default function Gallery({ notify }) {
       (filterType === 'video' && f.kind === 'video') ||
       (filterType === 'image' && f.kind === 'image');
     return matchesSearch && matchesFilter;
+  }).sort((a, b) => {
+    if (sortBy === 'old') return (a.mtime || 0) - (b.mtime || 0);
+    if (sortBy === 'big') return (b.size || 0) - (a.size || 0);
+    if (sortBy === 'name') return a.name.localeCompare(b.name);
+    return (b.mtime || 0) - (a.mtime || 0); // 'new'
   });
+
+  const totalSize = filteredFiles.reduce((acc, f) => acc + (f.size || 0), 0);
 
   const getFormatDate = (timestamp) => {
     try {
@@ -153,22 +161,44 @@ export default function Gallery({ notify }) {
             className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none"
           />
         </div>
-        <div className="flex gap-1.5 bg-black/20 p-1 rounded-xl border border-white/5">
-          {['all', 'video', 'image'].map((t) => (
-            <button
-              key={t}
-              onClick={() => setFilterType(t)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
-                filterType === t
-                  ? 'bg-[#E94560] text-white shadow-[0_2px_8px_rgba(233,69,96,0.3)]'
-                  : 'text-white/60 hover:text-white'
-              }`}
-            >
-              {t}s
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5 bg-black/20 p-1 rounded-xl border border-white/5">
+            {['all', 'video', 'image'].map((t) => (
+              <button
+                key={t}
+                onClick={() => setFilterType(t)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+                  filterType === t
+                    ? 'bg-[#E94560] text-white shadow-[0_2px_8px_rgba(233,69,96,0.3)]'
+                    : 'text-white/60 hover:text-white'
+                }`}
+              >
+                {t}s
+              </button>
+            ))}
+          </div>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            title="Sort outputs"
+            className="px-3 py-2 rounded-xl glass-input text-white text-xs font-bold focus:outline-none cursor-pointer"
+          >
+            <option value="new" className="bg-[#121420]">Newest first</option>
+            <option value="old" className="bg-[#121420]">Oldest first</option>
+            <option value="big" className="bg-[#121420]">Largest first</option>
+            <option value="name" className="bg-[#121420]">Name (A–Z)</option>
+          </select>
         </div>
       </Card>
+
+      {!loading && files.length > 0 && (
+        <div className="flex items-center gap-2 text-[11px] text-white/40 -mt-2 px-1">
+          <span className="font-bold text-white/60">{filteredFiles.length}</span> shown
+          {filteredFiles.length !== files.length && <span>of {files.length}</span>}
+          <span className="text-white/20">·</span>
+          <span className="font-bold text-white/60">{fmtSize(totalSize)}</span> total
+        </div>
+      )}
 
       {/* Loading state */}
       {loading && (
