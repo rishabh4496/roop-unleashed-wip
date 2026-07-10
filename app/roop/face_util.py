@@ -195,6 +195,74 @@ def _scale_face_coords(face, inv_scale: float) -> None:
             pass
 
 
+def _offset_face_coords(face, ox: float, oy: float) -> None:
+    """Shift a Face's spatial fields by (ox, oy) in place (used to map faces
+    detected in a cropped ROI back to full-frame coordinates)."""
+    bbox = getattr(face, 'bbox', None)
+    if bbox is not None:
+        try:
+            b = np.asarray(bbox, dtype=np.float32).copy()
+            b[0::2] += ox
+            b[1::2] += oy
+            face.bbox = b
+        except Exception:
+            pass
+    for attr in ('kps', 'landmark_2d_106'):
+        v = getattr(face, attr, None)
+        if v is not None:
+            try:
+                a = np.asarray(v, dtype=np.float32).copy()
+                a[:, 0] += ox
+                a[:, 1] += oy
+                setattr(face, attr, a)
+            except Exception:
+                pass
+    lm68 = getattr(face, 'landmark_3d_68', None)
+    if lm68 is not None:
+        try:
+            lm68 = np.asarray(lm68, dtype=np.float32).copy()
+            lm68[:, 0] += ox   # only x,y are pixel coords; z is depth
+            lm68[:, 1] += oy
+            face.landmark_3d_68 = lm68
+        except Exception:
+            pass
+
+
+def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
+    """Detect faces within a padded crop around `bbox` (a tracked face's
+    previous/predicted location) instead of the full frame. The detector's
+    input canvas size is unchanged, so a small tracked face fills far more of
+    it — improving recall on rotated/angled faces at no extra compute versus
+    a full-frame detect. Returns faces in full-frame coordinates, or an empty
+    list if none were found in the crop (caller decides whether to fall back
+    to a full-frame detect on a miss)."""
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    bw, bh = x2 - x1, y2 - y1
+    if bw <= 0 or bh <= 0:
+        return []
+    mx, my = bw * pad_ratio, bh * pad_ratio
+    cx1, cy1, cx2, cy2 = x1 - mx, y1 - my, x2 + mx, y2 + my
+    if cx2 - cx1 < min_crop:
+        pad = (min_crop - (cx2 - cx1)) / 2.0
+        cx1 -= pad
+        cx2 += pad
+    if cy2 - cy1 < min_crop:
+        pad = (min_crop - (cy2 - cy1)) / 2.0
+        cy1 -= pad
+        cy2 += pad
+    cx1, cy1 = max(0, int(round(cx1))), max(0, int(round(cy1)))
+    cx2, cy2 = min(w, int(round(cx2))), min(h, int(round(cy2)))
+    if cx2 <= cx1 or cy2 <= cy1:
+        return []
+
+    crop = frame[cy1:cy2, cx1:cx2]
+    faces = get_all_faces(crop) or []
+    for face in faces:
+        _offset_face_coords(face, cx1, cy1)
+    return faces
+
+
 def _hybrid_detector_faces(frame, fa, bboxes, kpss):
     """Wrap raw detector output (bbox + 5 kps per face) into full Face objects
     using buffalo_l's aux models (recognition + 106/68 landmarks) — mirrors

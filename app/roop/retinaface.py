@@ -6,10 +6,18 @@ identity + landmarks, so the rest of the pipeline sees the exact same Face
 objects. RetinaFace has higher recall than SCRFD on hard poses/lighting,
 which reduces detection dropouts (swap blink) at the source.
 
-The ONNX is FaceFusion's retinaface export. Its output layout is the
-standard insightface distance-regression head, and insightface's own
-ModelRouter recognises it (>= 5 outputs -> RetinaFace class), so we reuse
-insightface's proven anchor decode instead of reimplementing it.
+Two distinct model families are supported, each with its own output/anchor
+convention:
+  - '10g': FaceFusion's retinaface_10g.onnx. Same anchor-free, distance-
+    regression head as insightface's SCRFD, so it's routed straight through
+    insightface's own ModelRouter/RetinaFace class, which already decodes it
+    correctly.
+  - 'r50': a biubug6/Pytorch_Retinaface ResNet50 export. This is a classic
+    *anchor-based* detector (predefined box sizes per stride, decoded via
+    prior boxes + variance), a completely different convention from
+    '10g'/SCRFD, so it needs its own PriorBox + decode implementation
+    (RetinaFace3Output below) and its own preprocessing (mean-subtract only,
+    BGR, no std scaling — not the 127.5/128 SCRFD convention).
 """
 
 import os
@@ -29,36 +37,86 @@ def softmax(z):
     div = div[:, np.newaxis]
     return e_x / div
 
-def distance2bbox(points, distance, max_shape=None):
-    x1 = points[:, 0] - distance[:, 0]
-    y1 = points[:, 1] - distance[:, 1]
-    x2 = points[:, 0] + distance[:, 2]
-    y2 = points[:, 1] + distance[:, 3]
-    return np.stack([x1, y1, x2, y2], axis=-1)
 
-def distance2kps(points, distance, max_shape=None):
-    preds = []
-    for i in range(0, distance.shape[1], 2):
-        px = points[:, i%2] + distance[:, i]
-        py = points[:, i%2+1] + distance[:, i+1]
-        preds.append(px)
-        preds.append(py)
-    return np.stack(preds, axis=-1)
+# biubug6/Pytorch_Retinaface PriorBox config (ResNet50 variant).
+_R50_MIN_SIZES = ((16, 32), (64, 128), (256, 512))
+_R50_STEPS = (8, 16, 32)
+_R50_VARIANCE = (0.1, 0.2)
+
+_prior_cache = {}
+
+
+def _generate_priors(image_size, min_sizes_cfg=_R50_MIN_SIZES, steps=_R50_STEPS):
+    """Anchor-based PriorBox generation, matching biubug6/Pytorch_Retinaface's
+    box_utils.PriorBox exactly (grid + anchor order must match how the network
+    was trained). Result is normalized (cx, cy, w, h) in [0, 1]; cached per
+    image_size since it's static for a fixed input resolution."""
+    cached = _prior_cache.get(image_size)
+    if cached is not None:
+        return cached
+
+    h, w = image_size
+    anchors = []
+    for k, step in enumerate(steps):
+        fh = int(np.ceil(h / step))
+        fw = int(np.ceil(w / step))
+        min_sizes = min_sizes_cfg[k]
+        num_anchors = len(min_sizes)
+
+        cy = (np.arange(fh, dtype=np.float32) + 0.5) * step / h
+        cx = (np.arange(fw, dtype=np.float32) + 0.5) * step / w
+        grid_cy, grid_cx = np.meshgrid(cy, cx, indexing='ij')
+        grid_cy = grid_cy.reshape(-1)
+        grid_cx = grid_cx.reshape(-1)
+
+        sizes = np.array(min_sizes, dtype=np.float32)
+        cx_rep = np.repeat(grid_cx, num_anchors)
+        cy_rep = np.repeat(grid_cy, num_anchors)
+        skx = np.tile(sizes / w, grid_cx.shape[0])
+        sky = np.tile(sizes / h, grid_cy.shape[0])
+        anchors.append(np.stack([cx_rep, cy_rep, skx, sky], axis=1))
+
+    priors = np.concatenate(anchors, axis=0).astype(np.float32)
+    _prior_cache[image_size] = priors
+    return priors
+
+
+def _decode_boxes(loc, priors, variances=_R50_VARIANCE):
+    """box_utils.decode from biubug6/Pytorch_Retinaface. Returns normalized
+    (x1, y1, x2, y2) in [0, 1]."""
+    boxes = np.concatenate((
+        priors[:, :2] + loc[:, :2] * variances[0] * priors[:, 2:],
+        priors[:, 2:] * np.exp(loc[:, 2:] * variances[1])
+    ), axis=1)
+    boxes[:, :2] -= boxes[:, 2:] / 2
+    boxes[:, 2:] += boxes[:, :2]
+    return boxes
+
+
+def _decode_landmarks(pre, priors, variances=_R50_VARIANCE):
+    """box_utils.decode_landm counterpart — 5 (x, y) points, normalized."""
+    return np.concatenate([
+        priors[:, :2] + pre[:, 2 * i:2 * i + 2] * variances[0] * priors[:, 2:]
+        for i in range(5)
+    ], axis=1)
+
 
 class RetinaFace3Output:
+    """biubug6/Pytorch_Retinaface ResNet50 decoder — anchor-based, NOT the
+    insightface/SCRFD anchor-free convention. See module docstring."""
+
     def __init__(self, model_file=None, session=None):
         self.model_file = model_file
         self.session = session
         self.taskname = 'detection'
-        self.center_cache = {}
         self.nms_thresh = 0.4
         self.det_thresh = 0.5
-        self.input_mean = 127.5
-        self.input_std = 128.0
-        
+        # biubug6 preprocessing: BGR, mean-subtract only, no std scaling.
+        self.input_mean = (104.0, 117.0, 123.0)
+
         if self.session is None:
             self.session = onnxruntime.InferenceSession(self.model_file, providers=['CPUExecutionProvider'])
-            
+
         input_cfg = self.session.get_inputs()[0]
         input_shape = input_cfg.shape
         if isinstance(input_shape[2], str):
@@ -93,61 +151,52 @@ class RetinaFace3Output:
         det_img = np.zeros((input_size[1], input_size[0], 3), dtype=np.uint8)
         det_img[:new_height, :new_width, :] = resized_img
 
-        blob = cv2.dnn.blobFromImage(det_img, 1.0/self.input_std, input_size, (self.input_mean, self.input_mean, self.input_mean), swapRB=True)
+        blob = cv2.dnn.blobFromImage(det_img, 1.0, input_size, self.input_mean, swapRB=False)
         net_outs = self.session.run(self.output_names, {self.input_name : blob})
-        
+
         loc = net_outs[0][0]
         conf = net_outs[1][0]
         landms = net_outs[2][0]
-        
-        scores = softmax(conf)[:, 1]
-        
-        input_height = blob.shape[2]
-        input_width = blob.shape[3]
-        feat_stride_fpn = [8, 16, 32]
-        anchor_centers_list = []
-        
-        for stride in feat_stride_fpn:
-            height = input_height // stride
-            width = input_width // stride
-            anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
-            anchor_centers = (anchor_centers * stride).reshape((-1, 2))
-            anchor_centers = np.stack([anchor_centers]*2, axis=1).reshape((-1, 2))
-            anchor_centers_list.append(anchor_centers)
-            
-        anchor_centers = np.vstack(anchor_centers_list)
-        
-        loc_scaled = np.zeros_like(loc)
-        landms_scaled = np.zeros_like(landms)
-        idx = 0
-        for stride in feat_stride_fpn:
-            height = input_height // stride
-            width = input_width // stride
-            count = height * width * 2
-            loc_scaled[idx:idx+count] = loc[idx:idx+count] * stride
-            landms_scaled[idx:idx+count] = landms[idx:idx+count] * stride
-            idx += count
-            
-        bboxes = distance2bbox(anchor_centers, loc_scaled) / det_scale
-        kpss = distance2kps(anchor_centers, landms_scaled) / det_scale
+
+        # The nakamura196 r50 export already applies softmax inside the graph:
+        # conf rows are probabilities summing to 1 (face score in column 1),
+        # empirically peaking at ~0.999 on a clear face. Do NOT re-softmax it —
+        # that squashes a true 0.999 down to ~0.73, which silently falls below
+        # det_thresh (e.g. 0.8) and drops every detection. Guard defensively in
+        # case a future export emits raw logits instead (rows not ~1).
+        if abs(float(conf[0].sum()) - 1.0) < 1e-3:
+            scores = conf[:, 1]
+        else:
+            scores = softmax(conf)[:, 1]
+        priors = _generate_priors((input_size[1], input_size[0]))
+
+        boxes = _decode_boxes(loc, priors)
+        boxes[:, 0::2] *= input_size[0]
+        boxes[:, 1::2] *= input_size[1]
+        boxes /= det_scale
+
+        kpss = _decode_landmarks(landms, priors)
+        kpss[:, 0::2] *= input_size[0]
+        kpss[:, 1::2] *= input_size[1]
+        kpss /= det_scale
         kpss = kpss.reshape((kpss.shape[0], -1, 2))
-        
+
         pos_inds = np.where(scores >= self.det_thresh)[0]
         pos_scores = scores[pos_inds]
-        pos_bboxes = bboxes[pos_inds]
+        pos_boxes = boxes[pos_inds]
         pos_kpss = kpss[pos_inds]
-        
+
         order = pos_scores.argsort()[::-1]
         pos_scores = pos_scores[order]
-        pos_bboxes = pos_bboxes[order]
+        pos_boxes = pos_boxes[order]
         pos_kpss = pos_kpss[order]
-        
-        pre_det = np.hstack((pos_bboxes, pos_scores[:, np.newaxis])).astype(np.float32, copy=False)
+
+        pre_det = np.hstack((pos_boxes, pos_scores[:, np.newaxis])).astype(np.float32, copy=False)
         keep = self.nms(pre_det)
-        
+
         det = pre_det[keep, :]
         kpss = pos_kpss[keep, :, :]
-        
+
         return det, kpss
 
     def nms(self, dets):

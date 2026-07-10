@@ -1384,10 +1384,20 @@ class ProcessMgr():
         feeds pre-decoded animated-WebP frames instead of a VideoCapture.
         Returns the full track list (active + retired)."""
         import os
-        from roop.face_util import get_all_faces
+        from roop.face_util import get_all_faces, get_all_faces_in_roi
 
         # Skip-frames step (N=3 runs detection on 33% of frames; N=1 scans all)
         TRACK_STEP = max(1, int(step))
+
+        # Opt-in: when exactly one track is active, detect within a padded crop
+        # around its predicted bbox instead of the full frame. Same detector
+        # canvas size -> same compute, but the tracked face fills much more of
+        # it, improving recall on rotated/angled faces. Falls back to a
+        # full-frame detect on a miss (occlusion, fast motion, re-entry), so it
+        # never loses a face the old full-frame path would have found. Skipped
+        # entirely with 0 or >1 active tracks to avoid extra detector calls in
+        # multi-face scenes (kept identical to today's full-frame behaviour there).
+        ROI_CROP = os.environ.get('ROOP_TRACK_ROI_CROP', '0') == '1'
 
         # active = tracks seen within STALE frames (candidates for matching);
         # retired = older tracks, kept only for the final source assignment. This
@@ -1398,6 +1408,18 @@ class ProcessMgr():
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
         IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
         print(f'[Track] {desc}: scanning frames (step={TRACK_STEP})...')
+
+        def _predict_bbox(t, f_idx):
+            """Project a track's last bbox forward by its linear velocity to
+            estimate where it should be at f_idx. Shared by _consume's
+            detection-to-track association and (opt-in) ROI-crop detection."""
+            predicted_bbox = t['bbox']
+            dt = f_idx - t['last_seen']
+            if 0 < dt <= 6 and t['vel'] is not None and np.any(t['vel']):
+                proj = t['bbox'] + t['vel'] * dt
+                if proj[2] > proj[0] and proj[3] > proj[1]:
+                    predicted_bbox = proj
+            return predicted_bbox
 
         # Terminal progress bar (same style as the swap phase) so the pre-pass is
         # visible in the console too, not just the web UI.
@@ -1420,14 +1442,21 @@ class ProcessMgr():
         det_executor = (ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix='track_det')
                         if pool_workers > 1 else None)
 
-        def _detect_one(fr):
+        def _run_detect(fr, crop_bbox):
+            if crop_bbox is not None:
+                faces = get_all_faces_in_roi(fr, crop_bbox)
+                if faces:
+                    return faces
+            return get_all_faces(fr) or []
+
+        def _detect_one(fr, crop_bbox=None):
             # Runs inside a pool worker, one at a time per worker (ThreadPoolExecutor
             # caps concurrency at pool_workers == the analyser pool size), so this is
             # real GPU/model time, not queue-wait — lease_face_analyser() should never
             # actually block here. Tagged 'track_detect' (not 'detect') so it shows up
             # as its own STAGE TIMING line, separate from the swap phase's detect stage.
             with _prof('track_detect'), _gpu_guard(pooled=True):
-                return get_all_faces(fr) or []
+                return _run_detect(fr, crop_bbox)
 
         def _consume(f_idx, faces):
             nonlocal active, retired, next_id
@@ -1445,15 +1474,7 @@ class ProcessMgr():
                 for t in active:
                     if t['id'] in used:
                         continue
-                    dt = f_idx - t['last_seen']
-                    # Predict bbox location using linear velocity
-                    predicted_bbox = t['bbox']
-                    if 0 < dt <= 6 and t['vel'] is not None and np.any(t['vel']):
-                        proj = t['bbox'] + t['vel'] * dt
-                        # Ensure projection is a valid bounding box
-                        if proj[2] > proj[0] and proj[3] > proj[1]:
-                            predicted_bbox = proj
-
+                    predicted_bbox = _predict_bbox(t, f_idx)
                     iou = self._bbox_iou(bbox, predicted_bbox)
                     if iou < IOU_MIN:
                         continue
@@ -1469,8 +1490,13 @@ class ProcessMgr():
 
                 is_reid = False
                 if best is None:
-                    # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces
-                    best_reid, best_reid_dist = None, 0.45
+                    # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces.
+                    # Cutoff matches EMB_MAX (the primary spatial-match path's embedding gate) rather than being
+                    # stricter than it — Re-ID only runs once spatial continuity is already lost (occlusion/motion
+                    # blur/fast turn), so it's the fallback for exactly the hard frames where embeddings also drift
+                    # most; being stricter than the path it falls back from just fragments one real face into many
+                    # short-lived tracks instead of reconnecting them.
+                    best_reid, best_reid_dist = None, EMB_MAX
                     is_retired = False
 
                     for t in active:
@@ -1573,8 +1599,10 @@ class ProcessMgr():
                     pbar.update(1)
                     continue
 
+                crop_bbox = _predict_bbox(active[0], idx) if ROI_CROP and len(active) == 1 else None
+
                 if det_executor is not None:
-                    in_flight.append((idx, det_executor.submit(_detect_one, frame)))
+                    in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox)))
                     if len(in_flight) >= pool_workers:
                         done_idx, done_fut = in_flight.popleft()
                         # If this blocks waiting on done_fut, all pool_workers are busy
@@ -1587,7 +1615,7 @@ class ProcessMgr():
                             _consume(done_idx, result)
                 else:
                     with _prof('track_detect'), _gpu_guard(pooled=analysis_pooled()):
-                        faces = get_all_faces(frame) or []
+                        faces = _run_detect(frame, crop_bbox)
                     with _prof('track_consume'):
                         _consume(idx, faces)
 
