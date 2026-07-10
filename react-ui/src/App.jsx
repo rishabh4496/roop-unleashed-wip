@@ -34,6 +34,10 @@ export default function App() {
 
   useEffect(() => {
     const handleDragOver = (e) => {
+      // Only react to OS file drags — internal drags (e.g. dragging a source
+      // face onto a person) carry custom types, not 'Files', and must not
+      // trigger the full-screen "drop media" overlay.
+      if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
       e.preventDefault();
       setIsDraggingOver(true);
     };

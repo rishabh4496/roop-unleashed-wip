@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card } from './ui';
+import PersonGroups from './PersonGroups';
 
 const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
 
@@ -15,6 +16,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [sourceFacesInfo, setSourceFacesInfo] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
   const [targetGroups, setTargetGroups] = useState([]);
+  const [targetNames, setTargetNames] = useState([]);
+  const [targetFacesInfo, setTargetFacesInfo] = useState([]);
   const [targets, setTargets] = useState([]);
   const [selSource, setSelSource] = useState(0);
   const [selTarget, setSelTarget] = useState(0);
@@ -136,6 +139,29 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   }, []);
 
   // Save active parameters to a new profile
+  // Persist presets both to localStorage (instant/offline) and the backend
+  // (survives cache clears, shareable via profiles.json on disk).
+  const persistProfiles = (updated) => {
+    setProfiles(updated);
+    localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    postJSON('/api/profiles', { profiles: updated }).catch(() => { /* offline-tolerant */ });
+  };
+
+  // On mount, prefer server-side presets if any exist (merge, server wins).
+  useEffect(() => {
+    getJSON('/api/profiles').then((res) => {
+      const server = Array.isArray(res.profiles) ? res.profiles : [];
+      if (server.length === 0) return;
+      setProfiles((local) => {
+        const map = new Map((local || []).map((pr) => [pr.name, pr]));
+        server.forEach((pr) => { if (pr && pr.name) map.set(pr.name, pr); });
+        const merged = Array.from(map.values());
+        localStorage.setItem('roop_profiles', JSON.stringify(merged));
+        return merged;
+      });
+    }).catch(() => { /* backend not ready — localStorage still works */ });
+  }, []);
+
   const saveProfile = () => {
     if (!newProfileName.trim()) {
       notify('Enter a profile name first', 'error');
@@ -146,8 +172,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       settings: { ...p }
     };
     const updated = [...profiles.filter(pr => pr.name !== newProfileName), profile];
-    setProfiles(updated);
-    localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    persistProfiles(updated);
     setNewProfileName('');
     notify(`Saved profile: ${profile.name}`);
   };
@@ -163,8 +188,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   // Delete a profile
   const deleteProfile = (name) => {
     const updated = profiles.filter(pr => pr.name !== name);
-    setProfiles(updated);
-    localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    persistProfiles(updated);
     notify(`Deleted profile: ${name}`);
   };
 
@@ -206,8 +230,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           }
         });
         const merged = Array.from(existingMap.values());
-        localStorage.setItem('roop_profiles', JSON.stringify(merged));
-        setProfiles(merged);
+        persistProfiles(merged);
         notify('Imported presets successfully!');
       } catch (err) {
         notify('Failed to import presets: ' + err.message, 'error');
@@ -426,6 +449,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       if (st.source_faces_info) setSourceFacesInfo(st.source_faces_info);
       setTargetFaces(st.target_faces || []);
       setTargetGroups(st.target_groups || []);
+      setTargetNames(st.target_names || []);
+      setTargetFacesInfo(st.target_faces_info || []);
       const tg = st.targets || [];
       setTargets(tg);
       if (tg.length > 0) {
@@ -774,21 +799,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       const res = await postJSON('/api/target/use_face', { index: selTarget, frame });
       setTargetFaces(res.target_faces);
       setTargetGroups(res.target_groups || []);
+      setTargetNames(res.target_names || []);
+      setTargetFacesInfo(res.target_faces_info || []);
       set('face_detection_mode', 'Selected face');
       notify(`Added ${res.count} target person(s)`);
-    } catch (e) { notify(e.message, 'error'); }
-  };
-
-  // Add another angle (profile/side/upside-down) of the SELECTED person, from
-  // the current frame, so matching survives pose changes (less flicker).
-  const addAngle = async () => {
-    const person = targetGroups[selTargetFace] ?? 0;
-    try {
-      const res = await postJSON('/api/target/add_angle', { person, index: selTarget, frame });
-      setTargetFaces(res.target_faces);
-      setTargetGroups(res.target_groups || []);
-      if (res.count) notify(`Added angle to Person ${person + 1} (match ${res.distance})`);
-      else notify(res.message || 'No matching face in this frame', 'error');
     } catch (e) { notify(e.message, 'error'); }
   };
 
@@ -1477,68 +1491,25 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         {/* COLUMN 2: Media Asset Manager */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
           <Section title="Target faces">
-            <FaceGallery title="" faces={targetFaces} selected={selTargetFace} onSelect={setSelTargetFace}
-              groups={targetGroups} vertical={true}
-              onRemove={async (i) => { const r = await postJSON('/api/target/remove_face', { index: i }); setTargetFaces(r.target_faces); setTargetGroups(r.target_groups || []); if (selTargetFace >= r.target_faces.length) setSelTargetFace(Math.max(0, r.target_faces.length - 1)); }}
-              empty={targets.length === 0 ? 'No target loaded' : "Use 'face from frame'"} />
-            {targetFaces.length > 0 && (
-              <div className="mt-4 space-y-4">
-                <Button size="sm" variant="primary" className="w-full justify-center text-xs tracking-wider" onClick={addAngle}>
-                  ➕ Add Angle to Person {(targetGroups[selTargetFace] ?? 0) + 1}
-                </Button>
-                <div className="grid grid-cols-3 gap-2">
-                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = Math.max(0, (g[selTargetFace] || 0) - 1); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>👥 Group -</Button>
-                  <Button size="sm" variant="secondary" className="px-2 justify-center text-[10px]" onClick={() => { const g = [...targetGroups]; g[selTargetFace] = (g[selTargetFace] || 0) + 1; setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Group +</Button>
-                  <Button size="sm" variant="stop" className="px-2 justify-center text-[10px]" onClick={() => { const g = targetGroups.map(() => 0); setTargetGroups(g); postJSON('/api/target/group', { groups: g }); }}>Reset</Button>
-                </div>
-                
-
-                {/* Target-to-Source Mapping Panel */}
-                {sourceFaces.length > 0 && (
-                  <div className="mt-5 pt-4 border-t border-white/5 space-y-3">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-3 flex items-center gap-1.5">
-                      <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
-                      🎯 Target Swap Mapping
-                    </h4>
-                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                      {Array.from(new Set(targetGroups)).sort((a, b) => a - b).map((pId) => {
-                        const idx = targetGroups.indexOf(pId);
-                        const thumb = targetFaces[idx];
-                        const currentMap = faceMapping[pId] !== undefined ? faceMapping[pId] : pId;
-                        const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
-                        const color = PERSON_COLORS[pId % PERSON_COLORS.length];
-                        
-                        return (
-                          <div key={pId} className="flex items-center justify-between gap-3 bg-black/40 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors text-xs">
-                            <div className="flex items-center gap-2 min-w-0">
-                              {thumb && <img src={thumb} alt={`p ${pId}`} className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />}
-                              <span className="font-extrabold truncate" style={{ color }}>Person {pId + 1}</span>
-                            </div>
-                            <span className="text-white/20 text-[9px]">➔</span>
-                            <select
-                              value={currentMap}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value);
-                                setFaceMapping(prev => ({ ...prev, [pId]: val }));
-                                clearPreviewCache();
-                              }}
-                              className="px-2 py-1.5 rounded-lg glass-input text-white text-xs focus:outline-none cursor-pointer max-w-[125px] shrink-0 font-bold"
-                            >
-                              <option value={-1} className="bg-[#121420]">❌ Skip (Keep)</option>
-                              {sourceFaces.map((sf, sfIdx) => (
-                                <option key={sfIdx} value={sfIdx} className="bg-[#121420]">
-                                  🎭 Face {sfIdx + 1}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            <PersonGroups
+              targetFaces={targetFaces}
+              targetGroups={targetGroups}
+              targetNames={targetNames}
+              targetFacesInfo={targetFacesInfo}
+              selTargetFace={selTargetFace}
+              setSelTargetFace={setSelTargetFace}
+              sourceFaces={sourceFaces}
+              faceMapping={faceMapping}
+              setFaceMapping={setFaceMapping}
+              frame={frame}
+              selTarget={selTarget}
+              setTargetFaces={setTargetFaces}
+              setTargetGroups={setTargetGroups}
+              setTargetNames={setTargetNames}
+              setTargetFacesInfo={setTargetFacesInfo}
+              notify={notify}
+              clearPreviewCache={clearPreviewCache}
+            />
           </Section>
 
           <Section title="Target file(s)">
@@ -1605,14 +1576,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             )}
             {targets.length > 0 && (
               <div className="pt-2 border-t border-white/5 flex justify-end">
-                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>
+                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setTargetNames([]); setTargetFacesInfo([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>
               </div>
             )}
           </Section>
           
           <Section title="Source images / facesets">
           <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
-          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource}
+          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true}
             onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
           {sourceFaces.length > 0 && (
             <div className="space-y-3">

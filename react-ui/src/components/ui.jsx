@@ -123,9 +123,9 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 };
 
 // Gallery of face thumbnails with selection + move/remove controls.
-const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
+export const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
 
-export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [] }) => {
+export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [], draggable = false }) => {
   const personCount = groups && groups.length ? new Set(groups).size : 0;
   return (
     <div>
@@ -151,7 +151,13 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
             return (
               <div
                 key={i}
-                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 apple-transition apple-spring-active cursor-pointer ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
+                draggable={draggable}
+                onDragStart={draggable ? (e) => {
+                  e.dataTransfer.setData('text/roop-source', String(i));
+                  e.dataTransfer.effectAllowed = 'link';
+                } : undefined}
+                title={draggable ? `Face ${i + 1} — drag onto a person to assign` : undefined}
+                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 apple-transition apple-spring-active cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
                 style={{ borderColor: selected === i ? (color || 'var(--accent)') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
               >

@@ -10,6 +10,7 @@ The Gradio UI (app/ui/) is the frozen legacy/backup UI and is NOT touched here.
 import os
 import io
 import sys
+import json
 import base64
 import shutil
 import subprocess
@@ -403,6 +404,8 @@ def get_state():
         "source_faces_info": _get_source_faces_info(),
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
         "target_groups": _target_groups_ranked(),
+        "target_faces_info": _target_faces_info(),
+        "target_names": _target_names_ranked(),
         "targets": targets,
         "selected_target_index": selected_target_index,
         "faceset_count": len(roop_globals.INPUT_FACESETS),
@@ -586,6 +589,8 @@ def target_clear():
     list_files_process.clear()
     roop_globals.TARGET_FACES.clear()
     roop_globals.TARGET_FACE_GROUP.clear()
+    if getattr(roop_globals, 'TARGET_FACE_NAMES', None):
+        roop_globals.TARGET_FACE_NAMES.clear()
     ui_globals.ui_target_thumbs.clear()
     selected_target_index = 0
     return _target_list_payload()
@@ -654,10 +659,34 @@ def _target_groups_ranked():
     return [rank[g] for g in grp]
 
 
+def _target_faces_info():
+    """Per-target-face pose label (parallel to TARGET_FACES / thumbs), so the UI
+    can show what angle each captured face is and compute pose coverage."""
+    info = []
+    for face in roop_globals.TARGET_FACES:
+        kps = getattr(face, 'kps', None)
+        if kps is None and isinstance(face, dict):
+            kps = face.get('kps')
+        pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
+        info.append({"pose": pose})
+    return info
+
+
+def _target_names_ranked():
+    """Person display names indexed by contiguous rank (parallel to the ranks
+    returned by _target_groups_ranked). Empty string when unnamed."""
+    grp = roop_globals.TARGET_FACE_GROUP
+    uniq = sorted(set(grp))
+    names = getattr(roop_globals, 'TARGET_FACE_NAMES', {}) or {}
+    return [names.get(g, "") for g in uniq]
+
+
 def _target_faces_payload(extra=None):
     out = {
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
         "target_groups": _target_groups_ranked(),
+        "target_faces_info": _target_faces_info(),
+        "target_names": _target_names_ranked(),
     }
     if extra:
         out.update(extra)
@@ -743,6 +772,91 @@ def target_group(payload: dict = Body(...)):
                 parsed.append(0)
         roop_globals.TARGET_FACE_GROUP = parsed
     return _target_faces_payload()
+
+
+@app.post("/api/target/name")
+def target_name(payload: dict = Body(...)):
+    """Give a person (by 0-based rank) a display name, e.g. 'Bride'. Stored by
+    the person's stable raw group id so it survives rank shifts."""
+    person = int(payload.get("person", 0))
+    name = str(payload.get("name", "")).strip()[:40]
+    ranks = _target_groups_ranked()
+    raw_group = next((roop_globals.TARGET_FACE_GROUP[i]
+                      for i, r in enumerate(ranks) if r == person), None)
+    if raw_group is not None:
+        if not hasattr(roop_globals, 'TARGET_FACE_NAMES') or roop_globals.TARGET_FACE_NAMES is None:
+            roop_globals.TARGET_FACE_NAMES = {}
+        if name:
+            roop_globals.TARGET_FACE_NAMES[raw_group] = name
+        else:
+            roop_globals.TARGET_FACE_NAMES.pop(raw_group, None)
+    return _target_faces_payload()
+
+
+@app.post("/api/target/autocluster")
+def target_autocluster(payload: dict = Body(...)):
+    """Auto-assign every captured target face to a person by clustering their
+    recognition embeddings — same identity within `threshold` cosine distance
+    lands in one group. Replaces the current manual grouping."""
+    threshold = float(payload.get("threshold", 0.55))
+    faces = roop_globals.TARGET_FACES
+    groups = [-1] * len(faces)
+    next_id = 0
+    for i, face in enumerate(faces):
+        if groups[i] != -1:
+            continue
+        emb_i = getattr(face, 'embedding', None)
+        groups[i] = next_id
+        if emb_i is not None:
+            for j in range(i + 1, len(faces)):
+                if groups[j] != -1:
+                    continue
+                emb_j = getattr(faces[j], 'embedding', None)
+                if emb_j is None:
+                    continue
+                try:
+                    d = util.compute_cosine_distance(emb_i, emb_j)
+                except Exception:
+                    continue
+                if d < threshold:
+                    groups[j] = next_id
+        next_id += 1
+    roop_globals.TARGET_FACE_GROUP = groups
+    # Names keyed by old raw ids are meaningless after a full re-cluster.
+    if getattr(roop_globals, 'TARGET_FACE_NAMES', None):
+        roop_globals.TARGET_FACE_NAMES.clear()
+    return _target_faces_payload({"people": next_id})
+
+
+# ── Profiles (persisted settings presets) ────────────────────────────────────
+PROFILES_FILE = "profiles.json"
+
+
+@app.get("/api/profiles")
+def get_profiles():
+    try:
+        with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {"profiles": data}
+    except Exception:
+        pass
+    return {"profiles": []}
+
+
+@app.post("/api/profiles")
+def save_profiles(payload: dict = Body(...)):
+    profiles = payload.get("profiles", [])
+    if not isinstance(profiles, list):
+        return JSONResponse(status_code=400, content={"message": "profiles must be a list"})
+    try:
+        tmp = PROFILES_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(profiles, f, indent=2)
+        os.replace(tmp, PROFILES_FILE)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    return {"status": "success", "count": len(profiles)}
 
 
 # ── Live preview swap ────────────────────────────────────────────────────────
