@@ -20,18 +20,22 @@ export const Section = ({ title, children, className = '' }) => (
   </Card>
 );
 
+// Shared "?" hover-tooltip badge. shrink-0 so it never wraps to its own line,
+// and stays pinned to the top of a multi-line label.
+export const InfoBadge = ({ info }) => (
+  <div className="relative group inline-flex items-center shrink-0 mt-0.5">
+    <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
+    <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left">
+      {info}
+    </div>
+  </div>
+);
+
 export const Field = ({ label, info, children }) => (
   <label className="block">
-    <div className="flex items-baseline justify-between mb-1.5">
-      <span className="text-xs font-medium text-white/70">{label}</span>
-      {info && (
-        <div className="relative group inline-flex items-center">
-          <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
-          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left">
-            {info}
-          </div>
-        </div>
-      )}
+    <div className="flex items-start justify-between gap-2 mb-1.5">
+      <span className="text-xs font-medium text-white/70 leading-snug min-w-0">{label}</span>
+      {info && <InfoBadge info={info} />}
     </div>
     {children}
   </label>
@@ -67,19 +71,12 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
 );
 
 export const Toggle = ({ label, info, checked, onChange }) => (
-  <label className="flex items-center justify-between w-full text-left cursor-pointer group/toggle select-none">
-    <div className="flex items-center gap-2">
-      <span className="text-sm font-semibold tracking-wide text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
-      {info && (
-        <div className="relative group inline-flex items-center">
-          <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
-          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left">
-            {info}
-          </div>
-        </div>
-      )}
-    </div>
-    <div className={`relative shrink-0 w-10.5 h-6 rounded-full transition-all duration-300 ml-3 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'bg-black/30 border-white/5'}`}>
+  <label className="flex items-start justify-between gap-3 w-full text-left cursor-pointer group/toggle select-none">
+    <span className="flex items-start gap-1.5 min-w-0 flex-1">
+      <span className="text-[13px] font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
+      {info && <InfoBadge info={info} />}
+    </span>
+    <div className={`relative shrink-0 mt-0.5 w-10.5 h-6 rounded-full transition-all duration-300 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'bg-black/30 border-white/5'}`}>
       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-[0_2px_4px_rgba(0,0,0,0.4)] transition-all duration-300 cubic-bezier(0.16, 1, 0.3, 1) ${checked ? 'translate-x-4.5' : ''}`} />
     </div>
     <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
