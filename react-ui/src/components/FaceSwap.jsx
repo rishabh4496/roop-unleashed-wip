@@ -1250,8 +1250,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
-      {/* COLUMN 1: Settings & Controls (Scrollable sidebar on large viewports) */}
-      <div className="w-full lg:w-[400px] 3xl:w-[820px] 4xl:w-[900px] shrink-0 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+      {/* COLUMN 1: Settings & Controls — sticky sidebar on large viewports so it
+          follows the scroll (and never leaves the lower-left area empty) while
+          scrolling a taller workspace. Scrolls internally when taller than the
+          viewport. */}
+      <div className="w-full lg:w-[400px] 3xl:w-[820px] 4xl:w-[900px] shrink-0 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-100px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
