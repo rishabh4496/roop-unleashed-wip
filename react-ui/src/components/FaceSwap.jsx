@@ -1643,41 +1643,41 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               const circumference = radius * 2 * Math.PI;
               const strokeDashoffset = circumference - prog * circumference;
               return (
-                <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                <div className="relative overflow-hidden rounded-2xl glass-panel px-6 py-5 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
                   {/* Left: Circular Progress Ring & Info */}
                   <div className="flex items-center gap-5">
-                    <div className={`relative flex items-center justify-center h-20 w-20 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_15px_var(--accent-glow)] animate-pulse' : ''}`}>
-                      <svg className="transform -rotate-90 w-16 h-16" viewBox="0 0 48 48">
+                    <div className={`relative flex items-center justify-center h-20 w-20 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_18px_var(--accent-glow)]' : ''}`}>
+                      <svg className="transform -rotate-90 w-[72px] h-[72px]" viewBox="0 0 48 48">
                         <circle
                           stroke="rgba(255, 255, 255, 0.08)"
                           fill="transparent"
-                          strokeWidth={3}
+                          strokeWidth={3.5}
                           r={radius}
                           cx={24}
                           cy={24}
                         />
                         <circle
-                          className="transition-all duration-300 ease-out"
+                          className="transition-all duration-500 ease-out"
                           stroke="var(--accent)"
                           fill="transparent"
-                          strokeWidth={3}
+                          strokeWidth={3.5}
                           strokeDasharray={`${circumference} ${circumference}`}
-                          style={{ strokeDashoffset }}
+                          style={{ strokeDashoffset, filter: 'drop-shadow(0 0 4px var(--accent-glow))' }}
                           r={radius}
                           cx={24}
                           cy={24}
                           strokeLinecap="round"
                         />
                       </svg>
-                      <span className="absolute text-sm font-extrabold text-white tabular-nums">
+                      <span className="absolute text-base font-extrabold text-white tabular-nums">
                         {Math.round(prog * 100)}%
                       </span>
                     </div>
 
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="h-2 w-2 rounded-full bg-[var(--accent)] animate-ping" />
-                        <span className="text-xs font-black uppercase tracking-widest text-[var(--accent)]">
+                        <span className={`h-2 w-2 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
+                        <span className={`text-xs font-black uppercase tracking-widest ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
                           {progress.paused ? 'Paused' : 'Processing'}
                         </span>
                       </div>
@@ -1725,14 +1725,40 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     )}
                   </div>
 
-                  {/* Right: Actions */}
-                  <div className="flex items-center gap-2 shrink-0">
+                  {/* Right: big icon action buttons */}
+                  <div className="flex items-center gap-3 shrink-0">
                     {progress.paused ? (
-                      <Button variant="primary" size="md" onClick={resume}>▶ Resume</Button>
+                      <button type="button" onClick={resume} title="Resume (Space)"
+                        className="group flex flex-col items-center gap-1.5 focus:outline-none">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 shadow-[0_0_18px_rgba(16,185,129,0.25)] transition-all duration-200 group-hover:bg-emerald-500/25 group-hover:scale-105 group-active:scale-95">
+                          <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
+                        </span>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
+                      </button>
                     ) : (
-                      <Button variant="secondary" size="md" onClick={pause}>⏸ Pause</Button>
+                      <button type="button" onClick={pause} title="Pause (Space)"
+                        className="group flex flex-col items-center gap-1.5 focus:outline-none">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 shadow-[0_0_18px_rgba(245,158,11,0.2)] transition-all duration-200 group-hover:bg-amber-500/25 group-hover:scale-105 group-active:scale-95">
+                          <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
+                        </span>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
+                      </button>
                     )}
-                    <Button variant="stop" size="md" onClick={stop}>⏹ Stop</Button>
+                    <button type="button" onClick={stop} title="Stop"
+                      className="group flex flex-col items-center gap-1.5 focus:outline-none">
+                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 shadow-[0_0_18px_rgba(239,68,68,0.2)] transition-all duration-200 group-hover:bg-red-500/25 group-hover:scale-105 group-active:scale-95">
+                        <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
+                      </span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
+                    </button>
+                  </div>
+
+                  {/* Smooth animated progress line along the bottom edge */}
+                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/[0.04]">
+                    <div
+                      className={`h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
+                      style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
+                    />
                   </div>
                 </div>
               );
