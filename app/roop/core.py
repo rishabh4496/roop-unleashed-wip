@@ -370,10 +370,26 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     """
     import base64 as _b64
     import cv2 as _cv2
-    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise, rotate_image_180
+    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
 
     if frame_bgr is None:
         return ""
+
+    def _rotation_action(face, frame):
+        bbox_w = face.bbox[2] - face.bbox[0]
+        bbox_h = face.bbox[3] - face.bbox[1]
+        if bbox_w <= bbox_h:
+            return None
+        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
+            forehead_x = face.landmark_2d_106[72][0]
+            chin_x     = face.landmark_2d_106[0][0]
+            if chin_x < forehead_x:
+                return "rotate_anticlockwise"
+            if forehead_x < chin_x:
+                return "rotate_clockwise"
+        fh, fw = frame.shape[:2]
+        bbox_cx = face.bbox[0] + bbox_w / 2.0
+        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
 
     face = get_first_face(frame_bgr)
     if face is None or not hasattr(face, 'kps') or face.kps is None:
@@ -381,11 +397,21 @@ def get_face_crop_from_frame(frame_bgr) -> str:
 
     frame = frame_bgr.copy()
     if roop.globals.autorotate_faces:
-        from roop.face_util import find_best_rotation
-        best_action, best_face, rotated_cut = find_best_rotation(face, frame)
-        if best_action is not None:
-            face  = best_face
-            frame = rotated_cut
+        action = _rotation_action(face, frame)
+        if action is not None:
+            x0, y0, x1, y1 = face.bbox.astype(int)
+            offs = int(max(x1 - x0, y1 - y0) * 0.25)
+            x0m = max(0, x0 - offs); y0m = max(0, y0 - offs)
+            x1m = min(frame.shape[1], x1 + offs); y1m = min(frame.shape[0], y1 + offs)
+            cut = frame[y0m:y1m, x0m:x1m]
+            if action == "rotate_anticlockwise":
+                cut = rotate_anticlockwise(cut)
+            else:
+                cut = rotate_clockwise(cut)
+            rotface = get_first_face(cut)
+            if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
+                face  = rotface
+                frame = cut
 
     crop, _ = align_crop(frame, face.kps, 512)
     ok, buf = _cv2.imencode('.png', crop)

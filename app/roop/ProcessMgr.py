@@ -7,7 +7,7 @@ import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, clamp_cut_values, analysis_pooled
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -2064,13 +2064,50 @@ class ProcessMgr():
         return num_faces_found, temp_frame
 
 
+    def rotation_action(self, original_face:Face, frame:Frame):
+        (height, width) = frame.shape[:2]
+
+        bounding_box_width = original_face.bbox[2] - original_face.bbox[0]
+        bounding_box_height = original_face.bbox[3] - original_face.bbox[1]
+        horizontal_face = bounding_box_width > bounding_box_height
+
+        center_x = width // 2.0
+        start_x = original_face.bbox[0]
+        end_x = original_face.bbox[2]
+        bbox_center_x = start_x + (bounding_box_width // 2.0)
+
+        forehead_x = original_face.landmark_2d_106[72][0]
+        chin_x = original_face.landmark_2d_106[0][0]
+
+        if horizontal_face:
+            if chin_x < forehead_x:
+                return "rotate_anticlockwise"
+            elif forehead_x < chin_x:
+                return "rotate_clockwise"
+            if bbox_center_x >= center_x:
+                return "rotate_anticlockwise"
+            if bbox_center_x < center_x:
+                return "rotate_clockwise"
+
+        return None
+
+
+    def auto_rotate_frame(self, original_face, frame:Frame):
+        target_face = original_face
+        original_frame = frame
+        rotation_action = self.rotation_action(original_face, frame)
+        if rotation_action == "rotate_anticlockwise":
+            frame = rotate_anticlockwise(frame)
+        elif rotation_action == "rotate_clockwise":
+            frame = rotate_clockwise(frame)
+        return target_face, frame, rotation_action
+
+
     def auto_unrotate_frame(self, frame:Frame, rotation_action):
         if rotation_action == "rotate_anticlockwise":
             return rotate_clockwise(frame)
         elif rotation_action == "rotate_clockwise":
             return rotate_anticlockwise(frame)
-        elif rotation_action == "rotate_180":
-            return rotate_image_180(frame)
         return frame
 
 
@@ -2089,17 +2126,24 @@ class ProcessMgr():
 
         rotation_action = None
         if roop.globals.autorotate_faces:
-            from roop.face_util import find_best_rotation
-            best_action, best_face, rotated_cut = find_best_rotation(target_face, frame)
-            if best_action is not None:
-                rotation_action = best_action
-                (x0, y0, x1, y1) = target_face.bbox.astype(int)
-                offs = int(max(x1 - x0, y1 - y0) * 0.25)
-                startX = max(0, x0 - offs)
-                startY = max(0, y0 - offs)
-                saved_frame = frame.copy()
-                frame = rotated_cut
-                target_face = best_face
+            rotation_action = self.rotation_action(target_face, frame)
+            if rotation_action is not None:
+                (startX, startY, endX, endY) = target_face["bbox"].astype("int")
+                width = endX - startX
+                height = endY - startY
+                offs = int(max(width, height) * 0.25)
+                rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
+                if rotation_action == "rotate_anticlockwise":
+                    rotcutframe = rotate_anticlockwise(rotcutframe)
+                elif rotation_action == "rotate_clockwise":
+                    rotcutframe = rotate_clockwise(rotcutframe)
+                rotface = get_first_face(rotcutframe)
+                if rotface is None:
+                    rotation_action = None
+                else:
+                    saved_frame = frame.copy()
+                    frame = rotcutframe
+                    target_face = rotface
 
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
@@ -2154,52 +2198,22 @@ class ProcessMgr():
             if (getattr(self.options, 'use_source_bank', False)
                     and len(fs.faces) > 1
                     and fs.face_poses is not None):
-                # Dynamic pose-weighted blending of the source facesets.
-                # Computes a weighted sum of the face embeddings based on how close
-                # their yaw/pitch poses are to the target face's pose.
-                valid_faces = []
-                for idx, face in enumerate(fs.faces):
-                    if idx < len(fs.face_poses) and fs.face_poses[idx] is not None:
-                        y_d, p_d = fs.face_poses[idx]
-                        if y_d is not None:
-                            valid_faces.append((face, y_d, p_d))
-                
-                if valid_faces:
-                    # Calculate weights using a Gaussian function of distance in pose space (sigma = 18 degrees)
-                    sigma2 = 2 * (18.0 ** 2)
-                    weights = []
-                    for face, y_d, p_d in valid_faces:
-                        d2 = (tgt_yaw_deg - y_d) ** 2 + (tgt_pitch_deg - p_d) ** 2
-                        weights.append(_math.exp(-d2 / sigma2))
-                    
-                    sum_w = sum(weights)
-                    if sum_w > 0.001:
-                        blended_emb = np.zeros_like(valid_faces[0][0]['embedding'])
-                        for idx, w in enumerate(weights):
-                            blended_emb += (w / sum_w) * valid_faces[idx][0]['embedding']
-                        
-                        # Return a copy of the default face with the blended embedding
-                        inputface = type(inputface)(inputface)
-                        inputface['embedding'] = blended_emb
-                    else:
-                        # Fallback to closest single pose
-                        best_idx = 0
-                        best_dist = float('inf')
-                        for idx, (y_d, p_d) in enumerate(fs.face_poses):
-                            if y_d is None:
-                                continue
-                            dist = (tgt_yaw_deg - y_d) ** 2 + (tgt_pitch_deg - p_d) ** 2
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_idx = idx
-                        inputface = fs.faces[best_idx]
+                best_idx  = 0
+                best_dist = float('inf')
+                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
+                    if yaw_d is None:
+                        continue
+                    dist = (tgt_yaw_deg - yaw_d) ** 2 + (tgt_pitch_deg - pitch_d) ** 2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx  = i
+                inputface = fs.faces[best_idx]
 
         if inputface is None:
             return frame
 
         # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
         if (getattr(self.options, 'use_3d_recon', False)
-                and abs(tgt_yaw_deg) < 42.0  # bypass on extreme lateral profiles to prevent alignment distortion
                 and inputface is not None
                 and len(self.input_face_datas) > face_index
                 and self.input_face_datas[face_index].face_3d is not None):
@@ -2263,7 +2277,6 @@ class ProcessMgr():
         aligned_for_swap = aligned_img   # may be replaced by frontalized version
 
         if (getattr(self.options, 'use_frontalization', False)
-                and abs(tgt_yaw_deg) < 42.0  # bypass on extreme lateral profiles to prevent warping distortion
                 and tgt_lm68_crop is not None
                 and inputface is not None):
             try:
