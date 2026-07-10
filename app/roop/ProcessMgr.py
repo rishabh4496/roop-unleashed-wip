@@ -1421,7 +1421,12 @@ class ProcessMgr():
                         if pool_workers > 1 else None)
 
         def _detect_one(fr):
-            with _gpu_guard(pooled=True):
+            # Runs inside a pool worker, one at a time per worker (ThreadPoolExecutor
+            # caps concurrency at pool_workers == the analyser pool size), so this is
+            # real GPU/model time, not queue-wait — lease_face_analyser() should never
+            # actually block here. Tagged 'track_detect' (not 'detect') so it shows up
+            # as its own STAGE TIMING line, separate from the swap phase's detect stage.
+            with _prof('track_detect'), _gpu_guard(pooled=True):
                 return get_all_faces(fr) or []
 
         def _consume(f_idx, faces):
@@ -1557,7 +1562,8 @@ class ProcessMgr():
                     if frame is None:
                         break
                 else:
-                    ret, frame = cap.read()
+                    with _prof('track_decode'):
+                        ret, frame = cap.read()
                     if not ret or frame is None:
                         break
 
@@ -1571,11 +1577,19 @@ class ProcessMgr():
                     in_flight.append((idx, det_executor.submit(_detect_one, frame)))
                     if len(in_flight) >= pool_workers:
                         done_idx, done_fut = in_flight.popleft()
-                        _consume(done_idx, done_fut.result())
+                        # If this blocks waiting on done_fut, all pool_workers are busy
+                        # and the reader/consumer has caught up to the dispatch cap --
+                        # i.e. detection itself (track_detect above), not this wait, is
+                        # the real ceiling. Timed separately so STAGE TIMING shows which.
+                        with _prof('track_wait'):
+                            result = done_fut.result()
+                        with _prof('track_consume'):
+                            _consume(done_idx, result)
                 else:
-                    with _gpu_guard(pooled=analysis_pooled()):
+                    with _prof('track_detect'), _gpu_guard(pooled=analysis_pooled()):
                         faces = get_all_faces(frame) or []
-                    _consume(idx, faces)
+                    with _prof('track_consume'):
+                        _consume(idx, faces)
 
                 idx += 1
                 pbar.update(1)   # terminal bar
