@@ -261,7 +261,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
 
   return (
     <Card
-      className="overflow-hidden border border-white/5 flex flex-col group/card hover:border-[#E94560]/40 hover:shadow-[0_8px_30px_rgba(233,69,96,0.1)] transition-all duration-300"
+      className="tap overflow-hidden border border-white/5 flex flex-col group/card hover:border-[#E94560]/40 hover:shadow-[0_12px_36px_rgba(233,69,96,0.15)]"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >

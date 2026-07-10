@@ -14,8 +14,8 @@ export default function ThemeGallery({ value, onChange }) {
             type="button"
             onClick={() => onChange(t.name)}
             title={t.label}
-            className={`group relative text-left rounded-xl overflow-hidden border-2 transition-all duration-200 focus:outline-none ${active ? 'scale-[1.02] shadow-lg' : 'hover:scale-[1.01]'}`}
-            style={{ borderColor: active ? t.accent : 'rgba(255,255,255,0.08)' }}
+            className={`tap group relative text-left rounded-xl overflow-hidden border-2 focus:outline-none ${active ? 'shadow-lg' : ''}`}
+            style={{ borderColor: active ? t.accent : 'rgba(255,255,255,0.08)', boxShadow: active ? `0 0 0 1px ${t.accent}, 0 8px 24px ${t.accent}33` : undefined }}
           >
             {/* Swatch preview */}
             <div className="h-12 w-full relative" style={{ background: t.bg }}>

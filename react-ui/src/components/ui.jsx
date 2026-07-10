@@ -112,7 +112,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-xl font-extrabold text-center apple-transition apple-spring-active disabled:opacity-30 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`rounded-xl font-extrabold text-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 active:translate-y-0 active:scale-95 active:duration-100 disabled:opacity-30 disabled:hover:translate-y-0 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
     </button>
@@ -170,7 +170,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                        className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[var(--accent-hover)] hover:text-white transition-colors flex items-center justify-center"
+                        className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[var(--accent-hover)] hover:text-white hover:scale-110 active:scale-90 flex items-center justify-center"
                       >✕</button>
                     )}
                   </>
@@ -191,7 +191,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                         type="button"
                         title="Remove this face"
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] transition-opacity flex items-center justify-center"
+                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
                       >✕</button>
                     )}
                   </>
