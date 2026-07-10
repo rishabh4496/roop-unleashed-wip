@@ -1242,6 +1242,24 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     startQueue
   ]);
 
+  // Command-palette action bus (dispatched from App via window 'roop:command').
+  // A ref keeps the handler map fresh without re-subscribing every render.
+  const cmdRef = useRef({});
+  cmdRef.current = {
+    start: () => { if (isQueueRunning) return; if (queue.length > 0) startQueue(); else start(); },
+    stop,
+    queue: addToQueue,
+    compare: () => setCompare((v) => { const n = !v; if (n) setComparingEnhancers(false); return n; }),
+    split: () => setSplitView((v) => !v),
+    preview: () => refreshPreview(),
+    shortcuts: () => setShowShortcutHUD(true),
+  };
+  useEffect(() => {
+    const h = (e) => { const fn = cmdRef.current[e.detail?.id]; if (fn) fn(); };
+    window.addEventListener('roop:command', h);
+    return () => window.removeEventListener('roop:command', h);
+  }, []);
+
   const startFrame = targets[selTarget]?.start_frame || 1;
   const endFrame = targets[selTarget]?.end_frame || maxFrames;
   const startPct = maxFrames > 1 ? ((startFrame - 1) / (maxFrames - 1)) * 100 : 0;

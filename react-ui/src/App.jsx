@@ -1,12 +1,13 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { getJSON } from './api';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { getJSON, postJSON } from './api';
 import { Toast } from './components/ui';
+import CommandPalette from './components/CommandPalette';
 import FaceSwap from './components/FaceSwap';
 import Settings from './components/Settings';
 import FaceManager from './components/FaceManager';
 import Extras from './components/Extras';
 import Gallery from './components/Gallery';
-import { THEME_CLASSES, themeByName } from './themes';
+import { THEME_CLASSES, THEMES, themeByName } from './themes';
 
 const TABS = [
   { id: 'faceswap', label: '🎭 Face Swap' },
@@ -24,7 +25,46 @@ export default function App() {
   const [error, setError] = useState('');
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
   const fileListenersRef = useRef([]);
+
+  // Global ⌘K / Ctrl-K toggles the command palette.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowPalette((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const applyTheme = useCallback((name) => {
+    setSettings((s) => ({ ...(s || {}), selected_theme: name }));
+    postJSON('/api/settings', { selected_theme: name }).catch(() => {});
+  }, []);
+
+  // Faceswap-tab actions are decoupled via a window event bus so the palette
+  // stays independent of the FaceSwap component's internal handlers.
+  const runFaceswap = useCallback((id) => {
+    setTab('faceswap');
+    setTimeout(() => window.dispatchEvent(new CustomEvent('roop:command', { detail: { id } })), 60);
+  }, []);
+
+  const commands = useMemo(() => {
+    const cmds = [];
+    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.label.split(' ')[0], title: `Go to ${t.label.replace(/^\S+\s/, '')}`, run: () => setTab(t.id) }));
+    cmds.push({ id: 'act-start', section: 'Actions', icon: '▶', title: 'Start swapping', subtitle: 'Run the current job', run: () => runFaceswap('start') });
+    cmds.push({ id: 'act-stop', section: 'Actions', icon: '⏹', title: 'Stop processing', run: () => runFaceswap('stop') });
+    cmds.push({ id: 'act-queue', section: 'Actions', icon: '➕', title: 'Add current to batch queue', run: () => runFaceswap('queue') });
+    cmds.push({ id: 'act-compare', section: 'Actions', icon: '🔍', title: 'Toggle before/after compare', run: () => runFaceswap('compare') });
+    cmds.push({ id: 'act-split', section: 'Actions', icon: '⬍', title: 'Toggle split view', run: () => runFaceswap('split') });
+    cmds.push({ id: 'act-preview', section: 'Actions', icon: '🔄', title: 'Refresh preview', run: () => runFaceswap('preview') });
+    cmds.push({ id: 'act-shortcuts', section: 'Actions', icon: '⌨️', title: 'Show keyboard shortcuts', run: () => runFaceswap('shortcuts') });
+    THEMES.forEach((t) => cmds.push({ id: `theme-${t.name}`, section: 'Theme', icon: '🎨', title: t.name, subtitle: t.label, run: () => applyTheme(t.name) }));
+    return cmds;
+  }, [applyTheme, runFaceswap]);
 
   const registerFileListener = useCallback((cb) => {
     fileListenersRef.current.push(cb);
@@ -134,6 +174,16 @@ export default function App() {
             )}
           </div>
         </div>
+        <div className="flex items-center gap-2 w-full md:w-auto">
+        <button
+          type="button"
+          onClick={() => setShowPalette(true)}
+          title="Command palette (Ctrl/⌘ + K)"
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white/45 hover:text-white hover:border-white/25 transition-colors text-xs font-semibold"
+        >
+          <span className="text-sm">⌘</span> Search
+          <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
+        </button>
         <nav className="flex gap-1 bg-black/40 p-1 rounded-2xl border border-white/5 w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => (
             <button
@@ -150,6 +200,7 @@ export default function App() {
             </button>
           ))}
         </nav>
+        </div>
       </header>
 
       {/* Main Container Layout */}
@@ -177,6 +228,8 @@ export default function App() {
       </main>
 
       <Toast toast={toast} />
+
+      <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} commands={commands} />
 
       {isDraggingOver && (
         <div className="fixed inset-0 bg-[var(--accent)]/10 backdrop-blur-[2px] border-4 border-dashed border-[var(--accent)] z-50 flex items-center justify-center pointer-events-none">
