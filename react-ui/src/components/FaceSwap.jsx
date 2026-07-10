@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Confetti, Skeleton } from './ui';
 import PersonGroups from './PersonGroups';
+import QualityReport from './QualityReport';
 
 const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
 
@@ -2303,6 +2304,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
                     <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
                   </div>
+                  <QualityReport outputPath={out.path} notify={notify} />
                 </div>
               )}
             </div>
