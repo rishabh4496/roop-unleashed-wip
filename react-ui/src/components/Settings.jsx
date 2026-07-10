@@ -78,7 +78,19 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Select label="Image format" value={p.output_image_format} onChange={(v) => set('output_image_format', v)} options={meta.image_formats} />
           <Select label="Video format" value={p.output_video_format} onChange={(v) => set('output_video_format', v)} options={meta.video_formats} />
           <Select label="Video codec" value={p.output_video_codec} onChange={(v) => set('output_video_codec', v)} options={meta.video_codecs} />
-          <Slider label="Video quality (crf)" info="default 14" min={0} max={100} step={1} value={p.video_quality ?? 14} onChange={(v) => set('video_quality', v)} />
+          {(() => {
+            // NVENC codecs use -cq (a different scale than libx264/265 -crf); the
+            // same number produces a much bigger, near-lossless file on GPU encoders.
+            // Make the label/help reflect which rate control is actually in effect.
+            const isNvenc = /_nvenc$/.test(p.output_video_codec || '');
+            const qLabel = isNvenc ? 'Video quality (cq)' : 'Video quality (crf)';
+            const qInfo = isNvenc
+              ? 'NVENC uses -cq, not CRF: LOWER = bigger/near-lossless (14 is huge). Try ~23 for a normal-size file.'
+              : 'default 14 (libx264/265 CRF: lower = bigger). Try ~23 for a normal-size file.';
+            return (
+              <Slider label={qLabel} info={qInfo} min={0} max={100} step={1} value={p.video_quality ?? 14} onChange={(v) => set('video_quality', v)} />
+            );
+          })()}
           <Toggle label="Use OS temp folder" checked={!!p.use_os_temp_folder} onChange={(v) => set('use_os_temp_folder', v)} />
           <Toggle label="Show video in browser (re-encodes)" checked={!!p.output_show_video} onChange={(v) => set('output_show_video', v)} />
         </Section>
