@@ -6,6 +6,7 @@ import Settings from './components/Settings';
 import FaceManager from './components/FaceManager';
 import Extras from './components/Extras';
 import Gallery from './components/Gallery';
+import { THEME_CLASSES, themeByName } from './themes';
 
 const TABS = [
   { id: 'faceswap', label: '🎭 Face Swap' },
@@ -101,31 +102,9 @@ export default function App() {
   // Apply selected theme class to body/html
   useEffect(() => {
     if (!settings || !settings.selected_theme) return;
-    const theme = settings.selected_theme;
-    
-    const themeClasses = [
-      'theme-glass-light',
-      'theme-cyberpunk-dark',
-      'theme-cyberpunk-light',
-      'theme-emerald-dark',
-      'theme-emerald-light',
-      'theme-nordic-dark',
-      'theme-nordic-light'
-    ];
-    document.documentElement.classList.remove(...themeClasses);
-    document.body.classList.remove(...themeClasses);
-    
-    const themeClassMap = {
-      'Glass Light': 'theme-glass-light',
-      'Cyberpunk Dark': 'theme-cyberpunk-dark',
-      'Cyberpunk Light': 'theme-cyberpunk-light',
-      'Emerald Dark': 'theme-emerald-dark',
-      'Emerald Light': 'theme-emerald-light',
-      'Nordic Dark': 'theme-nordic-dark',
-      'Nordic Light': 'theme-nordic-light'
-    };
-    
-    const cls = themeClassMap[theme];
+    document.documentElement.classList.remove(...THEME_CLASSES);
+    document.body.classList.remove(...THEME_CLASSES);
+    const cls = themeByName(settings.selected_theme).className;
     if (cls) {
       document.documentElement.classList.add(cls);
       document.body.classList.add(cls);

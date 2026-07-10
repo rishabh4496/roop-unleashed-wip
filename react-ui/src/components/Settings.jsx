@@ -1,6 +1,7 @@
 import React from 'react';
 import { postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button } from './ui';
+import ThemeGallery from './ThemeGallery';
 
 export default function Settings({ meta, settings, setSettings, notify }) {
   const p = settings || {};
@@ -30,12 +31,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         </Section>
 
         <Section title="Appearance">
-          <Select 
-            label="Interface Theme" 
-            value={p.selected_theme || 'Default'} 
-            onChange={(v) => set('selected_theme', v)} 
-            options={['Default', 'Glass Light', 'Cyberpunk Dark', 'Cyberpunk Light', 'Emerald Dark', 'Emerald Light', 'Nordic Dark', 'Nordic Light']} 
-          />
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium text-white/70">Interface Theme</span>
+            <span className="text-[10px] text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>
+          </div>
+          <ThemeGallery value={p.selected_theme} onChange={(v) => { set('selected_theme', v); postJSON('/api/settings', { selected_theme: v }).catch(() => {}); }} />
         </Section>
 
         <Section title="Performance">

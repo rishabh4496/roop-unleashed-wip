@@ -134,6 +134,126 @@
   --scrollbar-thumb-hover: rgba(94, 129, 172, 0.32);
 }
 
+.theme-midnight-violet {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(155, 93, 229, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(0, 187, 249, 0.06) 0px, transparent 50%), linear-gradient(140deg, #07030f, #0d0819 45%, #060412);
+  --card-bg: rgba(18, 12, 32, 0.5);
+  --text-main: #f3eeff;
+  --text-muted: rgba(243, 238, 255, 0.6);
+  --accent: #9b5de5;
+  --accent-hover: #b07ff0;
+  --accent-glow: rgba(155, 93, 229, 0.3);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(8, 4, 18, 0.6);
+  --input-focus: rgba(155, 93, 229, 0.18);
+  --scrollbar-thumb: rgba(155, 93, 229, 0.22);
+  --scrollbar-thumb-hover: rgba(155, 93, 229, 0.42);
+}
+
+.theme-sunset-amber {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(245, 158, 11, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(233, 69, 96, 0.06) 0px, transparent 50%), linear-gradient(140deg, #0d0703, #14100a 45%, #0a0604);
+  --card-bg: rgba(28, 18, 8, 0.5);
+  --text-main: #fdf3e7;
+  --text-muted: rgba(253, 243, 231, 0.6);
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-glow: rgba(245, 158, 11, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(16, 10, 3, 0.6);
+  --input-focus: rgba(245, 158, 11, 0.18);
+  --scrollbar-thumb: rgba(245, 158, 11, 0.22);
+  --scrollbar-thumb-hover: rgba(245, 158, 11, 0.42);
+}
+
+.theme-ocean-teal {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(0, 187, 249, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.06) 0px, transparent 50%), linear-gradient(140deg, #030a0f, #071620 45%, #04101a);
+  --card-bg: rgba(10, 24, 34, 0.55);
+  --text-main: #e6f6ff;
+  --text-muted: rgba(230, 246, 255, 0.6);
+  --accent: #00bbf9;
+  --accent-hover: #38ceff;
+  --accent-glow: rgba(0, 187, 249, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(3, 12, 18, 0.6);
+  --input-focus: rgba(0, 187, 249, 0.18);
+  --scrollbar-thumb: rgba(0, 187, 249, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 187, 249, 0.42);
+}
+
+.theme-rose-gold {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(244, 114, 152, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(197, 168, 128, 0.07) 0px, transparent 50%), linear-gradient(140deg, #0e070a, #150a10 45%, #0b0508);
+  --card-bg: rgba(28, 14, 20, 0.5);
+  --text-main: #fdeef3;
+  --text-muted: rgba(253, 238, 243, 0.6);
+  --accent: #f472a0;
+  --accent-hover: #f890b5;
+  --accent-glow: rgba(244, 114, 160, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(16, 8, 12, 0.6);
+  --input-focus: rgba(244, 114, 160, 0.18);
+  --scrollbar-thumb: rgba(244, 114, 160, 0.22);
+  --scrollbar-thumb-hover: rgba(244, 114, 160, 0.42);
+}
+
+.theme-dracula {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(189, 147, 249, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(255, 121, 198, 0.06) 0px, transparent 50%), linear-gradient(140deg, #191a26, #21222c 45%, #14151d);
+  --card-bg: rgba(40, 42, 54, 0.55);
+  --text-main: #f8f8f2;
+  --text-muted: rgba(248, 248, 242, 0.6);
+  --accent: #bd93f9;
+  --accent-hover: #d0aefb;
+  --accent-glow: rgba(189, 147, 249, 0.3);
+  --border-color: rgba(255, 255, 255, 0.07);
+  --input-bg: rgba(25, 26, 38, 0.6);
+  --input-focus: rgba(189, 147, 249, 0.18);
+  --scrollbar-thumb: rgba(189, 147, 249, 0.24);
+  --scrollbar-thumb-hover: rgba(189, 147, 249, 0.44);
+}
+
+.theme-solarized-dark {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(38, 139, 210, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(133, 153, 0, 0.06) 0px, transparent 50%), linear-gradient(140deg, #04222b, #073642 45%, #032630);
+  --card-bg: rgba(7, 54, 66, 0.5);
+  --text-main: #eee8d5;
+  --text-muted: rgba(238, 232, 213, 0.6);
+  --accent: #268bd2;
+  --accent-hover: #4aa3e0;
+  --accent-glow: rgba(38, 139, 210, 0.28);
+  --border-color: rgba(238, 232, 213, 0.08);
+  --input-bg: rgba(3, 33, 41, 0.6);
+  --input-focus: rgba(38, 139, 210, 0.18);
+  --scrollbar-thumb: rgba(38, 139, 210, 0.22);
+  --scrollbar-thumb-hover: rgba(38, 139, 210, 0.42);
+}
+
+.theme-monochrome {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(255, 255, 255, 0.05) 0px, transparent 50%), linear-gradient(140deg, #050505, #0d0d0d 45%, #060606);
+  --card-bg: rgba(20, 20, 20, 0.55);
+  --text-main: #fafafa;
+  --text-muted: rgba(250, 250, 250, 0.55);
+  --accent: #d4d4d8;
+  --accent-hover: #f4f4f5;
+  --accent-glow: rgba(212, 212, 216, 0.2);
+  --border-color: rgba(255, 255, 255, 0.08);
+  --input-bg: rgba(0, 0, 0, 0.55);
+  --input-focus: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.4);
+}
+
+.theme-sakura-light {
+  --bg-gradient: linear-gradient(135deg, #fff5f8, #ffeef4, #fbe9f0, #fef2f6);
+  --card-bg: rgba(255, 255, 255, 0.7);
+  --text-main: #4a1d2e;
+  --text-muted: rgba(74, 29, 46, 0.6);
+  --accent: #e0538a;
+  --accent-hover: #cf3e78;
+  --accent-glow: rgba(224, 83, 138, 0.16);
+  --border-color: rgba(74, 29, 46, 0.08);
+  --input-bg: rgba(255, 255, 255, 0.55);
+  --input-focus: rgba(224, 83, 138, 0.12);
+  --scrollbar-thumb: rgba(224, 83, 138, 0.18);
+  --scrollbar-thumb-hover: rgba(224, 83, 138, 0.34);
+}
+
 @layer base {
   body {
     margin: 0;
