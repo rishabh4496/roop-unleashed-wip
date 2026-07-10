@@ -2327,9 +2327,9 @@ class ProcessMgr():
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
-                    fake_frame = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M)
+                    fake_frame = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
                     if enhanced_frame is not None:
-                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M)
+                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
             else:
                 # Pooled (no global lock) ONLY when this enhancer built its own
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool
@@ -2687,12 +2687,12 @@ class ProcessMgr():
         final_frame = final_frame.transpose(2, 0, 3, 1, 4).reshape(pixel_boost_size, pixel_boost_size, 3)
         return final_frame
 
-    def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None):
+    def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None, tgt_pitch_deg:float=0.0):
         # SAM2 is temporally tracked: instead of running per-crop inference it warps
         # its precomputed full-frame mask into this crop via the affine M stashed in
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
         p_name = getattr(processor, 'processorname', None)
-        
+
         # Check if face is in lateral/side profile OR upside-down position.
         # Lateral: nose x-coordinate is strongly asymmetric relative to the two eyes.
         # Upside-down: eyes y-coordinate is BELOW mouth y-coordinate.
@@ -2718,6 +2718,19 @@ class ProcessMgr():
                 mouth_y = (kps[3][1] + kps[4][1]) / 2.0
                 if eye_y > mouth_y + 5.0:   # 5px tolerance for near-horizontal
                     is_non_frontal = True
+        # ── Extreme-pitch detection (head tilted far back/forward) ──────────
+        # The two kps-based checks above only see 2D in-plane position, so a
+        # face pitched back steeply (chin toward camera, forehead away — e.g.
+        # head thrown back) can keep eyes-above-mouth in image space and pass
+        # both checks, yet estimate_norm's SimilarityTransform (2D rotation +
+        # uniform scale only, no true 3D pose) still fits M poorly for that
+        # pose. The mask, warped back into the frame via that same poor-fit M,
+        # then lands on the wrong region — a visible seam down the face where
+        # the mask boundary misses the actual swapped-region boundary. Reuse
+        # the yaw/pitch estimate process_face already computes (from
+        # landmark_3d_68, no extra cost) to catch this case too.
+        if abs(tgt_pitch_deg) > 30.0:
+            is_non_frontal = True
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
         
