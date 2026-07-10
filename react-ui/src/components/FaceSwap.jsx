@@ -273,6 +273,53 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     e.target.value = '';
   };
 
+  // ── Shareable "recipe": full current settings + person→source mapping ──
+  const exportRecipe = () => {
+    try {
+      const recipe = {
+        type: 'roop-recipe',
+        version: 1,
+        exported_at: new Date().toISOString(),
+        settings: { ...p },
+        face_mapping: getFaceMappingArray(),
+      };
+      const blob = new Blob([JSON.stringify(recipe, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `roop_recipe_${Date.now()}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      notify('Recipe exported — share the .json to reproduce this exact setup');
+    } catch (e) { notify('Failed to export recipe: ' + e.message, 'error'); }
+  };
+
+  const importRecipe = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const r = JSON.parse(event.target.result);
+        if (r.type !== 'roop-recipe' || !r.settings) throw new Error('Not a valid roop recipe file.');
+        setSettings((s) => ({ ...s, ...r.settings }));
+        if (Array.isArray(r.face_mapping)) {
+          const fm = {};
+          r.face_mapping.forEach((v, i) => { fm[i] = v; });
+          setFaceMapping(fm);
+        }
+        clearPreviewCache();
+        notify('Recipe applied — settings and mapping restored');
+      } catch (err) {
+        notify('Failed to import recipe: ' + err.message, 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   // Register clipboard & drop listener with global App registry
   useEffect(() => {
     if (!registerFileListener) return;
@@ -1497,6 +1544,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <input type="file" accept=".json" onChange={importProfiles} className="hidden" />
               </label>
             </div>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">🔗 Share Recipe</Button>
+              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
+                📂 Load Recipe
+                <input type="file" accept=".json" onChange={importRecipe} className="hidden" />
+              </label>
+            </div>
+            <p className="text-[10px] text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
           </Section>
         </div>
 
