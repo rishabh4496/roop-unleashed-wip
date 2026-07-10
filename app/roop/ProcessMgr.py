@@ -2002,15 +2002,29 @@ class ProcessMgr():
                             if cost < best_cost:
                                 best_cost, best_j = cost, j
                                 
+                    src_index = None
                     if best_j >= 0:
+                        # Claim the entry even if its source is unresolved, so a
+                        # second face this frame can't re-match the same track.
                         claimed.add(best_j)
-                        src_index = entries[best_j][1]
-                        if src_index is None or src_index >= len(self.input_face_datas):
-                            continue
+                        cand = entries[best_j][1]
+                        if cand is not None and cand < len(self.input_face_datas):
+                            src_index = cand
+
+                    if src_index is not None:
                         temp_frame = self.process_face(src_index, face, temp_frame)
                         num_faces_found += 1
                     else:
-                        # Fallback lookup to per-frame multi-angle matching if untracked
+                        # No usable track source for this face — either it matched
+                        # no track entry this frame, OR it matched a track the
+                        # pre-pass left unassigned (src=None: typically a short
+                        # early/entering tracklet whose MEAN embedding missed the
+                        # distance threshold even though individual frames match).
+                        # Fall back to per-frame multi-angle matching — the same
+                        # logic live preview uses — so these frames still swap
+                        # instead of being silently skipped. (Previously a matched
+                        # None-source track hit `continue` and was never swapped,
+                        # which dropped the opening frames of full-range runs.)
                         best_i, best_d = -1, threshold
                         for i, tf in enumerate(self.target_face_datas):
                             d = compute_cosine_distance(tf.embedding, face.embedding)
