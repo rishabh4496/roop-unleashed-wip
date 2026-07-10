@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 export const Card = ({ children, className = '', ...rest }) => (
   <div className={`rounded-2xl glass-panel apple-transition ${className}`} {...rest}>
@@ -201,6 +201,68 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           })}
         </div>
       )}
+    </div>
+  );
+};
+
+// Smoothly tweens a displayed number toward `value` (eased). Great for %/fps/ETA.
+export const AnimatedNumber = ({ value, duration = 500, decimals = 0, suffix = '', className = '' }) => {
+  const [disp, setDisp] = useState(value || 0);
+  const fromRef = useRef(value || 0);
+  const rafRef = useRef();
+  useEffect(() => {
+    const from = fromRef.current;
+    const to = value || 0;
+    if (from === to) return;
+    const start = performance.now();
+    const tick = (t) => {
+      const p = Math.min(1, (t - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisp(from + (to - from) * eased);
+      if (p < 1) rafRef.current = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [value, duration]);
+  return <span className={className}>{Number(disp).toFixed(decimals)}{suffix}</span>;
+};
+
+// Shimmering placeholder block for loading states.
+export const Skeleton = ({ className = '' }) => (
+  <div className={`rounded-lg bg-white/5 relative overflow-hidden ${className}`}>
+    <div className="absolute inset-0 -translate-x-full animate-[skeleton_1.4s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+  </div>
+);
+
+// One-shot celebratory confetti burst. Renders nothing when inactive.
+export const Confetti = ({ active }) => {
+  if (!active) return null;
+  const colors = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9'];
+  const pieces = Array.from({ length: 90 });
+  return (
+    <div className="fixed inset-0 z-[70] pointer-events-none overflow-hidden">
+      {pieces.map((_, i) => {
+        const left = Math.random() * 100;
+        const delay = Math.random() * 0.5;
+        const dur = 1.8 + Math.random() * 1.4;
+        const size = 6 + Math.random() * 6;
+        const color = colors[i % colors.length];
+        const rot = Math.random() * 360;
+        return (
+          <span
+            key={i}
+            style={{
+              position: 'absolute', top: '-5%', left: `${left}%`,
+              width: size, height: size * 0.5, background: color,
+              transform: `rotate(${rot}deg)`,
+              animation: `confetti-fall ${dur}s cubic-bezier(0.4,0,0.6,1) ${delay}s forwards`,
+              borderRadius: 1,
+            }}
+          />
+        );
+      })}
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card } from './ui';
+import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Confetti, Skeleton } from './ui';
 import PersonGroups from './PersonGroups';
 
 const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
@@ -9,6 +9,39 @@ const fmtTime = (ms) => {
   const s = Math.max(0, Math.round(ms / 1000));
   const m = Math.floor(s / 60);
   return m > 0 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+};
+
+// Short ascending 3-note chime via WebAudio (no asset, CSP-safe).
+const playChime = () => {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99].forEach((f, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = f;
+      o.connect(g);
+      g.connect(ctx.destination);
+      const t = now + i * 0.11;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.12, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.34);
+      o.start(t);
+      o.stop(t + 0.36);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 1400);
+  } catch { /* audio not available */ }
+};
+
+const notifyDesktop = (title, body) => {
+  try {
+    if (!('Notification' in window)) return;
+    if (document.visibilityState === 'visible') return; // only notify when tab is backgrounded
+    if (Notification.permission === 'granted') new Notification(title, { body, silent: true });
+  } catch { /* ignore */ }
 };
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
@@ -831,6 +864,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         face_mapping: getFaceMappingArray(),
       });
       startTimeRef.current = Date.now();
+      // Ask for desktop-notification permission so we can ping on completion if
+      // the tab is backgrounded (no-op if already decided).
+      try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* ignore */ }
       // Optimistically flag processing so the old "Latest output" clears
       // immediately, before the first poll tick (~1s) confirms it.
       setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Starting…' }));
@@ -876,6 +912,22 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const out = progress.processing ? null : progress.output;
   const outUrl = out?.path ? `${API}/api/file?path=${encodeURIComponent(out.path)}&t=${progress.progress}` : '';
   const prog = progress.progress || 0;
+
+  // ── Completion celebration: chime + desktop notification + confetti ──
+  const [confetti, setConfetti] = useState(false);
+  const prevProcessingRef = useRef(false);
+  useEffect(() => {
+    const was = prevProcessingRef.current;
+    prevProcessingRef.current = progress.processing;
+    // Only celebrate a genuine finish (near-100%), not a manual Stop.
+    if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
+      playChime();
+      notifyDesktop('✨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
+      setConfetti(false);
+      requestAnimationFrame(() => setConfetti(true));
+      setTimeout(() => setConfetti(false), 2600);
+    }
+  }, [progress.processing, progress.error, progress.progress, progress.output]);
   const elapsedMs = progress.processing && startTimeRef.current ? Date.now() - startTimeRef.current : 0;
   const etaMs = progress.processing && prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0;
   const rawUrl = targets.length > 0 ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}` : '';
@@ -1266,8 +1318,24 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const endPct = maxFrames > 1 ? ((endFrame - 1) / (maxFrames - 1)) * 100 : 100;
   const currentPct = maxFrames > 1 ? ((frame - 1) / (maxFrames - 1)) * 100 : 0;
 
+  // ── Rough pre-run estimate (idle only) ──
+  const estFrames = maxFrames > 1 ? Math.max(1, endFrame - startFrame + 1) : (targets.length ? 1 : 0);
+  const estTotalMs = (() => {
+    let ms = 45;
+    if (p.selected_enhancer && p.selected_enhancer !== 'None') ms += 70;
+    const det = parseInt(p.face_detector_size || '640', 10) || 640;
+    ms += (det / 640) * 15;
+    ms += (num(p.num_swap_steps, 1) - 1) * 25;
+    if (p.track_identities) ms += 8;
+    const parallel = Math.max(1.5, Math.min(4, (telemetry?.threads || 3) * 0.6));
+    return (estFrames * ms) / parallel;
+  })();
+  const heavyVram = (p.selected_enhancer && p.selected_enhancer !== 'None') &&
+    (parseInt(p.face_detector_size || '640', 10) >= 960);
+
   return (
     <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
+      <Confetti active={confetti} />
       {/* COLUMN 1: Settings & Controls — sticky sidebar on large viewports so it
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
@@ -1496,7 +1564,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
               </div>
             ) : (
-              <div className="text-xs text-white/30 italic">Connecting to hardware diagnostics…</div>
+              <div className="space-y-4">
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-20 w-full" />
+                <Skeleton className="h-9 w-full" />
+                <div className="text-[10px] text-white/25 italic text-center">Connecting to hardware diagnostics…</div>
+              </div>
             )}
             <div className="mt-3 flex justify-between items-center">
               <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>⌨️ Keyboard Shortcuts Info</Button>
@@ -1690,9 +1763,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                           strokeLinecap="round"
                         />
                       </svg>
-                      <span className="absolute text-base font-extrabold text-white tabular-nums">
-                        {Math.round(prog * 100)}%
-                      </span>
+                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-base font-extrabold text-white tabular-nums" />
                     </div>
 
                     <div className="space-y-1">
@@ -1793,9 +1864,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     </Button>
                   )}
                 </div>
-                <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
-                  <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
-                  {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                <div className="flex items-center gap-4">
+                  {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
+                    <div className="hidden md:flex flex-col items-end text-right leading-tight">
+                      <span className="text-[10px] uppercase tracking-widest text-white/35 font-bold">Est. runtime</span>
+                      <span className="text-sm font-extrabold text-white/90 tabular-nums">~{fmtTime(estTotalMs)}</span>
+                      <span className="text-[10px] text-white/40 tabular-nums">
+                        {estFrames.toLocaleString()} frames{heavyVram ? ' · high VRAM' : ''}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
+                    <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
+                    {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                  </div>
                 </div>
               </div>
             )}

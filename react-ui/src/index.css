@@ -319,6 +319,15 @@
   animation: pulse-glow 3s infinite;
 }
 
+@keyframes confetti-fall {
+  0% { top: -5%; opacity: 1; }
+  100% { top: 105%; opacity: 0.9; transform: translateX(40px) rotate(720deg); }
+}
+
+@keyframes skeleton {
+  100% { transform: translateX(100%); }
+}
+
 @keyframes progress-stripes {
   0% { background-position: 1rem 0; }
   100% { background-position: 0 0; }
