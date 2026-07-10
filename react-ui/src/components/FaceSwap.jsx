@@ -1351,7 +1351,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               )}
             </>
           )}
-          <Toggle label="✨ Reduce enhancer flicker" info="Temporally blends the enhanced face. NOTE: forces SINGLE-THREAD, so it's slower." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          <Toggle label="✨ Reduce enhancer flicker" info="Temporally blends the enhanced face. Runs multi-threaded (work-stealing) when the launcher's ROOP_STAB_PARALLEL is on (the Pinokio default) — otherwise it forces single-thread. Either way it costs some extra compute (blending + per-block warm-up), so it's somewhat slower, not free." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
           {p.stabilize_enhancer && (
             <Slider label="Flicker reduction strength" info="higher = smoother" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
