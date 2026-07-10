@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { getJSON, postJSON, postFiles, fileUrl } from '../api';
-import { Section, Button, Card } from './ui';
+import { Button, Card } from './ui';
 
 export default function Gallery({ notify }) {
   const [files, setFiles] = useState([]);

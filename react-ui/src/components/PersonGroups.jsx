@@ -70,7 +70,7 @@ export default function PersonGroups({
     if (res.target_groups) setTargetGroups(res.target_groups);
     if (res.target_names !== undefined && setTargetNames) setTargetNames(res.target_names || []);
     if (res.target_faces_info !== undefined && setTargetFacesInfo) setTargetFacesInfo(res.target_faces_info || []);
-    clearPreviewCache && clearPreviewCache();
+    if (clearPreviewCache) clearPreviewCache();
   };
 
   const isExpanded = (rank) => (rank in expanded ? expanded[rank] : rank === selRank);
@@ -132,7 +132,7 @@ export default function PersonGroups({
 
   const setMapping = (rank, val) => {
     setFaceMapping((prev) => ({ ...prev, [rank]: val }));
-    clearPreviewCache && clearPreviewCache();
+    if (clearPreviewCache) clearPreviewCache();
   };
 
   // Scoped arrow-key nav: move the selected person up/down. stopPropagation so

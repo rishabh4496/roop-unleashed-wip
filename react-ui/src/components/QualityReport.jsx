@@ -37,7 +37,7 @@ export default function QualityReport({ outputPath, notify }) {
       if (res.ok) setData(res);
       else { setErr(res.message || 'No face detected in the output'); }
     } catch (e) {
-      setErr(e.message); notify && notify(e.message, 'error');
+      setErr(e.message); if (notify) notify(e.message, 'error');
     } finally { setLoading(false); }
   };
 
