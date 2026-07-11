@@ -2117,12 +2117,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <div className="absolute top-1/2 right-0 w-2.5 h-5 -translate-y-1/2 border-t-2 border-b-2 border-l-2 border-orange-400 rounded-l pointer-events-none" />
                   </div>
 
-                  {/* Red Playhead Line & Top diamond */}
-                  <div 
-                    className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[#ff3366] to-[#E94560] z-30 pointer-events-none shadow-[0_0_12px_rgba(233,69,96,1)]"
+                  {/* Playhead line & top diamond */}
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-[var(--accent)] z-30 pointer-events-none shadow-[0_0_8px_var(--accent-glow)]"
                     style={{ left: `${currentPct}%` }}
                   >
-                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-gradient-to-br from-[#ff5588] to-[#E94560] border border-white/35 shadow-[0_2px_6px_rgba(233,69,96,0.6)]" />
+                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-[var(--accent)] border border-white/35 shadow-[0_2px_5px_rgba(0,0,0,0.5)]" />
                   </div>
                 </div>
               </div>
