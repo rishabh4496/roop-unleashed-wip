@@ -160,7 +160,7 @@ export default function App() {
       </div>
 
       {/* Floating Header Capsule */}
-      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
+      <header className="sticky top-4 z-40 mx-auto max-w-[1600px] w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
         <div className="flex items-center gap-3">
           <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-lg">⚡</span>
           <div>
@@ -203,7 +203,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4 z-10 relative">
+      <main className="flex-1 w-[98%] max-w-[1600px] mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
           <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
             ⚠️ {error}
