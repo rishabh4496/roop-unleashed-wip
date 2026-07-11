@@ -1621,6 +1621,54 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             </div>
           </Section>
         </div>
+
+        <Section title="Batch Swapping Queue">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs text-white/50">
+              {queue.length === 0
+                ? 'No jobs in queue. Configure settings & click "Add Current to Queue".'
+                : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 mb-3">
+            <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add current to queue</Button>
+            {queue.length > 0 && (
+              <>
+                <Button size="sm" variant={isQueueRunning ? 'stop' : 'primary'} onClick={isQueueRunning ? () => setIsQueueRunning(false) : startQueue}>
+                  {isQueueRunning ? '⏹ Stop queue' : '▶ Start queue'}
+                </Button>
+                <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
+              </>
+            )}
+          </div>
+
+          {queue.length > 0 && (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+              {queue.map((job, idx) => {
+                const statusColors = {
+                  Pending: 'text-white/60 bg-white/5 border-white/5',
+                  Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
+                  Finished: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+                  Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
+                };
+                return (
+                  <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[job.status] || 'text-white bg-white/5'}`}>
+                    <div className="flex-1 min-w-0 pr-3">
+                      <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
+                      <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{job.status}</span>
+                      {!isQueueRunning && (
+                        <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Section>
       </div>
     </div>
 
@@ -2267,54 +2315,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
               <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
             </div>
-          </Section>
-
-          <Section title="Batch Swapping Queue">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-xs text-white/50">
-                {queue.length === 0 
-                  ? 'No jobs in queue. Configure settings & click "Add Current to Queue".' 
-                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add Current to Queue</Button>
-                {queue.length > 0 && (
-                  <>
-                    <Button size="sm" variant={isQueueRunning ? 'stop' : 'primary'} onClick={isQueueRunning ? () => setIsQueueRunning(false) : startQueue}>
-                      {isQueueRunning ? '⏹ Stop Queue' : '▶ Start Queue'}
-                    </Button>
-                    <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {queue.length > 0 && (
-              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                {queue.map((job, idx) => {
-                  const statusColors = {
-                    Pending: 'text-white/60 bg-white/5 border-white/5',
-                    Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
-                    Finished: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
-                    Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
-                  };
-                  return (
-                    <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[job.status] || 'text-white bg-white/5'}`}>
-                      <div className="flex-1 min-w-0 pr-3">
-                        <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
-                        <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{job.status}</span>
-                        {!isQueueRunning && (
-                          <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </Section>
 
           <Section title="Output settings & renders">
