@@ -8,6 +8,7 @@ import EnhancerCompareGrid from './faceswap/EnhancerCompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
+import useTelemetry from './faceswap/useTelemetry';
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
@@ -51,8 +52,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
   const activeIntervalsRef = useRef({});
 
-  // Telemetry HUD State
-  const [telemetry, setTelemetry] = useState(null);
+  // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
+  const telemetry = useTelemetry();
 
   // Target-to-Source visual mapping state
   const [faceMapping, setFaceMapping] = useState({});
@@ -116,22 +117,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   useEffect(() => {
     clearPreviewCache();
   }, [sourceFaces.length, targetFaces.length, selSource, selTargetFace]);
-
-
-  // Telemetry Polling Effect
-  useEffect(() => {
-    const fetchTelemetry = async () => {
-      try {
-        const data = await getJSON('/api/system/telemetry');
-        setTelemetry(data);
-      } catch (err) {
-        // quiet fail
-      }
-    };
-    fetchTelemetry();
-    const id = setInterval(fetchTelemetry, 3000);
-    return () => clearInterval(id);
-  }, []);
 
   // â”€â”€ Shareable "recipe": full current settings + personâ†’source mapping â”€â”€
   const exportRecipe = () => {
