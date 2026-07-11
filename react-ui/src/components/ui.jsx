@@ -6,20 +6,31 @@ export const Card = ({ children, className = '', ...rest }) => (
   </div>
 );
 
-export const Section = ({ title, action, children, className = '' }) => (
-  <Card className={`p-5 ${className}`}>
-    {title && (
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40 flex items-center gap-2">
-          <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80" />
-          {title}
-        </h3>
-        {action}
-      </div>
-    )}
-    <div className="space-y-4">{children}</div>
-  </Card>
-);
+export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  const showBody = !collapsible || open;
+  const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
+  const label = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40';
+  return (
+    <Card className={`p-5 ${className}`}>
+      {title && (
+        <div className={`flex items-center justify-between gap-3 ${showBody ? 'mb-4' : 'mb-0'}`}>
+          {collapsible ? (
+            <button type="button" onClick={() => setOpen((o) => !o)} className="flex items-center gap-2 min-w-0 group/sec">
+              {marker}
+              <span className={`${label} group-hover/sec:text-white/60 transition-colors`}>{title}</span>
+              <svg className={`w-3 h-3 text-white/30 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          ) : (
+            <h3 className={`${label} flex items-center gap-2`}>{marker}{title}</h3>
+          )}
+          {action}
+        </div>
+      )}
+      {showBody && <div className="space-y-4">{children}</div>}
+    </Card>
+  );
+};
 
 // Shared "?" hover-tooltip badge. shrink-0 so it never wraps to its own line,
 // and stays pinned to the top of a multi-line label.

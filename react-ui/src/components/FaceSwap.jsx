@@ -1457,7 +1457,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
         </Section>
 
-        <Section title="Masking parameters">
+        <Section title="Masking parameters" collapsible defaultOpen={false}>
           <Select label="Masking engine" value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
           {p.mask_engine === 'Clip2Seg' && (
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
@@ -1474,7 +1474,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Slider label="Face mask edge blend" min={0} max={200} step={1} value={num(p.face_mask_blend, 20)} onChange={(v) => set('face_mask_blend', v)} />
         </Section>
 
-        <Section title="Mouth & Angle math">
+        <Section title="Mouth & Angle math" collapsible defaultOpen={false}>
           <Slider label="Mouth mask top" min={0} max={2} step={0.01} value={num(p.mouth_top_scale, 1)} onChange={(v) => set('mouth_top_scale', v)} />
           <Slider label="Mouth mask bottom" min={0} max={2} step={0.01} value={num(p.mouth_bottom_scale, 1)} onChange={(v) => set('mouth_bottom_scale', v)} />
           <Slider label="Mouth mask left" min={0} max={2} step={0.01} value={num(p.mouth_left_scale, 1)} onChange={(v) => set('mouth_left_scale', v)} />
@@ -1512,7 +1512,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         </Section>
 
         <div className="3xl:col-span-2">
-          <Section title="System options">
+          <Section title="System options" collapsible defaultOpen={false}>
             <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
             <Toggle label="Skip audio" checked={!!p.skip_audio} onChange={(v) => set('skip_audio', v)} />
             <Toggle label="Keep frames (when extracting)" checked={!!p.keep_frames} onChange={(v) => set('keep_frames', v)} />
@@ -1521,7 +1521,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         </div>
 
         <div className="3xl:col-span-2">
-          <Section title="Saved Profiles">
+          <Section title="Saved Profiles" collapsible defaultOpen={false}>
             <div className="flex flex-wrap gap-2 items-end">
               <div className="flex-1 min-w-[120px]">
                 <TextInput label="Save active settings as:" value={newProfileName} onChange={setNewProfileName} placeholder="My Preset Name" />
@@ -1560,7 +1560,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         </div>
 
         <div className="3xl:col-span-2">
-          <Section title="Live Telemetry & Diagnostics">
+          <Section title="Live Telemetry & Diagnostics" collapsible defaultOpen={false}>
             {telemetry ? (
               <div className="space-y-4 text-xs font-mono">
                 {/* GPU & VRAM */}
