@@ -60,6 +60,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [maxFrames, setMaxFrames] = useState(1);
   const [previewSrc, setPreviewSrc] = useState('');
   const [previewFaces, setPreviewFaces] = useState([]);
+  const [previewPersonIds, setPreviewPersonIds] = useState([]);
   const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
@@ -565,6 +566,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     const cached = getCachedPreview(idx, fr);
     if (cached) {
       setPreviewFaces(cached.faces);
+      setPreviewPersonIds(cached.personIds || []);
       setPreviewSrc(cached.image);
       return;
     }
@@ -615,9 +617,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         mouth_right_scale: p.mouth_right_scale,
       }, { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
+      setPreviewPersonIds(res.person_ids || []);
       setPreviewSrc(res.image || '');
       if (res.image) {
-        setCachedPreview(idx, fr, { faces: res.faces || [], image: res.image });
+        setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], image: res.image });
       }
     } catch (e) {
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
@@ -1990,8 +1993,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               })() : (
                 <InteractivePreview 
                   beforeSrc={rawUrl} 
-                  afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))} 
+                  afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
                   faces={previewFaces}
+                  personIds={previewPersonIds}
                   splitView={splitView}
                   compare={compare}
                   setCompare={setCompare}
@@ -2587,9 +2591,10 @@ function EnhancerCompareGrid({ activeList, gridColsClass, enhancerPreviews, enha
 }
 
 function InteractivePreview({
-  beforeSrc, 
-  afterSrc, 
-  faces = [], 
+  beforeSrc,
+  afterSrc,
+  faces = [],
+  personIds = [],
   splitView = false,
   compare = false,
   setCompare,
@@ -2722,7 +2727,7 @@ function InteractivePreview({
         <div key={i} className="absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 pointer-events-none"
              style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}>
           <span className="absolute -top-6 left-0 bg-[var(--accent)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
-            Person {i}
+            Person {(personIds[i] ?? i) + 1}
           </span>
         </div>
       );

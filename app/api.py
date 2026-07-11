@@ -565,6 +565,8 @@ def target_select(payload: dict = Body(...)):
     # Clamp: a negative index would silently wrap to the last entry via
     # Python list indexing in downstream helpers.
     selected_target_index = max(0, min(idx, max(0, len(list_files_process) - 1)))
+    # Switching media re-derives the overlay's stable person ids from scratch.
+    _preview_identity_banks.pop(selected_target_index, None)
     _refresh_target_frames(selected_target_index)
     return _target_list_payload()
 
@@ -987,6 +989,73 @@ def quality_analyze(payload: dict = Body(...)):
             "has_source": bool(src_embs), "metrics": metrics}
 
 
+# ── Stable person ids for the live-preview overlay ───────────────────────────
+# Detection order is spatial (faces sorted left-to-right), so when a new person
+# enters the frame to the left of an existing one, every other face shifts index
+# and "Person 0" silently becomes a different physical person. That made the box
+# labels — and the person→source mapping the user reasons about — unreliable.
+# We keep a small per-target bank of identity embeddings and match each detected
+# face back to it, so a given person keeps the same id for as long as the target
+# stays selected. Numbers displayed in the UI are 1-based (id + 1).
+_preview_identity_banks = {}   # target idx -> list[np.ndarray]  (one per stable person)
+_PREVIEW_IDENTITY_THRESH = 0.5 # cosine similarity for "same person" (normed embeddings)
+
+
+def _face_normed_emb(f):
+    """Return a unit-length embedding for a detected face, or None."""
+    e = None
+    try:
+        e = f["normed_embedding"]
+    except Exception:
+        e = getattr(f, "normed_embedding", None)
+    if e is None:
+        raw = None
+        try:
+            raw = f["embedding"]
+        except Exception:
+            raw = getattr(f, "embedding", None)
+        if raw is not None:
+            e = raw
+    if e is None:
+        return None
+    e = np.asarray(e, dtype=np.float32).flatten()
+    n = float(np.linalg.norm(e))
+    return e / n if n > 0 else None
+
+
+def _preview_person_ids(idx, faces):
+    """Assign each detected face a stable person id by matching its embedding
+    against a persistent per-target bank (greedy, one id per face per frame)."""
+    bank = _preview_identity_banks.setdefault(idx, [])
+    ids = []
+    used = set()
+    for f in faces:
+        e = _face_normed_emb(f)
+        if e is None:
+            # No embedding — fall back to a fresh id so at least it renders.
+            bank.append(None)
+            ids.append(len(bank) - 1)
+            continue
+        best_i, best_s = None, _PREVIEW_IDENTITY_THRESH
+        for i, b in enumerate(bank):
+            if i in used or b is None:
+                continue
+            s = float(np.dot(e, b))
+            if s > best_s:
+                best_s, best_i = s, i
+        if best_i is None:
+            bank.append(e)
+            best_i = len(bank) - 1
+        else:
+            # Light EMA keeps the identity current through pose/lighting drift.
+            merged = 0.9 * bank[best_i] + 0.1 * e
+            n = float(np.linalg.norm(merged))
+            bank[best_i] = merged / n if n > 0 else bank[best_i]
+        used.add(best_i)
+        ids.append(best_i)
+    return ids
+
+
 # ── Live preview swap ────────────────────────────────────────────────────────
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
@@ -1019,6 +1088,7 @@ def preview(payload: dict = Body(...)):
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
 
     faces_list = []
+    person_ids = []
     try:
         from roop.face_util import get_all_faces
         faces = get_all_faces(current_frame)
@@ -1026,11 +1096,12 @@ def preview(payload: dict = Body(...)):
             for f in faces:
                 bbox = f["bbox"].astype(int).tolist()
                 faces_list.append(bbox)
+            person_ids = _preview_person_ids(idx, faces)
     except Exception:
         pass
 
     if not fake or len(roop_globals.INPUT_FACESETS) < 1:
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids}
 
     try:
         from roop.core import live_swap, get_processing_plugins
@@ -1074,11 +1145,11 @@ def preview(payload: dict = Body(...)):
         with temp_mapped_facesets(payload.get("face_mapping")):
             swapped = live_swap(current_frame, options)
         if swapped is None:
-            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list}
-        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list}
+            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids}
+        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list, "person_ids": person_ids}
     except Exception:
         traceback.print_exc()
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "error": "swap failed"}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "error": "swap failed"}
 
 
 # ── Run the swap ─────────────────────────────────────────────────────────────
