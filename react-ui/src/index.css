@@ -14,19 +14,23 @@
 
 /* ── Theme Definitions ────────────────────────────────────────────────── */
 :root {
-  /* Default: Obsidian & Crimson Gold */
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(233, 69, 96, 0.07) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(197, 168, 128, 0.06) 0px, transparent 50%), linear-gradient(140deg, #040508, #0B0C12 45%, #06070B);
-  --card-bg: rgba(12, 14, 20, 0.45);
-  --text-main: #F8F9FA;
-  --text-muted: rgba(248, 249, 250, 0.6);
+  /* Default: Obsidian — refined premium dark (calm surfaces, hairline borders) */
+  --bg-gradient: radial-gradient(at 18% -12%, rgba(233, 69, 96, 0.05) 0px, transparent 42%), radial-gradient(at 100% 108%, rgba(139, 92, 246, 0.035) 0px, transparent 45%), linear-gradient(162deg, #06070B, #0A0B11 55%, #070810);
+  --card-bg: rgba(19, 21, 29, 0.55);
+  --surface-2: rgba(255, 255, 255, 0.035);
+  --text-main: #F4F5F7;
+  --text-muted: rgba(244, 245, 247, 0.55);
   --accent: #E94560;
-  --accent-hover: #f15872;
-  --accent-glow: rgba(233, 69, 96, 0.22);
-  --border-color: rgba(255, 255, 255, 0.05);
-  --input-bg: rgba(3, 3, 5, 0.6);
-  --input-focus: rgba(233, 69, 96, 0.15);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.15);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+  --accent-hover: #F1657C;
+  --accent-glow: rgba(233, 69, 96, 0.14);
+  --border-color: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --input-bg: rgba(8, 9, 13, 0.55);
+  --input-focus: rgba(233, 69, 96, 0.14);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.13);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.22);
+  --radius-lg: 16px;
 }
 
 .theme-glass-light {
@@ -260,14 +264,14 @@
     color: var(--text-main);
     min-height: 100vh;
     background-attachment: fixed;
-    /* Ambient radial glow, architect dot-mesh grid, and dark obsidian backdrop */
-    background: 
-      radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 45%),
-      radial-gradient(var(--border-color) 1.5px, transparent 1.5px),
+    /* Soft top-lit ambient glow over a deep obsidian backdrop — no busy grid. */
+    background:
+      radial-gradient(circle at 50% -10%, var(--accent-glow), transparent 38%),
       var(--bg-gradient);
-    background-size: 100% 100%, 28px 28px, 100% 100%;
+    background-size: 100% 100%, 100% 100%;
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.01em;
     transition: background 0.6s cubic-bezier(0.16, 1, 0.3, 1), color 0.6s cubic-bezier(0.16, 1, 0.3, 1);
   }
 }
@@ -411,20 +415,19 @@
   animation: tooltip-fade 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Glassmorphism improvements */
+/* Premium glass surface — calm elevation, hairline border, quiet hover. */
 .glass-panel {
   background: var(--card-bg);
-  backdrop-filter: blur(32px) saturate(220%);
-  -webkit-backdrop-filter: blur(32px) saturate(220%);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.18), inset 0 1px 1px rgba(255, 255, 255, 0.05);
-  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .glass-panel:hover {
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 20px var(--accent-glow);
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-strong);
 }
 
 .shimmer-sweep {
@@ -464,10 +467,14 @@
   transition: border-color 0.4s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.glass-input:hover {
+  border-color: var(--border-strong);
+}
+
 .glass-input:focus {
   border-color: var(--accent);
-  background: rgba(0, 0, 0, 0.45);
-  box-shadow: 0 0 0 4px var(--input-focus);
+  background: rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 3px var(--input-focus);
 }
 
 /* Custom Webkit range input styling to match Apple Sliders */
@@ -482,13 +489,18 @@ input[type="range"] {
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border-radius: 99px;
-  background: white;
-  box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+  background: #ffffff;
+  border: 2px solid var(--accent);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.35);
   cursor: pointer;
-  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 5px var(--input-focus);
 }
 
 input[type="range"]::-webkit-slider-thumb:active {

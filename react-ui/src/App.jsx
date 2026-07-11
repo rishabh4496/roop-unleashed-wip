@@ -153,23 +153,23 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden select-none">
-      {/* Floating Ambient Background Glows */}
+      {/* Floating Ambient Background Glows — subtle, slow */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute top-[-25%] left-[-15%] w-[60%] h-[60%] rounded-full bg-[var(--accent)]/[0.06] blur-[150px] animate-float-1" />
-        <div className="absolute bottom-[-20%] right-[-15%] w-[65%] h-[65%] rounded-full bg-[#C5A880]/[0.04] blur-[170px] animate-float-2" />
+        <div className="absolute top-[-28%] left-[-18%] w-[55%] h-[55%] rounded-full bg-[var(--accent)]/[0.04] blur-[170px] animate-float-1" />
+        <div className="absolute bottom-[-24%] right-[-18%] w-[60%] h-[60%] rounded-full bg-[#8B5CF6]/[0.03] blur-[190px] animate-float-2" />
       </div>
- 
+
       {/* Floating Header Capsule */}
-      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-6 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-2xl border-white/10">
+      <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
         <div className="flex items-center gap-3">
-          <span className="text-2xl animate-pulse">⚡</span>
+          <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-lg">⚡</span>
           <div>
-            <h1 className="text-lg font-black tracking-widest uppercase text-white/95 flex items-center gap-2">
-              Roop Unleashed <span className="bg-gradient-to-r from-[#C5A880] to-[var(--accent)] bg-clip-text text-transparent font-black">Studio Pro</span>
+            <h1 className="text-[15px] font-bold tracking-tight text-white/95 flex items-center gap-1.5">
+              Roop Unleashed <span className="text-white/35 font-medium">Studio</span>
             </h1>
             {meta?.git_version && (
-              <span className="text-[9px] font-mono text-white/40 tracking-widest block uppercase mt-0.5">
-                Engine: {meta.git_version}
+              <span className="text-[9px] font-mono text-white/35 tracking-wider block mt-0.5">
+                Engine {meta.git_version}
               </span>
             )}
           </div>
@@ -179,23 +179,22 @@ export default function App() {
           type="button"
           onClick={() => setShowPalette(true)}
           title="Command palette (Ctrl/⌘ + K)"
-          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white/45 hover:text-white hover:border-white/25 transition-colors text-xs font-semibold"
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-xs font-medium"
         >
           <span className="text-sm">⌘</span> Search
           <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
-        <nav className="flex gap-1 bg-black/40 p-1 rounded-2xl border border-white/5 w-full md:w-auto overflow-x-auto">
+        <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all duration-300 apple-transition apple-spring-active flex items-center gap-1.5 ${
+              className={`px-3.5 py-2 rounded-lg text-[12px] font-semibold tracking-wide whitespace-nowrap transition-all duration-200 flex items-center gap-1.5 ${
                 tab === t.id
-                  ? 'bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] text-white shadow-[0_4px_15px_var(--accent-glow)] scale-[1.03]'
-                  : 'text-white/50 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
+                  ? 'bg-white/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] border border-white/10'
+                  : 'text-white/45 hover:text-white/90 hover:bg-white/[0.04] border border-transparent'
               }`}
             >
-              {tab === t.id && <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />}
               {t.label}
             </button>
           ))}

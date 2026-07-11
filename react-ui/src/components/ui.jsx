@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 export const Card = ({ children, className = '', ...rest }) => (
-  <div className={`rounded-2xl glass-panel apple-transition ${className}`} {...rest}>
+  <div className={`rounded-2xl glass-panel ${className}`} {...rest}>
     {children}
   </div>
 );
 
-export const Section = ({ title, children, className = '' }) => (
-  <Card className={`p-6 shadow-xl hover:shadow-2xl border-white/5 border hover:border-white/10 ${className}`}>
+export const Section = ({ title, action, children, className = '' }) => (
+  <Card className={`p-5 ${className}`}>
     {title && (
-      <div className="flex items-center justify-between mb-5 border-b border-white/5 pb-3">
-        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/45 flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40 flex items-center gap-2">
+          <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80" />
           {title}
         </h3>
+        {action}
       </div>
     )}
-    <div className="space-y-5">{children}</div>
+    <div className="space-y-4">{children}</div>
   </Card>
 );
 
@@ -46,7 +47,7 @@ export const Select = ({ label, info, value, onChange, options = [] }) => (
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none cursor-pointer"
+      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none cursor-pointer"
     >
       {options.map((o) => (
         <option key={o} value={o} className="bg-[#121420]">{o}</option>
@@ -76,8 +77,8 @@ export const Toggle = ({ label, info, checked, onChange }) => (
       <span className="text-[13px] font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
       {info && <InfoBadge info={info} />}
     </span>
-    <div className={`relative shrink-0 mt-0.5 w-10.5 h-6 rounded-full transition-all duration-300 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'bg-black/30 border-white/5'}`}>
-      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-[0_2px_4px_rgba(0,0,0,0.4)] transition-all duration-300 cubic-bezier(0.16, 1, 0.3, 1) ${checked ? 'translate-x-4.5' : ''}`} />
+    <div className={`relative shrink-0 mt-0.5 w-10 h-[22px] rounded-full transition-colors duration-200 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-white/[0.06] border-white/10 group-hover/toggle:border-white/20'}`}>
+      <span className={`absolute top-[2px] left-[2px] w-[16px] h-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)] transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${checked ? 'translate-x-[18px]' : ''}`} />
     </div>
     <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
   </label>
@@ -90,29 +91,29 @@ export const TextInput = ({ label, info, value, onChange, placeholder, type = 't
       value={value ?? ''}
       placeholder={placeholder}
       onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
-      className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none"
+      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
     />
   </Field>
 );
 
 export const Button = ({ children, onClick, variant = 'primary', disabled, className = '', size = 'md' }) => {
   const variants = {
-    primary: 'bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] text-white shadow-[0_4px_20px_rgba(233,69,96,0.35)] hover:shadow-[0_8px_30px_rgba(233,69,96,0.5)] border border-white/10 shimmer-sweep',
-    secondary: 'bg-white/5 hover:bg-white/10 text-white/90 border border-white/5 backdrop-blur-md hover:border-white/10 shimmer-sweep',
-    stop: 'bg-red-500/5 hover:bg-red-500/15 text-red-400 border border-red-500/20 hover:border-red-500/40 shimmer-sweep',
-    ghost: 'bg-transparent hover:bg-white/5 text-white/60 hover:text-white',
+    primary: 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white shadow-[0_2px_10px_var(--accent-glow)] hover:shadow-[0_4px_18px_var(--accent-glow)] border border-white/10',
+    secondary: 'bg-white/[0.05] hover:bg-white/[0.09] text-white/85 hover:text-white border border-white/10 hover:border-white/20',
+    stop: 'bg-red-500/10 hover:bg-red-500/18 text-red-300 border border-red-500/25 hover:border-red-500/40',
+    ghost: 'bg-transparent hover:bg-white/[0.06] text-white/55 hover:text-white',
   };
-  const sizes = { 
-    sm: 'px-3 py-1.5 text-[10px] tracking-wider uppercase', 
-    md: 'px-5 py-3 text-xs tracking-wider uppercase', 
-    lg: 'px-7 py-4 text-sm tracking-widest uppercase' 
+  const sizes = {
+    sm: 'px-3 py-1.5 text-[11px] tracking-wide rounded-lg',
+    md: 'px-4 py-2.5 text-[13px] tracking-wide rounded-xl',
+    lg: 'px-6 py-3.5 text-sm tracking-wide rounded-xl',
   };
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-xl font-extrabold text-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 active:translate-y-0 active:scale-95 active:duration-100 disabled:opacity-30 disabled:hover:translate-y-0 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`font-semibold text-center transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-px active:translate-y-0 active:scale-[0.98] active:duration-75 disabled:opacity-35 disabled:hover:translate-y-0 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
     </button>
@@ -269,7 +270,7 @@ export const Confetti = ({ active }) => {
 
 export const Toast = ({ toast }) =>
   !toast ? null : (
-    <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl animate-slide-up bg-[#16213E]/95 backdrop-blur-md border border-white/10 flex items-center gap-3 min-w-[250px]">
+    <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl animate-slide-up bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px]">
       {toast.type === 'error' && <span className="text-lg">❌</span>}
       {toast.type === 'info' && <span className="text-lg">ℹ️</span>}
       {(!toast.type || toast.type === 'success') && <span className="text-lg">✅</span>}
