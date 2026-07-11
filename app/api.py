@@ -1007,7 +1007,12 @@ def quality_analyze(payload: dict = Body(...)):
 # number and doesn't drift frame-to-frame. Faces matching no captured person are
 # numbered after the known persons; with nothing captured yet we fall back to a
 # deterministic left-to-right numbering. Ids are 0-based; the UI shows id + 1.
-_PREVIEW_TARGET_MATCH_THRESH = 0.30  # min cosine similarity to bind a face to a captured person
+# Min cosine similarity to bind a detected face to a captured person. Kept low
+# (0.20) so the SAME person keeps their number through hard frames (steep
+# profile, motion blur, partial occlusion) where the embedding similarity dips —
+# arcface same-person stays well above this while different people fall below it,
+# so Person 1 remains Person 1 throughout without mislabeling strangers.
+_PREVIEW_TARGET_MATCH_THRESH = 0.20
 
 
 def _face_normed_emb(f):
