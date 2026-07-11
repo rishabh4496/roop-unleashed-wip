@@ -2013,8 +2013,28 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 />
               )
             ) : (
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center">
-                <span className="text-[var(--text-muted)] text-sm">Select a target to preview</span>
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex items-center justify-center select-none">
+                <div className="absolute inset-0 pointer-events-none opacity-70" style={{ background: 'radial-gradient(circle at 50% 42%, var(--accent-glow), transparent 62%)' }} />
+                {previewing ? (
+                  <div className="relative flex flex-col items-center gap-3">
+                    <div className="h-9 w-9 rounded-full border-2 border-white/10 border-t-[var(--accent)] animate-spin" />
+                    <span className="text-sm font-medium text-white/50">Rendering preview…</span>
+                  </div>
+                ) : (
+                  <div className="relative flex flex-col items-center gap-3 text-center px-6">
+                    <div className="grid place-items-center h-14 w-14 rounded-2xl bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-2xl">🎭</div>
+                    <div>
+                      <div className="text-sm font-semibold text-white/80">No preview yet</div>
+                      <div className="text-xs text-white/40 mt-1 max-w-[280px] leading-relaxed">
+                        {targets.length === 0
+                          ? 'Add a target image or video, then a source face, to see the live swap here.'
+                          : sourceFaces.length === 0
+                            ? 'Add a source face to preview the swap on your target.'
+                            : 'Scrub the timeline or adjust settings to render a live preview.'}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             
