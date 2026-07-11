@@ -1694,7 +1694,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   const typeIcon = isVideo ? '🎥' : '🖼️';
                   return (
                     <div key={i}
-                      className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-300 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40 shadow-[0_0_15px_var(--accent-glow)] scale-[0.99]' : 'bg-black/30 border-white/5 hover:border-white/15 hover:bg-white/[0.01]'}`}
+                      className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-200 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40' : 'bg-white/[0.02] border-white/[0.06] hover:border-white/15 hover:bg-white/[0.04]'}`}
                       onClick={() => selectTarget(i)}>
                       {/* v=name busts the browser cache: the URL is index-based, so
                           after a removal the same index can point at another file. */}
@@ -1928,8 +1928,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <div className="flex items-center gap-4">
                   {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
                     <div className="hidden md:flex flex-col items-end text-right leading-tight">
-                      <span className="text-[10px] uppercase tracking-widest text-white/35 font-bold">Est. runtime</span>
-                      <span className="text-sm font-extrabold text-white/90 tabular-nums">~{fmtTime(estTotalMs)}</span>
+                      <span className="text-[10px] uppercase tracking-[0.12em] text-white/35 font-semibold">Est. runtime</span>
+                      <span className="text-sm font-bold text-white/90 tabular-nums">~{fmtTime(estTotalMs)}</span>
                       <span className="text-[10px] text-white/40 tabular-nums">
                         {estFrames.toLocaleString()} frames{heavyVram ? ' · high VRAM' : ''}
                       </span>
