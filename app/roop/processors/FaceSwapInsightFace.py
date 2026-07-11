@@ -210,15 +210,59 @@ SWAP_MODELS = {
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 
 
-def _dynamic_batch_model_bytes(model_path):
-    """Return the swap ONNX serialized with a symbolic batch dimension."""
-    m = onnx.load(model_path)
-    for t in list(m.graph.input) + list(m.graph.output):
+def _relax_batch_dim(model):
+    """Mutate `model` in place, giving every graph input/output a symbolic
+    batch dimension so the session accepts batches > 1."""
+    for t in list(model.graph.input) + list(model.graph.output):
         dims = t.type.tensor_type.shape.dim
         if len(dims):
             dims[0].dim_param = 'N'
             dims[0].ClearField('dim_value')
-    return m.SerializeToString()
+
+
+def _freeze_convtranspose_reshape(model):
+    """Mutate `model` in place so TensorRT can build its ConvTranspose layers.
+
+    GHOST's generator reshapes the identity vector with a [1,-1,1,1] target and
+    feeds it straight into a ConvTranspose. onnxruntime resolves the -1 to 512,
+    but TensorRT keeps that inferred channel dimension dynamic and refuses to
+    build the deconvolution ('IDeconvolutionLayer number of channels in `input`
+    tensor must not be dynamic' → INVALID_NODE). Bake the -1 into its
+    statically-inferable value for any Reshape feeding a ConvTranspose. This is
+    numerically a no-op — the graph inputs are fixed-shape, so every internal
+    shape is already static — verified bit-identical on CPU. Returns True if it
+    changed anything (inswapper and the other emap swappers match nothing)."""
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+    except Exception:
+        return False
+    static_shapes = {}
+    for vi in (list(inferred.graph.value_info) + list(inferred.graph.input)
+               + list(inferred.graph.output)):
+        dims = vi.type.tensor_type.shape.dim
+        static_shapes[vi.name] = [
+            (d.dim_value if (d.dim_param == '' and d.dim_value > 0) else None)
+            for d in dims]
+    convt_inputs = {n.input[0] for n in model.graph.node
+                    if n.op_type == 'ConvTranspose' and n.input}
+    inits = {i.name: i for i in model.graph.initializer}
+    changed = False
+    for node in model.graph.node:
+        if node.op_type != 'Reshape' or node.output[0] not in convt_inputs:
+            continue
+        out_shape = static_shapes.get(node.output[0])
+        if not out_shape or any(v is None for v in out_shape):
+            continue
+        shape_init = inits.get(node.input[1])
+        if shape_init is None:
+            continue
+        arr = onnx.numpy_helper.to_array(shape_init)
+        if -1 not in arr.tolist() or len(arr) != len(out_shape):
+            continue
+        shape_init.CopyFrom(onnx.numpy_helper.from_array(
+            np.array(out_shape, dtype=arr.dtype), shape_init.name))
+        changed = True
+    return changed
 
 
 def _swap_providers(providers):
@@ -320,9 +364,18 @@ class FaceSwapInsightFace():
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
 
             swap_providers = _swap_providers(roop.globals.execution_providers)
-            # When batched swap is enabled, build the session from a batch-dynamic
-            # copy of the model so it accepts >1 crop per inference.
-            model_arg = _dynamic_batch_model_bytes(model_path) if _BATCH_SWAP else model_path
+            # Load once and apply the transforms this session needs. Freezing the
+            # ConvTranspose reshape channel makes TensorRT-incompatible exports
+            # (GHOST) buildable; batch relaxation is opt-in. If neither applies we
+            # hand onnxruntime the path so it can memory-map the file directly.
+            model_arg = model_path
+            _model = onnx.load(model_path)
+            _changed = _freeze_convtranspose_reshape(_model)
+            if _BATCH_SWAP:
+                _relax_batch_dim(_model)
+                _changed = True
+            if _changed:
+                model_arg = _model.SerializeToString()
 
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
