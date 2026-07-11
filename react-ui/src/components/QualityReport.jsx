@@ -92,7 +92,7 @@ export default function QualityReport({ outputPath, notify }) {
         </div>
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">Quality Report</div>
-          <div className="text-sm font-extrabold text-white/90">
+          <div className="text-sm font-bold text-white/90">
             {g === 'A' ? 'Excellent result' : g === 'B' ? 'Good result' : g === 'C' ? 'Acceptable' : g === 'D' ? 'Needs work' : 'Poor — review settings'}
           </div>
           <div className="text-[10px] text-white/35 mt-0.5">

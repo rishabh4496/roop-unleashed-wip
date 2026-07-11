@@ -166,7 +166,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                   e.dataTransfer.effectAllowed = 'link';
                 } : undefined}
                 title={draggable ? `Face ${i + 1} — drag onto a person to assign` : undefined}
-                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 apple-transition apple-spring-active cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'scale-105') : 'hover:border-white/30'}`}
+                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'ring-2 ring-[var(--accent)]/30') : 'hover:border-white/30'}`}
                 style={{ borderColor: selected === i ? (color || 'var(--accent)') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
               >
@@ -190,7 +190,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                   <>
                     <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
                     {hasMultiFaces && (
-                      <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-[8px] font-black text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
+                      <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-[8px] font-bold text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
                         {itemInfo.count}F
                       </span>
                     )}

@@ -137,7 +137,7 @@ export default function Gallery({ notify }) {
       {/* Upper header action bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-white/90">📂 OUTPUTS GALLERY</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/90">📂 Outputs</h2>
           <p className="text-sm text-white/50">Browse, manage, and reuse files from the output folder.</p>
         </div>
         <div className="flex gap-2">
@@ -288,8 +288,8 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
 
         {/* Video badge */}
         {isVideo && (
-          <span className="absolute top-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-bold text-white tracking-widest pointer-events-none z-10 flex items-center gap-1 border border-white/5">
-            🎬 VIDEO
+          <span className="absolute top-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-semibold text-white tracking-wider pointer-events-none z-10 flex items-center gap-1 border border-white/5">
+            🎬 Video
           </span>
         )}
 
@@ -349,7 +349,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
           <span className="text-[10px] font-mono text-white/40 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
         </div>
         <div className="flex justify-between items-center shrink-0">
-          <span className="text-[10px] uppercase font-bold tracking-widest text-[#E94560]/80">
+          <span className="text-[10px] uppercase font-semibold tracking-wider text-[var(--accent)]/80">
             {file.kind}
           </span>
           <button
