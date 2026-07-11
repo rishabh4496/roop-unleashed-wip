@@ -28,17 +28,32 @@ export default function App() {
   const [showPalette, setShowPalette] = useState(false);
   const fileListenersRef = useRef([]);
 
-  // Global ⌘K / Ctrl-K toggles the command palette.
+  // App-level UI zoom (Chrome-style). Uses the CSS `zoom` property, which
+  // reflows layout instead of just visually scaling, so the whole UI grows /
+  // shrinks cleanly. Persisted so it survives reloads.
+  const [zoom, setZoom] = useState(() => {
+    const v = parseFloat(localStorage.getItem('roop_zoom'));
+    return v && v >= 0.5 && v <= 1.6 ? v : 1;
+  });
+  const bumpZoom = useCallback((d) => setZoom((z) => Math.min(1.6, Math.max(0.5, Math.round((z + d) * 20) / 20))), []);
+  useEffect(() => {
+    document.documentElement.style.zoom = String(zoom);
+    localStorage.setItem('roop_zoom', String(zoom));
+  }, [zoom]);
+
+  // Global keyboard shortcuts: ⌘/Ctrl-K palette, and ⌘/Ctrl +/-/0 zoom.
   useEffect(() => {
     const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setShowPalette((v) => !v);
-      }
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'k') { e.preventDefault(); setShowPalette((v) => !v); }
+      else if (e.key === '=' || e.key === '+') { e.preventDefault(); bumpZoom(0.05); }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); bumpZoom(-0.05); }
+      else if (e.key === '0') { e.preventDefault(); setZoom(1); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [bumpZoom]);
 
   const applyTheme = useCallback((name) => {
     setSettings((s) => ({ ...(s || {}), selected_theme: name }));
@@ -160,7 +175,7 @@ export default function App() {
       </div>
 
       {/* Floating Header Capsule */}
-      <header className="sticky top-4 z-40 mx-auto max-w-[1600px] w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
+      <header className="sticky top-4 z-40 mx-auto max-w-[1920px] w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
         <div className="flex items-center gap-3">
           <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-lg">⚡</span>
           <div>
@@ -184,6 +199,11 @@ export default function App() {
           <span className="text-sm">⌘</span> Search
           <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
+        <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">
+          <button type="button" onClick={() => bumpZoom(-0.05)} title="Zoom out (Ctrl −)" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">−</button>
+          <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" className="min-w-[44px] text-[11px] font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
+          <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
+        </div>
         <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => (
             <button
@@ -203,7 +223,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <main className="flex-1 w-[98%] max-w-[1600px] mx-auto px-6 py-8 mt-4 z-10 relative">
+      <main className="flex-1 w-[98%] max-w-[1920px] mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
           <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
             ⚠️ {error}
