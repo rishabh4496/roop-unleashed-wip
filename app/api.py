@@ -1037,59 +1037,50 @@ def _face_normed_emb(f):
     return e / n if n > 0 else None
 
 
-def _target_person_reps():
-    """One representative (mean, unit-length) embedding per captured target
-    person rank, keyed by rank. Empty if nothing captured."""
-    reps = {}
+def _target_person_embs():
+    """All captured embeddings grouped by person rank (multi-angle aware), so a
+    detected face can be matched against each captured angle of a person rather
+    than a blurred mean. Empty if nothing captured."""
+    by_rank = {}
     try:
         captured = list(roop_globals.TARGET_FACES)
         if not captured:
-            return reps
+            return by_rank
         ranks = _target_groups_ranked()
-        sums, counts = {}, {}
         for face, r in zip(captured, ranks):
             e = _face_normed_emb(face)
-            if e is None:
-                continue
-            if r in sums:
-                sums[r] = sums[r] + e
-                counts[r] += 1
-            else:
-                sums[r] = e.copy()
-                counts[r] = 1
-        for r, s in sums.items():
-            n = float(np.linalg.norm(s))
-            if n > 0:
-                reps[r] = s / n
+            if e is not None:
+                by_rank.setdefault(r, []).append(e)
     except Exception:
         return {}
-    return reps
+    return by_rank
 
 
 def _preview_person_ids(idx, faces):
     """Number the detected faces for the overlay.
 
-    Each detected face is bound to the nearest captured target person by
-    embedding, so the box label equals that person's number and stays put
-    across frames (one person per id per frame). Faces matching no captured
-    person are numbered after the known persons. With nothing captured yet,
-    fall back to deterministic left-to-right numbering. Ids are 0-based.
+    Each detected face is bound to the captured target person whose closest
+    captured angle best matches it, so the box label equals that person's
+    number and stays put across the clip (one person per id per frame) even as
+    they turn. Faces matching no captured person are numbered after the known
+    persons. With nothing captured yet, fall back to deterministic left-to-right
+    numbering. Ids are 0-based; the UI shows id + 1.
     """
-    reps = _target_person_reps()
-    if not reps:
+    by_rank = _target_person_embs()
+    if not by_rank:
         return list(range(len(faces)))          # positional, deterministic
 
-    next_extra = max(reps) + 1
+    next_extra = max(by_rank) + 1
     ids, used = [], set()
     for f in faces:
         e = _face_normed_emb(f)
         pid = None
         if e is not None:
             best_r, best_s = None, _PREVIEW_TARGET_MATCH_THRESH
-            for r, rep in reps.items():
+            for r, embs in by_rank.items():
                 if r in used:
                     continue
-                s = float(np.dot(e, rep))
+                s = max(float(np.dot(e, b)) for b in embs)   # best-matching angle
                 if s > best_s:
                     best_s, best_r = s, r
             if best_r is not None:
