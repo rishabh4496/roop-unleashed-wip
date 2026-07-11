@@ -998,7 +998,13 @@ def quality_analyze(payload: dict = Body(...)):
 # face back to it, so a given person keeps the same id for as long as the target
 # stays selected. Numbers displayed in the UI are 1-based (id + 1).
 _preview_identity_banks = {}   # target idx -> list[np.ndarray]  (one per stable person)
-_PREVIEW_IDENTITY_THRESH = 0.5 # cosine similarity for "same person" (normed embeddings)
+# Min cosine similarity (normed embeddings) to treat a detected face as an
+# already-seen person. The video tracker (ProcessMgr EMB_MAX=0.7 cosine
+# distance) matches at similarity >= 0.3, but leans on IoU to avoid merging
+# different people; this overlay is embedding-only, so we sit a little above
+# that (0.4) — high enough not to fuse distinct people, low enough that the
+# same person surviving a moderate turn keeps their number.
+_PREVIEW_IDENTITY_THRESH = 0.4
 
 
 def _face_normed_emb(f):
