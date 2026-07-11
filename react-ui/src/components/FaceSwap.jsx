@@ -1391,7 +1391,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
           viewport. */}
-      <div className="w-full lg:w-[380px] 3xl:w-[400px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none">
+      <div className="w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none">
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -1678,7 +1678,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       <div className="flex-1 w-full min-w-0 space-y-6 flex flex-col 2xl:flex-row-reverse gap-6">
 
         {/* COLUMN 2: Media Asset Manager — right rail */}
-        <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
+        <div className="w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none">
           <Section title="Target faces">
             <PersonGroups
               targetFaces={targetFaces}
