@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Confetti, Skeleton } from './ui';
 import PersonGroups from './PersonGroups';
@@ -118,7 +118,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     clearPreviewCache();
   }, [sourceFaces.length, targetFaces.length, selSource, selTargetFace]);
 
-  // â”€â”€ Shareable "recipe": full current settings + personâ†’source mapping â”€â”€
+  // ── Shareable "recipe": full current settings + person→source mapping ──
   const exportRecipe = () => {
     try {
       const recipe = {
@@ -137,7 +137,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      notify('Recipe exported â€” share the .json to reproduce this exact setup');
+      notify('Recipe exported — share the .json to reproduce this exact setup');
     } catch (e) { notify('Failed to export recipe: ' + e.message, 'error'); }
   };
 
@@ -156,7 +156,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           setFaceMapping(fm);
         }
         clearPreviewCache();
-        notify('Recipe applied â€” settings and mapping restored');
+        notify('Recipe applied — settings and mapping restored');
       } catch (err) {
         notify('Failed to import recipe: ' + err.message, 'error');
       }
@@ -233,7 +233,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     const executeJob = async () => {
       setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
 
-      // Resolve the target by NAME at run time â€” stored indices go stale when
+      // Resolve the target by NAME at run time — stored indices go stale when
       // targets are removed after the job was queued, which made a queued job
       // silently swap the wrong file.
       const resolvedIndex = targets.findIndex(t => t.name === job.targetName);
@@ -274,7 +274,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         });
 
         startTimeRef.current = Date.now();
-        setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue jobâ€¦', output: null });
+        setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
         startPolling();
       } catch (e) {
         notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
@@ -350,7 +350,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   // One-click speed/quality profiles. Each bundles the core levers (detection
   // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
-  // engine, target selection, etc.) are left as-is. Pure UI â€” no runtime cost.
+  // engine, target selection, etc.) are left as-is. Pure UI — no runtime cost.
   const PRESETS = {
     Fast:     { default_det_size: false, face_detector_size: '320', face_detector_threshold: 0.50, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
     Balanced: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
@@ -364,7 +364,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     notify(`Applied ${name} preset`, 'info');
   };
 
-  // â”€â”€ initial rehydrate â”€â”€
+  // ── initial rehydrate ──
   // Pinokio reloads the webview whenever you switch the RUN/DEV/FILES tabs,
   // which remounts this component and wipes its React state. The backend keeps
   // running, so we restore both the faces/targets AND the live job state.
@@ -416,7 +416,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
     // ProcessMgr on the GPU. Two overlapping /api/preview calls corrupt/hang
-    // TensorRT/CUDA. So never run two at once â€” queue the latest request and
+    // TensorRT/CUDA. So never run two at once — queue the latest request and
     // run it once the current one finishes.
     if (previewBusyRef.current) { 
       previewPendingRef.current = { ...opts, index: idx, frame: fr, fake: fake }; 
@@ -615,7 +615,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     };
   }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
 
-  // Live elapsed timer for the "Renderingâ€¦" badge so a slow first run reads as
+  // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
   useEffect(() => {
     if (!previewing) { setPreviewSecs(0); return; }
@@ -641,7 +641,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewKey, sourceFaces.length, targetFaces.length, isScrubbing, isPlaying]);
 
-  // â”€â”€ source / target file handling â”€â”€
+  // ── source / target file handling ──
   const onAddSource = async (files) => {
     if (!files || !files.length) return;
     const before = sourceFaces.length;
@@ -651,7 +651,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       setSourceFaces(res.source_faces);
       if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
       const added = res.source_faces.length - before;
-      if (added > 0) notify(`Loaded ${added} face(s) â€” ${res.faceset_count} faceset(s) total`);
+      if (added > 0) notify(`Loaded ${added} face(s) — ${res.faceset_count} faceset(s) total`);
       else notify('No face detected in the uploaded file(s)', 'error');
     } catch (err) { notify(err.message, 'error'); }
     finally { setUploadingSrc(false); }
@@ -742,7 +742,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     } catch (e) { notify(e.message, 'error'); }
   };
 
-  // â”€â”€ start / stop â”€â”€
+  // ── start / stop ──
   const start = async () => {
     try {
       await postJSON('/api/settings', p);            // persist CFG
@@ -763,13 +763,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* ignore */ }
       // Optimistically flag processing so the old "Latest output" clears
       // immediately, before the first poll tick (~1s) confirms it.
-      setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Startingâ€¦' }));
+      setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Starting…' }));
       notify('Processing started');
       startPolling();
     } catch (e) { notify(e.message, 'error'); }
   };
 
-  const stop = async () => { await postJSON('/api/stop', {}); notify('Stoppingâ€¦', 'info'); };
+  const stop = async () => { await postJSON('/api/stop', {}); notify('Stopping…', 'info'); };
 
   const pause = async () => {
     try {
@@ -782,7 +782,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const resume = async () => {
     try {
       await postJSON('/api/resume', {});
-      setProgress((pr) => ({ ...pr, paused: false, desc: 'Resumingâ€¦' }));
+      setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
       notify('Resumed');
     } catch (e) { notify(e.message, 'error'); }
   };
@@ -807,7 +807,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const outUrl = out?.path ? `${API}/api/file?path=${encodeURIComponent(out.path)}&t=${progress.progress}` : '';
   const prog = progress.progress || 0;
 
-  // â”€â”€ Completion celebration: chime + desktop notification + confetti â”€â”€
+  // ── Completion celebration: chime + desktop notification + confetti ──
   const [confetti, setConfetti] = useState(false);
   const prevProcessingRef = useRef(false);
   useEffect(() => {
@@ -816,7 +816,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     // Only celebrate a genuine finish (near-100%), not a manual Stop.
     if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
       playChime();
-      notifyDesktop('âœ¨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
+      notifyDesktop('✨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
       setConfetti(false);
       requestAnimationFrame(() => setConfetti(true));
       setTimeout(() => setConfetti(false), 2600);
@@ -1220,7 +1220,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const endPct = maxFrames > 1 ? ((endFrame - 1) / (maxFrames - 1)) * 100 : 100;
   const currentPct = maxFrames > 1 ? ((frame - 1) / (maxFrames - 1)) * 100 : 0;
 
-  // â”€â”€ Rough pre-run estimate (idle only) â”€â”€
+  // ── Rough pre-run estimate (idle only) ──
   const estFrames = maxFrames > 1 ? Math.max(1, endFrame - startFrame + 1) : (targets.length ? 1 : 0);
   const estTotalMs = (() => {
     let ms = 45;
@@ -1238,7 +1238,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   return (
     <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
       <Confetti active={confetti} />
-      {/* COLUMN 1: Settings & Controls â€” sticky sidebar on large viewports so it
+      {/* COLUMN 1: Settings & Controls — sticky sidebar on large viewports so it
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
           viewport. */}
@@ -1249,7 +1249,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <Button key={name} size="sm"
                 variant={activePreset === name ? 'primary' : 'secondary'}
                 onClick={() => applyPreset(name)}>
-                {name === 'Fast' ? 'âš¡ Fast' : name === 'Balanced' ? 'âš–ï¸ Balanced' : 'ðŸ’Ž Quality'}
+                {name === 'Fast' ? '⚡ Fast' : name === 'Balanced' ? '⚖️ Balanced' : '💎 Quality'}
               </Button>
             ))}
           </div>
@@ -1260,11 +1260,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
         <div className="space-y-5">
           <Section title="Swap settings">
-          <Select label="Swap model" info="inswapper 128 Â· reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 Â· simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
+          <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Select
             label="Detector engine"
-            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces. RetinaFace has the highest recall on hard poses/lighting (fewest missed detections â†’ less swap blink), slightly slower. All engines reuse the same identity/landmark models; alternates download a small model on first use."
+            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces. RetinaFace has the highest recall on hard poses/lighting (fewest missed detections → less swap blink), slightly slower. All engines reuse the same identity/landmark models; alternates download a small model on first use."
             value={p.detector_engine || 'scrfd'}
             onChange={(v) => set('detector_engine', v)}
             options={meta.detector_engines || ['scrfd', 'yoloface', 'retinaface', 'retinaface_r50', 'yunet']}
@@ -1297,8 +1297,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             value={num(p.face_detector_nms, 0.40)}
             onChange={(v) => set('face_detector_nms', v)}
           />
-          <Toggle label="ðŸŽ¯ Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points â€” more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
-          <Toggle label="ðŸ”¬ Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces â€” without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
+          <Toggle label="🎯 Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points — more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
+          <Toggle label="🔬 Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face similarity" info="0=identical 1=any" min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />
@@ -1313,7 +1313,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
           )}
           {p.mask_engine === 'Segment Anything 2 (tracked)' && (
-            <Select label="SAM2 checkpoint (speed â†” quality)" value={p.sam2_model_size || 'tiny'} onChange={(v) => set('sam2_model_size', v)} options={meta.sam2_model_sizes || ['tiny', 'small', 'base_plus', 'large']} />
+            <Select label="SAM2 checkpoint (speed ↔ quality)" value={p.sam2_model_size || 'tiny'} onChange={(v) => set('sam2_model_size', v)} options={meta.sam2_model_sizes || ['tiny', 'small', 'base_plus', 'large']} />
           )}
           <Toggle label="Show mask overlay in preview" checked={!!p.show_mask_offsets} onChange={(v) => set('show_mask_offsets', v)} />
           <Slider label="Offset face top" min={0} max={2} step={0.01} value={num(p.mask_top, 0)} onChange={(v) => set('mask_top', v)} />
@@ -1329,20 +1329,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Slider label="Mouth mask left" min={0} max={2} step={0.01} value={num(p.mouth_left_scale, 1)} onChange={(v) => set('mouth_left_scale', v)} />
           <Slider label="Mouth mask right" min={0} max={2} step={0.01} value={num(p.mouth_right_scale, 1)} onChange={(v) => set('mouth_right_scale', v)} />
           <Slider label="Mouth mask edge blend" min={0} max={200} step={1} value={num(p.mouth_mask_blend, 10)} onChange={(v) => set('mouth_mask_blend', v)} />
-          <Toggle label="ðŸ§Š 3D source pose matching" info="experimental â€” improves angled swaps" checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
-          <Toggle label="ðŸŽ¯ Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
-          <Toggle label="â†”ï¸ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
+          <Toggle label="🧊 3D source pose matching" info="experimental — improves angled swaps" checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
+          <Toggle label="🎯 Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
+          <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
           {p.use_frontalization && (
-            <Slider label="Frontalize above angle (Â°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 30)} onChange={(v) => set('frontalization_threshold', v)} />
+            <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 30)} onChange={(v) => set('frontalization_threshold', v)} />
           )}
         </Section>
 
         <Section title="Video parameters">
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
-          <Toggle label="ðŸ›¡ï¸ Temporal detection (anti-flicker)" info="Video (In-Memory method): one tracked detection pre-pass over the clip. Short detection misses (â‰¤10 frames) are gap-filled by interpolating the face's position, so the swap can't blink out; with 'Stabilize face' also on, keypoints AND mask/mouth landmarks are smoothed per person. The swap pass then skips per-frame detection and stays multi-threaded. Includes identity locking when that toggle is on." checked={!!p.temporal_detection} onChange={(v) => set('temporal_detection', v)} />
+          <Toggle label="🛡️ Temporal detection (anti-flicker)" info="Video (In-Memory method): one tracked detection pre-pass over the clip. Short detection misses (≤10 frames) are gap-filled by interpolating the face's position, so the swap can't blink out; with 'Stabilize face' also on, keypoints AND mask/mouth landmarks are smoothed per person. The swap pass then skips per-frame detection and stays multi-threaded. Includes identity locking when that toggle is on." checked={!!p.temporal_detection} onChange={(v) => set('temporal_detection', v)} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
-          <Toggle label="âœ¨ Reduce enhancer flicker" info="Temporally blends the enhanced face. Runs multi-threaded (work-stealing) when the launcher's ROOP_STAB_PARALLEL is on (the Pinokio default) â€” otherwise it forces single-thread. Either way it costs some extra compute (blending + per-block warm-up), so it's somewhat slower, not free." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          <Toggle label="✨ Reduce enhancer flicker" info="Temporally blends the enhanced face. Runs multi-threaded (work-stealing) when the launcher's ROOP_STAB_PARALLEL is on (the Pinokio default) — otherwise it forces single-thread. Either way it costs some extra compute (blending + per-block warm-up), so it's somewhat slower, not free." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
           {p.stabilize_enhancer && (
             <Slider label="Flicker reduction strength" info="higher = smoother" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
@@ -1363,7 +1363,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <div className="flex-1 min-w-[120px]">
                 <TextInput label="Save active settings as:" value={newProfileName} onChange={setNewProfileName} placeholder="My Preset Name" />
               </div>
-              <Button size="sm" onClick={saveProfile}>ðŸ’¾ Save</Button>
+              <Button size="sm" onClick={saveProfile}>💾 Save</Button>
             </div>
             {profiles.length > 0 && (
               <div className="space-y-2 mt-3">
@@ -1372,27 +1372,27 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   {profiles.map((pr) => (
                     <div key={pr.name} className="flex items-center gap-1 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg px-2.5 py-1 text-xs transition-colors">
                       <button onClick={() => loadProfile(pr.name)} className="text-white hover:text-[var(--accent)] font-semibold">{pr.name}</button>
-                      <button onClick={() => deleteProfile(pr.name)} className="text-white/40 hover:text-red-400 font-bold ml-1.5" title="Delete preset">âœ•</button>
+                      <button onClick={() => deleteProfile(pr.name)} className="text-white/40 hover:text-red-400 font-bold ml-1.5" title="Delete preset">✕</button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
             <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
-              <Button size="xs" variant="secondary" onClick={exportProfiles}>ðŸ“¤ Export Presets</Button>
+              <Button size="xs" variant="secondary" onClick={exportProfiles}>📤 Export Presets</Button>
               <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
-                ðŸ“¥ Import Presets
+                📥 Import Presets
                 <input type="file" accept=".json" onChange={importProfiles} className="hidden" />
               </label>
             </div>
             <div className="flex flex-wrap gap-2 mt-2">
-              <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">ðŸ”— Share Recipe</Button>
+              <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">🔗 Share Recipe</Button>
               <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
-                ðŸ“‚ Load Recipe
+                📂 Load Recipe
                 <input type="file" accept=".json" onChange={importRecipe} className="hidden" />
               </label>
             </div>
-            <p className="text-[10px] text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the personâ†’source mapping, so anyone can reproduce this exact look.</p>
+            <p className="text-[10px] text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
           </Section>
         </div>
 
@@ -1464,11 +1464,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <Skeleton className="h-16 w-full" />
                 <Skeleton className="h-20 w-full" />
                 <Skeleton className="h-9 w-full" />
-                <div className="text-[10px] text-white/25 italic text-center">Connecting to hardware diagnosticsâ€¦</div>
+                <div className="text-[10px] text-white/25 italic text-center">Connecting to hardware diagnostics…</div>
               </div>
             )}
             <div className="mt-3 flex justify-between items-center">
-              <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>âŒ¨ï¸ Keyboard Shortcuts Info</Button>
+              <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>⌨️ Keyboard Shortcuts Info</Button>
             </div>
           </Section>
         </div>
@@ -1480,7 +1480,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           preview is the visual center instead of buried on the far right. */}
       <div className="flex-1 w-full min-w-0 space-y-6 flex flex-col 2xl:flex-row-reverse gap-6">
 
-        {/* COLUMN 2: Media Asset Manager â€” right rail */}
+        {/* COLUMN 2: Media Asset Manager — right rail */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none">
           <Section title="Target faces">
             <PersonGroups
@@ -1505,8 +1505,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </Section>
 
           <Section title="Enhancements">
-            <Toggle label="ðŸ”’ Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
-            <Toggle label="ðŸŽ¯ Stabilize face (video)" info="Temporal keypoint smoothing â€” reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+            <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
+            <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
             {p.stabilize_face && (
               <>
                 <Select label="Smoothing method" info="One Euro = adaptive (best jitter-vs-lag). EMA = simpler fixed smoothing." value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
@@ -1545,7 +1545,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   }
                   const isVideo = t.frames > 1;
                   const duration = isVideo && t.fps ? (t.frames / t.fps).toFixed(1) : null;
-                  const typeIcon = isVideo ? 'ðŸŽ¥' : 'ðŸ–¼ï¸';
+                  const typeIcon = isVideo ? '🎥' : '🖼️';
                   return (
                     <div key={i}
                       className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-200 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40' : 'bg-white/[0.02] border-white/[0.06] hover:border-white/15 hover:bg-white/[0.04]'}`}
@@ -1564,7 +1564,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
                         <div className="flex items-center gap-2 mt-0.5 text-[10px] font-medium text-white/40">
                           {isVideo ? (
-                            <span>{t.frames} frames Â· {t.fps} FPS{duration ? ` Â· ${duration}s` : ''}</span>
+                            <span>{t.frames} frames · {t.fps} FPS{duration ? ` · ${duration}s` : ''}</span>
                           ) : (
                             <span>Static Image</span>
                           )}
@@ -1577,7 +1577,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       </div>
                       <button type="button" title="Remove this target"
                         onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                        className="h-6 w-6 shrink-0 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center">âœ•</button>
+                        className="h-6 w-6 shrink-0 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center">✕</button>
                     </div>
                   );
                 })}
@@ -1597,16 +1597,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           {sourceFaces.length > 0 && (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>â¬… Move</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move âž¡</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>âŒ Remove</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
                 <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
               </div>
               
               {sourceFacesInfo[selSource] && (
                 <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-[10px] uppercase tracking-[0.14em] text-white/50">ðŸ“ Selected source details</span>
+                    <span className="font-semibold text-[10px] uppercase tracking-[0.14em] text-white/50">📁 Selected source details</span>
                     <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
                       {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
                     </span>
@@ -1689,7 +1689,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         </span>
                       </div>
                       <div className="text-sm font-bold text-white truncate max-w-[360px]">
-                        {progress.desc || 'Swapping facesâ€¦'}
+                        {progress.desc || 'Swapping faces…'}
                       </div>
                       {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
                     </div>
@@ -1772,10 +1772,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             })() : (
               <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
                 <div className="flex items-center gap-3 w-full md:w-auto">
-                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">â–¶ Start Swapping</Button>
+                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
                   {maxFrames > 1 && (
                     <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
-                      âš¡ Render 5s Preview
+                      ⚡ Render 5s Preview
                     </Button>
                   )}
                 </div>
@@ -1785,7 +1785,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       <span className="text-[10px] uppercase tracking-[0.12em] text-white/35 font-semibold">Est. runtime</span>
                       <span className="text-sm font-bold text-white/90 tabular-nums">~{fmtTime(estTotalMs)}</span>
                       <span className="text-[10px] text-white/40 tabular-nums">
-                        {estFrames.toLocaleString()} frames{heavyVram ? ' Â· high VRAM' : ''}
+                        {estFrames.toLocaleString()} frames{heavyVram ? ' · high VRAM' : ''}
                       </span>
                     </div>
                   )}
@@ -1807,7 +1807,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">ðŸ“Š Compare Enhancers (Select up to 4)</span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -1872,11 +1872,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 {previewing ? (
                   <div className="relative flex flex-col items-center gap-3">
                     <div className="h-9 w-9 rounded-full border-2 border-white/10 border-t-[var(--accent)] animate-spin" />
-                    <span className="text-sm font-medium text-white/50">Rendering previewâ€¦</span>
+                    <span className="text-sm font-medium text-white/50">Rendering preview…</span>
                   </div>
                 ) : (
                   <div className="relative flex flex-col items-center gap-3 text-center px-6">
-                    <div className="grid place-items-center h-14 w-14 rounded-2xl bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-2xl">ðŸŽ­</div>
+                    <div className="grid place-items-center h-14 w-14 rounded-2xl bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-2xl">🎭</div>
                     <div>
                       <div className="text-sm font-semibold text-white/80">No preview yet</div>
                       <div className="text-xs text-white/40 mt-1 max-w-[280px] leading-relaxed">
@@ -1931,7 +1931,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                           className="w-28 h-16 object-cover rounded-md border border-[var(--border-color)] bg-black/50"
                         />
                         <span className="text-[10px] font-mono text-[var(--text-muted)] whitespace-nowrap">
-                          Frame <span className="text-[var(--text-main)] font-semibold tabular-nums">{hoverFrame}</span> Â· {fmtTC(hoverFrame, targets[selTarget]?.fps || 25)}
+                          Frame <span className="text-[var(--text-main)] font-semibold tabular-nums">{hoverFrame}</span> · {fmtTC(hoverFrame, targets[selTarget]?.fps || 25)}
                         </span>
                       </div>
                       {/* Caret pointer */}
@@ -2004,7 +2004,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   {/* Left: timecode / frame readout */}
                   <div className="font-mono text-xs text-[var(--text-muted)] flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-start">
                     <span className="tabular-nums text-sm font-semibold text-[var(--text-main)]">{fmtTC(frame, targets[selTarget]?.fps || 25)}</span>
-                    <span className="opacity-30 hidden sm:inline">Â·</span>
+                    <span className="opacity-30 hidden sm:inline">·</span>
                     <span className="tabular-nums">Frame <span className="text-[var(--text-main)]">{frame}</span> <span className="opacity-40">/ {maxFrames}</span></span>
                   </div>
 
@@ -2098,7 +2098,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         className="w-11 text-center text-xs font-mono font-semibold text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors"
                         title="In frame"
                       />
-                      <span className="text-[var(--text-muted)] text-xs">â€“</span>
+                      <span className="text-[var(--text-muted)] text-xs">–</span>
                       <input
                         type="number"
                         value={targets[selTarget]?.end_frame || maxFrames}
@@ -2121,15 +2121,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             )}
 
             <div className={`flex items-center gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
-              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>ðŸ”„ Refresh</Button>
+              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
             </div>
 
             <div className="flex items-center flex-wrap gap-3">
-              <Toggle label="âœ¨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="ðŸ” Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
+              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="ðŸ“Š Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
             </div>
           </Section>
 
@@ -2138,14 +2138,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <div className="text-xs text-white/50">
                 {queue.length === 0
                   ? 'No jobs in queue. Configure settings & click "Add current to queue".'
-                  : `${queue.length} jobs queued Â· ${queue.filter(j => j.status === 'Finished').length} finished`}
+                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>âž• Add current to queue</Button>
+                <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add current to queue</Button>
                 {queue.length > 0 && (
                   <>
                     <Button size="sm" variant={isQueueRunning ? 'stop' : 'primary'} onClick={isQueueRunning ? () => setIsQueueRunning(false) : startQueue}>
-                      {isQueueRunning ? 'â¹ Stop queue' : 'â–¶ Start queue'}
+                      {isQueueRunning ? '⏹ Stop queue' : '▶ Start queue'}
                     </Button>
                     <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
                   </>
@@ -2166,12 +2166,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[job.status] || 'text-white bg-white/5'}`}>
                       <div className="flex-1 min-w-0 pr-3">
                         <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
-                        <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} Â· Enhancer: {job.params.selected_enhancer || 'None'}</span>
+                        <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{job.status}</span>
                         {!isQueueRunning && (
-                          <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">âœ•</button>
+                          <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
                         )}
                       </div>
                     </div>
@@ -2194,8 +2194,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     : <img src={outUrl} alt="output" className="w-full rounded-xl border border-white/5" />}
                   <div className="flex flex-wrap gap-2">
                     <a href={outUrl} download
-                      className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">â¬‡ Download</a>
-                    <Button size="sm" variant="secondary" onClick={revealOutput}>ðŸ“‚ Open folder</Button>
+                      className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
+                    <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
                   </div>
                   <QualityReport outputPath={out.path} notify={notify} />
                 </div>
@@ -2210,11 +2210,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       {pastedFiles && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center animate-slide-up">
           <Card className="p-6 max-w-md w-full border border-white/10 shadow-2xl flex flex-col gap-4 text-center">
-            <h3 className="text-lg font-bold text-white">ðŸ“‹ Clipboard/Dropped File</h3>
+            <h3 className="text-lg font-bold text-white">📋 Clipboard/Dropped File</h3>
             <p className="text-sm text-white/60">Would you like to load <span className="font-semibold text-white">{pastedFiles[0]?.name}</span> as a Source Face or Target Media?</p>
             <div className="flex gap-3 justify-center mt-2">
-              <Button variant="primary" onClick={() => { onAddSource(pastedFiles); setPastedFiles(null); }}>ðŸŽ­ Source Face</Button>
-              <Button variant="secondary" onClick={() => { onAddTarget(pastedFiles); setPastedFiles(null); }}>ðŸŽžï¸ Target Media</Button>
+              <Button variant="primary" onClick={() => { onAddSource(pastedFiles); setPastedFiles(null); }}>🎭 Source Face</Button>
+              <Button variant="secondary" onClick={() => { onAddTarget(pastedFiles); setPastedFiles(null); }}>🎞️ Target Media</Button>
               <Button variant="stop" onClick={() => setPastedFiles(null)}>Cancel</Button>
             </div>
           </Card>
@@ -2228,15 +2228,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center animate-slide-up" onClick={() => setShowShortcutHUD(false)}>
           <Card className="p-6 max-w-lg w-full border border-white/10 shadow-2xl flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">âŒ¨ï¸ Pro Keyboard Shortcuts</h3>
-              <Button size="sm" variant="ghost" onClick={() => setShowShortcutHUD(false)}>âœ•</Button>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">⌨️ Pro Keyboard Shortcuts</h3>
+              <Button size="sm" variant="ghost" onClick={() => setShowShortcutHUD(false)}>✕</Button>
             </div>
             <div className="grid grid-cols-2 gap-x-8 gap-y-5 py-2 text-sm text-white/80">
               <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Playback & Nav</h4>
                 <div className="flex items-center justify-between"><span className="text-white/60">Play / Pause</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Space</kbd></div>
-                <div className="flex items-center justify-between"><span className="text-white/60">Prev / Next Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">â† / â†’</kbd></div>
-                <div className="flex items-center justify-between"><span className="text-white/60">Step 10 Frames</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Shift + â† / â†’</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Prev / Next Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">← / →</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Step 10 Frames</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Shift + ← / →</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Jump to Start/End</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Home / End</kbd></div>
               </div>
               <div className="space-y-2.5">
