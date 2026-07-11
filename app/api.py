@@ -565,8 +565,6 @@ def target_select(payload: dict = Body(...)):
     # Clamp: a negative index would silently wrap to the last entry via
     # Python list indexing in downstream helpers.
     selected_target_index = max(0, min(idx, max(0, len(list_files_process) - 1)))
-    # Switching media re-derives the overlay's stable person ids from scratch.
-    _preview_identity_banks.pop(selected_target_index, None)
     _refresh_target_frames(selected_target_index)
     return _target_list_payload()
 
@@ -1002,22 +1000,14 @@ def quality_analyze(payload: dict = Body(...)):
             "has_source": bool(src_embs), "metrics": metrics}
 
 
-# ── Stable person ids for the live-preview overlay ───────────────────────────
-# Detection order is spatial (faces sorted left-to-right), so when a new person
-# enters the frame to the left of an existing one, every other face shifts index
-# and "Person 0" silently becomes a different physical person. That made the box
-# labels — and the person→source mapping the user reasons about — unreliable.
-# We keep a small per-target bank of identity embeddings and match each detected
-# face back to it, so a given person keeps the same id for as long as the target
-# stays selected. Numbers displayed in the UI are 1-based (id + 1).
-_preview_identity_banks = {}   # target idx -> list[np.ndarray]  (one per stable person)
-# Min cosine similarity (normed embeddings) to treat a detected face as an
-# already-seen person. The video tracker (ProcessMgr EMB_MAX=0.7 cosine
-# distance) matches at similarity >= 0.3, but leans on IoU to avoid merging
-# different people; this overlay is embedding-only, so we sit a little above
-# that (0.4) — high enough not to fuse distinct people, low enough that the
-# same person surviving a moderate turn keeps their number.
-_PREVIEW_IDENTITY_THRESH = 0.4
+# ── Person ids for the live-preview overlay ──────────────────────────────────
+# The overlay numbers each detected face. To keep those numbers meaningful and
+# stable, we bind each detected face to the nearest CAPTURED target person (the
+# ones the user assigns sources to), so the box label matches that person's
+# number and doesn't drift frame-to-frame. Faces matching no captured person are
+# numbered after the known persons; with nothing captured yet we fall back to a
+# deterministic left-to-right numbering. Ids are 0-based; the UI shows id + 1.
+_PREVIEW_TARGET_MATCH_THRESH = 0.30  # min cosine similarity to bind a face to a captured person
 
 
 def _face_normed_emb(f):
@@ -1042,36 +1032,68 @@ def _face_normed_emb(f):
     return e / n if n > 0 else None
 
 
+def _target_person_reps():
+    """One representative (mean, unit-length) embedding per captured target
+    person rank, keyed by rank. Empty if nothing captured."""
+    reps = {}
+    try:
+        captured = list(roop_globals.TARGET_FACES)
+        if not captured:
+            return reps
+        ranks = _target_groups_ranked()
+        sums, counts = {}, {}
+        for face, r in zip(captured, ranks):
+            e = _face_normed_emb(face)
+            if e is None:
+                continue
+            if r in sums:
+                sums[r] = sums[r] + e
+                counts[r] += 1
+            else:
+                sums[r] = e.copy()
+                counts[r] = 1
+        for r, s in sums.items():
+            n = float(np.linalg.norm(s))
+            if n > 0:
+                reps[r] = s / n
+    except Exception:
+        return {}
+    return reps
+
+
 def _preview_person_ids(idx, faces):
-    """Assign each detected face a stable person id by matching its embedding
-    against a persistent per-target bank (greedy, one id per face per frame)."""
-    bank = _preview_identity_banks.setdefault(idx, [])
-    ids = []
-    used = set()
+    """Number the detected faces for the overlay.
+
+    Each detected face is bound to the nearest captured target person by
+    embedding, so the box label equals that person's number and stays put
+    across frames (one person per id per frame). Faces matching no captured
+    person are numbered after the known persons. With nothing captured yet,
+    fall back to deterministic left-to-right numbering. Ids are 0-based.
+    """
+    reps = _target_person_reps()
+    if not reps:
+        return list(range(len(faces)))          # positional, deterministic
+
+    next_extra = max(reps) + 1
+    ids, used = [], set()
     for f in faces:
         e = _face_normed_emb(f)
-        if e is None:
-            # No embedding — fall back to a fresh id so at least it renders.
-            bank.append(None)
-            ids.append(len(bank) - 1)
-            continue
-        best_i, best_s = None, _PREVIEW_IDENTITY_THRESH
-        for i, b in enumerate(bank):
-            if i in used or b is None:
-                continue
-            s = float(np.dot(e, b))
-            if s > best_s:
-                best_s, best_i = s, i
-        if best_i is None:
-            bank.append(e)
-            best_i = len(bank) - 1
-        else:
-            # Light EMA keeps the identity current through pose/lighting drift.
-            merged = 0.9 * bank[best_i] + 0.1 * e
-            n = float(np.linalg.norm(merged))
-            bank[best_i] = merged / n if n > 0 else bank[best_i]
-        used.add(best_i)
-        ids.append(best_i)
+        pid = None
+        if e is not None:
+            best_r, best_s = None, _PREVIEW_TARGET_MATCH_THRESH
+            for r, rep in reps.items():
+                if r in used:
+                    continue
+                s = float(np.dot(e, rep))
+                if s > best_s:
+                    best_s, best_r = s, r
+            if best_r is not None:
+                pid = best_r
+                used.add(best_r)
+        if pid is None:
+            pid = next_extra
+            next_extra += 1
+        ids.append(pid)
     return ids
 
 
