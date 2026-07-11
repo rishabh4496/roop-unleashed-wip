@@ -762,6 +762,19 @@ def target_remove_face(payload: dict = Body(...)):
     return _target_faces_payload()
 
 
+@app.post("/api/target/clear_faces")
+def target_clear_faces():
+    """Remove every captured target person/angle, but keep the target media
+    queue intact (unlike /api/target/clear which also drops the videos/images).
+    Backs the 'Reset' button in the Target Faces panel."""
+    roop_globals.TARGET_FACES.clear()
+    roop_globals.TARGET_FACE_GROUP.clear()
+    if getattr(roop_globals, 'TARGET_FACE_NAMES', None):
+        roop_globals.TARGET_FACE_NAMES.clear()
+    ui_globals.ui_target_thumbs.clear()
+    return _target_faces_payload({"count": 0})
+
+
 @app.post("/api/target/group")
 def target_group(payload: dict = Body(...)):
     groups = payload.get("groups")

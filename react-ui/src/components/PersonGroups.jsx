@@ -108,11 +108,16 @@ export default function PersonGroups({
     if (res) { setExpanded({}); notify(`Grouped into ${res.people} ${res.people === 1 ? 'person' : 'people'}`); }
   };
 
-  const resetGroups = () => {
-    const g = targetGroups.map((_, i) => i); // each face its own person
-    setTargetGroups(g);
-    setExpanded({});
-    postJSON('/api/target/group', { groups: g }).then(applyPayload).catch((e) => notify(e.message, 'error'));
+  // Remove every captured person/angle from the layout (keeps target media).
+  const clearAllFaces = async () => {
+    if (!targetFaces.length) return;
+    if (!window.confirm('Remove all captured target faces? This clears every person in this layout.')) return;
+    const res = await call('/api/target/clear_faces', {}, 'Cleared all target faces');
+    if (res) {
+      setExpanded({});
+      setSelTargetFace(0);
+      if (setFaceMapping) setFaceMapping({});
+    }
   };
 
   // Move a single angle to another person (or a brand-new one via `newPerson`).
@@ -182,8 +187,8 @@ export default function PersonGroups({
             className="px-2 py-1 rounded-lg text-[10px] font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40">
             🧩 Auto-group
           </button>
-          <button type="button" disabled={busy} onClick={resetGroups}
-            title="Split every angle back into its own person"
+          <button type="button" disabled={busy || !targetFaces.length} onClick={clearAllFaces}
+            title="Remove all captured target faces from this layout"
             className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/[0.03] border border-white/10 text-white/50 hover:text-white/80 hover:border-white/20 transition-colors disabled:opacity-40">
             Reset
           </button>
