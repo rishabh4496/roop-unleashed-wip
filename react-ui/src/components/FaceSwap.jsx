@@ -1140,6 +1140,14 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     updateTimelinePos(targetFrame, dragTarget);
   };
 
+  // Format a frame index as an m:ss timecode for the timeline ruler/readouts.
+  const fmtTC = (f, fps) => {
+    const s = Math.max(0, f) / (fps || 25);
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  };
+
   const renderPreviewClip = async () => {
     if (targets.length === 0) return;
     const fps = targets[selTarget]?.fps || 25;
@@ -2043,211 +2051,224 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             
             {/* CINEMATIC TIMELINE SLIDER */}
             {maxFrames > 1 && (
-              <div className="space-y-3 pt-3 border-t border-white/5 select-none">
+              <div className="space-y-2.5 pt-3 border-t border-[var(--border-color)] select-none">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-white/40">Cinematic Timeline</span>
-                  <div className="text-[11px] font-mono text-[var(--text-muted)] bg-black/30 px-2 py-0.5 rounded border border-white/5">
-                    Start: <span className="text-[var(--text-main)] font-semibold">{targets[selTarget]?.start_frame ?? 1}</span> · 
-                    End: <span className="text-[var(--text-main)] font-semibold">{targets[selTarget]?.end_frame ?? maxFrames}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="h-3 w-[3px] rounded-full bg-[var(--accent)]" />
+                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Cinematic Timeline</span>
                   </div>
+                  <div className="flex items-center gap-1.5 text-[11px] font-mono text-[var(--text-muted)]">
+                    <span className="px-2 py-0.5 rounded-md border border-[var(--border-color)] bg-[var(--surface-2)]">
+                      In <span className="text-[var(--text-main)] font-semibold tabular-nums">{targets[selTarget]?.start_frame ?? 1}</span>
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md border border-[var(--border-color)] bg-[var(--surface-2)]">
+                      Out <span className="text-[var(--text-main)] font-semibold tabular-nums">{targets[selTarget]?.end_frame ?? maxFrames}</span>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Time ruler */}
+                <div className="flex items-center justify-between px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] opacity-70">
+                  {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+                    <span key={i}>{fmtTC(Math.round(t * (maxFrames - 1)) + 1, targets[selTarget]?.fps || 25)}</span>
+                  ))}
                 </div>
 
                 {/* Timeline Track with Storyboard Background */}
                 <div className="relative">
                   {hoverFrame !== null && (
-                    <div 
-                      className="absolute bottom-[66px] z-50 hud-glass p-2 rounded-xl border border-white/10 flex flex-col items-center gap-1.5 shadow-2xl pointer-events-none transition-all duration-75 select-none -translate-x-1/2"
+                    <div
+                      className="absolute bottom-[76px] z-50 flex flex-col items-center gap-1.5 pointer-events-none select-none -translate-x-1/2"
                       style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
                     >
-                      <img
-                        src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=240`}
-                        alt="Hover Preview"
-                        className="w-24 h-13 object-cover rounded-lg border border-white/10 bg-black/50"
-                      />
-                      <span className="text-[10px] font-mono font-extrabold text-[#C5A880] tracking-wider whitespace-nowrap">
-                        FRAME {hoverFrame} · {((hoverFrame) / (targets[selTarget]?.fps || 25)).toFixed(2)}s
-                      </span>
-                      {/* Triangle indicator anchor pointer */}
-                      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 w-2.5 h-2.5 rotate-45 hud-glass border-b border-r border-white/10" />
+                      <div className="flex flex-col items-center gap-1.5 p-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] backdrop-blur-xl shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+                        <img
+                          src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=240`}
+                          alt="Hover Preview"
+                          className="w-28 h-16 object-cover rounded-md border border-[var(--border-color)] bg-black/50"
+                        />
+                        <span className="text-[10px] font-mono text-[var(--text-muted)] whitespace-nowrap">
+                          Frame <span className="text-[var(--text-main)] font-semibold tabular-nums">{hoverFrame}</span> · {fmtTC(hoverFrame, targets[selTarget]?.fps || 25)}
+                        </span>
+                      </div>
+                      {/* Caret pointer */}
+                      <div className="w-2 h-2 rotate-45 -mt-[5px] border-b border-r border-[var(--border-color)] bg-[var(--card-bg)]" />
                     </div>
                   )}
 
-                  <div 
+                  <div
                     ref={timelineRef}
                     onPointerDown={handleTimelinePointerDown}
                     onPointerMove={handleTimelinePointerMove}
                     onPointerLeave={handleTimelinePointerLeave}
-                    className="relative h-14 w-full rounded-xl bg-black/75 border border-white/10 overflow-hidden cursor-ew-resize select-none timeline-ticks timeline-glow-track shadow-2xl"
+                    className="relative h-16 w-full rounded-lg bg-[var(--input-bg)] border border-[var(--border-color)] overflow-hidden cursor-ew-resize select-none timeline-ticks timeline-glow-track"
                   >
-                  {/* Storyboard Thumbnails strip */}
+                  {/* Storyboard filmstrip */}
                   {storyboardThumbs.length > 0 && (
-                    <div className="absolute inset-0 flex opacity-25 pointer-events-none">
+                    <div className="absolute inset-0 flex opacity-45 pointer-events-none">
                       {storyboardThumbs.map((url, i) => (
-                        <img 
-                          key={i} 
-                          src={url} 
-                          alt="thumb" 
-                          className="flex-1 h-full object-cover border-r border-white/5 last:border-r-0"
+                        <img
+                          key={i}
+                          src={url}
+                          alt="thumb"
+                          className="flex-1 h-full object-cover border-r border-black/30 last:border-r-0"
                           loading="lazy"
                         />
                       ))}
                     </div>
                   )}
+                  {/* Legibility scrim over the filmstrip */}
+                  <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/45 via-transparent to-black/15" />
 
-                  {/* Active Track Highlight */}
-                  <div 
-                    className="absolute top-0 bottom-0 bg-[var(--accent)]/8 border-l-2 border-r-2 border-[var(--accent)]/30 z-10 pointer-events-none shadow-[inset_0_0_10px_rgba(233,69,96,0.15)]"
+                  {/* Out-of-range dimming (pro-editor trim convention) */}
+                  <div className="absolute top-0 bottom-0 left-0 z-10 bg-black/55 pointer-events-none" style={{ width: `${startPct}%` }} />
+                  <div className="absolute top-0 bottom-0 right-0 z-10 bg-black/55 pointer-events-none" style={{ left: `${endPct}%` }} />
+
+                  {/* Active-range baseline */}
+                  <div
+                    className="absolute bottom-0 h-[2px] z-10 bg-[var(--accent)] opacity-80 pointer-events-none"
                     style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
                   />
 
-                  {/* Start Marker Handle */}
-                  <div 
-                    className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 to-teal-500 hover:from-emerald-300 hover:to-teal-400 z-25 transition-all"
+                  {/* In handle */}
+                  <div
+                    className="absolute top-0 bottom-0 w-[2px] -translate-x-1/2 z-20 bg-[var(--text-main)]/85"
                     style={{ left: `${startPct}%` }}
                   >
-                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-white border-2 border-emerald-400 shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none" />
-                    {/* Visual marker bracket */}
-                    <div className="absolute top-1/2 left-0 w-2.5 h-5 -translate-y-1/2 border-t-2 border-b-2 border-r-2 border-emerald-400 rounded-r pointer-events-none" />
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-7 w-1.5 rounded-full bg-[var(--text-main)] shadow-[0_1px_3px_rgba(0,0,0,0.6)] pointer-events-none" />
                   </div>
 
-                  {/* End Marker Handle */}
-                  <div 
-                    className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 z-25 transition-all"
+                  {/* Out handle */}
+                  <div
+                    className="absolute top-0 bottom-0 w-[2px] -translate-x-1/2 z-20 bg-[var(--text-main)]/85"
                     style={{ left: `${endPct}%` }}
                   >
-                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-white border-2 border-orange-400 shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none" />
-                    {/* Visual marker bracket */}
-                    <div className="absolute top-1/2 right-0 w-2.5 h-5 -translate-y-1/2 border-t-2 border-b-2 border-l-2 border-orange-400 rounded-l pointer-events-none" />
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-7 w-1.5 rounded-full bg-[var(--text-main)] shadow-[0_1px_3px_rgba(0,0,0,0.6)] pointer-events-none" />
                   </div>
 
-                  {/* Playhead line & top diamond */}
+                  {/* Playhead */}
                   <div
-                    className="absolute top-0 bottom-0 w-0.5 bg-[var(--accent)] z-30 pointer-events-none shadow-[0_0_8px_var(--accent-glow)]"
+                    className="absolute top-0 bottom-0 w-px -translate-x-1/2 bg-[var(--accent)] z-30 pointer-events-none"
                     style={{ left: `${currentPct}%` }}
                   >
-                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-[var(--accent)] border border-white/35 shadow-[0_2px_5px_rgba(0,0,0,0.5)]" />
+                    <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[5px] border-r-[5px] border-t-[7px] border-l-transparent border-r-transparent border-t-[var(--accent)]" />
                   </div>
                 </div>
               </div>
 
-                {/* Cinematic Timeline Controls Toolbar */}
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-black/35 p-3 rounded-xl border border-white/5 shadow-lg">
-                  {/* Left Side: Timecode / Frame Info */}
-                  <div className="text-xs text-[var(--text-muted)] font-mono flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-[var(--text-main)] text-sm">Frame {frame}</span>
-                      <span className="opacity-40">/</span>
-                      <span className="opacity-60">{maxFrames}</span>
-                    </div>
+                {/* Timeline controls toolbar */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-2.5">
+                  {/* Left: timecode / frame readout */}
+                  <div className="font-mono text-xs text-[var(--text-muted)] flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-start">
+                    <span className="tabular-nums text-sm font-semibold text-[var(--text-main)]">{fmtTC(frame, targets[selTarget]?.fps || 25)}</span>
                     <span className="opacity-30 hidden sm:inline">·</span>
-                    <span className="bg-white/5 px-2 py-0.5 rounded text-[11px]">{(frame / (targets[selTarget]?.fps || 25)).toFixed(2)}s</span>
+                    <span className="tabular-nums">Frame <span className="text-[var(--text-main)]">{frame}</span> <span className="opacity-40">/ {maxFrames}</span></span>
                   </div>
 
-                  {/* Center: Playback Control Buttons */}
-                  <div className="flex items-center gap-1 bg-black/40 p-1 rounded-lg border border-white/5">
-                    <button 
-                      onClick={() => setFrame(targets[selTarget]?.start_frame || 1)} 
-                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
-                      title="Jump to Start Range"
+                  {/* Center: transport */}
+                  <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
+                    <button
+                      onClick={() => setFrame(targets[selTarget]?.start_frame || 1)}
+                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
+                      title="Jump to In point"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
                     </button>
-                    <button 
-                      onClick={() => setFrame(f => Math.max(1, f - 1))} 
-                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                    <button
+                      onClick={() => setFrame(f => Math.max(1, f - 1))}
+                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
                       title="Previous Frame (Left Arrow)"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 12 5 12"/><polyline points="12 19 5 12 12 5"/></svg>
                     </button>
-                    
-                    <button 
-                      onClick={() => setIsPlaying(!isPlaying)} 
-                      className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1 active:scale-95 transition-all ${isPlaying ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-[var(--accent)] text-white shadow-[0_2px_8px_var(--accent-glow)] hover:bg-[var(--accent-hover)]'}`}
+
+                    <button
+                      onClick={() => setIsPlaying(!isPlaying)}
+                      className={`px-3.5 py-1.5 rounded-md font-semibold text-xs inline-flex items-center gap-1.5 active:scale-95 transition-colors ${isPlaying ? 'bg-[var(--surface-2)] text-[var(--text-main)] border border-[var(--border-strong)] hover:bg-white/[0.06]' : 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'}`}
                       title="Play/Pause (Spacebar)"
                     >
                       {isPlaying ? (
                         <>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                          PAUSE
+                          Pause
                         </>
                       ) : (
                         <>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                          PLAY
+                          Play
                         </>
                       )}
                     </button>
 
-                    <button 
-                      onClick={() => setFrame(f => Math.min(maxFrames, f + 1))} 
-                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
+                    <button
+                      onClick={() => setFrame(f => Math.min(maxFrames, f + 1))}
+                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
                       title="Next Frame (Right Arrow)"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 12 19 12"/><polyline points="12 5 19 12 12 19"/></svg>
                     </button>
-                    <button 
-                      onClick={() => setFrame(targets[selTarget]?.end_frame || maxFrames)} 
-                      className="p-1.5 hover:bg-white/5 rounded text-white/70 hover:text-white active:scale-95 transition-all"
-                      title="Jump to End Range"
+                    <button
+                      onClick={() => setFrame(targets[selTarget]?.end_frame || maxFrames)}
+                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
+                      title="Jump to Out point"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
                     </button>
                   </div>
 
-                  {/* Trim Shortcuts */}
-                  <div className="flex items-center gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
-                    <button 
+                  {/* Set In / Out / Reset */}
+                  <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
+                    <button
                       onClick={() => setFrameMarkerVal('start', frame)}
-                      className="px-2 py-1 hover:bg-emerald-500/10 rounded text-emerald-400 text-[10px] font-bold transition-all"
-                      title="Set Range Start to Current Frame"
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
+                      title="Set In point to current frame"
                     >
-                      [ Set Start
+                      Set In
                     </button>
-                    <button 
+                    <button
                       onClick={() => setFrameMarkerVal('end', frame)}
-                      className="px-2 py-1 hover:bg-orange-500/10 rounded text-orange-400 text-[10px] font-bold transition-all"
-                      title="Set Range End to Current Frame"
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
+                      title="Set Out point to current frame"
                     >
-                      Set End ]
+                      Set Out
                     </button>
-                    <button 
+                    <button
                       onClick={async () => {
                         await setFrameMarkerVal('start', 1);
                         await setFrameMarkerVal('end', maxFrames);
                       }}
-                      className="px-2 py-1 hover:bg-white/5 rounded text-white/50 hover:text-white text-[10px] font-bold transition-all"
-                      title="Reset Range to Full Video"
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)]/70 hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
+                      title="Reset range to full video"
                     >
                       Reset
                     </button>
                   </div>
 
-                  {/* Right Side: Loop toggle & manual start/end frame inputs */}
-                  <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-                    {/* Manual start/end numeric inputs */}
-                    <div className="flex items-center gap-1.5 bg-black/20 px-2 py-1 rounded-lg border border-white/5">
-                      <span className="text-[10px] text-white/40 font-semibold uppercase">Range:</span>
-                      <input 
+                  {/* Right: numeric range inputs & loop */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] px-2 py-1">
+                      <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Range</span>
+                      <input
                         type="number"
                         value={targets[selTarget]?.start_frame || 1}
                         onChange={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
-                        className="bg-black/30 w-12 text-center text-xs font-mono font-bold text-emerald-400 outline-none rounded border border-white/5 py-0.5 focus:border-emerald-500"
-                        title="Start Frame"
+                        className="w-11 text-center text-xs font-mono font-semibold text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors"
+                        title="In frame"
                       />
-                      <span className="text-white/20 text-xs">-</span>
-                      <input 
+                      <span className="text-[var(--text-muted)] text-xs">–</span>
+                      <input
                         type="number"
                         value={targets[selTarget]?.end_frame || maxFrames}
                         onChange={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
-                        className="bg-black/30 w-12 text-center text-xs font-mono font-bold text-orange-400 outline-none rounded border border-white/5 py-0.5 focus:border-orange-500"
-                        title="End Frame"
+                        className="w-11 text-center text-xs font-mono font-semibold text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors"
+                        title="Out frame"
                       />
                     </div>
 
-                    <button 
-                      onClick={() => setIsLooping(!isLooping)} 
-                      className={`p-1.5 rounded transition-all active:scale-95 ${isLooping ? 'bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30' : 'text-white/40 hover:text-white/60 hover:bg-white/5'}`} 
-                      title="Toggle Loop Playback"
+                    <button
+                      onClick={() => setIsLooping(!isLooping)}
+                      className={`p-1.5 rounded-md border transition-colors active:scale-95 ${isLooping ? 'bg-[var(--accent)]/12 text-[var(--accent)] border-[var(--accent)]/30' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] border-[var(--border-color)]'}`}
+                      title="Toggle loop playback"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
                     </button>
