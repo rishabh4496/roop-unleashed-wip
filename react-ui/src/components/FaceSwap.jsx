@@ -1883,7 +1883,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     {progress.paused ? (
                       <button type="button" onClick={resume} title="Resume (Space)"
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 shadow-[0_0_18px_rgba(16,185,129,0.25)] transition-all duration-200 group-hover:bg-emerald-500/25 group-hover:scale-105 group-active:scale-95">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-all duration-200 group-hover:bg-emerald-500/25 group-hover:scale-105 group-active:scale-95">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
@@ -1891,7 +1891,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     ) : (
                       <button type="button" onClick={pause} title="Pause (Space)"
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 shadow-[0_0_18px_rgba(245,158,11,0.2)] transition-all duration-200 group-hover:bg-amber-500/25 group-hover:scale-105 group-active:scale-95">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-all duration-200 group-hover:bg-amber-500/25 group-hover:scale-105 group-active:scale-95">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
@@ -1899,7 +1899,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     )}
                     <button type="button" onClick={stop} title="Stop"
                       className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 shadow-[0_0_18px_rgba(239,68,68,0.2)] transition-all duration-200 group-hover:bg-red-500/25 group-hover:scale-105 group-active:scale-95">
+                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-all duration-200 group-hover:bg-red-500/25 group-hover:scale-105 group-active:scale-95">
                         <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                       </span>
                       <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
