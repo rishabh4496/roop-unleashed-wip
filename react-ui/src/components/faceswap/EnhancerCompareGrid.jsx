@@ -1,0 +1,115 @@
+import React, { useEffect, useRef, useState } from 'react';
+
+export default function EnhancerCompareGrid({ activeList, gridColsClass, enhancerPreviews, enhancerTimes, liveRenderingTimers }) {
+  // Zoom/pan is shared by every cell, so the same region is magnified in all
+  // enhancers at once — that's what makes fine differences readable.
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const handleUp = () => setIsPanning(false);
+    window.addEventListener('mouseup', handleUp);
+    window.addEventListener('touchend', handleUp);
+    return () => {
+      window.removeEventListener('mouseup', handleUp);
+      window.removeEventListener('touchend', handleUp);
+    };
+  }, []);
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const zoomSpeed = 0.15;
+    const newZoom = Math.min(Math.max(1, zoom + (e.deltaY < 0 ? zoomSpeed : -zoomSpeed)), 8);
+    if (newZoom === 1) setPan({ x: 0, y: 0 });
+    setZoom(newZoom);
+  };
+
+  const handlePointerDown = (e) => {
+    if (zoom > 1) {
+      setIsPanning(true);
+      setStartPan({ x: (e.clientX ?? e.touches?.[0]?.clientX) - pan.x, y: (e.clientY ?? e.touches?.[0]?.clientY) - pan.y });
+    }
+  };
+
+  const handlePointerMove = (e) => {
+    if (!isPanning || zoom <= 1) return;
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    setPan({ x: cx - startPan.x, y: cy - startPan.y });
+  };
+
+  // Double click toggles fit ↔ 2.5x centered near the clicked spot of that cell
+  const handleDoubleClick = (e) => {
+    if (zoom > 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    } else {
+      setZoom(2.5);
+      const cell = e.currentTarget;
+      const rect = cell.getBoundingClientRect();
+      const clickX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
+      const clickY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
+      setPan({
+        x: (rect.width / 2 - clickX) * 1.5,
+        y: (rect.height / 2 - clickY) * 1.5
+      });
+    }
+  };
+
+  const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  const transformStyle = { transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`, transformOrigin: 'center' };
+
+  return (
+    <div
+      ref={containerRef}
+      className={`relative grid ${gridColsClass} gap-3 aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2`}
+      onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
+      style={{ touchAction: 'none', cursor: zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'zoom-in' }}
+    >
+      {activeList.map((enh) => (
+        <div key={enh} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center"
+             onDoubleClick={handleDoubleClick}>
+          {enhancerPreviews[enh] ? (
+            <div className="w-full h-full flex items-center justify-center transition-transform duration-75 select-none" style={transformStyle}>
+              <img src={enhancerPreviews[enh]} alt={enh} className="max-w-full max-h-full object-contain pointer-events-none" draggable={false} />
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
+              <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
+              <span className="font-semibold">Rendering {enh}…</span>
+              {liveRenderingTimers[enh] && (
+                <span className="text-[10px] text-white/30 font-mono">
+                  Elapsed: {liveRenderingTimers[enh]}
+                </span>
+              )}
+            </div>
+          )}
+          <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase pointer-events-none">{enh}</span>
+          {enhancerTimes[enh] && (
+            <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white/60 font-mono pointer-events-none">
+              ⏱️ {enhancerTimes[enh]}
+            </span>
+          )}
+        </div>
+      ))}
+      {zoom > 1 && (
+        <button
+          type="button"
+          onClick={resetZoom}
+          className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur border border-white/10 text-[11px] font-bold text-white/80 hover:text-white hover:border-white/30 transition-all"
+          title="Reset zoom (or double-click)"
+        >
+          🔍 {zoom.toFixed(1)}× — Reset
+        </button>
+      )}
+      {zoom === 1 && (
+        <span className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-[10px] font-semibold text-white/40 pointer-events-none select-none">
+          Scroll or double-click to zoom all
+        </span>
+      )}
+    </div>
+  );
+}
