@@ -1391,7 +1391,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
           viewport. */}
-      <div className="w-full lg:w-[400px] 3xl:w-[820px] 4xl:w-[900px] shrink-0 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-100px)] lg:overflow-y-auto pr-0 lg:pr-2 select-none">
+      <div className="w-full lg:w-[380px] 3xl:w-[400px] shrink-0 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-100px)] lg:overflow-y-auto pr-0 lg:pr-2 space-y-5 select-none">
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -1407,7 +1407,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </div>
         </Section>
 
-        <div className="grid grid-cols-1 3xl:grid-cols-2 gap-6 items-start">
+        <div className="grid grid-cols-1 gap-5 items-start">
           <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
