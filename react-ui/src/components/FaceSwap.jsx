@@ -1407,7 +1407,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </div>
         </Section>
 
-        <div className="grid grid-cols-1 gap-5 items-start">
+        <div className="space-y-5">
           <Section title="Swap settings">
           <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
@@ -1497,7 +1497,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           )}
         </Section>
 
-        <div className="3xl:col-span-2">
+        <div>
           <Section title="System options" collapsible defaultOpen={false}>
             <Toggle label="Auto rotate horizontal faces" checked={!!p.autorotate_faces} onChange={(v) => set('autorotate_faces', v)} />
             <Toggle label="Skip audio" checked={!!p.skip_audio} onChange={(v) => set('skip_audio', v)} />
@@ -1506,7 +1506,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </Section>
         </div>
 
-        <div className="3xl:col-span-2">
+        <div>
           <Section title="Saved Profiles" collapsible defaultOpen={false}>
             <div className="flex flex-wrap gap-2 items-end">
               <div className="flex-1 min-w-[120px]">
@@ -1545,7 +1545,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </Section>
         </div>
 
-        <div className="3xl:col-span-2">
+        <div>
           <Section title="Live Telemetry & Diagnostics" collapsible defaultOpen={false}>
             {telemetry ? (
               <div className="space-y-4 text-xs font-mono">
