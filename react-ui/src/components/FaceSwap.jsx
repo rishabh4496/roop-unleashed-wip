@@ -1713,7 +1713,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                             <span>Static Image</span>
                           )}
                           {statusLabel && (
-                            <span className={`text-[8px] uppercase tracking-widest px-1.5 py-0.5 rounded border font-black ${badgeColor}`}>
+                            <span className={`text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-semibold ${badgeColor}`}>
                               {statusLabel}
                             </span>
                           )}
@@ -1750,7 +1750,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               {sourceFacesInfo[selSource] && (
                 <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
                   <div className="flex items-center justify-between">
-                    <span className="font-extrabold text-[10px] uppercase tracking-widest text-white/50">📁 Selected Source Details</span>
+                    <span className="font-semibold text-[10px] uppercase tracking-[0.14em] text-white/50">📁 Selected source details</span>
                     <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
                       {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
                     </span>
@@ -1828,11 +1828,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5">
                         <span className={`h-2 w-2 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-                        <span className={`text-xs font-black uppercase tracking-widest ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                        <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
                           {progress.paused ? 'Paused' : 'Processing'}
                         </span>
                       </div>
-                      <div className="text-sm font-extrabold text-white truncate max-w-[360px]">
+                      <div className="text-sm font-bold text-white truncate max-w-[360px]">
                         {progress.desc || 'Swapping faces…'}
                       </div>
                       {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
@@ -1884,7 +1884,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 shadow-[0_0_18px_rgba(16,185,129,0.25)] transition-all duration-200 group-hover:bg-emerald-500/25 group-hover:scale-105 group-active:scale-95">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
                         </span>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
                       </button>
                     ) : (
                       <button type="button" onClick={pause} title="Pause (Space)"
@@ -1892,7 +1892,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                         <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 shadow-[0_0_18px_rgba(245,158,11,0.2)] transition-all duration-200 group-hover:bg-amber-500/25 group-hover:scale-105 group-active:scale-95">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
                         </span>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
                       </button>
                     )}
                     <button type="button" onClick={stop} title="Stop"
@@ -1900,7 +1900,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 shadow-[0_0_18px_rgba(239,68,68,0.2)] transition-all duration-200 group-hover:bg-red-500/25 group-hover:scale-105 group-active:scale-95">
                         <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                       </span>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
                     </button>
                   </div>
 
@@ -1951,7 +1951,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -2457,21 +2457,8 @@ function FloatingEmojis() {
 function AIScannerOverlay() {
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
-      {/* Dynamic Laser Line Sweep */}
-      <div className="absolute w-full h-0.5 bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent opacity-85 shadow-[0_0_12px_var(--accent)] animate-scanner-sweep" />
-
-      {/* Grid Overlay */}
-      <div className="absolute inset-0 opacity-[0.04] bg-[linear-gradient(rgba(255,255,255,0.15)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.15)_1px,transparent_1px)] bg-[size:20px_20px] animate-pulse" />
-
-      {/* Corner HUD Brackets */}
-      <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
-      <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
-      <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
-      <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-[var(--accent)]/55 opacity-70 animate-pulse" />
-
-      {/* Subtle Digital Telemetry Labels */}
-      <div className="absolute top-4 left-10 text-[8px] font-mono text-[var(--accent)]/45 uppercase tracking-widest select-none font-bold animate-pulse">SYSTEM SWAP SEARCHING: TARGET</div>
-      <div className="absolute bottom-4 right-10 text-[8px] font-mono text-[var(--accent)]/45 uppercase tracking-widest select-none font-bold animate-pulse">GRID OVERLAY: ACTIVE</div>
+      {/* A single soft scanner sweep signals "working" — calm, no HUD clutter. */}
+      <div className="absolute w-full h-px bg-gradient-to-r from-transparent via-[var(--accent)]/70 to-transparent shadow-[0_0_10px_var(--accent-glow)] animate-scanner-sweep" />
     </div>
   );
 }
@@ -2803,9 +2790,9 @@ function InteractivePreview({
       )}
       {processing && liveFrame && (
         <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-black tracking-widest text-white border border-[var(--accent)]/30 shadow-2xl animate-pulse uppercase">
-            <span className="h-2 w-2 rounded-full bg-white animate-ping" />
-            Live Swapping{liveSeq > 0 ? ` · ${liveSeq} frames` : ''}
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--accent)] backdrop-blur-md text-[11px] font-semibold tracking-wide text-white border border-white/15 shadow-lg">
+            <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />
+            Live swapping{liveSeq > 0 ? ` · ${liveSeq} frames` : ''}
           </div>
         </div>
       )}

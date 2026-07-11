@@ -33,7 +33,7 @@ export default function ThemeGallery({ value, onChange }) {
             <div className="px-2.5 py-2 bg-black/40 backdrop-blur-sm">
               <div className="flex items-center justify-between gap-1">
                 <span className="text-[11px] font-bold text-white/90 truncate">{t.name}</span>
-                <span className={`text-[8px] font-black uppercase tracking-wider px-1 py-0.5 rounded shrink-0 ${t.mode === 'light' ? 'bg-amber-400/15 text-amber-300' : 'bg-white/10 text-white/40'}`}>{t.mode}</span>
+                <span className={`text-[8px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded shrink-0 ${t.mode === 'light' ? 'bg-amber-400/15 text-amber-300' : 'bg-white/10 text-white/40'}`}>{t.mode}</span>
               </div>
               <div className="text-[9px] text-white/35 truncate">{t.label}</div>
             </div>

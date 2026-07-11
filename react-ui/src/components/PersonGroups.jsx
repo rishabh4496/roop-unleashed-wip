@@ -178,7 +178,7 @@ export default function PersonGroups({
     >
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] font-black uppercase tracking-widest text-white/40">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">
           {people.length} {people.length === 1 ? 'person' : 'people'} · {targetFaces.length} {targetFaces.length === 1 ? 'angle' : 'angles'}
         </span>
         <div className="flex gap-1.5">
@@ -324,7 +324,7 @@ export default function PersonGroups({
                 <div className="flex items-center gap-3">
                   <PoseCompass covered={covered} color={color} />
                   <div className="min-w-0">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-white/30 mb-1">
+                    <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30 mb-1">
                       Angle coverage · {covered.size}/5
                     </div>
                     {missing.length === 0 ? (

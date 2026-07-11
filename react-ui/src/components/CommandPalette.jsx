@@ -83,7 +83,7 @@ export default function CommandPalette({ open, onClose, commands }) {
           ) : (
             groups.map((g) => (
               <div key={g.section} className="mb-1">
-                <div className="px-4 py-1 text-[9px] font-black uppercase tracking-widest text-white/30">{g.section}</div>
+                <div className="px-4 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{g.section}</div>
                 {g.items.map(({ c, i }) => (
                   <button
                     key={c.id}
