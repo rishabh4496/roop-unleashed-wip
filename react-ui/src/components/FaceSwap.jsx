@@ -1638,10 +1638,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       </div>
     </div>
 
-      {/* COLUMN 2 & 3 WRAPPER: Media asset managers on left and large active workspace on right */}
-      <div className="flex-1 w-full space-y-6 flex flex-col 2xl:flex-row gap-6">
-        
-        {/* COLUMN 2: Media Asset Manager */}
+      {/* COLUMN 2 & 3 WRAPPER: Preview canvas leads (hero) with the media
+          asset managers as a right rail (2xl:flex-row-reverse), so the live
+          preview is the visual center instead of buried on the far right. */}
+      <div className="flex-1 w-full min-w-0 space-y-6 flex flex-col 2xl:flex-row-reverse gap-6">
+
+        {/* COLUMN 2: Media Asset Manager — right rail */}
         <div className="w-full 2xl:w-[360px] 3xl:w-[380px] shrink-0 space-y-6 select-none">
           <Section title="Target faces">
             <PersonGroups
