@@ -114,44 +114,46 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
               restarts, so you never re-upload. Set the folder to a cloud drive in Settings to sync across devices.
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-1">
               {entries.map((e) => (
-                <div key={e.filename} className="group relative rounded-lg bg-white/[0.03] border border-white/5 overflow-hidden">
+                <div
+                  key={e.filename}
+                  className="group flex items-center gap-2.5 rounded-lg bg-white/[0.02] border border-white/5 hover:border-white/15 hover:bg-white/[0.04] transition-colors pr-2"
+                >
                   <button
                     type="button"
                     onClick={() => load(e.filename)}
                     disabled={busy}
                     title="Load into source faces"
-                    className="block w-full aspect-square bg-black/40"
+                    className="flex items-center gap-2.5 flex-1 min-w-0 py-1.5 pl-1.5 text-left"
                   >
-                    {e.thumb
-                      ? <img src={e.thumb} alt={e.name} className="w-full h-full object-cover" draggable={false} />
-                      : <span className="flex items-center justify-center w-full h-full text-white/20 text-2xl">🧑</span>}
-                    {e.faces > 1 && (
-                      <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/60 text-[9px] text-white/70 border border-white/10">
-                        {e.faces} faces
-                      </span>
-                    )}
-                  </button>
-
-                  <div className="px-2 py-1.5">
+                    <span className="shrink-0 w-9 h-9 rounded-md overflow-hidden bg-black/40 border border-white/10">
+                      {e.thumb
+                        ? <img src={e.thumb} alt={e.name} className="w-full h-full object-cover" draggable={false} />
+                        : <span className="flex items-center justify-center w-full h-full text-white/20 text-sm">🧑</span>}
+                    </span>
                     {renaming === e.filename ? (
                       <input
                         autoFocus
                         value={renameVal}
+                        onClick={(ev) => ev.stopPropagation()}
                         onChange={(ev) => setRenameVal(ev.target.value)}
                         onBlur={() => commitRename(e.filename)}
                         onKeyDown={(ev) => { if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
-                        className="w-full bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-1 text-[11px] text-white/90 outline-none"
+                        className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
                       />
                     ) : (
-                      <div className="truncate text-[11px] text-white/70" title={e.name}>{e.name}</div>
+                      <span className="flex-1 min-w-0 truncate text-[11px] text-white/75" title={e.name}>
+                        {e.name}
+                        {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
+                      </span>
                     )}
-                    <div className="mt-1 flex items-center gap-1.5 text-[10px] text-white/40">
-                      <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={() => beginRename(e)}>✏️</button>
-                      <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename}>⬇</a>
-                      <button type="button" className="hover:text-[var(--accent)] transition-colors ml-auto" title="Delete" onClick={() => del(e.filename)}>🗑</button>
-                    </div>
+                  </button>
+
+                  <div className="flex items-center gap-1.5 text-[10px] text-white/35 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
+                    <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={() => beginRename(e)}>✏️</button>
+                    <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename}>⬇</a>
+                    <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={() => del(e.filename)}>🗑</button>
                   </div>
                 </div>
               ))}
