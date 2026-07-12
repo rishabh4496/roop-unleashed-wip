@@ -50,6 +50,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   };
 
   const load = async (entry) => {
+    if (busy) return; // rows stay clickable while busy — don't double-load
     setBusy(true);
     setPickerOpen(false);
     try {
@@ -69,11 +70,20 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
     } catch (e) { notify?.(e.message, 'error'); }
   };
 
-  const beginRename = (entry) => { setRenaming(entry.filename); setRenameVal(entry.name); };
-  const commitRename = async (filename) => {
+  // Rename lifecycle guard: closing the input (Escape, or the unmount-blur that
+  // follows Enter/Escape) must not re-commit or commit a cancelled rename.
+  const renameDone = useRef(false);
+  const beginRename = (entry) => { renameDone.current = false; setRenaming(entry.filename); setRenameVal(entry.name); };
+  const cancelRename = () => { renameDone.current = true; setRenaming(null); };
+  const commitRename = async (entry) => {
+    if (renameDone.current) return;
+    renameDone.current = true;
+    const newName = renameVal.trim();
+    if (!newName || newName === entry.name) { setRenaming(null); return; } // no-op
     try {
-      const r = await postJSON('/api/faceset/library/rename', { filename, name: renameVal });
+      const r = await postJSON('/api/faceset/library/rename', { filename: entry.filename, name: newName });
       setEntries(r.entries || []);
+      if (selected?.filename === entry.filename) setSelected(null);
     } catch (e) { notify?.(e.message, 'error'); } finally { setRenaming(null); }
   };
 
@@ -200,8 +210,8 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                               value={renameVal}
                               onClick={(ev) => ev.stopPropagation()}
                               onChange={(ev) => setRenameVal(ev.target.value)}
-                              onBlur={() => commitRename(e.filename)}
-                              onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
+                              onBlur={() => commitRename(e)}
+                              onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e); if (ev.key === 'Escape') cancelRename(); }}
                               className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
                             />
                           ) : (

@@ -649,12 +649,27 @@ def _frontality(kps):
         return 999.0
 
 
+def _shrink_for_thumb(img, max_side=256):
+    """Downscale a thumbnail candidate so sidecars (and the base64 data URLs the
+    library list embeds for every entry) stay small even when the source is a
+    full-resolution frame."""
+    h, w = img.shape[:2]
+    s = max(h, w)
+    if s <= max_side:
+        return img
+    scale = max_side / float(s)
+    return cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                      interpolation=cv2.INTER_AREA)
+
+
 def _frontal_crop_from_images(images):
     """Return the most frontal face crop (BGR) across a list of BGR images, so
     a multi-angle faceset shows a front-facing thumbnail instead of a profile."""
     best = None
     best_score = None
-    tmp = os.path.join(API_TEMP, "_libthumb.png")
+    # Unique temp name: concurrent calls (e.g. rebuild while a save runs) must
+    # not clobber each other's scratch file.
+    tmp = os.path.join(API_TEMP, f"_libthumb_{os.getpid()}_{threading.get_ident()}.png")
     os.makedirs(API_TEMP, exist_ok=True)
     # Cap the scan — a frontal face is found quickly and we only need a preview.
     for img in list(images)[:15]:
@@ -698,7 +713,7 @@ def _write_library_thumb(fsz_path: str, images=None):
         thumb = _frontal_crop_from_images(images)
         if thumb is None:
             thumb = images[0]  # fall back to the raw first image
-        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png", thumb)
+        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png", _shrink_for_thumb(thumb))
     except Exception:
         traceback.print_exc()
 
@@ -759,7 +774,8 @@ def faceset_library_save(payload: dict = Body(...)):
     thumb_sidecar = os.path.splitext(fsz_path)[0] + ".png"
     if not os.path.exists(thumb_sidecar) and 0 <= idx < len(ui_globals.ui_input_thumbs) \
             and ui_globals.ui_input_thumbs[idx] is not None:
-        _imwrite_unicode(thumb_sidecar, cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR))
+        _imwrite_unicode(thumb_sidecar,
+                         _shrink_for_thumb(cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR)))
 
     shutil.rmtree(tmpdir, ignore_errors=True)
     return _faceset_library_payload({"saved": os.path.splitext(os.path.basename(fsz_path))[0]})
@@ -786,6 +802,10 @@ def faceset_library_rename(payload: dict = Body(...)):
     old = os.path.join(lib, fn)
     if not (fn.lower().endswith(".fsz") and os.path.exists(old)):
         return JSONResponse(status_code=404, content={"message": "faceset not found"})
+    # Renaming to the current name must be a no-op — _unique_fsz_path would see
+    # the file itself and "dedupe" it into "<name> (1).fsz".
+    if _slugify_faceset_name(payload.get("name", "")) == os.path.splitext(fn)[0]:
+        return _faceset_library_payload()
     new = _unique_fsz_path(payload.get("name", ""))
     try:
         os.replace(old, new)
@@ -850,7 +870,7 @@ def faceset_library_open():
     d = _faceset_library_dir()
     try:
         if sys.platform.startswith("win"):
-            os.startfile(d)  # noqa: type
+            os.startfile(d)  # Windows-only API; branch is platform-guarded
         elif sys.platform == "darwin":
             subprocess.Popen(["open", d])
         else:
