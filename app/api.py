@@ -506,6 +506,20 @@ def source_select(payload: dict = Body(...)):
     return {"selected": selected_input_face_index}
 
 
+@app.post("/api/source/refresh_thumbs")
+def source_refresh_thumbs():
+    """Recompute the gallery thumbnail for each loaded multi-angle faceset to the
+    most frontal face, without needing to clear + reload the source."""
+    for idx, fs in enumerate(roop_globals.INPUT_FACESETS):
+        refs = getattr(fs, "ref_images", None) or []
+        if not refs:
+            continue
+        crop = _frontal_crop_from_images(refs)
+        if crop is not None and idx < len(ui_globals.ui_input_thumbs):
+            ui_globals.ui_input_thumbs[idx] = util.convert_to_gradio(crop)
+    return _source_faces_payload()
+
+
 # ── Faceset library (persistent, named .fsz facesets) ─────────────────────────
 # The library is a real folder on disk holding named `<name>.fsz` facesets plus a
 # `<name>.png` thumbnail sidecar for instant previews. Facesets saved here survive
