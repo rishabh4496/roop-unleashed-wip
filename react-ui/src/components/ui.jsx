@@ -134,7 +134,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 // Gallery of face thumbnails with selection + move/remove controls.
 export const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
 
-export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [], draggable = false }) => {
+export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [], draggable = false, large = false }) => {
   const personCount = groups && groups.length ? new Set(groups).size : 0;
   return (
     <div>
@@ -151,7 +151,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           {empty || 'None yet'}
         </div>
       ) : (
-        <div className={vertical ? "flex flex-col gap-2" : "grid grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2"}>
+        <div className={vertical ? "flex flex-col gap-2" : (large ? "grid grid-cols-2 3xl:grid-cols-3 gap-2.5" : "grid grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2")}>
           {faces.map((src, i) => {
             const person = groups && i < groups.length ? groups[i] : null;
             const color = person != null ? PERSON_COLORS[person % PERSON_COLORS.length] : null;

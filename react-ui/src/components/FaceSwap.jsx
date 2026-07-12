@@ -1597,7 +1597,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             canSave={sourceFaces.length > 0}
             onLoaded={(r) => { setSourceFaces(r.source_faces || []); if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info); }}
             notify={notify} />
-          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true}
+          <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true} large={true}
             onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
           {sourceFaces.length > 0 && (
             <div className="space-y-3">

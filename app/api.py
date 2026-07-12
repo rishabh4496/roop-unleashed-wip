@@ -442,19 +442,28 @@ def _ingest_faceset(path):
     os.makedirs(unzipfolder, exist_ok=True)
     util.unzip(path, unzipfolder)
     face_set = FaceSet()
-    is_first = True
-    for file in os.listdir(unzipfolder):
+    best_crop = None
+    best_score = None
+    for file in sorted(os.listdir(unzipfolder)):
         if file.endswith(".png"):
             filename = os.path.join(unzipfolder, file)
+            frame = get_image_frame(filename)
             for fd in extract_face_images(filename, (False, 0)):
                 face = fd[0]
                 face.mask_offsets = _mask_offsets_from_cfg()
                 face_set.faces.append(face)
-                if is_first:
-                    ui_globals.ui_input_thumbs.append(util.convert_to_gradio(fd[1]))
-                    is_first = False
-                face_set.ref_images.append(get_image_frame(filename))
+                face_set.ref_images.append(frame)
+                # Use the most frontal face as the gallery thumbnail, not just
+                # the first one (which is often a profile in a multi-angle set).
+                kps = getattr(face, "kps", None)
+                if kps is None and isinstance(face, dict):
+                    kps = face.get("kps")
+                score = _frontality(kps) if kps is not None else 999.0
+                if best_score is None or score < best_score:
+                    best_score, best_crop = score, fd[1]
     if len(face_set.faces) > 0:
+        if best_crop is not None:
+            ui_globals.ui_input_thumbs.append(util.convert_to_gradio(best_crop))
         if len(face_set.faces) > 1:
             face_set.AverageEmbeddings()
         roop_globals.INPUT_FACESETS.append(face_set)
