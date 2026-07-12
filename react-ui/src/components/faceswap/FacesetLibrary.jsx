@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { getJSON, postJSON, postFile, fileUrl } from '../../api';
 import { Button } from '../ui';
 
@@ -16,10 +15,8 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   const [filter, setFilter] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState(null); // last-loaded entry (for the closed box)
-  const [menuPos, setMenuPos] = useState({ left: 0, top: 0, width: 0 });
   const importRef = useRef(null);
-  const triggerRef = useRef(null);
-  const menuRef = useRef(null);
+  const pickerRef = useRef(null);
 
   const q = filter.trim().toLowerCase();
   const shown = q ? entries.filter((e) => e.name.toLowerCase().includes(q)) : entries;
@@ -33,33 +30,13 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
 
   useEffect(() => { if (open) refresh(); }, [open, refresh]);
 
-  // The menu renders in a portal (position: fixed) so it can't be clipped or
-  // stacked under sibling glass-panel Sections (backdrop-filter makes each its
-  // own stacking context). Keep it anchored to the trigger on scroll/resize.
-  const positionMenu = useCallback(() => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setMenuPos({ left: r.left, top: r.bottom + 4, width: r.width });
-  }, []);
-
+  // Close the dropdown when clicking outside of it.
   useEffect(() => {
     if (!pickerOpen) return undefined;
-    positionMenu();
-    const onMove = () => positionMenu();
-    window.addEventListener('scroll', onMove, true);
-    window.addEventListener('resize', onMove);
-    const onDown = (ev) => {
-      if (triggerRef.current?.contains(ev.target) || menuRef.current?.contains(ev.target)) return;
-      setPickerOpen(false);
-    };
+    const onDown = (ev) => { if (pickerRef.current && !pickerRef.current.contains(ev.target)) setPickerOpen(false); };
     document.addEventListener('mousedown', onDown);
-    return () => {
-      window.removeEventListener('scroll', onMove, true);
-      window.removeEventListener('resize', onMove);
-      document.removeEventListener('mousedown', onDown);
-    };
-  }, [pickerOpen, positionMenu]);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [pickerOpen]);
 
   const saveCurrent = async () => {
     const name = window.prompt('Name this faceset', '');
@@ -125,7 +102,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   );
 
   return (
-    <div className="rounded-xl bg-black/45 border border-white/5">
+    <div className={`rounded-xl bg-black/45 border border-white/5 ${pickerOpen ? 'relative z-20' : ''}`}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -165,78 +142,75 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
           ) : (
             <div>
               <div className="text-[10px] uppercase tracking-[0.12em] text-white/40 mb-1.5">Load a faceset</div>
-              {/* Closed dropdown box (mirrors the Select control) */}
-              <button
-                ref={triggerRef}
-                type="button"
-                onClick={() => setPickerOpen((v) => !v)}
-                className="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-2 text-left transition-colors"
-              >
-                <span className="flex items-center gap-2 min-w-0">
-                  <Thumb e={selected} size="w-6 h-6" />
-                  <span className={`truncate text-[12px] ${selected ? 'text-white/85' : 'text-white/35'}`}>
-                    {selected ? selected.name : 'Select a faceset…'}
-                  </span>
-                </span>
-                <span className={`text-white/40 text-xs shrink-0 transition-transform ${pickerOpen ? 'rotate-180' : ''}`}>⌄</span>
-              </button>
-
-              {/* Open dropdown menu — portal + fixed position so it can't be clipped
-                  or stacked behind sibling glass-panel Sections */}
-              {pickerOpen && createPortal(
-                <div
-                  ref={menuRef}
-                  style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, width: menuPos.width, zIndex: 1000 }}
-                  className="rounded-lg bg-[#181016] border border-white/10 shadow-2xl shadow-black/70 overflow-hidden"
+              <div className="relative" ref={pickerRef}>
+                {/* Closed dropdown box (mirrors the Select control) */}
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  className="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-2 text-left transition-colors"
                 >
-                  {entries.length > 6 && (
-                    <div className="p-1.5 border-b border-white/5">
-                      <input
-                        autoFocus
-                        value={filter}
-                        onChange={(ev) => setFilter(ev.target.value)}
-                        placeholder={`Search ${entries.length} facesets…`}
-                        className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none"
-                      />
-                    </div>
-                  )}
-                  <div className="max-h-60 overflow-y-auto py-1 [scrollbar-width:thin]">
-                    {shown.length === 0 ? (
-                      <p className="text-[11px] text-white/30 py-2 text-center">No match for “{filter}”.</p>
-                    ) : shown.map((e) => (
-                      <div
-                        key={e.filename}
-                        className={`group flex items-center gap-2.5 px-2 py-1.5 mx-1 rounded-md cursor-pointer transition-colors ${selected?.filename === e.filename ? 'bg-[var(--accent)]/10' : 'hover:bg-white/[0.06]'}`}
-                        onClick={() => { if (renaming !== e.filename) load(e); }}
-                      >
-                        <Thumb e={e} size="w-8 h-8" />
-                        {renaming === e.filename ? (
-                          <input
-                            autoFocus
-                            value={renameVal}
-                            onClick={(ev) => ev.stopPropagation()}
-                            onChange={(ev) => setRenameVal(ev.target.value)}
-                            onBlur={() => commitRename(e.filename)}
-                            onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
-                            className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
-                          />
-                        ) : (
-                          <span className="flex-1 min-w-0 truncate text-[12px] text-white/80" title={e.name}>
-                            {e.name}
-                            {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
-                          </span>
-                        )}
-                        <span className="flex items-center gap-1.5 text-[11px] text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
-                          <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
-                          <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
-                        </span>
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Thumb e={selected} size="w-6 h-6" />
+                    <span className={`truncate text-[12px] ${selected ? 'text-white/85' : 'text-white/35'}`}>
+                      {selected ? selected.name : 'Select a faceset…'}
+                    </span>
+                  </span>
+                  <span className={`text-white/40 text-xs shrink-0 transition-transform ${pickerOpen ? 'rotate-180' : ''}`}>⌄</span>
+                </button>
+
+                {/* Open menu: absolute under the trigger. The library card gets
+                    relative z-20 while open so this paints above the Input-faces
+                    gallery that follows it in the same Section. */}
+                {pickerOpen && (
+                  <div className="absolute z-50 left-0 right-0 mt-1 rounded-lg bg-[#181016] border border-white/10 shadow-2xl shadow-black/70 overflow-hidden">
+                    {entries.length > 6 && (
+                      <div className="p-1.5 border-b border-white/5">
+                        <input
+                          autoFocus
+                          value={filter}
+                          onChange={(ev) => setFilter(ev.target.value)}
+                          placeholder={`Search ${entries.length} facesets…`}
+                          className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none"
+                        />
                       </div>
-                    ))}
+                    )}
+                    <div className="max-h-60 overflow-y-auto py-1 [scrollbar-width:thin]">
+                      {shown.length === 0 ? (
+                        <p className="text-[11px] text-white/30 py-2 text-center">No match for “{filter}”.</p>
+                      ) : shown.map((e) => (
+                        <div
+                          key={e.filename}
+                          className={`group flex items-center gap-2.5 px-2 py-1.5 mx-1 rounded-md cursor-pointer transition-colors ${selected?.filename === e.filename ? 'bg-[var(--accent)]/10' : 'hover:bg-white/[0.06]'}`}
+                          onClick={() => { if (renaming !== e.filename) load(e); }}
+                        >
+                          <Thumb e={e} size="w-8 h-8" />
+                          {renaming === e.filename ? (
+                            <input
+                              autoFocus
+                              value={renameVal}
+                              onClick={(ev) => ev.stopPropagation()}
+                              onChange={(ev) => setRenameVal(ev.target.value)}
+                              onBlur={() => commitRename(e.filename)}
+                              onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
+                              className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
+                            />
+                          ) : (
+                            <span className="flex-1 min-w-0 truncate text-[12px] text-white/80" title={e.name}>
+                              {e.name}
+                              {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1.5 text-[11px] text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
+                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
+                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>,
-                document.body,
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
