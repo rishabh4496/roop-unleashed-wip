@@ -715,9 +715,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   };
 
   const sourceAction = async (path, body) => {
-    const res = await postJSON(path, body);
-    if (res.source_faces) setSourceFaces(res.source_faces);
-    if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
+    try {
+      const res = await postJSON(path, body);
+      if (res.source_faces) setSourceFaces(res.source_faces);
+      if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
+    } catch (e) {
+      // Surface failures (e.g. a 404 when the backend hasn't been restarted to
+      // pick up a new endpoint) instead of silently doing nothing.
+      notify(`${path.split('/').pop()} failed: ${e.message}. If this is a new feature, restart the app server.`, 'error');
+    }
   };
 
   const selectSource = async (i) => { setSelSource(i); await postJSON('/api/source/select', { index: i }); };
