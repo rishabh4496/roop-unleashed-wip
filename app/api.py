@@ -497,6 +497,300 @@ def source_select(payload: dict = Body(...)):
     return {"selected": selected_input_face_index}
 
 
+# ── Faceset library (persistent, named .fsz facesets) ─────────────────────────
+# The library is a real folder on disk holding named `<name>.fsz` facesets plus a
+# `<name>.png` thumbnail sidecar for instant previews. Facesets saved here survive
+# restarts so sources never need re-uploading, can be renamed/exported/imported,
+# and — by pointing the folder at OneDrive/Dropbox/Google Drive (Settings →
+# "Faceset library folder") — sync across devices automatically.
+
+def _faceset_library_dir() -> str:
+    p = ""
+    if roop_globals.CFG:
+        p = getattr(roop_globals.CFG, "faceset_library_path", "") or ""
+    if not p:
+        p = os.path.join(os.getcwd(), "facesets")
+    p = os.path.abspath(os.path.expanduser(p))
+    try:
+        os.makedirs(p, exist_ok=True)
+    except Exception:
+        traceback.print_exc()
+    return p
+
+
+def _imread_unicode(path):
+    # cv2.imread mangles non-ASCII paths on Windows (the library may live under a
+    # unicode OneDrive/Dropbox path), so decode from raw bytes instead.
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def _imwrite_unicode(path, img) -> bool:
+    ext = os.path.splitext(path)[1] or ".png"
+    try:
+        ok, buf = cv2.imencode(ext, img)
+        if not ok:
+            return False
+        buf.tofile(path)
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def _slugify_faceset_name(name: str) -> str:
+    name = (name or "").strip()
+    # Keep it a safe, cross-platform filename stem.
+    keep = "".join(c for c in name if c.isalnum() or c in " ._-()").strip(" .")
+    return keep or "faceset"
+
+
+def _unique_fsz_path(name: str) -> str:
+    lib = _faceset_library_dir()
+    stem = _slugify_faceset_name(name)
+    path = os.path.join(lib, f"{stem}.fsz")
+    n = 1
+    while os.path.exists(path):
+        path = os.path.join(lib, f"{stem} ({n}).fsz")
+        n += 1
+    return path
+
+
+def _library_thumb_dataurl(fsz_path: str) -> str:
+    thumb_path = os.path.splitext(fsz_path)[0] + ".png"
+    if os.path.exists(thumb_path):
+        return _bgr_to_jpg_dataurl(_imread_unicode(thumb_path))
+    return ""
+
+
+def _faceset_face_count(fsz_path: str) -> int:
+    try:
+        import zipfile
+        with zipfile.ZipFile(fsz_path, "r") as zf:
+            return sum(1 for n in zf.namelist() if n.lower().endswith(".png"))
+    except Exception:
+        return 0
+
+
+def _library_entries() -> list:
+    lib = _faceset_library_dir()
+    entries = []
+    try:
+        names = os.listdir(lib)
+    except Exception:
+        names = []
+    for fn in names:
+        if not fn.lower().endswith(".fsz"):
+            continue
+        fsz_path = os.path.join(lib, fn)
+        try:
+            st = os.stat(fsz_path)
+        except Exception:
+            continue
+        entries.append({
+            "filename": fn,
+            "name": os.path.splitext(fn)[0],
+            "path": fsz_path,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "faces": _faceset_face_count(fsz_path),
+            "thumb": _library_thumb_dataurl(fsz_path),
+        })
+    entries.sort(key=lambda e: e["name"].lower())
+    return entries
+
+
+def _faceset_library_payload(extra=None) -> dict:
+    payload = {"entries": _library_entries(), "dir": _faceset_library_dir()}
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _write_library_thumb_from_fsz(fsz_path: str):
+    # Extract the first face PNG from a .fsz to use as the library thumbnail.
+    try:
+        import zipfile
+        with zipfile.ZipFile(fsz_path, "r") as zf:
+            pngs = [n for n in zf.namelist() if n.lower().endswith(".png")]
+            if not pngs:
+                return
+            data = zf.read(sorted(pngs)[0])
+        img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return
+        # Prefer a tight face crop for the preview if one can be extracted.
+        thumb = img
+        try:
+            faces = extract_face_images_from_image(img)
+            if faces:
+                thumb = faces[0]
+        except Exception:
+            pass
+        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png", thumb)
+    except Exception:
+        traceback.print_exc()
+
+
+def extract_face_images_from_image(bgr):
+    # Small helper: run extract_face_images on an in-memory BGR image by writing
+    # it to a temp file (extract_face_images takes a path). Returns crop images.
+    tmp = os.path.join(API_TEMP, "_libthumb.png")
+    os.makedirs(API_TEMP, exist_ok=True)
+    _imwrite_unicode(tmp, bgr)
+    out = []
+    try:
+        for fd in extract_face_images(tmp, (False, 0), 0.5):
+            out.append(fd[1])
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+    return out
+
+
+def _faceset_member_images(idx: int):
+    """BGR images to store in the .fsz for source faceset `idx`.
+
+    Prefer the full reference frames (facesets loaded from .fsz keep these), so
+    embeddings re-average identically on reload; fall back to the cropped thumb
+    for facesets that came from a single image upload.
+    """
+    imgs = []
+    if 0 <= idx < len(roop_globals.INPUT_FACESETS):
+        fs = roop_globals.INPUT_FACESETS[idx]
+        for rimg in getattr(fs, "ref_images", None) or []:
+            if rimg is not None:
+                imgs.append(rimg)
+    if not imgs and 0 <= idx < len(ui_globals.ui_input_thumbs):
+        rgb = ui_globals.ui_input_thumbs[idx]
+        if rgb is not None:
+            imgs.append(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    return imgs
+
+
+@app.get("/api/faceset/library")
+def faceset_library_list():
+    return _faceset_library_payload()
+
+
+@app.post("/api/faceset/library/save")
+def faceset_library_save(payload: dict = Body(...)):
+    idx = payload.get("index", None)
+    idx = selected_input_face_index if idx is None else int(idx)
+    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
+        return JSONResponse(status_code=400, content={"message": "no source faceset selected"})
+
+    imgs = _faceset_member_images(idx)
+    if not imgs:
+        return JSONResponse(status_code=400, content={"message": "nothing to save for this faceset"})
+
+    # Write member PNGs into an ASCII temp dir, then zip into the (possibly
+    # unicode) library path — zipfile handles the unicode zipname fine.
+    tmpdir = os.path.join(API_TEMP, "_libsave")
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    os.makedirs(tmpdir, exist_ok=True)
+    imgnames = []
+    for j, img in enumerate(imgs):
+        fn = os.path.join(tmpdir, f"{j}.png")
+        _imwrite_unicode(fn, img)
+        imgnames.append(fn)
+
+    fsz_path = _unique_fsz_path(payload.get("name", ""))
+    util.zip(imgnames, fsz_path)
+
+    # Thumbnail sidecar: use the source panel's crop for a clean face preview.
+    if 0 <= idx < len(ui_globals.ui_input_thumbs) and ui_globals.ui_input_thumbs[idx] is not None:
+        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png",
+                         cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR))
+    else:
+        _write_library_thumb_from_fsz(fsz_path)
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    return _faceset_library_payload({"saved": os.path.splitext(os.path.basename(fsz_path))[0]})
+
+
+@app.post("/api/faceset/library/load")
+def faceset_library_load(payload: dict = Body(...)):
+    fn = os.path.basename(str(payload.get("filename", "")))
+    path = os.path.join(_faceset_library_dir(), fn)
+    if not (fn.lower().endswith(".fsz") and os.path.exists(path)):
+        return JSONResponse(status_code=404, content={"message": "faceset not found"})
+    try:
+        _ingest_faceset(path)
+    except Exception:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": "failed to load faceset"})
+    return _source_faces_payload()
+
+
+@app.post("/api/faceset/library/rename")
+def faceset_library_rename(payload: dict = Body(...)):
+    fn = os.path.basename(str(payload.get("filename", "")))
+    lib = _faceset_library_dir()
+    old = os.path.join(lib, fn)
+    if not (fn.lower().endswith(".fsz") and os.path.exists(old)):
+        return JSONResponse(status_code=404, content={"message": "faceset not found"})
+    new = _unique_fsz_path(payload.get("name", ""))
+    try:
+        os.replace(old, new)
+        old_thumb = os.path.splitext(old)[0] + ".png"
+        if os.path.exists(old_thumb):
+            os.replace(old_thumb, os.path.splitext(new)[0] + ".png")
+    except Exception:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": "rename failed"})
+    return _faceset_library_payload()
+
+
+@app.post("/api/faceset/library/delete")
+def faceset_library_delete(payload: dict = Body(...)):
+    fn = os.path.basename(str(payload.get("filename", "")))
+    lib = _faceset_library_dir()
+    path = os.path.join(lib, fn)
+    if fn.lower().endswith(".fsz") and os.path.exists(path):
+        try:
+            os.remove(path)
+            thumb = os.path.splitext(path)[0] + ".png"
+            if os.path.exists(thumb):
+                os.remove(thumb)
+        except Exception:
+            traceback.print_exc()
+    return _faceset_library_payload()
+
+
+@app.post("/api/faceset/library/import")
+async def faceset_library_import(file: UploadFile = File(...)):
+    base = os.path.basename(file.filename or "")
+    if not base.lower().endswith(".fsz"):
+        return JSONResponse(status_code=400, content={"message": "expected a .fsz file"})
+    dest = _unique_fsz_path(os.path.splitext(base)[0])
+    with open(dest, "wb") as buf:
+        shutil.copyfileobj(file.file, buf)
+    _write_library_thumb_from_fsz(dest)
+    return _faceset_library_payload({"imported": os.path.splitext(os.path.basename(dest))[0]})
+
+
+@app.post("/api/faceset/library/open")
+def faceset_library_open():
+    d = _faceset_library_dir()
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(d)  # noqa: type
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", d])
+        else:
+            subprocess.Popen(["xdg-open", d])
+    except Exception:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": "could not open folder"})
+    return {"dir": d}
+
+
 # ── Target media ─────────────────────────────────────────────────────────────
 @app.post("/api/target/add")
 async def target_add(files: list[UploadFile] = File(...)):
@@ -1494,7 +1788,7 @@ def get_file(path: str, request: Request):
     so the finished video can be moved out of the output folder while it's still
     showing in the player.
     """
-    roots = [API_TEMP, os.path.join(os.getcwd(), "temp")]
+    roots = [API_TEMP, os.path.join(os.getcwd(), "temp"), _faceset_library_dir()]
     out_dir = getattr(roop_globals, "output_path", "") or ""
     if out_dir:
         roots.append(out_dir)

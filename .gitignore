@@ -24,6 +24,7 @@ app/temp
 app/output
 app/config.yaml
 app/saved_configs
+app/facesets
 
 # app/output and app/temp are already ignored above as directories
 

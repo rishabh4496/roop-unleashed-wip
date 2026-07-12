@@ -109,6 +109,11 @@ class Settings:
         self.trt_precision = self.default_get(data, 'trt_precision', 'mixed')
         self.force_cpu = self.default_get(data, 'force_cpu', False)
         self.output_template = self.default_get(data, 'output_template', '{file}_{time}')
+        # Faceset library folder: persistent, named .fsz facesets that survive
+        # restarts so sources never need re-uploading. Blank = <app>/facesets.
+        # Point it at a cloud-synced folder (OneDrive/Dropbox/Google Drive) to
+        # sync your faceset library across devices.
+        self.faceset_library_path = self.default_get(data, 'faceset_library_path', '')
         self.use_os_temp_folder = self.default_get(data, 'use_os_temp_folder', False)
         self.output_show_video = self.default_get(data, 'output_show_video', True)
         self.launch_browser = self.default_get(data, 'launch_browser', False)
@@ -205,6 +210,7 @@ class Settings:
             'trt_precision' : self.trt_precision,
             'force_cpu' : self.force_cpu,
             'output_template' : self.output_template,
+            'faceset_library_path' : self.faceset_library_path,
             'use_os_temp_folder' : self.use_os_temp_folder,
             'output_show_video' : self.output_show_video,
             'launch_browser': self.launch_browser,

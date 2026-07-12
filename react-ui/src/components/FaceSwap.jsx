@@ -6,6 +6,7 @@ import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import EnhancerCompareGrid from './faceswap/EnhancerCompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
+import FacesetLibrary from './faceswap/FacesetLibrary';
 import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
@@ -1592,6 +1593,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           
           <Section title="Source images / facesets">
           <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
+          <FacesetLibrary
+            canSave={sourceFaces.length > 0}
+            onLoaded={(r) => { setSourceFaces(r.source_faces || []); if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info); }}
+            notify={notify} />
           <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true}
             onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
           {sourceFaces.length > 0 && (

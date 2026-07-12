@@ -28,6 +28,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <TextInput label="Server name" info="blank = local" value={p.server_name} onChange={(v) => set('server_name', v)} placeholder="127.0.0.1" />
           <TextInput label="Server port" info="0 = default" type="number" value={p.server_port} onChange={(v) => set('server_port', v)} />
           <TextInput label="Filename output template" info="{file} {time} {date} {i} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
+          <TextInput label="Faceset library folder" info="Where saved facesets live. Blank = app/facesets. Point at a cloud folder (OneDrive/Dropbox/Google Drive) to sync facesets across devices." value={p.faceset_library_path || ''} onChange={(v) => set('faceset_library_path', v)} placeholder="e.g. C:\Users\you\OneDrive\roop-facesets" />
         </Section>
 
         <Section title="Appearance">
