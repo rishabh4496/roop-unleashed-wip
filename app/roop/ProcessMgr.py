@@ -2037,27 +2037,48 @@ class ProcessMgr():
                                 num_faces_found += 1
 
             elif self.options.swap_mode == "selected":
-                # Multi-angle matching: for each detected face, find the target
-                # PERSON (group) with the smallest distance across all of that
-                # person's stored angles. Swap once with that person's source
-                # faceset. A turned head still matches via a side/back angle, so
-                # the swap doesn't drop out frame-to-frame (no flicker).
+                # Multi-angle matching: assign each captured target PERSON their
+                # single closest detected face (min distance across that person's
+                # stored angles), within the distance threshold. A turned head
+                # still matches via a side/back angle, so the swap doesn't drop
+                # out frame-to-frame (no flicker).
+                #
+                # Crucially this is a 1:1 assignment: a selected person maps to
+                # AT MOST ONE face per frame, and a face is swapped by AT MOST
+                # ONE person. This stops a look-alike or hard-pose bystander from
+                # also being swapped just for landing under the distance cutoff
+                # (which a per-face "swap everything under threshold" loop did).
                 groups = self.target_face_groups
                 uniq = sorted(set(groups)) if groups else []
                 rank = {g: r for r, g in enumerate(uniq)}
                 single_person = len(uniq) <= 1
                 threshold = self.options.face_distance_threshold
-                for face in faces:
-                    best_i, best_d = -1, threshold
-                    for i, tf in enumerate(self.target_face_datas):
-                        d = compute_cosine_distance(tf.embedding, face.embedding)
-                        if d <= best_d:
-                            best_d, best_i = d, i
-                    if best_i < 0:
+
+                # person group id -> list of its target-face (angle) indices
+                persons = {}
+                for i, g in enumerate(groups[:len(self.target_face_datas)]):
+                    persons.setdefault(g, []).append(i)
+
+                # (distance, person_g, face_idx) for every pair within threshold,
+                # using each person's closest angle to that face.
+                candidates = []
+                for fidx, face in enumerate(faces):
+                    for g, tis in persons.items():
+                        d = min(compute_cosine_distance(self.target_face_datas[ti].embedding, face.embedding)
+                                for ti in tis)
+                        if d <= threshold:
+                            candidates.append((d, g, fidx))
+                candidates.sort(key=lambda c: c[0])   # greedily assign closest pairs first
+
+                claimed_faces, claimed_persons = set(), set()
+                for d, g, fidx in candidates:
+                    if fidx in claimed_faces or g in claimed_persons:
                         continue
-                    src_index = self.options.selected_index if single_person else rank[groups[best_i]]
+                    claimed_faces.add(fidx)
+                    claimed_persons.add(g)
+                    src_index = self.options.selected_index if single_person else rank[g]
                     if src_index < len(self.input_face_datas):
-                        temp_frame = self.process_face(src_index, face, temp_frame)
+                        temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
                         num_faces_found += 1
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
