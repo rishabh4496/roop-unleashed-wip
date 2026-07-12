@@ -256,26 +256,42 @@ def pre_check() -> bool:
         update_status('Python version is not supported - please upgrade to 3.9 or higher.')
         return False
     
-    download_directory_path = util.resolve_relative_path('../models')
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/inswapper_128.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GFPGANv1.4.onnx'])
-    util.conditional_download(download_directory_path, ['https://github.com/csxmli2016/DMDNet/releases/download/v1/DMDNet.pth'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/restoreformer_plus_plus.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/xseg.onnx'])
-    download_directory_path = util.resolve_relative_path('../models/CLIP')
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/rd64-uni-refined.pth'])
-    download_directory_path = util.resolve_relative_path('../models/CodeFormer')
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/CodeFormerv0.1.onnx'])
-    download_directory_path = util.resolve_relative_path('../models/Frame')
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/deoldify_artistic.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/deoldify_stable.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/isnet-general-use.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x4.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x2.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/lsdir_x4.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/deepghs/imgutils-models/resolve/main/real_esrgan/RealESRGAN_x4plus_anime_6B.onnx'])
-    util.conditional_download(download_directory_path, ['https://huggingface.co/facefusion/models-3.3.0/resolve/main/ultra_sharp_2_x4.onnx'])
+    # Pre-warm the model cache while online. Offline (auto-detected), we skip
+    # this entirely and fall back to whatever is already on disk — the app still
+    # boots, and a missing model is only reported when its feature is actually
+    # used. required=False so even a single failed download online (host down,
+    # transient error) warns instead of aborting startup.
+    if util.is_online():
+        _pre_warm = [
+            ('../models', [
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/inswapper_128.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/GFPGANv1.4.onnx',
+                'https://github.com/csxmli2016/DMDNet/releases/download/v1/DMDNet.pth',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/restoreformer_plus_plus.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/xseg.onnx',
+            ]),
+            ('../models/CLIP', [
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/rd64-uni-refined.pth',
+            ]),
+            ('../models/CodeFormer', [
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/CodeFormerv0.1.onnx',
+            ]),
+            ('../models/Frame', [
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/deoldify_artistic.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/deoldify_stable.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/isnet-general-use.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x4.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/real_esrgan_x2.onnx',
+                'https://huggingface.co/countfloyd/deepfake/resolve/main/lsdir_x4.onnx',
+                'https://huggingface.co/deepghs/imgutils-models/resolve/main/real_esrgan/RealESRGAN_x4plus_anime_6B.onnx',
+                'https://huggingface.co/facefusion/models-3.3.0/resolve/main/ultra_sharp_2_x4.onnx',
+            ]),
+        ]
+        for subdir, urls in _pre_warm:
+            util.conditional_download(util.resolve_relative_path(subdir), urls, required=False)
+    else:
+        update_status('Offline mode: skipping model pre-download. Using locally available models; any missing model will be reported only when you use the feature that needs it.')
 
     print_cuda_info()  # Debug CUDA during pre-check
 
