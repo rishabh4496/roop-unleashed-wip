@@ -366,13 +366,47 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     notify(`Applied ${name} preset`, 'info');
   };
 
-  // Restore every Face Swap tab setting to the baked-in defaults
-  // (faceswap/defaults.js) and persist immediately so the backend CFG matches
-  // even if the user never runs a preview/swap afterwards.
+  // User-defined default: a snapshot of the Face Swap tab settings the user
+  // clicked "Save as default" on, kept in localStorage so it survives reloads.
+  // Only ever holds FACESWAP_DEFAULTS keys, so it can never capture or restore
+  // global/Settings-tab settings. null until the user saves one.
+  const USER_DEFAULTS_KEY = 'roop_faceswap_user_defaults';
+  const [userDefaults, setUserDefaults] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(USER_DEFAULTS_KEY) || 'null');
+      return raw && typeof raw === 'object' ? raw : null;
+    } catch { return null; }
+  });
+
+  // Snapshot the current Face Swap tab settings as the user's new default.
+  // Restricted to the FACESWAP_DEFAULTS key set so we never bake a global
+  // setting into the tab default.
+  const saveAsDefault = () => {
+    const snapshot = {};
+    for (const k of Object.keys(FACESWAP_DEFAULTS)) {
+      snapshot[k] = p[k] !== undefined ? p[k] : FACESWAP_DEFAULTS[k];
+    }
+    try { localStorage.setItem(USER_DEFAULTS_KEY, JSON.stringify(snapshot)); } catch { /* storage blocked — non-fatal */ }
+    setUserDefaults(snapshot);
+    notify('Saved current settings as your default', 'info');
+  };
+
+  // Restore every Face Swap tab setting to the user's saved default if they
+  // have one, otherwise the baked-in factory defaults (faceswap/defaults.js).
+  // Persist immediately so the backend CFG matches even if the user never runs
+  // a preview/swap afterwards.
   const resetToDefaults = () => {
-    setSettings((s) => ({ ...s, ...FACESWAP_DEFAULTS }));
-    postJSON('/api/settings', FACESWAP_DEFAULTS).catch(() => { /* backend offline — will persist on next run */ });
-    notify('Face Swap settings reset to defaults', 'info');
+    const target = userDefaults || FACESWAP_DEFAULTS;
+    setSettings((s) => ({ ...s, ...target }));
+    postJSON('/api/settings', target).catch(() => { /* backend offline — will persist on next run */ });
+    notify(userDefaults ? 'Restored your saved default' : 'Face Swap settings reset to factory defaults', 'info');
+  };
+
+  // Forget the user's saved default so "Reset" falls back to factory defaults.
+  const clearUserDefault = () => {
+    try { localStorage.removeItem(USER_DEFAULTS_KEY); } catch { /* non-fatal */ }
+    setUserDefaults(null);
+    notify('Cleared your saved default — Reset now uses factory defaults', 'info');
   };
 
   // ── initial rehydrate ──
@@ -1269,13 +1303,28 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 {name === 'Fast' ? '⚡ Fast' : name === 'Balanced' ? '⚖️ Balanced' : '💎 Quality'}
               </Button>
             ))}
-            <Button size="sm" variant="secondary" onClick={resetToDefaults}
-              title="Restore every Face Swap tab setting to the saved defaults">
-              ↩️ Reset defaults
+            <Button size="sm" variant="secondary" onClick={saveAsDefault}
+              title="Save the current Face Swap tab settings as your default. 'Reset defaults' will restore to this.">
+              ⭐ Save as default
             </Button>
+            <Button size="sm" variant="secondary" onClick={resetToDefaults}
+              title={userDefaults
+                ? 'Restore every Face Swap tab setting to your saved default'
+                : 'Restore every Face Swap tab setting to the factory defaults'}>
+              ↩️ {userDefaults ? 'Reset to my default' : 'Reset defaults'}
+            </Button>
+            {userDefaults && (
+              <Button size="sm" variant="secondary" onClick={clearUserDefault}
+                title="Forget your saved default and go back to the factory defaults">
+                🗑️ Clear my default
+              </Button>
+            )}
           </div>
           <div className="text-xs text-[var(--text-muted)] mt-2">
-            Sets detection resolution, upscale, enhancer & swap steps. Other settings unchanged. Reset restores all Face Swap tab settings to the saved defaults.
+            Sets detection resolution, upscale, enhancer & swap steps. Other settings unchanged.
+            {userDefaults
+              ? ' “Reset” restores all Face Swap tab settings to the default you saved.'
+              : ' “Save as default” stores the current Face Swap tab settings so “Reset” restores to them.'}
           </div>
         </Section>
 
