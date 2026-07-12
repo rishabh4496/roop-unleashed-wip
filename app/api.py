@@ -803,6 +803,25 @@ async def faceset_library_import(file: UploadFile = File(...)):
     return _faceset_library_payload({"imported": os.path.splitext(os.path.basename(dest))[0]})
 
 
+@app.post("/api/faceset/library/rebuild_thumbs")
+def faceset_library_rebuild_thumbs(payload: dict = Body(default=None)):
+    """Regenerate the frontal-face thumbnail sidecars from each .fsz's contents.
+    Use this to refresh facesets saved before frontal-thumbnail selection existed,
+    or any whose preview looks like a side profile. Optionally pass {"filename"}
+    to rebuild just one; otherwise rebuilds every faceset in the library."""
+    lib = _faceset_library_dir()
+    only = os.path.basename(str((payload or {}).get("filename", ""))) if payload else ""
+    rebuilt = 0
+    for fn in os.listdir(lib) if os.path.isdir(lib) else []:
+        if not fn.lower().endswith(".fsz"):
+            continue
+        if only and fn != only:
+            continue
+        _write_library_thumb(os.path.join(lib, fn))
+        rebuilt += 1
+    return _faceset_library_payload({"rebuilt": rebuilt})
+
+
 @app.post("/api/faceset/library/open")
 def faceset_library_open():
     d = _faceset_library_dir()

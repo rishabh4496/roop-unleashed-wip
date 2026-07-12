@@ -93,6 +93,15 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
     try { await postJSON('/api/faceset/library/open', {}); } catch (e) { notify?.(e.message, 'error'); }
   };
 
+  const rebuildThumbs = async () => {
+    setBusy(true);
+    try {
+      const r = await postJSON('/api/faceset/library/rebuild_thumbs', {});
+      setEntries(r.entries || []);
+      notify?.(`Rebuilt ${r.rebuilt} thumbnail(s) — picked the most frontal face`);
+    } catch (e) { notify?.(e.message, 'error'); } finally { setBusy(false); }
+  };
+
   const Thumb = ({ e, size }) => (
     <span className={`shrink-0 ${size} rounded-md overflow-hidden bg-black/40 border border-white/10`}>
       {e?.thumb
@@ -129,6 +138,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
             </Button>
             <Button size="sm" variant="secondary" onClick={() => importRef.current?.click()}>⬆ Import .fsz</Button>
             <Button size="sm" variant="secondary" onClick={openFolder}>📂 Open folder</Button>
+            <Button size="sm" variant="secondary" disabled={busy || entries.length === 0} onClick={rebuildThumbs} title="Regenerate previews, picking the most frontal face in each set">🖼 Fix thumbnails</Button>
             <Button size="sm" variant="secondary" onClick={refresh}>↻</Button>
             <input ref={importRef} type="file" accept=".fsz" multiple className="hidden" onChange={onImport} />
           </div>
