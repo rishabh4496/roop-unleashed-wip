@@ -10,6 +10,7 @@ import FacesetLibrary from './faceswap/FacesetLibrary';
 import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
+import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
@@ -363,6 +364,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const applyPreset = (name) => {
     setSettings((s) => ({ ...s, ...PRESETS[name] }));
     notify(`Applied ${name} preset`, 'info');
+  };
+
+  // Restore every Face Swap tab setting to the baked-in defaults
+  // (faceswap/defaults.js) and persist immediately so the backend CFG matches
+  // even if the user never runs a preview/swap afterwards.
+  const resetToDefaults = () => {
+    setSettings((s) => ({ ...s, ...FACESWAP_DEFAULTS }));
+    postJSON('/api/settings', FACESWAP_DEFAULTS).catch(() => { /* backend offline — will persist on next run */ });
+    notify('Face Swap settings reset to defaults', 'info');
   };
 
   // ── initial rehydrate ──
@@ -1259,9 +1269,13 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 {name === 'Fast' ? '⚡ Fast' : name === 'Balanced' ? '⚖️ Balanced' : '💎 Quality'}
               </Button>
             ))}
+            <Button size="sm" variant="secondary" onClick={resetToDefaults}
+              title="Restore every Face Swap tab setting to the saved defaults">
+              ↩️ Reset defaults
+            </Button>
           </div>
           <div className="text-xs text-[var(--text-muted)] mt-2">
-            Sets detection resolution, upscale, enhancer & swap steps. Other settings unchanged.
+            Sets detection resolution, upscale, enhancer & swap steps. Other settings unchanged. Reset restores all Face Swap tab settings to the saved defaults.
           </div>
         </Section>
 
