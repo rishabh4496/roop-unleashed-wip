@@ -13,7 +13,10 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   const [renaming, setRenaming] = useState(null); // filename being renamed
   const [renameVal, setRenameVal] = useState('');
   const [filter, setFilter] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selected, setSelected] = useState(null); // last-loaded entry (for the closed box)
   const importRef = useRef(null);
+  const pickerRef = useRef(null);
 
   const q = filter.trim().toLowerCase();
   const shown = q ? entries.filter((e) => e.name.toLowerCase().includes(q)) : entries;
@@ -27,6 +30,14 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
 
   useEffect(() => { if (open) refresh(); }, [open, refresh]);
 
+  // Close the dropdown when clicking outside of it.
+  useEffect(() => {
+    if (!pickerOpen) return undefined;
+    const onDown = (ev) => { if (pickerRef.current && !pickerRef.current.contains(ev.target)) setPickerOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [pickerOpen]);
+
   const saveCurrent = async () => {
     const name = window.prompt('Name this faceset', '');
     if (name == null) return;
@@ -38,20 +49,23 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
     } catch (e) { notify?.(e.message, 'error'); } finally { setBusy(false); }
   };
 
-  const load = async (filename) => {
+  const load = async (entry) => {
     setBusy(true);
+    setPickerOpen(false);
     try {
-      const r = await postJSON('/api/faceset/library/load', { filename });
+      const r = await postJSON('/api/faceset/library/load', { filename: entry.filename });
+      setSelected(entry);
       onLoaded?.(r);
-      notify?.('Faceset loaded into source faces');
+      notify?.(`Loaded “${entry.name}” into source faces`);
     } catch (e) { notify?.(e.message, 'error'); } finally { setBusy(false); }
   };
 
-  const del = async (filename) => {
-    if (!window.confirm(`Delete “${filename.replace(/\.fsz$/i, '')}” from the library? This removes the file on disk.`)) return;
+  const del = async (entry) => {
+    if (!window.confirm(`Delete “${entry.name}” from the library? This removes the file on disk.`)) return;
     try {
-      const r = await postJSON('/api/faceset/library/delete', { filename });
+      const r = await postJSON('/api/faceset/library/delete', { filename: entry.filename });
       setEntries(r.entries || []);
+      if (selected?.filename === entry.filename) setSelected(null);
     } catch (e) { notify?.(e.message, 'error'); }
   };
 
@@ -78,6 +92,14 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   const openFolder = async () => {
     try { await postJSON('/api/faceset/library/open', {}); } catch (e) { notify?.(e.message, 'error'); }
   };
+
+  const Thumb = ({ e, size }) => (
+    <span className={`shrink-0 ${size} rounded-md overflow-hidden bg-black/40 border border-white/10`}>
+      {e?.thumb
+        ? <img src={e.thumb} alt={e.name} className="w-full h-full object-cover" draggable={false} />
+        : <span className="flex items-center justify-center w-full h-full text-white/20 text-sm">🧑</span>}
+    </span>
+  );
 
   return (
     <div className="rounded-xl bg-black/45 border border-white/5 overflow-hidden">
@@ -118,62 +140,76 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
               restarts, so you never re-upload. Set the folder to a cloud drive in Settings to sync across devices.
             </p>
           ) : (
-            <>
-            {entries.length > 6 && (
-              <input
-                value={filter}
-                onChange={(ev) => setFilter(ev.target.value)}
-                placeholder={`Search ${entries.length} facesets…`}
-                className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-lg px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none"
-              />
-            )}
-            <div className="flex flex-col gap-1 max-h-64 overflow-y-auto pr-0.5 -mr-1 [scrollbar-width:thin]">
-              {shown.length === 0 ? (
-                <p className="text-[11px] text-white/30 py-2 text-center">No match for “{filter}”.</p>
-              ) : shown.map((e) => (
-                <div
-                  key={e.filename}
-                  className="group flex items-center gap-2.5 rounded-lg bg-white/[0.02] border border-white/5 hover:border-white/15 hover:bg-white/[0.04] transition-colors pr-2"
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.12em] text-white/40 mb-1.5">Load a faceset</div>
+              <div className="relative" ref={pickerRef}>
+                {/* Closed dropdown box (mirrors the Select control) */}
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  className="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-2 text-left transition-colors"
                 >
-                  <button
-                    type="button"
-                    onClick={() => load(e.filename)}
-                    disabled={busy}
-                    title="Load into source faces"
-                    className="flex items-center gap-2.5 flex-1 min-w-0 py-1.5 pl-1.5 text-left"
-                  >
-                    <span className="shrink-0 w-9 h-9 rounded-md overflow-hidden bg-black/40 border border-white/10">
-                      {e.thumb
-                        ? <img src={e.thumb} alt={e.name} className="w-full h-full object-cover" draggable={false} />
-                        : <span className="flex items-center justify-center w-full h-full text-white/20 text-sm">🧑</span>}
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Thumb e={selected} size="w-6 h-6" />
+                    <span className={`truncate text-[12px] ${selected ? 'text-white/85' : 'text-white/35'}`}>
+                      {selected ? selected.name : 'Select a faceset…'}
                     </span>
-                    {renaming === e.filename ? (
-                      <input
-                        autoFocus
-                        value={renameVal}
-                        onClick={(ev) => ev.stopPropagation()}
-                        onChange={(ev) => setRenameVal(ev.target.value)}
-                        onBlur={() => commitRename(e.filename)}
-                        onKeyDown={(ev) => { if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
-                        className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
-                      />
-                    ) : (
-                      <span className="flex-1 min-w-0 truncate text-[11px] text-white/75" title={e.name}>
-                        {e.name}
-                        {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
-                      </span>
-                    )}
-                  </button>
+                  </span>
+                  <span className="text-white/40 text-xs shrink-0">⌄</span>
+                </button>
 
-                  <div className="flex items-center gap-1.5 text-[10px] text-white/35 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
-                    <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={() => beginRename(e)}>✏️</button>
-                    <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename}>⬇</a>
-                    <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={() => del(e.filename)}>🗑</button>
+                {/* Open dropdown menu — overlays, so it never grows the panel */}
+                {pickerOpen && (
+                  <div className="absolute z-20 left-0 right-0 mt-1 rounded-lg bg-[#181016] border border-white/10 shadow-xl shadow-black/50 overflow-hidden">
+                    {entries.length > 6 && (
+                      <div className="p-1.5 border-b border-white/5">
+                        <input
+                          autoFocus
+                          value={filter}
+                          onChange={(ev) => setFilter(ev.target.value)}
+                          placeholder={`Search ${entries.length} facesets…`}
+                          className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none"
+                        />
+                      </div>
+                    )}
+                    <div className="max-h-60 overflow-y-auto py-1 [scrollbar-width:thin]">
+                      {shown.length === 0 ? (
+                        <p className="text-[11px] text-white/30 py-2 text-center">No match for “{filter}”.</p>
+                      ) : shown.map((e) => (
+                        <div
+                          key={e.filename}
+                          className={`group flex items-center gap-2.5 px-2 py-1.5 mx-1 rounded-md cursor-pointer transition-colors ${selected?.filename === e.filename ? 'bg-[var(--accent)]/10' : 'hover:bg-white/[0.06]'}`}
+                          onClick={() => { if (renaming !== e.filename) load(e); }}
+                        >
+                          <Thumb e={e} size="w-8 h-8" />
+                          {renaming === e.filename ? (
+                            <input
+                              autoFocus
+                              value={renameVal}
+                              onClick={(ev) => ev.stopPropagation()}
+                              onChange={(ev) => setRenameVal(ev.target.value)}
+                              onBlur={() => commitRename(e.filename)}
+                              onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e.filename); if (ev.key === 'Escape') setRenaming(null); }}
+                              className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
+                            />
+                          ) : (
+                            <span className="flex-1 min-w-0 truncate text-[12px] text-white/80" title={e.name}>
+                              {e.name}
+                              {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1.5 text-[11px] text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
+                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
+                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )}
+              </div>
             </div>
-            </>
           )}
         </div>
       )}

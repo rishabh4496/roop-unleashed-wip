@@ -610,47 +610,74 @@ def _faceset_library_payload(extra=None) -> dict:
     return payload
 
 
-def _write_library_thumb_from_fsz(fsz_path: str):
-    # Extract the first face PNG from a .fsz to use as the library thumbnail.
+def _frontality(kps):
+    """0 = perfectly frontal, larger = more turned to a profile. Uses the same
+    eye/nose geometry as estimate_face_pose_from_kps (ratio ~1 == front)."""
     try:
-        import zipfile
-        with zipfile.ZipFile(fsz_path, "r") as zf:
-            pngs = [n for n in zf.namelist() if n.lower().endswith(".png")]
-            if not pngs:
-                return
-            data = zf.read(sorted(pngs)[0])
-        img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        import math
+        le_x = kps[0][0]
+        re_x = kps[1][0]
+        nose_x = kps[2][0]
+        dx_left = abs(nose_x - le_x)
+        dx_right = abs(re_x - nose_x)
+        ratio = dx_left / (dx_right + 1e-6)
+        return abs(math.log(ratio + 1e-6))
+    except Exception:
+        return 999.0
+
+
+def _frontal_crop_from_images(images):
+    """Return the most frontal face crop (BGR) across a list of BGR images, so
+    a multi-angle faceset shows a front-facing thumbnail instead of a profile."""
+    best = None
+    best_score = None
+    tmp = os.path.join(API_TEMP, "_libthumb.png")
+    os.makedirs(API_TEMP, exist_ok=True)
+    # Cap the scan — a frontal face is found quickly and we only need a preview.
+    for img in list(images)[:15]:
         if img is None:
-            return
-        # Prefer a tight face crop for the preview if one can be extracted.
-        thumb = img
+            continue
+        if best_score is not None and best_score < 0.05:
+            break  # already have a near-perfect frontal crop
+        _imwrite_unicode(tmp, img)
         try:
-            faces = extract_face_images_from_image(img)
-            if faces:
-                thumb = faces[0]
+            for fd in extract_face_images(tmp, (False, 0), 0.5):
+                face, crop = fd[0], fd[1]
+                kps = getattr(face, "kps", None)
+                if kps is None and isinstance(face, dict):
+                    kps = face.get("kps")
+                score = _frontality(kps) if kps is not None else 999.0
+                if best_score is None or score < best_score:
+                    best_score, best = score, crop
         except Exception:
             pass
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+    return best
+
+
+def _write_library_thumb(fsz_path: str, images=None):
+    """Write the `<name>.png` thumbnail sidecar, choosing the most frontal face.
+    `images` (BGR) is used when known; otherwise the .fsz PNGs are read back."""
+    try:
+        if images is None:
+            import zipfile
+            images = []
+            with zipfile.ZipFile(fsz_path, "r") as zf:
+                for n in sorted(n for n in zf.namelist() if n.lower().endswith(".png")):
+                    img = cv2.imdecode(np.frombuffer(zf.read(n), dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if img is not None:
+                        images.append(img)
+        if not images:
+            return
+        thumb = _frontal_crop_from_images(images)
+        if thumb is None:
+            thumb = images[0]  # fall back to the raw first image
         _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png", thumb)
     except Exception:
         traceback.print_exc()
-
-
-def extract_face_images_from_image(bgr):
-    # Small helper: run extract_face_images on an in-memory BGR image by writing
-    # it to a temp file (extract_face_images takes a path). Returns crop images.
-    tmp = os.path.join(API_TEMP, "_libthumb.png")
-    os.makedirs(API_TEMP, exist_ok=True)
-    _imwrite_unicode(tmp, bgr)
-    out = []
-    try:
-        for fd in extract_face_images(tmp, (False, 0), 0.5):
-            out.append(fd[1])
-    finally:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-    return out
 
 
 def _faceset_member_images(idx: int):
@@ -703,12 +730,13 @@ def faceset_library_save(payload: dict = Body(...)):
     fsz_path = _unique_fsz_path(payload.get("name", ""))
     util.zip(imgnames, fsz_path)
 
-    # Thumbnail sidecar: use the source panel's crop for a clean face preview.
-    if 0 <= idx < len(ui_globals.ui_input_thumbs) and ui_globals.ui_input_thumbs[idx] is not None:
-        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png",
-                         cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR))
-    else:
-        _write_library_thumb_from_fsz(fsz_path)
+    # Thumbnail sidecar: pick the most frontal face in the set (fall back to the
+    # source panel's crop) so the preview is never a side profile.
+    _write_library_thumb(fsz_path, images=imgs)
+    thumb_sidecar = os.path.splitext(fsz_path)[0] + ".png"
+    if not os.path.exists(thumb_sidecar) and 0 <= idx < len(ui_globals.ui_input_thumbs) \
+            and ui_globals.ui_input_thumbs[idx] is not None:
+        _imwrite_unicode(thumb_sidecar, cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR))
 
     shutil.rmtree(tmpdir, ignore_errors=True)
     return _faceset_library_payload({"saved": os.path.splitext(os.path.basename(fsz_path))[0]})
@@ -771,7 +799,7 @@ async def faceset_library_import(file: UploadFile = File(...)):
     dest = _unique_fsz_path(os.path.splitext(base)[0])
     with open(dest, "wb") as buf:
         shutil.copyfileobj(file.file, buf)
-    _write_library_thumb_from_fsz(dest)
+    _write_library_thumb(dest)
     return _faceset_library_payload({"imported": os.path.splitext(os.path.basename(dest))[0]})
 
 
