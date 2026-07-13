@@ -8,7 +8,12 @@ export default function InteractivePreview({
   personIds = [],
   splitView = false,
   compare = false,
+  onToggleCompare,
+  frame = 1,
+  setFrame,
   maxFrames = 1,
+  isPlaying = false,
+  setIsPlaying,
   previewing = false,
   previewSecs = 0,
   processing = false,
@@ -154,6 +159,45 @@ export default function InteractivePreview({
     }
   };
 
+  const stepFrame = (delta) => setFrame && setFrame((f) => Math.max(1, Math.min(maxFrames, f + delta)));
+  const isVideo = maxFrames > 1;
+
+  // Shared floating HUD control bar (zoom / boxes / compare / transport / fullscreen).
+  const hudBar = () => (
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
+      <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
+      <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({ x: 0, y: 0 }); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
+      <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
+      <div className="w-px h-4 bg-white/10 mx-1" />
+      <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
+      {onToggleCompare && (
+        <button onClick={() => onToggleCompare()} title="Toggle before/after compare (C)"
+                className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${compare ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>COMPARE</button>
+      )}
+      {isVideo && (
+        <>
+          <div className="w-px h-4 bg-white/10 mx-1" />
+          <button onClick={() => stepFrame(-1)} className="p-2 rounded-lg hud-glass-button" title="Previous frame (←)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
+          </button>
+          <button onClick={() => setIsPlaying && setIsPlaying(p => !p)} className="p-2 rounded-lg hud-glass-button" title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
+            {isPlaying
+              ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+              : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
+          </button>
+          <button onClick={() => stepFrame(1)} className="p-2 rounded-lg hud-glass-button" title="Next frame (→)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
+          </button>
+          <span className="px-1 text-[10px] font-bold font-mono text-white/60 tabular-nums whitespace-nowrap">{frame}/{maxFrames}</span>
+        </>
+      )}
+      <div className="w-px h-4 bg-white/10 mx-1" />
+      <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+      </button>
+    </div>
+  );
+
   // Split View comparisons
   if (compare && splitView) {
     return (
@@ -180,16 +224,7 @@ export default function InteractivePreview({
         </div>
 
         {/* HUD control bar overlays */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 hover:opacity-100 transition-all duration-300 z-50">
-          <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
-          <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
-          <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
-          <div className="w-px h-4 bg-white/10 mx-1" />
-          <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
-          <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-          </button>
-        </div>
+        {hudBar()}
       </div>
     );
   }
@@ -263,16 +298,7 @@ export default function InteractivePreview({
             style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
 
       {/* HUD control bar overlays */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
-        <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
-        <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({x:0, y:0}); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
-        <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
-        <div className="w-px h-4 bg-white/10 mx-1" />
-        <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
-        <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-        </button>
-      </div>
+      {hudBar()}
     </div>
   );
 }

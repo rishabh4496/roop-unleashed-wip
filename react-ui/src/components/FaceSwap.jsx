@@ -2035,10 +2035,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   personIds={previewPersonIds}
                   splitView={splitView}
                   compare={compare}
-                  setCompare={setCompare}
+                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) setComparingEnhancers(false); return n; })}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}
+                  isPlaying={isPlaying}
                   previewing={previewing}
                   previewSecs={previewSecs}
                   setIsPlaying={setIsPlaying}
