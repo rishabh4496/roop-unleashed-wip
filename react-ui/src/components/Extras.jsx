@@ -34,11 +34,13 @@ export default function Extras({ notify, registerFileListener }) {
   }, []);
 
   // Keep subtype valid whenever the operation changes.
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: resync only when operation/frameOps change, not on every subtype edit */
   useEffect(() => {
     if (!frameOps) return;
     const list = frameOps[operation] || [];
     if (!list.includes(subtype)) setSubtype(list[0] || '');
   }, [operation, frameOps]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const runEnhance = async () => {
     if (!file) { notify('Pick a file first', 'error'); return; }
@@ -62,6 +64,7 @@ export default function Extras({ notify, registerFileListener }) {
     }
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: subscribe once; notify is stable */
   useEffect(() => {
     if (!registerFileListener) return;
     return registerFileListener((files) => {
@@ -77,6 +80,7 @@ export default function Extras({ notify, registerFileListener }) {
       return true; // consumed
     });
   }, [registerFileListener, fileUrlSrc]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     return () => {

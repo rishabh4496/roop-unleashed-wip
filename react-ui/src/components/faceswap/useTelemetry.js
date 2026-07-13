@@ -11,7 +11,7 @@ export default function useTelemetry(intervalMs = 3000) {
       try {
         const data = await getJSON('/api/system/telemetry');
         setTelemetry(data);
-      } catch (err) {
+      } catch {
         // quiet fail
       }
     };

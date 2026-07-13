@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { PERSON_COLORS } from './constants';
 
 export const Card = ({ children, className = '', ...rest }) => (
   <div className={`rounded-2xl glass-panel ${className}`} {...rest}>
@@ -132,8 +133,6 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
 };
 
 // Gallery of face thumbnails with selection + move/remove controls.
-export const PERSON_COLORS = ['#E94560', '#3DA5D9', '#52B788', '#E9C46A', '#9B5DE5', '#F4A261', '#00BBF9', '#F15BB5'];
-
 export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty, groups, vertical = false, info = [], draggable = false, large = false }) => {
   const personCount = groups && groups.length ? new Set(groups).size : 0;
   return (

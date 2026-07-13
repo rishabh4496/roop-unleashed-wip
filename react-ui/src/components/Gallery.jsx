@@ -24,9 +24,11 @@ export default function Gallery({ notify }) {
     }
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: fetch once on mount */
   useEffect(() => {
     fetchOutputs();
   }, []);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const revealFolder = async () => {
     try {

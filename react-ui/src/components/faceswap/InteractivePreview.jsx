@@ -8,12 +8,9 @@ export default function InteractivePreview({
   personIds = [],
   splitView = false,
   compare = false,
-  setCompare,
-  setFrame,
   maxFrames = 1,
   previewing = false,
   previewSecs = 0,
-  setIsPlaying,
   processing = false,
   liveFrame = null,
   liveSeq = 0

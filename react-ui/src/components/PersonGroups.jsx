@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { postJSON } from '../api';
-import { PERSON_COLORS } from './ui';
+import { PERSON_COLORS } from './constants';
 
 // Coarse pose buckets we consider "primary coverage" for a person. Anything the
 // backend labels (e.g. "Left Profile + Up Tilt") is matched against these by

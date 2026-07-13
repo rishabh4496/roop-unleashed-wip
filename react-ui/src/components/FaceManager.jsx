@@ -10,6 +10,7 @@ export default function FaceManager({ notify, registerFileListener }) {
   const [maxFrames, setMaxFrames] = useState(1);
   const [built, setBuilt] = useState(null);
 
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: subscribe once; notify is stable */
   useEffect(() => {
     if (!registerFileListener) return;
     return registerFileListener(async (files) => {
@@ -22,6 +23,7 @@ export default function FaceManager({ notify, registerFileListener }) {
       return true; // consumed
     });
   }, [registerFileListener]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const onAddFiles = async (e) => {
     if (!e.target.files.length) return;

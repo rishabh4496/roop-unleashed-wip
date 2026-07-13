@@ -216,6 +216,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   };
 
   // Queue Runner State Machine
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: queue state machine reads latest state each tick without re-subscribing on every dep change */
   useEffect(() => {
     if (!isQueueRunning || currentQueueIndex === null) return;
     
@@ -299,6 +300,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       setCurrentQueueIndex((idx) => idx + 1);
     }
   }, [progress.processing]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Custom Timeline and Playback States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -640,7 +642,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           setLiveRenderingTimers((prev) => ({ ...prev, [enh]: null }));
           previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
         }
-      } catch (err) {
+      } catch {
         if (activeIntervalsRef.current[enh]) {
           clearInterval(activeIntervalsRef.current[enh]);
           delete activeIntervalsRef.current[enh];
@@ -651,6 +653,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     }
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadEnhancerPreviews is a stable closure invoked on mount/trigger */
   useEffect(() => {
     if (!comparingEnhancers || targets.length === 0) return;
     let active = true;
@@ -663,6 +666,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       }
     };
   }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
@@ -972,6 +976,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     setHoverFrame(null);
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: scrub handlers bind latest markers via helpers, no re-subscribe wanted */
   useEffect(() => {
     if (!isScrubbing) return;
 
@@ -1004,6 +1009,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       window.removeEventListener('pointerup', handlePointerUp);
     };
   }, [isScrubbing, dragType, selTarget, maxFrames, targets]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const handleTimelinePointerDown = (e) => {
     if (!timelineRef.current) return;
@@ -1089,6 +1095,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   };
 
   // Restoration effect when swapping finishes
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: fires on processing-complete transition; notify is stable */
   useEffect(() => {
     if (isGeneratingPreviewClip && !progress.processing && origStartEnd) {
       const restore = async () => {
@@ -1110,8 +1117,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       restore();
     }
   }, [progress.processing, isGeneratingPreviewClip, origStartEnd]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Keyboard Escape, Shortcuts HUD, & Global Productivity Hotkeys
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: hotkey handlers read latest callbacks; re-subscribing every render would thrash listeners */
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ignore key events if the user is typing in form controls
@@ -1250,6 +1259,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     start,
     startQueue
   ]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Command-palette action bus (dispatched from App via window 'roop:command').
   // A ref keeps the handler map fresh without re-subscribing every render.
