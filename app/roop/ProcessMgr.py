@@ -446,6 +446,9 @@ class ProcessMgr():
         self.streamwriter = None
         self.progress_gradio = None
         self.total_frames = 0
+        # Cumulative count of target faces handed to process_face — used by the
+        # learned runtime estimator to derive average faces/frame (density).
+        self.total_swaps = 0
         # Set by core.live_swap on the shared preview ProcessMgr: preview
         # renders must not be published to the batch live-view frame.
         self.is_preview = False
@@ -2356,6 +2359,10 @@ class ProcessMgr():
 
     def process_face(self, face_index, target_face:Face, frame:Frame):
         from roop.face_util import align_crop
+
+        # Count each target face processed (density = total_swaps / frames). A
+        # lost increment under thread races is harmless for a coarse average.
+        self.total_swaps += 1
 
         # Capture full-frame dimensions before any rotation rebind.
         # 'frame' may be reassigned to a smaller rotcutframe below when

@@ -680,6 +680,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
 
             start_processing = time()
+            _swaps_before = getattr(process_mgr, 'total_swaps', 0)
             _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
             if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
                 util.create_temp(v.filename)
@@ -788,13 +789,19 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time
             update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
-            # Fold this run into the learned runtime estimator (keyed by the
-            # settings signature stashed at run start). Guarded — never fatal.
+            # Fold this run into the learned runtime estimator. Signature =
+            # settings (stashed at run start) + measured face-density bucket
+            # (avg faces/frame for THIS video). Guarded — never fatal.
             try:
                 from roop import runtime_calib
-                runtime_calib.record(
-                    getattr(roop.globals, '_run_signature', None),
-                    v.endframe - v.startframe, elapsed_time * 1000.0)
+                frames = v.endframe - v.startframe
+                base_sig = getattr(roop.globals, '_run_signature', None)
+                if base_sig:
+                    swaps = getattr(process_mgr, 'total_swaps', 0) - _swaps_before
+                    avg_faces = swaps / max(1, frames)
+                    sig = runtime_calib.with_density(
+                        base_sig, runtime_calib.density_bucket(avg_faces))
+                    runtime_calib.record(sig, frames, elapsed_time * 1000.0)
             except Exception:
                 pass
             import gc

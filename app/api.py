@@ -2243,20 +2243,29 @@ def runtime_estimate(payload: dict = Body(...)):
     runs (see roop.runtime_calib). Returns nulls when there's no data yet — the
     frontend falls back to its heuristic. `frames` in the payload is echoed into
     total_ms for convenience."""
+    precision = getattr(roop_globals.CFG, 'trt_precision', 'mixed')
+    threads = roop_globals.CFG.max_threads
+    gpu = _gpu_name()
+    out = {"ms_per_frame": None, "samples": 0, "source": "none", "total_ms": None,
+           "density_bucket": None, "gpu": gpu, "threads": threads,
+           "precision": precision, "store": {"entries": 0, "global_samples": 0}}
     try:
         from roop import runtime_calib
         frames = int(payload.get("frames", 1) or 1)
-        sig = runtime_calib.signature_from_payload(
-            payload, gpu=_gpu_name(),
-            threads=roop_globals.CFG.max_threads,
-            precision=getattr(roop_globals.CFG, 'trt_precision', 'mixed'))
+        base = runtime_calib.signature_from_payload(
+            payload, gpu=gpu, threads=threads, precision=precision)
+        fc = payload.get("face_count")
+        bucket = runtime_calib.density_bucket(fc) if fc is not None else None
+        sig = runtime_calib.with_density(base, bucket) if bucket else base
+        out["density_bucket"] = bucket
+        out["store"] = runtime_calib.stats()
         pred = runtime_calib.predict(sig)
         if pred and pred.get("ms_per_frame"):
-            return {"ms_per_frame": pred["ms_per_frame"], "samples": pred["samples"],
-                    "source": pred["source"], "total_ms": frames * pred["ms_per_frame"]}
+            out.update({"ms_per_frame": pred["ms_per_frame"], "samples": pred["samples"],
+                        "source": pred["source"], "total_ms": frames * pred["ms_per_frame"]})
     except Exception:
         traceback.print_exc()
-    return {"ms_per_frame": None, "samples": 0, "source": "none", "total_ms": None}
+    return out
 
 
 @app.get("/api/system/telemetry")

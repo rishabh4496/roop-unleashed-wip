@@ -80,6 +80,45 @@ def _norm(v):
     return str(v)
 
 
+def density_bucket(n):
+    """Bucket average faces-per-frame into coarse classes so a single-face clip
+    and a crowd scene calibrate separately without fragmenting the store."""
+    try:
+        n = float(n)
+    except Exception:
+        return "?"
+    if n <= 0:
+        return "0"
+    if n < 1.5:
+        return "1"
+    if n < 2.5:
+        return "2"
+    if n < 4.5:
+        return "3-4"
+    return "5+"
+
+
+def with_density(base_sig, bucket):
+    """Append a face-density bucket to a base (settings+env) signature. Kept
+    separate from signature_from_payload because the true density is only known
+    at run completion, whereas the base signature is built at run start."""
+    if not bucket:
+        return base_sig
+    return f"{base_sig}|density={bucket}"
+
+
+def stats():
+    """Aggregate store stats for the estimation panel."""
+    try:
+        with _LOCK:
+            data = _load()
+        return {"entries": len(data.get("entries", {})),
+                "global_samples": data.get("global_samples", 0),
+                "global_ms_per_frame": data.get("global_ms_per_frame")}
+    except Exception:
+        return {"entries": 0, "global_samples": 0, "global_ms_per_frame": None}
+
+
 def signature_from_payload(payload, gpu="", threads="", precision=""):
     """Build a stable signature string from a swap/estimate payload plus the
     server-side environment (GPU, thread count, TRT precision) that the payload
