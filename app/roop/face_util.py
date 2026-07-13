@@ -1,4 +1,3 @@
-import os
 import threading
 import contextlib
 from queue import Queue
@@ -705,32 +704,6 @@ WARP_TEMPLATES = {
         dtype=np.float32,
     ),
 }
-
-# ── DFM (DeepFaceLive) whole-face crop ────────────────────────────────────────
-# DeepFaceLive .dfm models are trained on DFL's "whole_face" alignment, which
-# deliberately includes jaw / chin / cheeks / forehead — that broad crop is the
-# whole reason a DFM can transfer face *shape* and not just inner-face identity.
-# These are the exact 5-point constants FaceFusion's deep_swapper uses to run
-# .dfm models (facefusion/face_helper.py WARP_TEMPLATES['dfl_whole_face']),
-# so the crop matches what the models were trained on.
-# ROOP_DFM_COVERAGE (default 1.0 = exact) optionally rescales toward the centroid
-# for a model trained slightly tighter/looser: <1 pulls more head into frame.
-WARP_TEMPLATES["dfl_whole_face"] = np.array(
-    [
-        [0.35342266, 0.39285716],
-        [0.62797622, 0.39285716],
-        [0.48660713, 0.54017860],
-        [0.38839287, 0.68750011],
-        [0.59821427, 0.68750011],
-    ],
-    dtype=np.float32,
-)
-_dfm_coverage = float(os.environ.get("ROOP_DFM_COVERAGE", "1.0"))
-if abs(_dfm_coverage - 1.0) > 1e-6:
-    _dfm_c = WARP_TEMPLATES["dfl_whole_face"].mean(axis=0)
-    WARP_TEMPLATES["dfl_whole_face"] = (
-        _dfm_c + (WARP_TEMPLATES["dfl_whole_face"] - _dfm_c) * _dfm_coverage
-    ).astype(np.float32)
 
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):

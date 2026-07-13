@@ -44,9 +44,6 @@ from collections import deque as _deque
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
-# DFM spike: feed/emit BGR instead of RGB to the .dfm model (color order is a
-# per-export unknown; default RGB matches FaceFusion's deep_swapper).
-_DFM_BGR = os.environ.get('ROOP_DFM_BGR', '0') == '1'
 
 
 # ── Jaw / chin reshape warp ──────────────────────────────────────────────────
@@ -2367,13 +2364,6 @@ class ProcessMgr():
             subsample_size = model_output_size
         subsample_total = subsample_size // model_output_size
 
-        # DFM (whole-face) models run at native resolution on a single whole
-        # aligned face — pixel-boost tiling would feed the generator sub-tiles of
-        # a face instead, which is meaningless. Force a single full-res crop.
-        if not getattr(swap_p, 'model_pixel_boost', True):
-            subsample_size = model_output_size
-            subsample_total = 1
-
         # Align with the swap model's training template (ghost/simswap use
         # arcface_112_v1, hififace uses mtcnn_512; inswapper family = arcface).
         # M is carried through masks/paste/mouth-restore generically, so the
@@ -2514,7 +2504,6 @@ class ProcessMgr():
                 print(f"[ProcessMgr] Frontalization failed: {e}")
 
         fake_frame = aligned_for_swap
-        dfm_face_mask = None   # DFM out_celeb_face_mask (crop space), routed to paste-back
 
         for p in self.processors:
             if p.type == 'swap':
@@ -2525,11 +2514,7 @@ class ProcessMgr():
                 # threads would share a single non-thread-safe TensorRT context
                 # and corrupt/hang the CUDA context.
                 _pooled = getattr(p, 'pool', None) is not None
-                # DFM emits a per-face mask we must read back deterministically,
-                # so it takes the plain Run path (never the cross-frame batcher,
-                # whose coalescing would scramble which mask belongs to which face).
-                if (self._swap_batcher is not None and hasattr(p, 'RunBatchMulti')
-                        and not getattr(p, 'is_dfm', False)):
+                if self._swap_batcher is not None and hasattr(p, 'RunBatchMulti'):
                     # Cross-frame batching: submit every tile to the batcher (which
                     # coalesces them with crops from other worker threads), then
                     # collect. The batcher thread holds the GPU guard.
@@ -2569,31 +2554,11 @@ class ProcessMgr():
                     print(f"[ProcessMgr] Face color transfer failed: {e}")
                 
                 scale_factor = 0.0
-
-                # ── DFM trained mask (out_celeb_face_mask) ────────────────────
-                # Grab the model's own mask (crop space) to drive paste-back —
-                # it precisely covers the swapped whole-face region (jaw/chin
-                # included, hair/background excluded), unlike the target landmark
-                # hull which would clip the reshaped jaw back to the target.
-                if getattr(p, 'is_dfm', False):
-                    try:
-                        dfm_face_mask = p.last_dfm_mask()
-                    except Exception:
-                        dfm_face_mask = None
-
                 # ── Defrontalize after swap (Option 2) ────────────────────────
                 if M_frontal is not None:
                     try:
                         from roop.face_frontalize import defrontalize_crop
                         fake_frame = defrontalize_crop(fake_frame, M_frontal)
-                        # Keep the DFM mask in the same crop space as fake_frame.
-                        if dfm_face_mask is not None:
-                            _m = dfm_face_mask
-                            if _m.ndim == 3:
-                                _m = _m[:, :, 0]
-                            _m8 = defrontalize_crop(
-                                (_m * 255.0).clip(0, 255).astype(np.uint8), M_frontal)
-                            dfm_face_mask = _m8.astype(np.float32) / 255.0
                     except Exception as e:
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
@@ -2739,9 +2704,9 @@ class ProcessMgr():
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_mask=dfm_face_mask)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_mask=dfm_face_mask)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
@@ -2799,7 +2764,7 @@ class ProcessMgr():
         return blended_image.astype(np.uint8)
 
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_mask=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -2819,25 +2784,13 @@ class ProcessMgr():
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
-        # DFM: intersect the model's trained mask (crop space) into the ellipse
-        # BEFORE warping to frame space. It covers the whole swapped face incl.
-        # the reshaped jaw/chin and excludes hair/background — so it also replaces
-        # the target landmark hull below (which would clip the jaw back).
-        if face_mask is not None:
-            fm = face_mask[:, :, 0] if face_mask.ndim == 3 else face_mask
-            fm8 = cv2.resize((fm * 255.0).clip(0, 255).astype(np.uint8), (w, h),
-                             interpolation=cv2.INTER_LINEAR)
-            img_matte = np.minimum(img_matte, fm8)
-
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
         # Constrain mask to actual face outline using landmark convex hull.
         # For angled/profile faces this prevents the warped ellipse from covering
         # background regions where the swap model put grey fill pixels.
-        # Skipped for DFM (face_mask given) — its trained mask is the authority and
-        # the target hull would clip the whole-face reshape.
-        if face_mask is None and face_landmarks is not None:
+        if face_landmarks is not None:
             lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4])
             img_matte = np.minimum(img_matte, lm_mask)
 
@@ -2958,33 +2911,22 @@ class ProcessMgr():
     def prepare_crop_frame(self, swap_frame, swap_p=None):
         model_mean = getattr(swap_p, 'model_mean', [0.0, 0.0, 0.0])
         model_standard_deviation = getattr(swap_p, 'model_standard_deviation', [1.0, 1.0, 1.0])
-        # DFM feeds RGB by default; ROOP_DFM_BGR=1 keeps BGR (color order is a
-        # per-export unknown, so the spike exposes a flip toggle).
-        if not (getattr(swap_p, 'model_layout', 'nchw') == 'nhwc' and _DFM_BGR):
-            swap_frame = swap_frame[:, :, ::-1]
-        swap_frame = swap_frame / 255.0
+        swap_frame = swap_frame[:, :, ::-1] / 255.0
         swap_frame = (swap_frame - model_mean) / model_standard_deviation
-        if getattr(swap_p, 'model_layout', 'nchw') == 'nhwc':
-            # DFM: keep [H,W,3], no channel-first transpose.
-            swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
-        else:
-            swap_frame = swap_frame.transpose(2, 0, 1)
-            swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
+        swap_frame = swap_frame.transpose(2, 0, 1)
+        swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
         return swap_frame
 
 
     def normalize_swap_frame(self, swap_frame, swap_p=None):
-        # DFM output is already [H,W,3]; the embedding swappers emit [3,H,W].
-        if getattr(swap_p, 'model_layout', 'nchw') != 'nhwc':
-            swap_frame = swap_frame.transpose(1, 2, 0)
+        swap_frame = swap_frame.transpose(1, 2, 0)
         # Models trained with [-1,1] output (e.g. HyperSwap) must be mapped back
         # to [0,1] before scaling to 8-bit.
         if getattr(swap_p, 'model_denormalize', False):
             swap_frame = (swap_frame + 1.0) / 2.0
         swap_frame = (swap_frame * 255.0).round()
         swap_frame = swap_frame.clip(0, 255)
-        if not (getattr(swap_p, 'model_layout', 'nchw') == 'nhwc' and _DFM_BGR):
-            swap_frame = swap_frame[:, :, ::-1]
+        swap_frame = swap_frame[:, :, ::-1]
         return swap_frame
 
     def implode_pixel_boost(self, aligned_face_frame, model_size, pixel_boost_total:int):
