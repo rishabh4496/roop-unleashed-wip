@@ -1,4 +1,5 @@
 import os
+import threading
 import roop.globals
 import cv2
 import numpy as np
@@ -317,11 +318,16 @@ class FaceSwapInsightFace():
         self.model_standard_deviation = [1.0, 1.0, 1.0]
         self.model_denormalize = False
         self.model_template = "arcface"
-        # ── DFM (DeepFaceLive) spike state ────────────────────────────────────
+        # ── DFM (DeepFaceLive) state ──────────────────────────────────────────
         self.is_dfm = False              # True when a .dfm identity model is loaded
         self.model_layout = "nchw"       # 'nhwc' for DFM (in_face is [1,H,W,3])
         self.dfm_out_idx = 0             # which output tensor is the swapped face
+        self.dfm_mask_idx = None         # which output tensor is out_celeb_face_mask
         self.model_pixel_boost = True    # DFM crops are native-res; no tiling
+        # Per-thread stash for the DFM mask emitted alongside the last swapped
+        # face, so process_face can route it into paste-back without changing the
+        # generic Run() return signature.
+        self._mask_tls = threading.local()
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
@@ -497,19 +503,28 @@ class FaceSwapInsightFace():
         else:
             self.model_layout, res = "nhwc", 256   # sane fallback
 
-        # Pick the swapped-face output: prefer a 'celeb' non-mask tensor, else the
-        # first non-mask output.
+        # Resolve outputs by name: the swapped face ('celeb' non-mask) and its
+        # trained mask ('celeb'+'mask'). Fall back to positional if names differ.
         outs = self.model_swap_insightface.get_outputs()
         self.dfm_out_idx = 0
+        self.dfm_mask_idx = None
         for i, o in enumerate(outs):
             n = o.name.lower()
-            if "celeb" in n and "mask" not in n:
+            if "mask" in n:
+                self.dfm_mask_idx = i
+            elif "celeb" in n:
                 self.dfm_out_idx = i
-                break
-        else:
+        # If no 'celeb' face was found, take the first non-mask output.
+        if not any("celeb" in o.name.lower() and "mask" not in o.name.lower() for o in outs):
             for i, o in enumerate(outs):
                 if "mask" not in o.name.lower():
                     self.dfm_out_idx = i
+                    break
+        # If names gave us no mask but there are >=2 outputs, assume the other one.
+        if self.dfm_mask_idx is None and len(outs) >= 2:
+            for i in range(len(outs)):
+                if i != self.dfm_out_idx:
+                    self.dfm_mask_idx = i
                     break
 
         # Publish the contract.
@@ -519,7 +534,7 @@ class FaceSwapInsightFace():
         self.model_mean = [0.0, 0.0, 0.0]
         self.model_standard_deviation = [1.0, 1.0, 1.0]
         self.model_denormalize = False
-        self.model_template = "dfm_whole_face"
+        self.model_template = "dfl_whole_face"
         self.model_pixel_boost = False
 
         # Optional TRT multi-context pool, same as the embedding swappers.
@@ -530,9 +545,10 @@ class FaceSwapInsightFace():
                 lambda i, _e=([self.model_swap_insightface] + extras): _e[i], n)
 
         self.loaded_model_key = key
+        _mask_name = outs[self.dfm_mask_idx].name if self.dfm_mask_idx is not None else "none"
         print(f"[DFM] ready — layout={self.model_layout} res={res} "
-              f"out='{outs[self.dfm_out_idx].name}' "
-              f"template=dfm_whole_face(cov={os.environ.get('ROOP_DFM_COVERAGE','0.72')}) "
+              f"face='{outs[self.dfm_out_idx].name}' mask='{_mask_name}' "
+              f"template=dfl_whole_face(cov={os.environ.get('ROOP_DFM_COVERAGE','1.0')}) "
               f"pool={'on' if self.pool else 'off'}")
 
     @staticmethod
@@ -606,13 +622,15 @@ class FaceSwapInsightFace():
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         if self.is_dfm:
             # DFM has no source input — identity is in the weights. Feed the crop
-            # only and return the swapped-face output tensor.
+            # only, stash the trained mask for paste-back, and return the face.
             feed = {self.image_input_name: temp_frame}
             if self.pool is not None:
                 with self.pool.lease() as sess:
                     ort_outs = sess.run(None, feed)
             else:
                 ort_outs = self.model_swap_insightface.run(None, feed)
+            self._mask_tls.mask = (
+                ort_outs[self.dfm_mask_idx][0] if self.dfm_mask_idx is not None else None)
             return ort_outs[self.dfm_out_idx][0]
         latent = self._compute_source_input(source_face)
         if latent is None:
@@ -696,6 +714,12 @@ class FaceSwapInsightFace():
             ort_outs = self.model_swap_insightface.run(None, feed)
         out = ort_outs[0]
         return [out[i] for i in range(out.shape[0])]
+
+    def last_dfm_mask(self):
+        """The out_celeb_face_mask ([H,W,1], [0,1]) from this thread's most recent
+        DFM Run, or None (model has no mask output / not DFM). process_face reads
+        it right after the swap to route into paste-back."""
+        return getattr(self._mask_tls, 'mask', None)
 
     def Release(self):
         if self.pool is not None:

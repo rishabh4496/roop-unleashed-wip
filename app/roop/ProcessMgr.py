@@ -2514,6 +2514,7 @@ class ProcessMgr():
                 print(f"[ProcessMgr] Frontalization failed: {e}")
 
         fake_frame = aligned_for_swap
+        dfm_face_mask = None   # DFM out_celeb_face_mask (crop space), routed to paste-back
 
         for p in self.processors:
             if p.type == 'swap':
@@ -2524,7 +2525,11 @@ class ProcessMgr():
                 # threads would share a single non-thread-safe TensorRT context
                 # and corrupt/hang the CUDA context.
                 _pooled = getattr(p, 'pool', None) is not None
-                if self._swap_batcher is not None and hasattr(p, 'RunBatchMulti'):
+                # DFM emits a per-face mask we must read back deterministically,
+                # so it takes the plain Run path (never the cross-frame batcher,
+                # whose coalescing would scramble which mask belongs to which face).
+                if (self._swap_batcher is not None and hasattr(p, 'RunBatchMulti')
+                        and not getattr(p, 'is_dfm', False)):
                     # Cross-frame batching: submit every tile to the batcher (which
                     # coalesces them with crops from other worker threads), then
                     # collect. The batcher thread holds the GPU guard.
@@ -2564,11 +2569,31 @@ class ProcessMgr():
                     print(f"[ProcessMgr] Face color transfer failed: {e}")
                 
                 scale_factor = 0.0
+
+                # ── DFM trained mask (out_celeb_face_mask) ────────────────────
+                # Grab the model's own mask (crop space) to drive paste-back —
+                # it precisely covers the swapped whole-face region (jaw/chin
+                # included, hair/background excluded), unlike the target landmark
+                # hull which would clip the reshaped jaw back to the target.
+                if getattr(p, 'is_dfm', False):
+                    try:
+                        dfm_face_mask = p.last_dfm_mask()
+                    except Exception:
+                        dfm_face_mask = None
+
                 # ── Defrontalize after swap (Option 2) ────────────────────────
                 if M_frontal is not None:
                     try:
                         from roop.face_frontalize import defrontalize_crop
                         fake_frame = defrontalize_crop(fake_frame, M_frontal)
+                        # Keep the DFM mask in the same crop space as fake_frame.
+                        if dfm_face_mask is not None:
+                            _m = dfm_face_mask
+                            if _m.ndim == 3:
+                                _m = _m[:, :, 0]
+                            _m8 = defrontalize_crop(
+                                (_m * 255.0).clip(0, 255).astype(np.uint8), M_frontal)
+                            dfm_face_mask = _m8.astype(np.float32) / 255.0
                     except Exception as e:
                         print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
@@ -2714,9 +2739,9 @@ class ProcessMgr():
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_mask=dfm_face_mask)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_mask=dfm_face_mask)
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
@@ -2774,7 +2799,7 @@ class ProcessMgr():
         return blended_image.astype(np.uint8)
 
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_mask=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -2794,13 +2819,25 @@ class ProcessMgr():
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
+        # DFM: intersect the model's trained mask (crop space) into the ellipse
+        # BEFORE warping to frame space. It covers the whole swapped face incl.
+        # the reshaped jaw/chin and excludes hair/background — so it also replaces
+        # the target landmark hull below (which would clip the jaw back).
+        if face_mask is not None:
+            fm = face_mask[:, :, 0] if face_mask.ndim == 3 else face_mask
+            fm8 = cv2.resize((fm * 255.0).clip(0, 255).astype(np.uint8), (w, h),
+                             interpolation=cv2.INTER_LINEAR)
+            img_matte = np.minimum(img_matte, fm8)
+
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
         # Constrain mask to actual face outline using landmark convex hull.
         # For angled/profile faces this prevents the warped ellipse from covering
         # background regions where the swap model put grey fill pixels.
-        if face_landmarks is not None:
+        # Skipped for DFM (face_mask given) — its trained mask is the authority and
+        # the target hull would clip the whole-face reshape.
+        if face_mask is None and face_landmarks is not None:
             lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4])
             img_matte = np.minimum(img_matte, lm_mask)
 

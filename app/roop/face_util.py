@@ -706,23 +706,31 @@ WARP_TEMPLATES = {
     ),
 }
 
-# ── DFM (DeepFaceLive) whole-face approximate crop  [Phase-1 SPIKE] ────────────
-# DeepFaceLive .dfm models are trained on a wider "whole_face" alignment that
+# ── DFM (DeepFaceLive) whole-face crop ────────────────────────────────────────
+# DeepFaceLive .dfm models are trained on DFL's "whole_face" alignment, which
 # deliberately includes jaw / chin / cheeks / forehead — that broad crop is the
 # whole reason a DFM can transfer face *shape* and not just inner-face identity.
-# We do not yet have DFL's exact canonical constellation (that is Phase-2 work),
-# so approximate it: shrink the ffhq_512 5-point constellation toward its own
-# centroid. A coverage < 1 pulls the five points inward, so the actual face
-# occupies a smaller central region of the crop and more surrounding head is
-# captured on all sides. Tune visually via ROOP_DFM_COVERAGE (smaller = more
-# head/jaw in frame, larger = tighter). This is intentionally approximate — the
-# spike exists to prove the runtime and measure speed, not to be pixel-accurate.
-_dfm_coverage = float(os.environ.get("ROOP_DFM_COVERAGE", "0.72"))
-_dfm_base = WARP_TEMPLATES["ffhq_512"]
-_dfm_centroid = _dfm_base.mean(axis=0)
-WARP_TEMPLATES["dfm_whole_face"] = (
-    _dfm_centroid + (_dfm_base - _dfm_centroid) * _dfm_coverage
-).astype(np.float32)
+# These are the exact 5-point constants FaceFusion's deep_swapper uses to run
+# .dfm models (facefusion/face_helper.py WARP_TEMPLATES['dfl_whole_face']),
+# so the crop matches what the models were trained on.
+# ROOP_DFM_COVERAGE (default 1.0 = exact) optionally rescales toward the centroid
+# for a model trained slightly tighter/looser: <1 pulls more head into frame.
+WARP_TEMPLATES["dfl_whole_face"] = np.array(
+    [
+        [0.35342266, 0.39285716],
+        [0.62797622, 0.39285716],
+        [0.48660713, 0.54017860],
+        [0.38839287, 0.68750011],
+        [0.59821427, 0.68750011],
+    ],
+    dtype=np.float32,
+)
+_dfm_coverage = float(os.environ.get("ROOP_DFM_COVERAGE", "1.0"))
+if abs(_dfm_coverage - 1.0) > 1e-6:
+    _dfm_c = WARP_TEMPLATES["dfl_whole_face"].mean(axis=0)
+    WARP_TEMPLATES["dfl_whole_face"] = (
+        _dfm_c + (WARP_TEMPLATES["dfl_whole_face"] - _dfm_c) * _dfm_coverage
+    ).astype(np.float32)
 
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):
