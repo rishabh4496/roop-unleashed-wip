@@ -331,6 +331,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
+    jr: p.jaw_reshape, jrs: p.jaw_reshape_strength,
     ctm: p.color_transfer_mode, s2: p.sam2_model_size,
     rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
     dds: p.default_det_size,
@@ -486,6 +487,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
+        jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
@@ -562,6 +564,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
         ctm: localParams.color_transfer_mode,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
@@ -606,6 +609,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
+          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
@@ -1404,6 +1408,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
           {p.use_frontalization && (
             <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 30)} onChange={(v) => set('frontalization_threshold', v)} />
+          )}
+          <Toggle label="🧬 Reshape jaw/chin to source" info="Identity swappers (inswapper/hyperswap/reswapper…) keep the TARGET's jaw & chin bone structure. This warps the swapped face's lower-silhouette toward your SOURCE person's jaw/chin shape after the swap (a smooth liquify — no re-swap, so swap quality is untouched). Best for moderate shape differences; very large changes can distort the neck/background near the jaw. Landmark jitter is smoothed when Temporal detection is on." checked={!!p.jaw_reshape} onChange={(v) => set('jaw_reshape', v)} />
+          {p.jaw_reshape && (
+            <Slider label="Jaw reshape strength" info="0 = off (target's jaw), 1 = full source jaw/chin shape. Start around 0.4–0.6 and back off if the chin looks distorted." min={0} max={1} step={0.05} value={num(p.jaw_reshape_strength, 0.5)} onChange={(v) => set('jaw_reshape_strength', v)} />
           )}
         </Section>
 

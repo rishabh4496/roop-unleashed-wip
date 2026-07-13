@@ -1505,6 +1505,8 @@ def preview(payload: dict = Body(...)):
     roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
     roop_globals.face_detector_nms = float(payload.get("face_detector_nms", roop_globals.CFG.face_detector_nms))
     roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
+    roop_globals.jaw_reshape = bool(payload.get("jaw_reshape", getattr(roop_globals.CFG, "jaw_reshape", False)))
+    roop_globals.jaw_reshape_strength = float(payload.get("jaw_reshape_strength", getattr(roop_globals.CFG, "jaw_reshape_strength", 0.5)))
     roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
 
@@ -1642,6 +1644,8 @@ def _run_swap(payload):
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", roop_globals.CFG.color_transfer_mode)
         roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", roop_globals.CFG.refine_landmarks))
+        roop_globals.jaw_reshape = bool(payload.get("jaw_reshape", getattr(roop_globals.CFG, "jaw_reshape", False)))
+        roop_globals.jaw_reshape_strength = float(payload.get("jaw_reshape_strength", getattr(roop_globals.CFG, "jaw_reshape_strength", 0.5)))
         roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", roop_globals.CFG.rescue_small_faces))
         roop_globals.detector_engine = payload.get("detector_engine", roop_globals.CFG.detector_engine)
         roop_globals.temporal_detection = bool(payload.get("temporal_detection", getattr(roop_globals.CFG, "temporal_detection", False)))

@@ -44,6 +44,8 @@ export const FACESWAP_DEFAULTS = {
   use_source_bank: true,
   use_frontalization: false,
   frontalization_threshold: 25,
+  jaw_reshape: false,
+  jaw_reshape_strength: 0.5,
 
   // Video parameters
   video_swapping_method: 'In-Memory processing',

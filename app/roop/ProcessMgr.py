@@ -44,6 +44,152 @@ from collections import deque as _deque
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
+
+
+# ── Jaw / chin reshape warp ──────────────────────────────────────────────────
+# inswapper-family swappers transfer identity but keep the TARGET's face
+# geometry — the swapped face is bounded by the target's jaw/chin outline. This
+# post-composite pass warps the lower-face silhouette toward the SOURCE person's
+# jaw/chin shape using a smooth thin-plate-spline displacement field applied with
+# cv2.remap (liquify style): neighbouring pixels are dragged continuously so no
+# inpainting / gap-filling is needed. Off unless the user enables it.
+#
+# The 106-pt face-silhouette landmarks (indices 0..32) of the source and target
+# are aligned into a shared canonical space via their 5-pt arcface transforms so
+# the pure shape difference is isolated from pose / scale / position, then mapped
+# back to the target frame. Central features (5 kps) and the ROI border are
+# pinned (zero displacement) so only the jaw region moves and the periphery is
+# untouched, giving a seamless paste-back.
+_JAW_CONTOUR_IDX = np.arange(0, 33)
+
+
+def _jaw_tps_solve(P, V):
+    """Thin-plate-spline weights for control points P (K,2), scalar values V (K,)."""
+    K = P.shape[0]
+    r = np.sqrt(np.sum((P[:, None, :] - P[None, :, :]) ** 2, axis=2))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        U = (r ** 2) * np.log(r + 1e-6)
+    U[~np.isfinite(U)] = 0.0
+    Ph = np.hstack([np.ones((K, 1)), P])
+    A = np.zeros((K + 3, K + 3), dtype=np.float64)
+    A[:K, :K] = U
+    A[:K, K:] = Ph
+    A[K:, :K] = Ph.T
+    b = np.zeros((K + 3,), dtype=np.float64)
+    b[:K] = V
+    sol = np.linalg.solve(A, b)
+    return sol[:K], sol[K:]
+
+
+def _jaw_tps_eval(P, w, a, G):
+    """Evaluate a TPS field (from _jaw_tps_solve) at grid points G (M,2)."""
+    r = np.sqrt(np.sum((G[:, None, :] - P[None, :, :]) ** 2, axis=2))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        U = (r ** 2) * np.log(r + 1e-6)
+    U[~np.isfinite(U)] = 0.0
+    return U @ w + a[0] + a[1] * G[:, 0] + a[2] * G[:, 1]
+
+
+def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
+                      grid=48, roi_margin=0.5):
+    """Warp `result` so the target jaw silhouette moves toward the source shape.
+
+    Returns the warped frame (or the original on any degenerate input). Pure
+    numpy/cv2 — no model inference — so it is cheap and thread-safe.
+    """
+    try:
+        from roop.face_util import estimate_norm
+
+        s = float(strength)
+        if s <= 0.0:
+            return result
+        if tgt106 is None or src106 is None or tgt_kps is None or src_kps is None:
+            return result
+        tgt106 = np.asarray(tgt106, dtype=np.float32)
+        src106 = np.asarray(src106, dtype=np.float32)
+        if tgt106.shape[0] < 33 or src106.shape[0] < 33:
+            return result
+        tgt_kps = np.asarray(tgt_kps, dtype=np.float32).reshape(-1, 2)
+        src_kps = np.asarray(src_kps, dtype=np.float32).reshape(-1, 2)
+        if tgt_kps.shape[0] != 5 or src_kps.shape[0] != 5:
+            return result
+
+        S = 256
+        Mt = estimate_norm(tgt_kps, S)   # frame(target) → canonical
+        Ms = estimate_norm(src_kps, S)   # source-image → canonical
+
+        def _aff(M, pts):
+            return pts @ M[:, :2].T + M[:, 2]
+
+        tgt_c = _aff(Mt, tgt106)
+        src_c = _aff(Ms, src106)
+
+        desired_c = tgt_c.copy()
+        desired_c[_JAW_CONTOUR_IDX] = (
+            tgt_c[_JAW_CONTOUR_IDX]
+            + s * (src_c[_JAW_CONTOUR_IDX] - tgt_c[_JAW_CONTOUR_IDX])
+        )
+
+        IMt = cv2.invertAffineTransform(Mt)
+        tgt_f = _aff(IMt, tgt_c)
+        desired_f = _aff(IMt, desired_c)
+
+        H, W = result.shape[:2]
+        x0, y0 = tgt_f.min(axis=0)
+        x1, y1 = tgt_f.max(axis=0)
+        bw, bh = x1 - x0, y1 - y0
+        mx, my = bw * roi_margin, bh * roi_margin
+        rx0 = int(max(0, np.floor(x0 - mx)))
+        ry0 = int(max(0, np.floor(y0 - my)))
+        rx1 = int(min(W, np.ceil(x1 + mx)))
+        ry1 = int(min(H, np.ceil(y1 + my)))
+        if rx1 - rx0 < 8 or ry1 - ry0 < 8:
+            return result
+
+        dst_jaw = desired_f[_JAW_CONTOUR_IDX]
+        delta_jaw = desired_f[_JAW_CONTOUR_IDX] - tgt_f[_JAW_CONTOUR_IDX]
+        if np.max(np.abs(delta_jaw)) < 0.5:
+            return result  # shapes already match — nothing to do
+
+        ring = np.array([
+            [rx0, ry0], [(rx0 + rx1) / 2, ry0], [rx1, ry0],
+            [rx1, (ry0 + ry1) / 2], [rx1, ry1], [(rx0 + rx1) / 2, ry1],
+            [rx0, ry1], [rx0, (ry0 + ry1) / 2],
+        ], dtype=np.float32)
+
+        P = np.vstack([dst_jaw, tgt_kps, ring]).astype(np.float64)
+        n_anchor = len(tgt_kps) + len(ring)
+        Vx = np.concatenate([delta_jaw[:, 0], np.zeros(n_anchor)])
+        Vy = np.concatenate([delta_jaw[:, 1], np.zeros(n_anchor)])
+
+        P_local = P - np.array([rx0, ry0])
+        wx, ax = _jaw_tps_solve(P_local, Vx)
+        wy, ay = _jaw_tps_solve(P_local, Vy)
+
+        roi_h, roi_w = ry1 - ry0, rx1 - rx0
+        gxs = np.linspace(0, roi_w - 1, grid)
+        gys = np.linspace(0, roi_h - 1, grid)
+        GX, GY = np.meshgrid(gxs, gys)
+        G = np.stack([GX.ravel(), GY.ravel()], axis=1)
+        ux = _jaw_tps_eval(P_local, wx, ax, G).reshape(grid, grid).astype(np.float32)
+        uy = _jaw_tps_eval(P_local, wy, ay, G).reshape(grid, grid).astype(np.float32)
+
+        ux_full = cv2.resize(ux, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+        uy_full = cv2.resize(uy, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+
+        xx, yy = np.meshgrid(np.arange(roi_w, dtype=np.float32),
+                             np.arange(roi_h, dtype=np.float32))
+        map_x = (xx - ux_full).astype(np.float32)
+        map_y = (yy - uy_full).astype(np.float32)
+
+        roi = result[ry0:ry1, rx0:rx1]
+        warped = cv2.remap(roi, map_x, map_y, interpolation=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REPLICATE)
+        result[ry0:ry1, rx0:rx1] = warped
+        return result
+    except Exception as e:
+        print(f"[ProcessMgr] jaw reshape failed: {e}")
+        return result
 _prof_lock = Lock()
 _prof_times = _defaultdict(float)
 _prof_counts = _defaultdict(int)
@@ -2565,6 +2711,22 @@ class ProcessMgr():
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+
+        # ── Jaw / chin reshape (post-composite) ───────────────────────────────
+        # Warp the target's jaw/chin silhouette toward the source person's shape.
+        # Skipped under autorotate (result lives in rotated-crop space, so the
+        # frame-space landmarks would be inconsistent — re-pasted below instead).
+        if (getattr(roop.globals, 'jaw_reshape', False)
+                and rotation_action is None
+                and inputface is not None):
+            result = reshape_jaw_frame(
+                result,
+                getattr(target_face, 'landmark_2d_106', None),
+                getattr(inputface, 'landmark_2d_106', None),
+                getattr(target_face, 'kps', None),
+                getattr(inputface, 'kps', None),
+                getattr(roop.globals, 'jaw_reshape_strength', 0.5),
+            )
 
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
