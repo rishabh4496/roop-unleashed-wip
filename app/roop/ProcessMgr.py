@@ -92,7 +92,10 @@ def _jaw_tps_eval(P, w, a, G):
 
 def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
                       grid=48, roi_margin=0.5):
-    """Warp `result` so the target jaw silhouette moves toward the source shape.
+    """Warp `result` so the target face shape moves toward the source: the jaw
+    silhouette plus the cheeks and lower face (interior expansion below the eye
+    line). Central features (eyes/nose/mouth) are pinned so identity/expression
+    are preserved.
 
     Returns the warped frame (or the original on any degenerate input). Pure
     numpy/cv2 — no model inference — so it is cheap and thread-safe.
@@ -124,15 +127,14 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
         tgt_c = _aff(Mt, tgt106)
         src_c = _aff(Ms, src106)
 
-        desired_c = tgt_c.copy()
-        desired_c[_JAW_CONTOUR_IDX] = (
-            tgt_c[_JAW_CONTOUR_IDX]
-            + s * (src_c[_JAW_CONTOUR_IDX] - tgt_c[_JAW_CONTOUR_IDX])
-        )
+        # Silhouette (jaw + cheeks + chin) displacement toward the source shape,
+        # computed in the shared canonical space.
+        cont_c = tgt_c[_JAW_CONTOUR_IDX]
+        disp_c = s * (src_c[_JAW_CONTOUR_IDX] - cont_c)
 
         IMt = cv2.invertAffineTransform(Mt)
+        A = IMt[:, :2]                     # linear part only (transforms displacements)
         tgt_f = _aff(IMt, tgt_c)
-        desired_f = _aff(IMt, desired_c)
 
         H, W = result.shape[:2]
         x0, y0 = tgt_f.min(axis=0)
@@ -146,9 +148,41 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
         if rx1 - rx0 < 8 or ry1 - ry0 < 8:
             return result
 
-        dst_jaw = desired_f[_JAW_CONTOUR_IDX]
-        delta_jaw = desired_f[_JAW_CONTOUR_IDX] - tgt_f[_JAW_CONTOUR_IDX]
-        if np.max(np.abs(delta_jaw)) < 0.5:
+        # ── Cheek / lower-face expansion ──────────────────────────────────────
+        # The silhouette reshape alone only tugs the outer edge. Carry it inward
+        # across the cheeks and lower face with interior control points that
+        # follow each below-the-eye-line contour point toward the face centre,
+        # fading to zero so the pinned central features (eyes/nose/mouth) stay
+        # put. Points landing near a pinned kp are dropped (TPS conditioning).
+        canon_kps = _aff(Mt, tgt_kps)      # == the arcface template positions
+        eye_y = 0.5 * (canon_kps[0, 1] + canon_kps[1, 1])
+        center = canon_kps[2]              # nose tip — inward anchor
+        lower = cont_c[:, 1] > eye_y       # cheeks + jaw + chin (exclude temples)
+
+        pts_c = [cont_c]
+        dsp_c = [disp_c]
+        if np.any(lower):
+            int_c, int_d = [], []
+            for t in (0.35, 0.6):
+                int_c.append(cont_c[lower] + t * (center - cont_c[lower]))
+                int_d.append((1.0 - t) * disp_c[lower])
+            int_c = np.vstack(int_c)
+            int_d = np.vstack(int_d)
+            int_f = _aff(IMt, int_c)
+            dmin = np.min(np.linalg.norm(int_f[:, None, :] - tgt_kps[None, :, :], axis=2), axis=1)
+            keep = dmin > 0.05 * max(bw, 1.0)
+            if np.any(keep):
+                pts_c.append(int_c[keep])
+                dsp_c.append(int_d[keep])
+
+        moved_c = np.vstack(pts_c)
+        moved_dsp = np.vstack(dsp_c)
+
+        # Map the moved points and their displacement back to the target frame.
+        tgt_move = _aff(IMt, moved_c)
+        delta_move = moved_dsp @ A.T
+        dst_move = tgt_move + delta_move
+        if np.max(np.abs(delta_move)) < 0.5:
             return result  # shapes already match — nothing to do
 
         ring = np.array([
@@ -157,10 +191,10 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
             [rx0, ry1], [rx0, (ry0 + ry1) / 2],
         ], dtype=np.float32)
 
-        P = np.vstack([dst_jaw, tgt_kps, ring]).astype(np.float64)
+        P = np.vstack([dst_move, tgt_kps, ring]).astype(np.float64)
         n_anchor = len(tgt_kps) + len(ring)
-        Vx = np.concatenate([delta_jaw[:, 0], np.zeros(n_anchor)])
-        Vy = np.concatenate([delta_jaw[:, 1], np.zeros(n_anchor)])
+        Vx = np.concatenate([delta_move[:, 0], np.zeros(n_anchor)])
+        Vy = np.concatenate([delta_move[:, 1], np.zeros(n_anchor)])
 
         P_local = P - np.array([rx0, ry0])
         wx, ax = _jaw_tps_solve(P_local, Vx)
@@ -2712,11 +2746,14 @@ class ProcessMgr():
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
 
-        # ── Jaw / chin reshape (post-composite) ───────────────────────────────
-        # Warp the target's jaw/chin silhouette toward the source person's shape.
-        # Skipped under autorotate (result lives in rotated-crop space, so the
-        # frame-space landmarks would be inconsistent — re-pasted below instead).
+        # ── Face-shape reshape (post-composite) ───────────────────────────────
+        # Warp the target's jaw/chin/cheek silhouette + lower face toward the
+        # source person's shape. Gated to the shape-capable swappers (hififace
+        # and hyperswap_1a, key 'hyperswap') per design — 1b/1c and the identity
+        # swappers are excluded. Skipped under autorotate (result lives in
+        # rotated-crop space, so the frame-space landmarks would be inconsistent).
         if (getattr(roop.globals, 'jaw_reshape', False)
+                and getattr(self.options, 'swap_model', 'inswapper') in ('hififace', 'hyperswap')
                 and rotation_action is None
                 and inputface is not None):
             result = reshape_jaw_frame(
