@@ -30,3 +30,6 @@ app/facesets
 
 # Local snapshot of the v1 React UI (canonical backup is the react-ui-v1 git tag)
 react-ui-v1-backup/
+
+# Learned runtime-estimate store (per-machine, grows over time)
+app/runtime_calibration.json

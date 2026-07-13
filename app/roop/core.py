@@ -788,6 +788,15 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time
             update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
+            # Fold this run into the learned runtime estimator (keyed by the
+            # settings signature stashed at run start). Guarded — never fatal.
+            try:
+                from roop import runtime_calib
+                runtime_calib.record(
+                    getattr(roop.globals, '_run_signature', None),
+                    v.endframe - v.startframe, elapsed_time * 1000.0)
+            except Exception:
+                pass
             import gc
             gc.collect()
             try:

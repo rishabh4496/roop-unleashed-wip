@@ -1683,6 +1683,18 @@ def _run_swap(payload):
         except Exception:
             pass
 
+        # Stash the settings signature so the completion hook (core.py) can
+        # record actual ms/frame for the learned runtime estimator, using the
+        # same signature the /api/runtime_estimate endpoint predicts from.
+        try:
+            from roop import runtime_calib
+            roop_globals._run_signature = runtime_calib.signature_from_payload(
+                payload, gpu=_gpu_name(),
+                threads=roop_globals.CFG.max_threads,
+                precision=getattr(roop_globals.CFG, 'trt_precision', 'mixed'))
+        except Exception:
+            roop_globals._run_signature = None
+
         with temp_mapped_facesets(payload.get("face_mapping")):
             batch_process_regular(
                 output_method, files_to_process, mask_engine, clip_text,
@@ -2203,6 +2215,48 @@ async def extras_enhance(file: UploadFile = File(...),
             proc.Release()
         except Exception:
             pass
+
+
+_GPU_NAME_CACHE = None
+
+
+def _gpu_name():
+    """Device name for the runtime-estimate signature (cached — it never changes
+    within a process)."""
+    global _GPU_NAME_CACHE
+    if _GPU_NAME_CACHE is not None:
+        return _GPU_NAME_CACHE
+    name = ""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+    except Exception:
+        name = ""
+    _GPU_NAME_CACHE = name
+    return name
+
+
+@app.post("/api/runtime_estimate")
+def runtime_estimate(payload: dict = Body(...)):
+    """Predicted ms/frame for the current settings, learned from past completed
+    runs (see roop.runtime_calib). Returns nulls when there's no data yet — the
+    frontend falls back to its heuristic. `frames` in the payload is echoed into
+    total_ms for convenience."""
+    try:
+        from roop import runtime_calib
+        frames = int(payload.get("frames", 1) or 1)
+        sig = runtime_calib.signature_from_payload(
+            payload, gpu=_gpu_name(),
+            threads=roop_globals.CFG.max_threads,
+            precision=getattr(roop_globals.CFG, 'trt_precision', 'mixed'))
+        pred = runtime_calib.predict(sig)
+        if pred and pred.get("ms_per_frame"):
+            return {"ms_per_frame": pred["ms_per_frame"], "samples": pred["samples"],
+                    "source": pred["source"], "total_ms": frames * pred["ms_per_frame"]}
+    except Exception:
+        traceback.print_exc()
+    return {"ms_per_frame": None, "samples": 0, "source": "none", "total_ms": None}
 
 
 @app.get("/api/system/telemetry")

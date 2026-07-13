@@ -1275,9 +1275,44 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const endPct = maxFrames > 1 ? ((endFrame - 1) / (maxFrames - 1)) * 100 : 100;
   const currentPct = maxFrames > 1 ? ((frame - 1) / (maxFrames - 1)) * 100 : 0;
 
-  // ── Rough pre-run estimate (idle only) ──
+  // ── Pre-run estimate (idle only) ──
+  // Heuristic baseline, refined by the measured ms/frame the backend has learned
+  // for the CURRENT settings from past completed runs (roop.runtime_calib).
+  const [calibEst, setCalibEst] = useState(null);
   const estFrames = maxFrames > 1 ? Math.max(1, endFrame - startFrame + 1) : (targets.length ? 1 : 0);
-  const estTotalMs = (() => {
+
+  // Fetch the learned estimate (debounced) whenever the perf-relevant settings
+  // or the frame span change, while idle.
+  useEffect(() => {
+    if (progress.processing || estFrames <= 1 || targets.length === 0) { setCalibEst(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const res = await postJSON('/api/runtime_estimate', {
+          frames: estFrames,
+          swap_model: p.swap_model,
+          selected_enhancer: p.selected_enhancer,
+          face_detection_mode: p.face_detection_mode,
+          face_detector_size: p.face_detector_size,
+          detector_engine: p.detector_engine,
+          num_swap_steps: num(p.num_swap_steps, 1),
+          subsample_upscale: p.subsample_upscale,
+          track_identities: p.track_identities,
+          temporal_detection: p.temporal_detection,
+          mask_engine: p.mask_engine,
+          stabilize_face: p.stabilize_face,
+          stabilize_enhancer: p.stabilize_enhancer,
+        });
+        if (!cancelled) setCalibEst(res && res.ms_per_frame ? res : null);
+      } catch { if (!cancelled) setCalibEst(null); }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [progress.processing, estFrames, p.swap_model, p.selected_enhancer, p.face_detection_mode,
+      p.face_detector_size, p.detector_engine, p.num_swap_steps, p.subsample_upscale,
+      p.track_identities, p.temporal_detection, p.mask_engine, p.stabilize_face,
+      p.stabilize_enhancer, targets.length]);
+
+  const heuristicPerFrame = (() => {
     let ms = 45;
     if (p.selected_enhancer && p.selected_enhancer !== 'None') ms += 70;
     const det = parseInt(p.face_detector_size || '640', 10) || 640;
@@ -1285,8 +1320,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     ms += (num(p.num_swap_steps, 1) - 1) * 25;
     if (p.track_identities) ms += 8;
     const parallel = Math.max(1.5, Math.min(4, (telemetry?.threads || 3) * 0.6));
-    return (estFrames * ms) / parallel;
+    return ms / parallel;   // wall-clock ms/frame, comparable to the measured value
   })();
+
+  // Prefer the measured ms/frame. Blend 50/50 with the heuristic when the data
+  // is thin (single sample, or the cross-settings global fallback).
+  const estPerFrame = (() => {
+    if (calibEst && calibEst.ms_per_frame) {
+      const thin = calibEst.source !== 'measured' || (calibEst.samples || 0) < 2;
+      return thin ? (calibEst.ms_per_frame + heuristicPerFrame) / 2 : calibEst.ms_per_frame;
+    }
+    return heuristicPerFrame;
+  })();
+  const estTotalMs = estFrames * estPerFrame;
+  const estLearned = !!(calibEst && calibEst.source === 'measured' && (calibEst.samples || 0) >= 1);
+
   const heavyVram = (p.selected_enhancer && p.selected_enhancer !== 'None') &&
     (parseInt(p.face_detector_size || '640', 10) >= 960);
 
@@ -1865,10 +1913,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <div className="flex items-center gap-4">
                   {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
                     <div className="hidden md:flex flex-col items-end text-right leading-tight">
-                      <span className="text-[10px] uppercase tracking-[0.12em] text-white/35 font-semibold">Est. runtime</span>
+                      <span className="text-[10px] uppercase tracking-[0.12em] text-white/35 font-semibold">
+                        Est. runtime{estLearned ? <span className="text-emerald-400/70 normal-case tracking-normal"> · learned</span> : ''}
+                      </span>
                       <span className="text-sm font-bold text-white/90 tabular-nums">~{fmtTime(estTotalMs)}</span>
                       <span className="text-[10px] text-white/40 tabular-nums">
-                        {estFrames.toLocaleString()} frames{heavyVram ? ' · high VRAM' : ''}
+                        {estFrames.toLocaleString()} frames{estLearned ? ` · from ${calibEst.samples} run${calibEst.samples > 1 ? 's' : ''}` : ''}{heavyVram ? ' · high VRAM' : ''}
                       </span>
                     </div>
                   )}
