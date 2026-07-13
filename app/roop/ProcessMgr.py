@@ -44,6 +44,9 @@ from collections import deque as _deque
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
+# DFM spike: feed/emit BGR instead of RGB to the .dfm model (color order is a
+# per-export unknown; default RGB matches FaceFusion's deep_swapper).
+_DFM_BGR = os.environ.get('ROOP_DFM_BGR', '0') == '1'
 
 
 # ── Jaw / chin reshape warp ──────────────────────────────────────────────────
@@ -2364,6 +2367,13 @@ class ProcessMgr():
             subsample_size = model_output_size
         subsample_total = subsample_size // model_output_size
 
+        # DFM (whole-face) models run at native resolution on a single whole
+        # aligned face — pixel-boost tiling would feed the generator sub-tiles of
+        # a face instead, which is meaningless. Force a single full-res crop.
+        if not getattr(swap_p, 'model_pixel_boost', True):
+            subsample_size = model_output_size
+            subsample_total = 1
+
         # Align with the swap model's training template (ghost/simswap use
         # arcface_112_v1, hififace uses mtcnn_512; inswapper family = arcface).
         # M is carried through masks/paste/mouth-restore generically, so the
@@ -2911,22 +2921,33 @@ class ProcessMgr():
     def prepare_crop_frame(self, swap_frame, swap_p=None):
         model_mean = getattr(swap_p, 'model_mean', [0.0, 0.0, 0.0])
         model_standard_deviation = getattr(swap_p, 'model_standard_deviation', [1.0, 1.0, 1.0])
-        swap_frame = swap_frame[:, :, ::-1] / 255.0
+        # DFM feeds RGB by default; ROOP_DFM_BGR=1 keeps BGR (color order is a
+        # per-export unknown, so the spike exposes a flip toggle).
+        if not (getattr(swap_p, 'model_layout', 'nchw') == 'nhwc' and _DFM_BGR):
+            swap_frame = swap_frame[:, :, ::-1]
+        swap_frame = swap_frame / 255.0
         swap_frame = (swap_frame - model_mean) / model_standard_deviation
-        swap_frame = swap_frame.transpose(2, 0, 1)
-        swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
+        if getattr(swap_p, 'model_layout', 'nchw') == 'nhwc':
+            # DFM: keep [H,W,3], no channel-first transpose.
+            swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
+        else:
+            swap_frame = swap_frame.transpose(2, 0, 1)
+            swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
         return swap_frame
 
 
     def normalize_swap_frame(self, swap_frame, swap_p=None):
-        swap_frame = swap_frame.transpose(1, 2, 0)
+        # DFM output is already [H,W,3]; the embedding swappers emit [3,H,W].
+        if getattr(swap_p, 'model_layout', 'nchw') != 'nhwc':
+            swap_frame = swap_frame.transpose(1, 2, 0)
         # Models trained with [-1,1] output (e.g. HyperSwap) must be mapped back
         # to [0,1] before scaling to 8-bit.
         if getattr(swap_p, 'model_denormalize', False):
             swap_frame = (swap_frame + 1.0) / 2.0
         swap_frame = (swap_frame * 255.0).round()
         swap_frame = swap_frame.clip(0, 255)
-        swap_frame = swap_frame[:, :, ::-1]
+        if not (getattr(swap_p, 'model_layout', 'nchw') == 'nhwc' and _DFM_BGR):
+            swap_frame = swap_frame[:, :, ::-1]
         return swap_frame
 
     def implode_pixel_boost(self, aligned_face_frame, model_size, pixel_boost_total:int):

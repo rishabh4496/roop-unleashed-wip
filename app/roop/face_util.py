@@ -1,3 +1,4 @@
+import os
 import threading
 import contextlib
 from queue import Queue
@@ -704,6 +705,24 @@ WARP_TEMPLATES = {
         dtype=np.float32,
     ),
 }
+
+# ── DFM (DeepFaceLive) whole-face approximate crop  [Phase-1 SPIKE] ────────────
+# DeepFaceLive .dfm models are trained on a wider "whole_face" alignment that
+# deliberately includes jaw / chin / cheeks / forehead — that broad crop is the
+# whole reason a DFM can transfer face *shape* and not just inner-face identity.
+# We do not yet have DFL's exact canonical constellation (that is Phase-2 work),
+# so approximate it: shrink the ffhq_512 5-point constellation toward its own
+# centroid. A coverage < 1 pulls the five points inward, so the actual face
+# occupies a smaller central region of the crop and more surrounding head is
+# captured on all sides. Tune visually via ROOP_DFM_COVERAGE (smaller = more
+# head/jaw in frame, larger = tighter). This is intentionally approximate — the
+# spike exists to prove the runtime and measure speed, not to be pixel-accurate.
+_dfm_coverage = float(os.environ.get("ROOP_DFM_COVERAGE", "0.72"))
+_dfm_base = WARP_TEMPLATES["ffhq_512"]
+_dfm_centroid = _dfm_base.mean(axis=0)
+WARP_TEMPLATES["dfm_whole_face"] = (
+    _dfm_centroid + (_dfm_base - _dfm_centroid) * _dfm_coverage
+).astype(np.float32)
 
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):
