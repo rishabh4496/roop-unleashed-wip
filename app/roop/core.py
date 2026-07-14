@@ -74,6 +74,9 @@ warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 
 def parse_args() -> None:
     signal.signal(signal.SIGINT, lambda signal_number, frame: destroy())
+    # Windows: also finalize the video if the console is closed via the X button
+    # (that path never raises SIGINT, so the handler above wouldn't fire).
+    install_console_close_handler()
     roop.globals.headless = False
 
     program = argparse.ArgumentParser(formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=100))
@@ -834,6 +837,24 @@ def end_processing(msg:str):
     roop.globals.batch_active = False
 
 
+def finalize_active_batch(timeout: float = 120.0) -> bool:
+    """Signal any in-progress batch to stop and wait (up to *timeout* seconds) for
+    the encode thread to finalize the output video — i.e. close the ffmpeg writer
+    so its trailer (moov atom) is written and the file stays playable.
+
+    Shared by every abrupt-exit path (Ctrl-C via destroy(), and the Windows
+    console-close handler). Returns True if the batch finished finalizing within
+    the timeout. Safe to call when nothing is running (returns True immediately)."""
+    if not roop.globals.batch_active:
+        return True
+    roop.globals.pause = False
+    roop.globals.processing = False
+    deadline = time() + timeout
+    while roop.globals.batch_active and time() < deadline:
+        _time.sleep(0.1)
+    return not roop.globals.batch_active
+
+
 def destroy() -> None:
     # Ctrl-C in the terminal lands here (SIGINT handler, see parse_args). If a
     # batch is mid-encode, do NOT hard-exit — that would kill the background
@@ -842,19 +863,61 @@ def destroy() -> None:
     # and wait for the worker to finalize the output video before tearing down.
     if roop.globals.batch_active:
         print('\nStopping — finalizing output video, please wait...')
-        roop.globals.pause = False
-        roop.globals.processing = False
-        deadline = time() + 120
-        while roop.globals.batch_active and time() < deadline:
-            _time.sleep(0.25)
-        if roop.globals.batch_active:
-            print('Timed out waiting for finalize; exiting anyway.')
-        else:
+        if finalize_active_batch(timeout=120):
             print('Output video finalized.')
+        else:
+            print('Timed out waiting for finalize; exiting anyway.')
     if roop.globals.target_path:
         util.clean_temp(roop.globals.target_path)
     release_resources()
     sys.exit()
+
+
+# Keeps the ctypes callback alive for the process lifetime (SetConsoleCtrlHandler
+# stores only a raw pointer; letting Python GC it would crash on the next event).
+_console_handler_ref = None
+
+
+def install_console_close_handler() -> None:
+    """Windows only: finalize the output video when the console window is closed
+    with the X button (CTRL_CLOSE_EVENT) or on logoff/shutdown. The OS gives a
+    close handler only a few seconds before force-killing the process, so the wait
+    is short — enough to flush ffmpeg's trailer in the common case, which is all
+    that's needed for the file to be playable. Ctrl-C / Ctrl-Break are left to the
+    Python SIGINT handler (destroy) so they aren't handled twice."""
+    global _console_handler_ref
+    if sys.platform != 'win32' or _console_handler_ref is not None:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return
+
+    CTRL_CLOSE_EVENT = 2
+    CTRL_LOGOFF_EVENT = 5
+    CTRL_SHUTDOWN_EVENT = 6
+    HANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def _handler(ctrl_type):
+        if ctrl_type in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+            if roop.globals.batch_active:
+                try:
+                    print('\nWindow closing — finalizing output video...')
+                except Exception:
+                    pass
+                # Bounded to stay inside the OS kill window (~5s); the frames are
+                # already encoded, so writing the trailer is fast in practice.
+                finalize_active_batch(timeout=4.0)
+            return True   # handled; the OS terminates the process afterwards
+        return False      # Ctrl-C / Ctrl-Break → defer to the SIGINT handler
+
+    try:
+        _console_handler_ref = HANDLER_ROUTINE(_handler)
+        if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, True):
+            _console_handler_ref = None
+    except Exception:
+        _console_handler_ref = None
 
 
 def print_startup_banner() -> None:
