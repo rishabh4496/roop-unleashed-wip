@@ -6,6 +6,7 @@ export default function InteractivePreview({
   afterSrc,
   faces = [],
   personIds = [],
+  onSelectPerson,
   splitView = false,
   compare = false,
   onToggleCompare,
@@ -130,18 +131,31 @@ export default function InteractivePreview({
 
   const renderFaces = () => {
     if (!faces.length || !imgDim || !showBoxes) return null;
+    const clickable = typeof onSelectPerson === 'function';
     return faces.map((bbox, i) => {
       const [sx, sy, ex, ey] = bbox;
       const left = (sx / imgDim.w) * 100;
       const top = (sy / imgDim.h) * 100;
       const width = ((ex - sx) / imgDim.w) * 100;
       const height = ((ey - sy) / imgDim.h) * 100;
+      const label = (personIds[i] ?? i) + 1;
       return (
-        <div key={i} className="absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 pointer-events-none"
-             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}>
+        <div
+          key={i}
+          className={`absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 ${clickable ? 'pointer-events-auto cursor-pointer group/face hover:bg-[var(--accent)]/10 transition-colors' : 'pointer-events-none'}`}
+          style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+          title={clickable ? `Click to add Person ${label} to target faces` : undefined}
+          onPointerDown={clickable ? (e) => e.stopPropagation() : undefined}
+          onClick={clickable ? (e) => { e.stopPropagation(); onSelectPerson(i); } : undefined}
+        >
           <span className="absolute -top-6 left-0 bg-[var(--accent)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
-            Person {(personIds[i] ?? i) + 1}
+            Person {label}
           </span>
+          {clickable && (
+            <span className="absolute left-1/2 -translate-x-1/2 -bottom-6 opacity-0 group-hover/face:opacity-100 transition-opacity bg-black/80 backdrop-blur text-[var(--accent)] text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none">
+              ＋ Add to targets
+            </span>
+          )}
         </div>
       );
     });

@@ -1087,12 +1087,22 @@ def _faces_from_frame(idx, frame):
 
 @app.post("/api/target/use_face")
 def target_use_face(payload: dict = Body(...)):
-    """Add target faces from the current frame, each as a NEW person (group)."""
+    """Add target faces from the current frame, each as a NEW person (group).
+
+    If `face_index` is supplied, only that single detected face is added — the
+    index is into the left-to-right detection order, which matches the numbered
+    boxes drawn on the live-preview overlay, so clicking a box adds exactly that
+    person to the target faces.
+    """
     idx = int(payload.get("index", selected_target_index))
     frame = int(payload.get("frame", 1))
     if idx >= len(list_files_process):
         return {"target_faces": [], "target_groups": []}
     faces_data = _faces_from_frame(idx, frame)
+    face_index = payload.get("face_index", None)
+    if face_index is not None:
+        fi = int(face_index)
+        faces_data = [faces_data[fi]] if 0 <= fi < len(faces_data) else []
     next_id = (max(roop_globals.TARGET_FACE_GROUP) + 1) if roop_globals.TARGET_FACE_GROUP else 0
     for fd in faces_data:
         roop_globals.TARGET_FACES.append(fd[0])

@@ -933,6 +933,21 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     } catch (e) { notify(e.message, 'error'); }
   };
 
+  // Click a numbered face box in the live preview to capture just that person
+  // as a NEW target face (face_index = its left-to-right box order).
+  const addPersonFromBox = async (faceIndex) => {
+    try {
+      const res = await postJSON('/api/target/use_face', { index: selTarget, frame, face_index: faceIndex });
+      if (!res.count) { notify('No face found for that box', 'error'); return; }
+      setTargetFaces(res.target_faces);
+      setTargetGroups(res.target_groups || []);
+      setTargetNames(res.target_names || []);
+      setTargetFacesInfo(res.target_faces_info || []);
+      set('face_detection_mode', 'Selected face');
+      notify(`Added Person ${(previewPersonIds[faceIndex] ?? faceIndex) + 1} to target faces`);
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
   const setFrameMarkerVal = async (which, val) => {
     if (!val || isNaN(val)) return;
     try {
@@ -2063,43 +2078,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               );
             })() : (
              <div className="w-full space-y-4">
-              {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
-                <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 w-full">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-[11px] uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
-                    <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${estSourceClass}`}>{estSourceLabel}</span>
-                  </div>
-                  <div className="flex items-end gap-3 mb-4">
-                    <span className="text-3xl font-bold text-white/95 tabular-nums leading-none">~{fmtTime(estTotalMs)}</span>
-                    <span className="text-xs text-white/40 mb-0.5">{Math.round(estPerFrame)} ms/frame{heavyVram ? ' · high VRAM' : ''}</span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-2.5 text-[11px]">
-                    {[
-                      ['Frames', estFrames.toLocaleString()],
-                      ['Duration', estDurationS ? `${estDurationS.toFixed(1)}s @ ${estFps} fps` : '—'],
-                      ['Faces / frame', `${previewFaces.length || '—'}${calibEst?.density_bucket ? ` (${calibEst.density_bucket})` : ''}`],
-                      ['This combo', estLearned ? `${calibEst.samples} run${calibEst.samples > 1 ? 's' : ''}` : 'no data yet'],
-                      ['GPU', calibEst?.gpu || '—'],
-                      ['Threads', calibEst?.threads ?? '—'],
-                      ['Precision', calibEst?.precision || '—'],
-                      ['Learned combos', calibEst?.store?.entries ?? 0],
-                      ['Total runs logged', calibEst?.store?.global_samples ?? 0],
-                    ].map(([k, v]) => (
-                      <div key={k} className="flex flex-col leading-tight min-w-0">
-                        <span className="text-white/35">{k}</span>
-                        <span className="text-white/80 tabular-nums truncate" title={String(v)}>{v}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-white/5 text-[10px] text-white/35 leading-snug">
-                    {estLearned
-                      ? 'Learned from your completed runs with these settings. Accuracy improves as you process more.'
-                      : calibEst?.source === 'global'
-                        ? 'No history for this exact settings + face-density combo yet — showing a blend of your overall average and the heuristic. Finish a run to calibrate it.'
-                        : 'Heuristic estimate. Finish a run with these settings to start learning the real speed.'}
-                  </div>
-                </div>
-              )}
               <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
                 <div className="flex items-center gap-3 w-full md:w-auto">
                   <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
@@ -2223,6 +2201,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
                   faces={previewFaces}
                   personIds={previewPersonIds}
+                  onSelectPerson={addPersonFromBox}
                   splitView={splitView}
                   compare={compare}
                   onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); } return n; })}
@@ -2552,6 +2531,44 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); } }} />
             </div>
           </Section>
+
+          {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
+            <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 w-full">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-[11px] uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
+                <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${estSourceClass}`}>{estSourceLabel}</span>
+              </div>
+              <div className="flex items-end gap-3 mb-4">
+                <span className="text-3xl font-bold text-white/95 tabular-nums leading-none">~{fmtTime(estTotalMs)}</span>
+                <span className="text-xs text-white/40 mb-0.5">{Math.round(estPerFrame)} ms/frame{heavyVram ? ' · high VRAM' : ''}</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-2.5 text-[11px]">
+                {[
+                  ['Frames', estFrames.toLocaleString()],
+                  ['Duration', estDurationS ? `${estDurationS.toFixed(1)}s @ ${estFps} fps` : '—'],
+                  ['Faces / frame', `${previewFaces.length || '—'}${calibEst?.density_bucket ? ` (${calibEst.density_bucket})` : ''}`],
+                  ['This combo', estLearned ? `${calibEst.samples} run${calibEst.samples > 1 ? 's' : ''}` : 'no data yet'],
+                  ['GPU', calibEst?.gpu || '—'],
+                  ['Threads', calibEst?.threads ?? '—'],
+                  ['Precision', calibEst?.precision || '—'],
+                  ['Learned combos', calibEst?.store?.entries ?? 0],
+                  ['Total runs logged', calibEst?.store?.global_samples ?? 0],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex flex-col leading-tight min-w-0">
+                    <span className="text-white/35">{k}</span>
+                    <span className="text-white/80 tabular-nums truncate" title={String(v)}>{v}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 pt-3 border-t border-white/5 text-[10px] text-white/35 leading-snug">
+                {estLearned
+                  ? 'Learned from your completed runs with these settings. Accuracy improves as you process more.'
+                  : calibEst?.source === 'global'
+                    ? 'No history for this exact settings + face-density combo yet — showing a blend of your overall average and the heuristic. Finish a run to calibrate it.'
+                    : 'Heuristic estimate. Finish a run with these settings to start learning the real speed.'}
+              </div>
+            </div>
+          )}
 
           <Section title="Batch Swapping Queue">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
