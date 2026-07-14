@@ -68,6 +68,13 @@ temporal_detection = False
 no_face_action = 1
 
 processing = False
+# True for the whole lifetime of a batch_process run (start → end_processing),
+# independent of the `processing` stop-signal. `processing` is cleared the moment
+# a stop is requested (UI Stop or Ctrl-C), but the background thread still needs a
+# moment to wind down and finalize the output video. `batch_active` stays True
+# until that teardown completes, so a terminal Ctrl-C can wait for the video to be
+# finalized (ffmpeg moov atom written) before exiting — same as the UI Stop path.
+batch_active = False
 # When True, the per-frame processing loops block (without aborting) so the
 # user can pause and later resume from the exact same spot. Stop clears both
 # `processing` and `pause`, so an abort always wins over a pause.

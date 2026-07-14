@@ -1723,6 +1723,10 @@ def _run_swap(payload):
         _progress["error"] = str(e)
     finally:
         roop_globals.pause = False
+        # Safety net: normally end_processing() clears this, but if batch_process
+        # raised before reaching it, clear here so a later terminal Ctrl-C doesn't
+        # block in destroy() waiting on a batch that's no longer running.
+        roop_globals.batch_active = False
         _progress["processing"] = False
         _progress["paused"] = False
 

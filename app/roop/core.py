@@ -626,6 +626,9 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
     global clip_text, process_mgr
 
     roop.globals.processing = True
+    # Marks the encode as live so a terminal Ctrl-C (destroy()) can wait for the
+    # output video to be finalized before exiting. Cleared in end_processing.
+    roop.globals.batch_active = True
 
     # Keep the GPU powered while the display is off so long runs don't freeze
     # (released in end_processing, which every exit path below goes through).
@@ -826,12 +829,31 @@ def end_processing(msg:str):
     update_status(msg)
     roop.globals.target_folder_path = None
     release_resources()
+    # Encode fully wound down (writers closed, output finalized). Clear last so a
+    # terminal Ctrl-C waiting in destroy() only proceeds once the file is safe.
+    roop.globals.batch_active = False
 
 
 def destroy() -> None:
+    # Ctrl-C in the terminal lands here (SIGINT handler, see parse_args). If a
+    # batch is mid-encode, do NOT hard-exit — that would kill the background
+    # encode thread with ffmpeg's pipe still open, leaving a truncated/unplayable
+    # output (no moov atom). Instead mirror the UI Stop: signal a graceful stop
+    # and wait for the worker to finalize the output video before tearing down.
+    if roop.globals.batch_active:
+        print('\nStopping — finalizing output video, please wait...')
+        roop.globals.pause = False
+        roop.globals.processing = False
+        deadline = time() + 120
+        while roop.globals.batch_active and time() < deadline:
+            _time.sleep(0.25)
+        if roop.globals.batch_active:
+            print('Timed out waiting for finalize; exiting anyway.')
+        else:
+            print('Output video finalized.')
     if roop.globals.target_path:
         util.clean_temp(roop.globals.target_path)
-    release_resources()        
+    release_resources()
     sys.exit()
 
 
