@@ -638,192 +638,199 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
     from roop import keep_awake
     keep_awake.acquire()
 
-    # limit threads for some providers
-    max_threads = suggest_execution_threads()
-    if max_threads == 1:
-        roop.globals.execution_threads = 1
+    try:
+        # limit threads for some providers
+        max_threads = suggest_execution_threads()
+        if max_threads == 1:
+            roop.globals.execution_threads = 1
 
-    imagefiles:list[ProcessEntry] = []
-    videofiles:list[ProcessEntry] = []
+        imagefiles:list[ProcessEntry] = []
+        videofiles:list[ProcessEntry] = []
            
-    update_status('Sorting videos/images')
+        update_status('Sorting videos/images')
 
 
-    for index, f in enumerate(files):
-        fullname = f.filename
-        if util.is_video(fullname) or util.has_extension(fullname, ['gif']) or util.is_animated_webp(fullname):
-            destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'__temp.{roop.globals.CFG.output_video_format}')
-            f.finalname = destination
-            videofiles.append(f)
+        for index, f in enumerate(files):
+            fullname = f.filename
+            if util.is_video(fullname) or util.has_extension(fullname, ['gif']) or util.is_animated_webp(fullname):
+                destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'__temp.{roop.globals.CFG.output_video_format}')
+                f.finalname = destination
+                videofiles.append(f)
 
-        elif util.has_image_extension(fullname):
-            destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'.{roop.globals.CFG.output_image_format}')
-            destination = util.replace_template(destination, index=index)
-            pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
-            f.finalname = destination
-            imagefiles.append(f)
+            elif util.has_image_extension(fullname):
+                destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'.{roop.globals.CFG.output_image_format}')
+                destination = util.replace_template(destination, index=index)
+                pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
+                f.finalname = destination
+                imagefiles.append(f)
 
 
 
-    if(len(imagefiles) > 0):
-        update_status('Processing image(s)')
-        origimages = []
-        fakeimages = []
-        for f in imagefiles:
-            origimages.append(f.filename)
-            fakeimages.append(f.finalname)
+        if(len(imagefiles) > 0):
+            update_status('Processing image(s)')
+            origimages = []
+            fakeimages = []
+            for f in imagefiles:
+                origimages.append(f.filename)
+                fakeimages.append(f.finalname)
 
-        process_mgr.run_batch(origimages, fakeimages, roop.globals.execution_threads)
-        origimages.clear()
-        fakeimages.clear()
+            process_mgr.run_batch(origimages, fakeimages, roop.globals.execution_threads)
+            origimages.clear()
+            fakeimages.clear()
 
-    if(len(videofiles) > 0):
-        for index,v in enumerate(videofiles):
-            if not roop.globals.processing:
-                end_processing('Processing stopped!')
-                return
-            fps = v.fps if v.fps > 0 else util.detect_fps(v.filename)
-            if v.endframe == 0:
-                v.endframe = get_video_frame_total(v.filename)
-
-            is_streaming_only = output_method == "Virtual Camera"
-            if is_streaming_only == False:
-                update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
-
-            start_processing = time()
-            _swaps_before = getattr(process_mgr, 'total_swaps', 0)
-            _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
-            if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
-                util.create_temp(v.filename)
-                update_status('Extracting frames...')
-                extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
+        if(len(videofiles) > 0):
+            for index,v in enumerate(videofiles):
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
                     return
+                fps = v.fps if v.fps > 0 else util.detect_fps(v.filename)
+                if v.endframe == 0:
+                    v.endframe = get_video_frame_total(v.filename)
 
-                temp_frame_paths = util.get_temp_frame_paths(v.filename)
-                if not temp_frame_paths:
-                    # Frame extraction produced no output — ffmpeg likely failed above.
-                    # Log and skip this video rather than crashing on temp_frame_paths[0].
-                    update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...')
-                    continue
+                is_streaming_only = output_method == "Virtual Camera"
+                if is_streaming_only == False:
+                    update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
 
-                # Save unswapped originals BEFORE run_batch overwrites them in-place.
-                # Needed for both keep_frames mode (Frame Editor) and per-frame mask re-processing.
-                per_frame_masks = getattr(roop.globals, 'mask_per_frame', {})
-                needs_originals = roop.globals.keep_frames or bool(per_frame_masks)
-                if needs_originals:
-                    util.save_original_frames(v.filename)
-                process_mgr.run_batch(temp_frame_paths, temp_frame_paths, roop.globals.execution_threads)
+                start_processing = time()
+                _swaps_before = getattr(process_mgr, 'total_swaps', 0)
+                _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
+                if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
+                    util.create_temp(v.filename)
+                    update_status('Extracting frames...')
+                    extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
+                    if not roop.globals.processing:
+                        end_processing('Processing stopped!')
+                        return
+
+                    temp_frame_paths = util.get_temp_frame_paths(v.filename)
+                    if not temp_frame_paths:
+                        # Frame extraction produced no output — ffmpeg likely failed above.
+                        # Log and skip this video rather than crashing on temp_frame_paths[0].
+                        update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...')
+                        continue
+
+                    # Save unswapped originals BEFORE run_batch overwrites them in-place.
+                    # Needed for both keep_frames mode (Frame Editor) and per-frame mask re-processing.
+                    per_frame_masks = getattr(roop.globals, 'mask_per_frame', {})
+                    needs_originals = roop.globals.keep_frames or bool(per_frame_masks)
+                    if needs_originals:
+                        util.save_original_frames(v.filename)
+                    process_mgr.run_batch(temp_frame_paths, temp_frame_paths, roop.globals.execution_threads)
+                    if not roop.globals.processing:
+                        end_processing('Processing stopped!')
+                        return
+
+                    # Re-process any frames that have custom per-frame masks.
+                    if per_frame_masks:
+                        update_status('Applying per-frame masks...')
+                        orig_paths = util.get_temp_frame_paths_from_dir(util.get_frames_orig_path(v.filename))
+                        _reprocess_custom_mask_frames(
+                            temp_frame_paths, orig_paths, per_frame_masks,
+                            masking_engine=None,
+                            new_clip_text=getattr(roop.globals, '_batch_clip_text', ''),
+                            num_swap_steps=getattr(roop.globals, '_batch_num_steps', 1),
+                            restore_original_mouth=getattr(roop.globals, '_batch_restore_mouth', False),
+                            selected_index=getattr(roop.globals, '_batch_selected_index', 0),
+                            use_3d_recon=getattr(roop.globals, '_batch_use_3d_recon', False),
+                            use_source_bank=getattr(roop.globals, '_batch_use_source_bank', False),
+                            use_frontalization=getattr(roop.globals, '_batch_use_frontalization', False),
+                            frontalization_threshold=getattr(roop.globals, '_batch_front_threshold', 25.0),
+                            swap_model=getattr(roop.globals, '_batch_swap_model', 'inswapper'),
+                        )
+
+                    if roop.globals.wait_after_extraction and temp_frame_paths:
+                        extract_path = os.path.dirname(temp_frame_paths[0])
+                        util.open_folder(extract_path)
+                        input("Press any key to continue...")
+                        print("Resorting frames to create video")
+                        util.sort_rename_frames(extract_path)                                    
+                
+                    ffmpeg.create_video(v.filename, v.finalname, fps)
+                    if roop.globals.keep_frames:
+                        util.move_frames_to_output(v.filename, fps=fps)
+                    else:
+                        util.delete_temp_frames(temp_frame_paths[0])
+                        # If we saved originals only for per-frame mask re-processing (not keep_frames),
+                        # clean them up now that the video has been compiled.
+                        if per_frame_masks and not roop.globals.keep_frames:
+                            orig_dir = util.get_frames_orig_path(v.filename)
+                            if os.path.isdir(orig_dir):
+                                import shutil as _shutil
+                                _shutil.rmtree(orig_dir, ignore_errors=True)
+                else:
+                    if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
+                        skip_audio = True
+                    else:
+                        skip_audio = roop.globals.skip_audio
+                    process_mgr.run_batch_inmem(output_method, v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
+                
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
                     return
-
-                # Re-process any frames that have custom per-frame masks.
-                if per_frame_masks:
-                    update_status('Applying per-frame masks...')
-                    orig_paths = util.get_temp_frame_paths_from_dir(util.get_frames_orig_path(v.filename))
-                    _reprocess_custom_mask_frames(
-                        temp_frame_paths, orig_paths, per_frame_masks,
-                        masking_engine=None,
-                        new_clip_text=getattr(roop.globals, '_batch_clip_text', ''),
-                        num_swap_steps=getattr(roop.globals, '_batch_num_steps', 1),
-                        restore_original_mouth=getattr(roop.globals, '_batch_restore_mouth', False),
-                        selected_index=getattr(roop.globals, '_batch_selected_index', 0),
-                        use_3d_recon=getattr(roop.globals, '_batch_use_3d_recon', False),
-                        use_source_bank=getattr(roop.globals, '_batch_use_source_bank', False),
-                        use_frontalization=getattr(roop.globals, '_batch_use_frontalization', False),
-                        frontalization_threshold=getattr(roop.globals, '_batch_front_threshold', 25.0),
-                        swap_model=getattr(roop.globals, '_batch_swap_model', 'inswapper'),
-                    )
-
-                if roop.globals.wait_after_extraction and temp_frame_paths:
-                    extract_path = os.path.dirname(temp_frame_paths[0])
-                    util.open_folder(extract_path)
-                    input("Press any key to continue...")
-                    print("Resorting frames to create video")
-                    util.sort_rename_frames(extract_path)                                    
-                
-                ffmpeg.create_video(v.filename, v.finalname, fps)
-                if roop.globals.keep_frames:
-                    util.move_frames_to_output(v.filename, fps=fps)
-                else:
-                    util.delete_temp_frames(temp_frame_paths[0])
-                    # If we saved originals only for per-frame mask re-processing (not keep_frames),
-                    # clean them up now that the video has been compiled.
-                    if per_frame_masks and not roop.globals.keep_frames:
-                        orig_dir = util.get_frames_orig_path(v.filename)
-                        if os.path.isdir(orig_dir):
-                            import shutil as _shutil
-                            _shutil.rmtree(orig_dir, ignore_errors=True)
-            else:
-                if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
-                    skip_audio = True
-                else:
-                    skip_audio = roop.globals.skip_audio
-                process_mgr.run_batch_inmem(output_method, v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
-                
-            if not roop.globals.processing:
-                end_processing('Processing stopped!')
-                return
             
-            video_file_name = v.finalname
-            # Defined before the isfile() branch: the failure path below falls
-            # through to the status line that references it.
-            destination = ''
-            if os.path.isfile(video_file_name):
-                if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
-                    gifname = util.get_destfilename_from_path(v.filename, roop.globals.output_path, '.gif')
-                    destination = util.replace_template(gifname, index=index)
-                    pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
+                video_file_name = v.finalname
+                # Defined before the isfile() branch: the failure path below falls
+                # through to the status line that references it.
+                destination = ''
+                if os.path.isfile(video_file_name):
+                    if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
+                        gifname = util.get_destfilename_from_path(v.filename, roop.globals.output_path, '.gif')
+                        destination = util.replace_template(gifname, index=index)
+                        pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
-                    update_status('Creating final GIF')
-                    # Pass fps explicitly so the GIF matches the original source
-                    # timing — avoids a lossy re-detect from the intermediate MP4.
-                    ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
-                    if os.path.isfile(destination):
-                        _remove_file_retry(video_file_name)
-                else:
-                    skip_audio = roop.globals.skip_audio
-                    destination = util.replace_template(video_file_name, index=index)
-                    pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
-
-                    if not skip_audio:
-                        ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
+                        update_status('Creating final GIF')
+                        # Pass fps explicitly so the GIF matches the original source
+                        # timing — avoids a lossy re-detect from the intermediate MP4.
+                        ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
                         if os.path.isfile(destination):
                             _remove_file_retry(video_file_name)
                     else:
-                        shutil.move(video_file_name, destination)
+                        skip_audio = roop.globals.skip_audio
+                        destination = util.replace_template(video_file_name, index=index)
+                        pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
-            elif is_streaming_only == False:
-                update_status(f'Failed processing {os.path.basename(v.finalname)}!')
-            elapsed_time = time() - start_processing
-            average_fps = (v.endframe - v.startframe) / elapsed_time
-            update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
-            # Fold this run into the learned runtime estimator. Signature =
-            # settings (stashed at run start) + measured face-density bucket
-            # (avg faces/frame for THIS video). Guarded — never fatal.
-            try:
-                from roop import runtime_calib
-                frames = v.endframe - v.startframe
-                base_sig = getattr(roop.globals, '_run_signature', None)
-                if base_sig:
-                    swaps = getattr(process_mgr, 'total_swaps', 0) - _swaps_before
-                    avg_faces = swaps / max(1, frames)
-                    sig = runtime_calib.with_density(
-                        base_sig, runtime_calib.density_bucket(avg_faces))
-                    runtime_calib.record(sig, frames, elapsed_time * 1000.0)
-            except Exception:
-                pass
-            import gc
-            gc.collect()
-            try:
-                if torch.cuda.is_available():
-                    with torch.cuda.device(roop.globals.cuda_device_id):
-                        torch.cuda.empty_cache()
-            except Exception:
-                pass
-    end_processing('Finished')
+                        if not skip_audio:
+                            ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
+                            if os.path.isfile(destination):
+                                _remove_file_retry(video_file_name)
+                        else:
+                            shutil.move(video_file_name, destination)
+
+                elif is_streaming_only == False:
+                    update_status(f'Failed processing {os.path.basename(v.finalname)}!')
+                elapsed_time = time() - start_processing
+                average_fps = (v.endframe - v.startframe) / elapsed_time
+                update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
+                # Fold this run into the learned runtime estimator. Signature =
+                # settings (stashed at run start) + measured face-density bucket
+                # (avg faces/frame for THIS video). Guarded — never fatal.
+                try:
+                    from roop import runtime_calib
+                    frames = v.endframe - v.startframe
+                    base_sig = getattr(roop.globals, '_run_signature', None)
+                    if base_sig:
+                        swaps = getattr(process_mgr, 'total_swaps', 0) - _swaps_before
+                        avg_faces = swaps / max(1, frames)
+                        sig = runtime_calib.with_density(
+                            base_sig, runtime_calib.density_bucket(avg_faces))
+                        runtime_calib.record(sig, frames, elapsed_time * 1000.0)
+                except Exception:
+                    pass
+                import gc
+                gc.collect()
+                try:
+                    if torch.cuda.is_available():
+                        with torch.cuda.device(roop.globals.cuda_device_id):
+                            torch.cuda.empty_cache()
+                except Exception:
+                    pass
+        end_processing('Finished')
+    finally:
+        # Guarantee the run is marked finished even if an exception escaped
+        # batch_process (e.g. the legacy Gradio caller has no finally), so a
+        # later Ctrl-C / window-close never waits on a batch that is gone.
+        keep_awake.release()
+        roop.globals.batch_active = False
 
 
 def end_processing(msg:str):
