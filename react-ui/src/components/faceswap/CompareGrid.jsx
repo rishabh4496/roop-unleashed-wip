@@ -1,8 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export default function EnhancerCompareGrid({ activeList, gridColsClass, enhancerPreviews, enhancerTimes, liveRenderingTimers }) {
+/**
+ * Generic side-by-side comparison grid with a single shared zoom/pan, used by
+ * both the Enhancer grid and the Mask-engine grid. Each cell shows one variant's
+ * rendered preview (or a live "Rendering…" spinner while it's in flight).
+ *
+ * Props:
+ *   items          string[]  — variant labels to show, one cell each
+ *   previews       {label: dataURL}
+ *   times          {label: "1.23s" | "Cached"}
+ *   timers         {label: "0.4s"}  — live elapsed while rendering
+ *   gridColsClass  tailwind grid-cols class
+ *   emptyHint      optional string shown center when there are no items
+ */
+export default function CompareGrid({ items, previews, times, timers, gridColsClass, emptyHint }) {
   // Zoom/pan is shared by every cell, so the same region is magnified in all
-  // enhancers at once — that's what makes fine differences readable.
+  // variants at once — that's what makes fine differences readable.
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -69,28 +82,33 @@ export default function EnhancerCompareGrid({ activeList, gridColsClass, enhance
       onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
       style={{ touchAction: 'none', cursor: zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'zoom-in' }}
     >
-      {activeList.map((enh) => (
-        <div key={enh} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center"
+      {items.length === 0 && emptyHint && (
+        <div className="col-span-full flex items-center justify-center text-xs text-white/40 font-semibold p-6 text-center">
+          {emptyHint}
+        </div>
+      )}
+      {items.map((label) => (
+        <div key={label} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center"
              onDoubleClick={handleDoubleClick}>
-          {enhancerPreviews[enh] ? (
+          {previews[label] ? (
             <div className="w-full h-full flex items-center justify-center transition-transform duration-75 select-none" style={transformStyle}>
-              <img src={enhancerPreviews[enh]} alt={enh} className="max-w-full max-h-full object-contain pointer-events-none" draggable={false} />
+              <img src={previews[label]} alt={label} className="max-w-full max-h-full object-contain pointer-events-none" draggable={false} />
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs">
+            <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs px-3 text-center">
               <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
-              <span className="font-semibold">Rendering {enh}…</span>
-              {liveRenderingTimers[enh] && (
+              <span className="font-semibold">Rendering {label}…</span>
+              {timers[label] && (
                 <span className="text-[10px] text-white/30 font-mono">
-                  Elapsed: {liveRenderingTimers[enh]}
+                  Elapsed: {timers[label]}
                 </span>
               )}
             </div>
           )}
-          <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase pointer-events-none">{enh}</span>
-          {enhancerTimes[enh] && (
+          <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white uppercase pointer-events-none max-w-[calc(100%-1rem)] truncate">{label}</span>
+          {times[label] && (
             <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur border border-white/10 text-[10px] font-bold text-white/60 font-mono pointer-events-none">
-              ⏱️ {enhancerTimes[enh]}
+              ⏱️ {times[label]}
             </span>
           )}
         </div>
@@ -105,7 +123,7 @@ export default function EnhancerCompareGrid({ activeList, gridColsClass, enhance
           🔍 {zoom.toFixed(1)}× — Reset
         </button>
       )}
-      {zoom === 1 && (
+      {zoom === 1 && items.length > 0 && (
         <span className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-[10px] font-semibold text-white/40 pointer-events-none select-none">
           Scroll or double-click to zoom all
         </span>

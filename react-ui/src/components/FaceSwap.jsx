@@ -4,7 +4,7 @@ import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, 
 import PersonGroups from './PersonGroups';
 import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
-import EnhancerCompareGrid from './faceswap/EnhancerCompareGrid';
+import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
@@ -53,6 +53,25 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [enhancerTimes, setEnhancerTimes] = useState({});
   const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
   const activeIntervalsRef = useRef({});
+
+  // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
+  const [comparingMasks, setComparingMasks] = useState(false);
+  const [selectedGridMasks, setSelectedGridMasks] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('roop_grid_masks') || 'null');
+      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
+        return saved;
+      }
+    } catch { /* fall through to default */ }
+    return ['None', 'DFL XSeg', 'Face Occluder', 'Face Parser (BiSeNet)'];
+  });
+  useEffect(() => {
+    localStorage.setItem('roop_grid_masks', JSON.stringify(selectedGridMasks));
+  }, [selectedGridMasks]);
+  const [maskPreviews, setMaskPreviews] = useState({});
+  const [maskTimes, setMaskTimes] = useState({});
+  const [maskRenderTimers, setMaskRenderTimers] = useState({});
+  const maskIntervalsRef = useRef({});
 
   // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
   const telemetry = useTelemetry();
@@ -305,10 +324,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   // Custom Timeline and Playback States
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLooping, setIsLooping] = useState(true);
+  const [playbackRate, setPlaybackRate] = useState(1); // 0.25 | 0.5 | 1 | 2 | 4
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
   const [storyboardThumbs, setStoryboardThumbs] = useState([]);
   const [hoverFrame, setHoverFrame] = useState(null);
+  const [frameInput, setFrameInput] = useState(null); // non-null while typing a frame to jump to
   const timelineRef = useRef(null);
   const playIntervalRef = useRef(null);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
@@ -668,6 +689,126 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
+  // Render one preview per selected mask engine, holding every other setting
+  // (including the currently-selected enhancer) fixed — the mirror image of
+  // loadEnhancerPreviews, but varying `mask_engine` instead of `enhancer`.
+  const loadMaskPreviews = async (activeCheck) => {
+    if (targets.length === 0) return;
+    const available = selectedGridMasks.filter(m => meta.mask_engines?.includes(m));
+
+    const keepOnly = (prev) => {
+      const reset = {};
+      for (const m of available) if (prev[m]) reset[m] = prev[m];
+      return reset;
+    };
+    setMaskPreviews(keepOnly);
+    setMaskTimes(keepOnly);
+    setMaskRenderTimers(keepOnly);
+
+    for (const me of available) {
+      if (!activeCheck()) return;
+      const localParams = { ...p, mask_engine: me };
+      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
+        fp: fakePreview,
+        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
+        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
+        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
+        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
+        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
+        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
+        ctm: localParams.color_transfer_mode,
+        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
+        dds: localParams.default_det_size,
+        fds: localParams.face_detector_size,
+        fdt: localParams.face_detector_threshold,
+        mask_top: localParams.mask_top,
+        mask_bottom: localParams.mask_bottom,
+        mask_left: localParams.mask_left,
+        mask_right: localParams.mask_right,
+        face_mask_blend: localParams.face_mask_blend,
+        mouth_mask_blend: localParams.mouth_mask_blend,
+        mouth_top_scale: localParams.mouth_top_scale,
+        mouth_bottom_scale: localParams.mouth_bottom_scale,
+        mouth_left_scale: localParams.mouth_left_scale,
+        mouth_right_scale: localParams.mouth_right_scale,
+      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+
+      if (previewCacheRef.current[cacheKey]) {
+        if (!activeCheck()) return;
+        setMaskPreviews((prev) => ({ ...prev, [me]: previewCacheRef.current[cacheKey].image }));
+        setMaskTimes((prev) => ({ ...prev, [me]: 'Cached' }));
+        continue;
+      }
+
+      try {
+        const start = Date.now();
+        setMaskRenderTimers(prev => ({ ...prev, [me]: '0.0s' }));
+        maskIntervalsRef.current[me] = setInterval(() => {
+          setMaskRenderTimers(prev => ({ ...prev, [me]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
+        }, 100);
+
+        const res = await postJSON('/api/preview', {
+          index: selTarget, frame: frame, fake_preview: fakePreview,
+          enhancer: p.selected_enhancer, detection: p.face_detection_mode,
+          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
+          mask_engine: me, clip_text: p.mask_clip_text,
+          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
+          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
+          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
+          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
+          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
+          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+          swap_model: p.swap_model, default_det_size: p.default_det_size,
+          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+          face_detector_nms: p.face_detector_nms,
+          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
+          refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          detector_engine: p.detector_engine,
+          face_mapping: getFaceMappingArray(),
+          mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
+          face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
+          mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
+          mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
+        });
+        const duration = ((Date.now() - start) / 1000).toFixed(2);
+        if (maskIntervalsRef.current[me]) {
+          clearInterval(maskIntervalsRef.current[me]);
+          delete maskIntervalsRef.current[me];
+        }
+        if (!activeCheck()) return;
+        if (res.image) {
+          setMaskPreviews((prev) => ({ ...prev, [me]: res.image }));
+          setMaskTimes((prev) => ({ ...prev, [me]: `${duration}s` }));
+          setMaskRenderTimers((prev) => ({ ...prev, [me]: null }));
+          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
+        }
+      } catch {
+        if (maskIntervalsRef.current[me]) {
+          clearInterval(maskIntervalsRef.current[me]);
+          delete maskIntervalsRef.current[me];
+        }
+        setMaskRenderTimers((prev) => ({ ...prev, [me]: null }));
+        // Fail silently (e.g. SAM2-tracked needs a video pre-pass and may skip a single frame)
+      }
+    }
+  };
+
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadMaskPreviews is a stable closure invoked on trigger */
+  useEffect(() => {
+    if (!comparingMasks || targets.length === 0) return;
+    let active = true;
+    loadMaskPreviews(() => active);
+    return () => {
+      active = false;
+      if (maskIntervalsRef.current) {
+        Object.values(maskIntervalsRef.current).forEach(clearInterval);
+        maskIntervalsRef.current = {};
+      }
+    };
+  }, [comparingMasks, selectedGridMasks, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
   useEffect(() => {
@@ -894,7 +1035,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   useEffect(() => {
     if (isPlaying) {
       const fps = targets[selTarget]?.fps || 25;
-      const intervalMs = 1000 / fps;
+      const intervalMs = 1000 / (fps * (playbackRate || 1));
       playIntervalRef.current = setInterval(() => {
         setFrame((f) => {
           const start = targets[selTarget]?.start_frame ?? 1;
@@ -920,7 +1061,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     return () => {
       if (playIntervalRef.current) clearInterval(playIntervalRef.current);
     };
-  }, [isPlaying, isLooping, selTarget, maxFrames, targets]);
+  }, [isPlaying, isLooping, playbackRate, selTarget, maxFrames, targets]);
 
   // Storyboard loading effect
   useEffect(() => {
@@ -1143,7 +1284,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           // enhancer grid are mutually exclusive.
           setCompare((c) => {
             const nextVal = !c;
-            if (nextVal) setComparingEnhancers(false);
+            if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); }
             return nextVal;
           });
         }
@@ -1197,7 +1338,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         e.preventDefault();
         setCompare((prev) => {
           const nextVal = !prev;
-          if (nextVal) setComparingEnhancers(false);
+          if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); }
           return nextVal;
         });
         return;
@@ -1268,7 +1409,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     start: () => { if (isQueueRunning) return; if (queue.length > 0) startQueue(); else start(); },
     stop,
     queue: addToQueue,
-    compare: () => setCompare((v) => { const n = !v; if (n) setComparingEnhancers(false); return n; }),
+    compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); } return n; }),
     split: () => setSplitView((v) => !v),
     preview: () => refreshPreview(),
     shortcuts: () => setShowShortcutHUD(true),
@@ -2018,24 +2159,73 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       </div>
                     </div>
 
-                    <EnhancerCompareGrid
-                      activeList={activeList}
+                    <CompareGrid
+                      items={activeList}
                       gridColsClass={gridColsClass}
-                      enhancerPreviews={enhancerPreviews}
-                      enhancerTimes={enhancerTimes}
-                      liveRenderingTimers={liveRenderingTimers}
+                      previews={enhancerPreviews}
+                      times={enhancerTimes}
+                      timers={liveRenderingTimers}
+                    />
+                  </div>
+                );
+              })() : comparingMasks ? (() => {
+                const activeMasks = selectedGridMasks.filter(m => meta.mask_engines?.includes(m));
+                const gridColsClass = activeMasks.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
+                return (
+                  <div className="space-y-4">
+                    {/* Mask-engine selector row */}
+                    <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🎭 Compare Mask Engines (Select up to 4)</span>
+                        <span className="text-[10px] text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {meta.mask_engines?.map((mE) => {
+                          const isSelected = selectedGridMasks.includes(mE);
+                          return (
+                            <button
+                              key={mE}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  if (selectedGridMasks.length > 1) {
+                                    setSelectedGridMasks(prev => prev.filter(x => x !== mE));
+                                  }
+                                } else {
+                                  if (selectedGridMasks.length >= 4) {
+                                    notify('You can select a maximum of 4 mask engines for grid comparison.', 'warning');
+                                  } else {
+                                    setSelectedGridMasks(prev => [...prev, mE]);
+                                  }
+                                }
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                            >
+                              {mE}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <CompareGrid
+                      items={activeMasks}
+                      gridColsClass={gridColsClass}
+                      previews={maskPreviews}
+                      times={maskTimes}
+                      timers={maskRenderTimers}
                     />
                   </div>
                 );
               })() : (
-                <InteractivePreview 
+                <InteractivePreview
                   beforeSrc={rawUrl} 
                   afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
                   faces={previewFaces}
                   personIds={previewPersonIds}
                   splitView={splitView}
                   compare={compare}
-                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) setComparingEnhancers(false); return n; })}
+                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); } return n; })}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}
@@ -2089,6 +2279,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     <span className="px-2 py-0.5 rounded-md border border-[var(--border-color)] bg-[var(--surface-2)]">
                       Out <span className="text-[var(--text-main)] font-semibold tabular-nums">{targets[selTarget]?.end_frame ?? maxFrames}</span>
                     </span>
+                    {(() => {
+                      const s = targets[selTarget]?.start_frame ?? 1;
+                      const e = targets[selTarget]?.end_frame ?? maxFrames;
+                      const len = Math.max(0, e - s + 1);
+                      return (
+                        <span className="px-2 py-0.5 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 text-[var(--accent)]" title="Selected range length">
+                          {len} f · {fmtTC(len, targets[selTarget]?.fps || 25)}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -2104,13 +2304,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   {hoverFrame !== null && (
                     <div
                       className="absolute bottom-[76px] z-50 flex flex-col items-center gap-1.5 pointer-events-none select-none -translate-x-1/2"
-                      style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
+                      style={{ left: `${maxFrames > 1 ? Math.min(92, Math.max(8, ((hoverFrame - 1) / (maxFrames - 1)) * 100)) : 0}%` }}
                     >
                       <div className="flex flex-col items-center gap-1.5 p-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] backdrop-blur-xl shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
                         <img
                           src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=240`}
                           alt="Hover Preview"
                           className="w-28 h-16 object-cover rounded-md border border-[var(--border-color)] bg-black/50"
+                          onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+                          onLoad={(e) => { e.currentTarget.style.visibility = 'visible'; }}
                         />
                         <span className="text-[10px] font-mono text-[var(--text-muted)] whitespace-nowrap">
                           Frame <span className="text-[var(--text-main)] font-semibold tabular-nums">{hoverFrame}</span> · {fmtTC(hoverFrame, targets[selTarget]?.fps || 25)}
@@ -2138,6 +2340,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                           alt="thumb"
                           className="flex-1 h-full object-cover border-r border-black/30 last:border-r-0"
                           loading="lazy"
+                          onError={(e) => { e.currentTarget.style.opacity = '0'; }}
                         />
                       ))}
                     </div>
@@ -2183,11 +2386,32 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
                 {/* Timeline controls toolbar */}
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-2.5">
-                  {/* Left: timecode / frame readout */}
+                  {/* Left: timecode / editable frame readout (click to jump) */}
                   <div className="font-mono text-xs text-[var(--text-muted)] flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-start">
                     <span className="tabular-nums text-sm font-semibold text-[var(--text-main)]">{fmtTC(frame, targets[selTarget]?.fps || 25)}</span>
                     <span className="opacity-30 hidden sm:inline">·</span>
-                    <span className="tabular-nums">Frame <span className="text-[var(--text-main)]">{frame}</span> <span className="opacity-40">/ {maxFrames}</span></span>
+                    <span className="tabular-nums flex items-center gap-1">
+                      Frame
+                      <input
+                        type="number"
+                        min={1}
+                        max={maxFrames}
+                        value={frameInput ?? frame}
+                        onFocus={(e) => { setFrameInput(String(frame)); e.target.select(); }}
+                        onChange={(e) => setFrameInput(e.target.value)}
+                        onBlur={() => {
+                          if (frameInput !== null) {
+                            const v = Math.max(1, Math.min(maxFrames, parseInt(frameInput, 10) || frame));
+                            setFrame(v);
+                          }
+                          setFrameInput(null);
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setFrameInput(null); e.currentTarget.blur(); } }}
+                        className="w-14 text-center text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors tabular-nums"
+                        title="Type a frame number and press Enter to jump"
+                      />
+                      <span className="opacity-40">/ {maxFrames}</span>
+                    </span>
                   </div>
 
                   {/* Center: transport */}
@@ -2290,6 +2514,19 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                       />
                     </div>
 
+                    {/* Playback speed */}
+                    <div className="flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5" title="Playback speed">
+                      {[0.5, 1, 2, 4].map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => setPlaybackRate(r)}
+                          className={`px-1.5 py-1 rounded-md text-[10px] font-bold tabular-nums transition-colors ${playbackRate === r ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05]'}`}
+                        >
+                          {r}×
+                        </button>
+                      ))}
+                    </div>
+
                     <button
                       onClick={() => setIsLooping(!isLooping)}
                       className={`p-1.5 rounded-md border transition-colors active:scale-95 ${isLooping ? 'bg-[var(--accent)]/12 text-[var(--accent)] border-[var(--accent)]/30' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] border-[var(--border-color)]'}`}
@@ -2309,9 +2546,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
             <div className="flex items-center flex-wrap gap-3">
               <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) setComparingEnhancers(false); }} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) setCompare(false); }} />
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); } }} />
+              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); } }} />
             </div>
           </Section>
 
