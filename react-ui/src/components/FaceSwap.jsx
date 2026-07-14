@@ -1803,7 +1803,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               const circumference = radius * 2 * Math.PI;
               const strokeDashoffset = circumference - prog * circumference;
               return (
-                <div className="relative overflow-hidden rounded-2xl glass-panel px-6 py-5 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                <div className="relative overflow-hidden rounded-2xl glass-panel px-6 py-5 flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
                   {/* Left: Circular Progress Ring & Info */}
                   <div className="flex items-center gap-5">
                     <div className={`relative flex items-center justify-center h-20 w-20 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_18px_var(--accent-glow)]' : ''}`}>
@@ -1847,24 +1847,24 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   </div>
 
                   {/* Center: Live Telemetry HUD */}
-                  <div className="flex flex-wrap items-center gap-4 text-xs font-mono bg-black/20 px-5 py-2.5 rounded-xl border border-white/5">
-                    <div className="flex flex-col">
+                  <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs font-mono bg-black/20 px-5 py-2.5 rounded-xl border border-white/5 min-w-0">
+                    <div className="flex flex-col shrink-0">
                       <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
-                      <span className="text-white font-bold tabular-nums">{fmtTime(elapsedMs)}</span>
+                      <span className="text-white font-bold tabular-nums whitespace-nowrap">{fmtTime(elapsedMs)}</span>
                     </div>
-                    <div className="h-6 w-px bg-white/10" />
-                    <div className="flex flex-col">
+                    <div className="h-6 w-px bg-white/10 shrink-0" />
+                    <div className="flex flex-col shrink-0">
                       <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
-                      <span className="text-emerald-400 font-bold tabular-nums">
+                      <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">
                         {etaMs > 0 ? fmtTime(etaMs) : '--:--'}
                       </span>
                     </div>
                     {telemetry && (
                       <>
-                        <div className="h-6 w-px bg-white/10" />
-                        <div className="flex flex-col relative group/telemetry cursor-help">
+                        <div className="h-6 w-px bg-white/10 shrink-0" />
+                        <div className="flex flex-col shrink-0 relative group/telemetry cursor-help">
                           <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">VRAM</span>
-                          <span className="text-blue-300 font-bold tabular-nums">
+                          <span className="text-blue-300 font-bold tabular-nums whitespace-nowrap">
                             {telemetry.vram_used} / {telemetry.vram_total} GB
                           </span>
                           
