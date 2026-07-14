@@ -627,6 +627,11 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
     roop.globals.processing = True
 
+    # Keep the GPU powered while the display is off so long runs don't freeze
+    # (released in end_processing, which every exit path below goes through).
+    from roop import keep_awake
+    keep_awake.acquire()
+
     # limit threads for some providers
     max_threads = suggest_execution_threads()
     if max_threads == 1:
@@ -816,6 +821,8 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
 
 def end_processing(msg:str):
+    from roop import keep_awake
+    keep_awake.release()
     update_status(msg)
     roop.globals.target_folder_path = None
     release_resources()
