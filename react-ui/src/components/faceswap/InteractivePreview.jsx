@@ -178,7 +178,7 @@ export default function InteractivePreview({
 
   // Shared floating HUD control bar (zoom / boxes / compare / transport / fullscreen).
   const hudBar = () => (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
+    <div className="spring-cluster absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
       <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
       <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({ x: 0, y: 0 }); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
       <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>

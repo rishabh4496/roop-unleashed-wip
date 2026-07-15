@@ -101,14 +101,14 @@ export const TiltCard = ({ children, className = '', max = 8, glare = true, ...r
       onMouseMove={onMove}
       onMouseLeave={onLeave}
       style={reduce ? undefined : { rotateX: rx, rotateY: ry, transformPerspective: 900, transformStyle: 'preserve-3d' }}
-      className={`relative ${className}`}
+      className={`group/tilt relative ${className}`}
       {...rest}
     >
       {children}
       {glare && !reduce && (
         <motion.div
           aria-hidden
-          className="pointer-events-none absolute inset-0 rounded-[inherit] opacity-0 transition-opacity duration-300 hover:opacity-100"
+          className="pointer-events-none absolute inset-0 rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover/tilt:opacity-100"
           style={{ background: glareBg }}
         />
       )}

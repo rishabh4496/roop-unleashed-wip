@@ -644,6 +644,21 @@
   }
 }
 
+/* Clustered icon controls (timeline transport, preview HUD, marker buttons):
+   one marker class on the container springs EVERY button inside with an
+   overshoot pop on hover and a crisp shrink on press — the "bold" tactile feel
+   without converting each raw button to a motion element. The higher specificity
+   (class + element + pseudo) intentionally wins over stray active:scale-* utils
+   so the whole cluster is consistent. */
+@media (prefers-reduced-motion: no-preference) {
+  .spring-cluster button {
+    transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+                color 0.2s, background-color 0.2s, border-color 0.2s, box-shadow 0.2s, opacity 0.2s;
+  }
+  .spring-cluster button:hover:not(:disabled) { transform: scale(1.14); }
+  .spring-cluster button:active:not(:disabled) { transform: scale(0.88); }
+}
+
 /* Tactile press + hover-lift for tiles/cards/thumbnails (opt-in via .tap). */
 .tap {
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);

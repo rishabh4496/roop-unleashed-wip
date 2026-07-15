@@ -11,6 +11,7 @@ import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
+import { motion, spring, TiltCard } from '../motion';
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
@@ -2088,29 +2089,32 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   {/* Right: big icon action buttons */}
                   <div className="flex items-center gap-3 shrink-0">
                     {progress.paused ? (
-                      <button type="button" onClick={resume} title="Resume (Space)"
+                      <motion.button type="button" onClick={resume} title="Resume (Space)"
+                        whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-all duration-200 group-hover:bg-emerald-500/25 group-hover:scale-105 group-active:scale-95">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-colors duration-200 group-hover:bg-emerald-500/25">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
-                      </button>
+                      </motion.button>
                     ) : (
-                      <button type="button" onClick={pause} title="Pause (Space)"
+                      <motion.button type="button" onClick={pause} title="Pause (Space)"
+                        whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-all duration-200 group-hover:bg-amber-500/25 group-hover:scale-105 group-active:scale-95">
+                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-colors duration-200 group-hover:bg-amber-500/25">
                           <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
-                      </button>
+                      </motion.button>
                     )}
-                    <button type="button" onClick={stop} title="Stop"
+                    <motion.button type="button" onClick={stop} title="Stop"
+                      whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                       className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-all duration-200 group-hover:bg-red-500/25 group-hover:scale-105 group-active:scale-95">
+                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-colors duration-200 group-hover:bg-red-500/25">
                         <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                       </span>
                       <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
-                    </button>
+                    </motion.button>
                   </div>
 
                   {/* Smooth animated progress line along the bottom edge */}
@@ -2443,7 +2447,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   </div>
 
                   {/* Center: transport */}
-                  <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
+                  <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
                     <button
                       onClick={() => setFrame(targets[selTarget]?.start_frame || 1)}
                       className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
@@ -2494,7 +2498,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   </div>
 
                   {/* Set In / Out / Reset */}
-                  <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
+                  <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
                     <button
                       onClick={() => setFrameMarkerVal('start', frame)}
                       className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
@@ -2543,7 +2547,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     </div>
 
                     {/* Playback speed */}
-                    <div className="flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5" title="Playback speed">
+                    <div className="spring-cluster flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5" title="Playback speed">
                       {[0.5, 1, 2, 4].map((r) => (
                         <button
                           key={r}
@@ -2582,6 +2586,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </Section>
 
           {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
+            <TiltCard className="rounded-2xl w-full" max={6}>
             <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 w-full">
               <div className="flex items-center justify-between mb-4">
                 <span className="text-[11px] uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
@@ -2617,6 +2622,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     : 'Heuristic estimate. Finish a run with these settings to start learning the real speed.'}
               </div>
             </div>
+            </TiltCard>
           )}
 
           <Section title="Batch Swapping Queue">
