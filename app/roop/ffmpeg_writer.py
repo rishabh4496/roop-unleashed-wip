@@ -21,6 +21,73 @@ DEVNULL = -3
 
 FFMPEG_BINARY = "ffmpeg"
 
+
+def probe_encoder(codec="libx265", crf=14, timeout=30):
+    """Pre-flight check that the ffmpeg encoder can actually launch and encode.
+
+    Runs a tiny synthetic encode (a 3-frame lavfi source) with the *same* codec
+    that the real render will use, capturing exit code and stderr with a hard
+    timeout. This catches failures in seconds — BEFORE the long analysis pass —
+    so a broken encoder aborts the run early instead of silently hanging the
+    frame pipe mid-render.
+
+    The classic Windows trigger: Smart App Control blocks an unsigned ffmpeg DLL
+    (e.g. avdevice-62.dll) at process startup, killing the encoder. Because that
+    block happens at launch/DLL-load time, this lavfi probe reproduces it without
+    needing the real stdin pipe.
+
+    Returns (ok: bool, message: str). message is empty on success.
+    """
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), f"roop_encoder_probe_{os.getpid()}.mp4")
+    cmd = [
+        FFMPEG_BINARY, '-hide_banner', '-loglevel', 'error', '-y',
+        # 256x256 stays above NVENC's minimum supported frame dimensions
+        # (smaller sizes fail hevc_nvenc's encoder init and false-negative here).
+        '-f', 'lavfi', '-i', 'testsrc=size=256x256:rate=25:duration=1',
+        '-frames:v', '3', '-vcodec', codec,
+    ]
+    if codec in ('h264_nvenc', 'hevc_nvenc'):
+        cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-preset', 'p5', '-tune', 'hq'])
+    else:
+        cmd.extend(['-crf', str(crf)])
+    cmd.extend(['-pix_fmt', 'yuv420p', tmp])
+
+    popen_params = {"stdout": sp.PIPE, "stderr": sp.PIPE, "stdin": DEVNULL}
+    if os.name == "nt":
+        popen_params["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+    try:
+        proc = sp.Popen(cmd, **popen_params)
+    except FileNotFoundError:
+        return (False, f"ffmpeg binary '{FFMPEG_BINARY}' was not found on PATH.")
+    except Exception as e:
+        return (False, f"could not launch ffmpeg: {e}")
+
+    try:
+        _, err = proc.communicate(timeout=timeout)
+    except sp.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate()
+        except Exception:
+            pass
+        return (False, "the ffmpeg encoder timed out during warm-up — it launched "
+                       "but never made progress. On Windows this is usually Smart "
+                       "App Control blocking an unsigned ffmpeg DLL.")
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        detail = (err or b"").decode('utf-8', 'replace').strip()
+        return (False, detail or f"the ffmpeg encoder exited with code {proc.returncode}.")
+    return (True, "")
+
+
 class FFMPEG_VideoWriter:
     """ A class for FFMPEG-based video writing.
 
@@ -171,6 +238,27 @@ class FFMPEG_VideoWriter:
 
     def write_frame(self, img_array):
         """ Writes one frame in the file."""
+        # Fail fast if the encoder process has already died (e.g. Windows Smart
+        # App Control blocked an unsigned ffmpeg DLL at launch, or the codec
+        # failed to initialise). Without this, writing into the dead pipe can
+        # block forever and the whole render hangs silently — losing the entire
+        # analysis pass with no error.
+        if self.proc is None or self.proc.poll() is not None:
+            rc = None if self.proc is None else self.proc.returncode
+            ffmpeg_error = b""
+            try:
+                if self.proc is not None and self.proc.stderr is not None:
+                    ffmpeg_error = self.proc.stderr.read() or b""
+            except Exception:
+                pass
+            raise IOError(
+                "roop unleashed error: the ffmpeg encoder process exited "
+                f"unexpectedly (code {rc}) before the video was finished.\n\n"
+                "On Windows this is usually Smart App Control blocking an "
+                "unsigned ffmpeg DLL (e.g. avdevice-62.dll). Re-run the job, or "
+                "turn off Smart App Control in Windows Security → App & "
+                "browser control.\n\nffmpeg said:\n"
+                + ffmpeg_error.decode('utf-8', 'replace'))
         try:
             #if PY3:
             self.proc.stdin.write(img_array.tobytes())

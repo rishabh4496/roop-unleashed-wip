@@ -679,6 +679,21 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             fakeimages.clear()
 
         if(len(videofiles) > 0):
+            # Warm-up: verify the video encoder can actually launch and encode
+            # BEFORE the (often very long) analysis pass. Catches a blocked/broken
+            # ffmpeg in seconds instead of silently hanging the frame pipe partway
+            # through a render and wasting the whole analysis. Most common cause on
+            # Windows: Smart App Control blocking an unsigned ffmpeg DLL.
+            from roop.ffmpeg_writer import probe_encoder
+            enc_ok, enc_msg = probe_encoder(roop.globals.video_encoder, roop.globals.video_quality)
+            if not enc_ok:
+                update_status(
+                    f"Video encoder '{roop.globals.video_encoder}' is not working, aborting. "
+                    f"{enc_msg}"
+                )
+                end_processing('Processing stopped: video encoder unavailable.')
+                return
+
             for index,v in enumerate(videofiles):
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
