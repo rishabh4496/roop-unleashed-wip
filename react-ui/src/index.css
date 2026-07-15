@@ -258,6 +258,332 @@
   --scrollbar-thumb-hover: rgba(224, 83, 138, 0.34);
 }
 
+/* ── AMOLED family: true #000000 for OLED power saving (no ambient glow) ─── */
+.theme-amoled {
+  --bg-gradient: #000000;
+  --card-bg: rgba(12, 12, 12, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.028);
+  --text-main: #f4f4f5;
+  --text-muted: rgba(244, 244, 245, 0.55);
+  --accent: #E94560;
+  --accent-hover: #f1657c;
+  --accent-glow: rgba(233, 69, 96, 0.16);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.85);
+  --input-focus: rgba(233, 69, 96, 0.16);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+}
+
+.theme-amoled-ice {
+  --bg-gradient: #000000;
+  --card-bg: rgba(12, 12, 12, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.028);
+  --text-main: #eaf6ff;
+  --text-muted: rgba(234, 246, 255, 0.55);
+  --accent: #38bdf8;
+  --accent-hover: #5cccfb;
+  --accent-glow: rgba(56, 189, 248, 0.16);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.85);
+  --input-focus: rgba(56, 189, 248, 0.16);
+  --scrollbar-thumb: rgba(56, 189, 248, 0.2);
+  --scrollbar-thumb-hover: rgba(56, 189, 248, 0.4);
+}
+
+.theme-amoled-matrix {
+  --bg-gradient: #000000;
+  --card-bg: rgba(12, 12, 12, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.028);
+  --text-main: #e5ffe9;
+  --text-muted: rgba(229, 255, 233, 0.55);
+  --accent: #22c55e;
+  --accent-hover: #4ade80;
+  --accent-glow: rgba(34, 197, 94, 0.16);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.85);
+  --input-focus: rgba(34, 197, 94, 0.16);
+  --scrollbar-thumb: rgba(34, 197, 94, 0.2);
+  --scrollbar-thumb-hover: rgba(34, 197, 94, 0.4);
+}
+
+.theme-amoled-gold {
+  --bg-gradient: #000000;
+  --card-bg: rgba(12, 12, 12, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.028);
+  --text-main: #fbf4dd;
+  --text-muted: rgba(251, 244, 221, 0.55);
+  --accent: #d4af37;
+  --accent-hover: #e6c454;
+  --accent-glow: rgba(212, 175, 55, 0.16);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.85);
+  --input-focus: rgba(212, 175, 55, 0.16);
+  --scrollbar-thumb: rgba(212, 175, 55, 0.2);
+  --scrollbar-thumb-hover: rgba(212, 175, 55, 0.4);
+}
+
+.theme-amoled-violet {
+  --bg-gradient: #000000;
+  --card-bg: rgba(12, 12, 12, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.028);
+  --text-main: #f3ecff;
+  --text-muted: rgba(243, 236, 255, 0.55);
+  --accent: #a855f7;
+  --accent-hover: #bd7bf9;
+  --accent-glow: rgba(168, 85, 247, 0.16);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.85);
+  --input-focus: rgba(168, 85, 247, 0.16);
+  --scrollbar-thumb: rgba(168, 85, 247, 0.2);
+  --scrollbar-thumb-hover: rgba(168, 85, 247, 0.4);
+}
+
+.theme-crimson-noir {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(239, 68, 68, 0.10) 0px, transparent 50%), linear-gradient(140deg, #070303, #0a0505 45%, #050202);
+  --card-bg: rgba(24, 12, 12, 0.55);
+  --text-main: #fdeaea;
+  --text-muted: rgba(253, 234, 234, 0.58);
+  --accent: #ef4444;
+  --accent-hover: #f76a6a;
+  --accent-glow: rgba(239, 68, 68, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(10, 4, 4, 0.6);
+  --input-focus: rgba(239, 68, 68, 0.18);
+  --scrollbar-thumb: rgba(239, 68, 68, 0.22);
+  --scrollbar-thumb-hover: rgba(239, 68, 68, 0.42);
+}
+
+.theme-deep-space {
+  --bg-gradient: radial-gradient(at 10% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(14, 165, 233, 0.06) 0px, transparent 50%), linear-gradient(150deg, #03040b, #05060f 45%, #020309);
+  --card-bg: rgba(14, 16, 30, 0.55);
+  --text-main: #e7e9ff;
+  --text-muted: rgba(231, 233, 255, 0.58);
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-glow: rgba(99, 102, 241, 0.3);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(5, 6, 15, 0.6);
+  --input-focus: rgba(99, 102, 241, 0.18);
+  --scrollbar-thumb: rgba(99, 102, 241, 0.22);
+  --scrollbar-thumb-hover: rgba(99, 102, 241, 0.42);
+}
+
+.theme-gruvbox-dark {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(250, 189, 47, 0.08) 0px, transparent 50%), linear-gradient(140deg, #1d2021, #282828 45%, #1d2021);
+  --card-bg: rgba(60, 56, 54, 0.5);
+  --text-main: #ebdbb2;
+  --text-muted: rgba(235, 219, 178, 0.6);
+  --accent: #fabd2f;
+  --accent-hover: #fe8019;
+  --accent-glow: rgba(250, 189, 47, 0.26);
+  --border-color: rgba(235, 219, 178, 0.09);
+  --input-bg: rgba(29, 32, 33, 0.6);
+  --input-focus: rgba(250, 189, 47, 0.18);
+  --scrollbar-thumb: rgba(250, 189, 47, 0.22);
+  --scrollbar-thumb-hover: rgba(250, 189, 47, 0.42);
+}
+
+.theme-tokyo-night {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(122, 162, 247, 0.12) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(187, 154, 247, 0.07) 0px, transparent 50%), linear-gradient(150deg, #16161e, #1a1b26 45%, #13131a);
+  --card-bg: rgba(36, 40, 59, 0.55);
+  --text-main: #c0caf5;
+  --text-muted: rgba(192, 202, 245, 0.6);
+  --accent: #7aa2f7;
+  --accent-hover: #9db4f9;
+  --accent-glow: rgba(122, 162, 247, 0.28);
+  --border-color: rgba(192, 202, 245, 0.08);
+  --input-bg: rgba(19, 19, 26, 0.6);
+  --input-focus: rgba(122, 162, 247, 0.18);
+  --scrollbar-thumb: rgba(122, 162, 247, 0.22);
+  --scrollbar-thumb-hover: rgba(122, 162, 247, 0.42);
+}
+
+.theme-catppuccin-mocha {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(203, 166, 247, 0.12) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(137, 180, 250, 0.07) 0px, transparent 50%), linear-gradient(150deg, #181825, #1e1e2e 45%, #11111b);
+  --card-bg: rgba(49, 50, 68, 0.55);
+  --text-main: #cdd6f4;
+  --text-muted: rgba(205, 214, 244, 0.6);
+  --accent: #cba6f7;
+  --accent-hover: #ddbbfb;
+  --accent-glow: rgba(203, 166, 247, 0.28);
+  --border-color: rgba(205, 214, 244, 0.08);
+  --input-bg: rgba(17, 17, 27, 0.6);
+  --input-focus: rgba(203, 166, 247, 0.18);
+  --scrollbar-thumb: rgba(203, 166, 247, 0.22);
+  --scrollbar-thumb-hover: rgba(203, 166, 247, 0.42);
+}
+
+.theme-blood-moon {
+  --bg-gradient: radial-gradient(at 50% 0%, rgba(255, 46, 77, 0.14) 0px, transparent 45%), linear-gradient(160deg, #080304, #0c0406 45%, #060203);
+  --card-bg: rgba(26, 10, 14, 0.55);
+  --text-main: #ffe6ea;
+  --text-muted: rgba(255, 230, 234, 0.58);
+  --accent: #ff2e4d;
+  --accent-hover: #ff5a72;
+  --accent-glow: rgba(255, 46, 77, 0.32);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(10, 3, 5, 0.6);
+  --input-focus: rgba(255, 46, 77, 0.18);
+  --scrollbar-thumb: rgba(255, 46, 77, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 46, 77, 0.44);
+}
+
+.theme-forest-night {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(74, 222, 128, 0.10) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.06) 0px, transparent 50%), linear-gradient(150deg, #040a05, #071108 45%, #030704);
+  --card-bg: rgba(12, 26, 16, 0.55);
+  --text-main: #e4f5e8;
+  --text-muted: rgba(228, 245, 232, 0.58);
+  --accent: #4ade80;
+  --accent-hover: #6ee79b;
+  --accent-glow: rgba(74, 222, 128, 0.26);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(4, 10, 5, 0.6);
+  --input-focus: rgba(74, 222, 128, 0.18);
+  --scrollbar-thumb: rgba(74, 222, 128, 0.22);
+  --scrollbar-thumb-hover: rgba(74, 222, 128, 0.42);
+}
+
+.theme-espresso {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(200, 149, 109, 0.10) 0px, transparent 50%), linear-gradient(150deg, #0d0805, #120c08 45%, #0a0604);
+  --card-bg: rgba(32, 22, 14, 0.55);
+  --text-main: #f2e5d6;
+  --text-muted: rgba(242, 229, 214, 0.58);
+  --accent: #c8956d;
+  --accent-hover: #d8a982;
+  --accent-glow: rgba(200, 149, 109, 0.26);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(13, 8, 5, 0.6);
+  --input-focus: rgba(200, 149, 109, 0.18);
+  --scrollbar-thumb: rgba(200, 149, 109, 0.22);
+  --scrollbar-thumb-hover: rgba(200, 149, 109, 0.42);
+}
+
+.theme-royal-purple {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(168, 85, 247, 0.12) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(217, 70, 239, 0.06) 0px, transparent 50%), linear-gradient(150deg, #08040f, #0c0616 45%, #060310);
+  --card-bg: rgba(22, 14, 34, 0.55);
+  --text-main: #f2e9ff;
+  --text-muted: rgba(242, 233, 255, 0.58);
+  --accent: #a855f7;
+  --accent-hover: #bd7bf9;
+  --accent-glow: rgba(168, 85, 247, 0.3);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(8, 4, 15, 0.6);
+  --input-focus: rgba(168, 85, 247, 0.18);
+  --scrollbar-thumb: rgba(168, 85, 247, 0.22);
+  --scrollbar-thumb-hover: rgba(168, 85, 247, 0.42);
+}
+
+.theme-neon-lime {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(163, 230, 53, 0.10) 0px, transparent 50%), linear-gradient(150deg, #06090b, #0a0f04 45%, #050803);
+  --card-bg: rgba(16, 22, 10, 0.55);
+  --text-main: #edffd6;
+  --text-muted: rgba(237, 255, 214, 0.58);
+  --accent: #a3e635;
+  --accent-hover: #bef264;
+  --accent-glow: rgba(163, 230, 53, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(6, 9, 4, 0.6);
+  --input-focus: rgba(163, 230, 53, 0.18);
+  --scrollbar-thumb: rgba(163, 230, 53, 0.22);
+  --scrollbar-thumb-hover: rgba(163, 230, 53, 0.42);
+}
+
+.theme-copper {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(224, 120, 86, 0.10) 0px, transparent 50%), linear-gradient(150deg, #0f0805, #140a06 45%, #0b0604);
+  --card-bg: rgba(34, 20, 14, 0.55);
+  --text-main: #f7e6dc;
+  --text-muted: rgba(247, 230, 220, 0.58);
+  --accent: #e07856;
+  --accent-hover: #e89174;
+  --accent-glow: rgba(224, 120, 86, 0.28);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(15, 8, 5, 0.6);
+  --input-focus: rgba(224, 120, 86, 0.18);
+  --scrollbar-thumb: rgba(224, 120, 86, 0.22);
+  --scrollbar-thumb-hover: rgba(224, 120, 86, 0.42);
+}
+
+.theme-steel-slate {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%), linear-gradient(150deg, #070b0f, #0b0f14 45%, #060a0e);
+  --card-bg: rgba(20, 26, 34, 0.55);
+  --text-main: #e6edf3;
+  --text-muted: rgba(230, 237, 243, 0.58);
+  --accent: #38bdf8;
+  --accent-hover: #5cccfb;
+  --accent-glow: rgba(56, 189, 248, 0.24);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(7, 11, 15, 0.6);
+  --input-focus: rgba(56, 189, 248, 0.18);
+  --scrollbar-thumb: rgba(56, 189, 248, 0.2);
+  --scrollbar-thumb-hover: rgba(56, 189, 248, 0.4);
+}
+
+.theme-vaporwave {
+  --bg-gradient: radial-gradient(at 0% 0%, rgba(255, 113, 206, 0.12) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(1, 205, 254, 0.08) 0px, transparent 50%), linear-gradient(150deg, #0a0414, #10061a 45%, #08030f);
+  --card-bg: rgba(26, 14, 40, 0.55);
+  --text-main: #fdeaff;
+  --text-muted: rgba(253, 234, 255, 0.6);
+  --accent: #ff71ce;
+  --accent-hover: #ff92db;
+  --accent-glow: rgba(255, 113, 206, 0.3);
+  --border-color: rgba(255, 255, 255, 0.06);
+  --input-bg: rgba(10, 4, 20, 0.6);
+  --input-focus: rgba(255, 113, 206, 0.18);
+  --scrollbar-thumb: rgba(255, 113, 206, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 113, 206, 0.42);
+}
+
+.theme-arctic-light {
+  --bg-gradient: linear-gradient(135deg, #f5f9fd, #eef4fa, #e4eef7, #eef2fb);
+  --card-bg: rgba(255, 255, 255, 0.68);
+  --text-main: #0f2a3f;
+  --text-muted: rgba(15, 42, 63, 0.6);
+  --accent: #0ea5e9;
+  --accent-hover: #0284c7;
+  --accent-glow: rgba(14, 165, 233, 0.16);
+  --border-color: rgba(15, 42, 63, 0.08);
+  --input-bg: rgba(255, 255, 255, 0.55);
+  --input-focus: rgba(14, 165, 233, 0.12);
+  --scrollbar-thumb: rgba(14, 165, 233, 0.16);
+  --scrollbar-thumb-hover: rgba(14, 165, 233, 0.32);
+}
+
+.theme-latte-light {
+  --bg-gradient: linear-gradient(135deg, #f6f7fb, #eff1f5, #e6e9ef, #eceef4);
+  --card-bg: rgba(255, 255, 255, 0.7);
+  --text-main: #4c4f69;
+  --text-muted: rgba(76, 79, 105, 0.6);
+  --accent: #8839ef;
+  --accent-hover: #7420e0;
+  --accent-glow: rgba(136, 57, 239, 0.15);
+  --border-color: rgba(76, 79, 105, 0.08);
+  --input-bg: rgba(255, 255, 255, 0.55);
+  --input-focus: rgba(136, 57, 239, 0.12);
+  --scrollbar-thumb: rgba(136, 57, 239, 0.16);
+  --scrollbar-thumb-hover: rgba(136, 57, 239, 0.32);
+}
+
+.theme-sepia-light {
+  --bg-gradient: linear-gradient(135deg, #f8f1e6, #f4ece0, #efe4d3, #f5eddf);
+  --card-bg: rgba(255, 252, 246, 0.72);
+  --text-main: #4a3b2a;
+  --text-muted: rgba(74, 59, 42, 0.62);
+  --accent: #b45309;
+  --accent-hover: #92400e;
+  --accent-glow: rgba(180, 83, 9, 0.14);
+  --border-color: rgba(74, 59, 42, 0.1);
+  --input-bg: rgba(255, 252, 246, 0.6);
+  --input-focus: rgba(180, 83, 9, 0.12);
+  --scrollbar-thumb: rgba(180, 83, 9, 0.16);
+  --scrollbar-thumb-hover: rgba(180, 83, 9, 0.32);
+}
+
 @layer base {
   body {
     margin: 0;
@@ -511,7 +837,11 @@ input[type="range"]::-webkit-slider-thumb:active {
 .theme-glass-light,
 .theme-cyberpunk-light,
 .theme-emerald-light,
-.theme-nordic-light {
+.theme-nordic-light,
+.theme-sakura-light,
+.theme-arctic-light,
+.theme-latte-light,
+.theme-sepia-light {
   /* Dynamic text overrides: intercept text-white classes and convert to theme color variables */
   .text-white {
     color: var(--text-main) !important;

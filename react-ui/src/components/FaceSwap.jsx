@@ -2363,8 +2363,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
               </div>
 
-                {/* Timeline controls toolbar */}
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-2.5">
+                {/* Timeline controls toolbar — flex-wrap so the control groups
+                   reflow to any container width and re-adapt automatically when
+                   the window is dragged between monitors of different sizes,
+                   instead of overflowing/overlapping off the right edge. */}
+                <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-2.5">
                   {/* Left: timecode / editable frame readout (click to jump) */}
                   <div className="font-mono text-xs text-[var(--text-muted)] flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-start">
                     <span className="tabular-nums text-sm font-semibold text-[var(--text-main)]">{fmtTC(frame, targets[selTarget]?.fps || 25)}</span>
