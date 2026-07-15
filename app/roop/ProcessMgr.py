@@ -662,20 +662,31 @@ class ProcessMgr():
             try:
                 from roop.face_util import align_crop, get_first_face
                 for fs in self.input_face_datas:
-                    if fs.face_3d is not None:
+                    if fs.face_3d_bank is not None:
                         continue   # already cached from a previous run
-                    src_img = fs.ref_images[0] if fs.ref_images else None
-                    if src_img is None:
-                        continue
-                    src_face = get_first_face(src_img)
-                    if src_face is None or not hasattr(src_face, 'kps') or src_face.kps is None:
-                        continue
-                    src_crop, src_M = align_crop(src_img, src_face.kps, 512)
-                    # Store the crop, the source → crop affine M, and the 3D landmarks
-                    src_lm68 = None
-                    if hasattr(src_face, 'landmark_3d_68') and src_face.landmark_3d_68 is not None:
-                        src_lm68 = src_face.landmark_3d_68[:, :2].astype(np.float32)
-                    fs.face_3d = {'src_crop': src_crop, 'src_M': src_M, 'src_lm68': src_lm68}
+                    # Cache a 512-px align_crop for EVERY source face (parallel to
+                    # fs.faces / fs.ref_images), so the per-frame 3D recon can warp
+                    # whichever face the source bank selects — not just face[0].
+                    bank = []
+                    for idx in range(len(fs.faces)):
+                        entry = None
+                        try:
+                            src_img = fs.ref_images[idx] if idx < len(fs.ref_images) else None
+                            if src_img is not None:
+                                src_face = get_first_face(src_img)
+                                if src_face is not None and getattr(src_face, 'kps', None) is not None:
+                                    src_crop, src_M = align_crop(src_img, src_face.kps, 512)
+                                    # Store the crop, the source → crop affine M, and the 3D landmarks
+                                    src_lm68 = None
+                                    if getattr(src_face, 'landmark_3d_68', None) is not None:
+                                        src_lm68 = src_face.landmark_3d_68[:, :2].astype(np.float32)
+                                    entry = {'src_crop': src_crop, 'src_M': src_M, 'src_lm68': src_lm68}
+                        except Exception as e:
+                            print(f"[ProcessMgr] Pose-aware source cache (idx {idx}) failed: {e}")
+                        bank.append(entry)
+                    fs.face_3d_bank = bank
+                    # Back-compat: face_3d points at the first valid cached crop.
+                    fs.face_3d = next((e for e in bank if e is not None), None)
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware source cache failed: {e}")
 
@@ -2441,6 +2452,9 @@ class ProcessMgr():
         # ── Option 1: Multi-angle source bank ────────────────────────────────
         # Select the source face whose pose best matches this target frame.
         # Falls back to faces[0] when the feature is off or poses are absent.
+        # selected_src_idx is carried into 3D recon below so the two features
+        # compose (recon warps the bank-selected face, not always face[0]).
+        selected_src_idx = 0
         if 0 <= face_index < len(self.input_face_datas):
             fs = self.input_face_datas[face_index]
             if len(fs.faces) > 0:
@@ -2457,21 +2471,33 @@ class ProcessMgr():
                     if dist < best_dist:
                         best_dist = dist
                         best_idx  = i
+                selected_src_idx = best_idx
                 inputface = fs.faces[best_idx]
 
         if inputface is None:
             return frame
 
         # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
+        # Warp the crop of the source-bank-SELECTED face (selected_src_idx) toward
+        # the target pose, so the bank's angle choice and recon's pose fit compose
+        # instead of recon always overriding with face[0]. Falls back to the first
+        # cached crop (face_3d) when the selected index has no bank entry.
+        _recon_face_data = None
+        if 0 <= face_index < len(self.input_face_datas):
+            _recon_fs = self.input_face_datas[face_index]
+            _bank = getattr(_recon_fs, 'face_3d_bank', None)
+            if _bank is not None and 0 <= selected_src_idx < len(_bank):
+                _recon_face_data = _bank[selected_src_idx]
+            if _recon_face_data is None:
+                _recon_face_data = _recon_fs.face_3d
         if (getattr(self.options, 'use_3d_recon', False)
                 and inputface is not None
-                and len(self.input_face_datas) > face_index
-                and self.input_face_datas[face_index].face_3d is not None):
+                and _recon_face_data is not None):
             try:
                 from roop.face_3d_recon import Face3DRecon, landmarks_to_crop_space
                 from roop.face_util import get_first_face as _gff
 
-                face_data = self.input_face_datas[face_index].face_3d
+                face_data = _recon_face_data
                 src_crop_512 = face_data.get('src_crop')
                 src_lm68_img = face_data.get('src_lm68')
 
