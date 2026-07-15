@@ -2755,12 +2755,16 @@ class ProcessMgr():
 
         # ── Face-shape reshape (post-composite) ───────────────────────────────
         # Warp the target's jaw/chin/cheek silhouette + lower face toward the
-        # source person's shape. Gated to the shape-capable swappers (hififace
-        # and hyperswap_1a, key 'hyperswap') per design — 1b/1c and the identity
-        # swappers are excluded. Skipped under autorotate (result lives in
-        # rotated-crop space, so the frame-space landmarks would be inconsistent).
+        # source person's shape. Applies to ANY swapper: the identity swappers
+        # (inswapper/reswapper/simswap/…) all keep the TARGET's jaw & chin bone
+        # structure, so this geometric liquify is the only thing that moves the
+        # lower silhouette toward the source — which is exactly what the UI
+        # toggle promises. It is a pure numpy/cv2 warp of the composited result
+        # (no re-swap), strength-controlled and opt-in, so leaving it available
+        # for every model just gives the user the lever. Skipped under autorotate
+        # (result lives in rotated-crop space, so frame-space landmarks would be
+        # inconsistent).
         if (getattr(roop.globals, 'jaw_reshape', False)
-                and getattr(self.options, 'swap_model', 'inswapper') in ('hififace', 'hyperswap')
                 and rotation_action is None
                 and inputface is not None):
             result = reshape_jaw_frame(
