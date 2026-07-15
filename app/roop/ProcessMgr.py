@@ -2477,13 +2477,18 @@ class ProcessMgr():
         if inputface is None:
             return frame
 
-        # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
+        # ── 3D source pose matching ───────────────────────────────────────────
         # Warp the crop of the source-bank-SELECTED face (selected_src_idx) toward
-        # the target pose, so the bank's angle choice and recon's pose fit compose
-        # instead of recon always overriding with face[0]. Falls back to the first
+        # the target pose. GATED to IMAGE-source swappers only (BlendSwap/UniFace,
+        # embedding_mode == "image"): those consume a source CROP, so a pose-warped
+        # crop can genuinely help. Embedding-based swappers (inswapper/ghost/
+        # hyperswap/simswap) take a near pose-invariant identity vector — feeding
+        # them an embedding re-extracted from a sheared/flipped crop only DEGRADES
+        # identity, so recon is a deliberate no-op for them. Falls back to the first
         # cached crop (face_3d) when the selected index has no bank entry.
+        _swap_is_image = (getattr(swap_p, 'embedding_mode', 'normed_emap') == 'image')
         _recon_face_data = None
-        if 0 <= face_index < len(self.input_face_datas):
+        if _swap_is_image and 0 <= face_index < len(self.input_face_datas):
             _recon_fs = self.input_face_datas[face_index]
             _bank = getattr(_recon_fs, 'face_3d_bank', None)
             if _bank is not None and 0 <= selected_src_idx < len(_bank):
@@ -2491,6 +2496,7 @@ class ProcessMgr():
             if _recon_face_data is None:
                 _recon_face_data = _recon_fs.face_3d
         if (getattr(self.options, 'use_3d_recon', False)
+                and _swap_is_image
                 and inputface is not None
                 and _recon_face_data is not None):
             try:
@@ -2531,17 +2537,25 @@ class ProcessMgr():
                     with _gpu_guard(pooled=analysis_pooled()):  # re-detection on posed crop: lock-free when pooled
                         posed_face = _gff(posed_crop)
                     if (posed_face is not None
-                            and hasattr(posed_face, 'normed_embedding')
-                            and posed_face.normed_embedding is not None):
+                            and getattr(posed_face, 'kps', None) is not None):
+                        # Image-source swapper: feed it the POSE-MATCHED source
+                        # crop. Re-derive the aligned source crops from posed_crop
+                        # using the face re-detected ON that crop (so kps and image
+                        # are in the same space), then drop the cached source blob
+                        # so the swapper rebuilds from the new crop.
                         # NB: copy.copy() crashes on an insightface Face (its
-                        # __getattr__ returns None for every missing dunder, so
-                        # pickle/copy ends up calling None). Use the Face dict
-                        # constructor to shallow-copy instead. And normed_embedding
-                        # is a read-only @property computed from `embedding`, so
-                        # set the raw embedding — assigning normed_embedding is a
-                        # no-op for the swap.
+                        # __getattr__ returns None for missing dunders → pickle/copy
+                        # calls None); shallow-copy via the dict constructor.
+                        from roop.face_util import _attach_source_crops
                         posed_input = type(inputface)(inputface)
-                        posed_input.embedding = posed_face.embedding
+                        posed_input['kps'] = posed_face.kps
+                        _attach_source_crops(posed_input, posed_crop)
+                        _blob_key = f"_srcblob_{getattr(swap_p, 'loaded_model_key', '')}"
+                        try:
+                            if _blob_key in posed_input:
+                                del posed_input[_blob_key]
+                        except Exception:
+                            pass
                         inputface = posed_input
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware embedding failed: {e}")
