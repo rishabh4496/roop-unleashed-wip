@@ -632,6 +632,18 @@
   }
 }
 
+/* Blanket tactile press: every clickable "sinks" slightly on press so no click
+   feels dead. Framer-Motion controls (Button/Toggle/tabs) set an inline
+   transform that supersedes this; Tailwind active:scale-* utilities are more
+   specific and win where a component wants its own amount. Disabled buttons and
+   reduce-motion users are excluded. */
+@media (prefers-reduced-motion: no-preference) {
+  button:not(:disabled):active,
+  [role="button"]:not([aria-disabled="true"]):active {
+    transform: scale(0.97);
+  }
+}
+
 /* Tactile press + hover-lift for tiles/cards/thumbnails (opt-in via .tap). */
 .tap {
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
@@ -754,6 +766,20 @@
 
 .glass-panel:hover {
   border-color: var(--border-strong);
+}
+
+/* Card hover depth — a shadow + border swell (no positional bob), so large
+   form panels gain a sense of lift without shifting the controls under the
+   cursor. Discrete targets (buttons, toggles, thumbnails) do the actual
+   spring-movement via Framer Motion instead. */
+.card-lift {
+  transition: border-color 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-lift:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-card), 0 14px 46px rgba(0, 0, 0, 0.3),
+              inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .shimmer-sweep {

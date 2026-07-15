@@ -1,10 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PERSON_COLORS } from './constants';
+import { motion, AnimatePresence, fadeUp, spring } from '../motion';
 
-export const Card = ({ children, className = '', ...rest }) => (
-  <div className={`rounded-2xl glass-panel ${className}`} {...rest}>
+// Panels rise + de-blur in on mount (cinematic reveal). Hover depth is done in
+// CSS (.card-lift) — a shadow/border swell, deliberately no positional "bob",
+// so large form panels don't jitter as the cursor crosses them. Pass
+// animate={false} to opt a card out of the entrance (e.g. rows inside a list
+// that already animates itself).
+export const Card = ({ children, className = '', animate = true, hover = true, ...rest }) => (
+  <motion.div
+    className={`rounded-2xl glass-panel ${hover ? 'card-lift' : ''} ${className}`}
+    variants={fadeUp}
+    initial={animate ? 'hidden' : false}
+    animate={animate ? 'show' : false}
+    {...rest}
+  >
     {children}
-  </div>
+  </motion.div>
 );
 
 export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true }) => {
@@ -28,7 +40,24 @@ export const Section = ({ title, action, children, className = '', collapsible =
           {action}
         </div>
       )}
-      {showBody && <div className="space-y-4">{children}</div>}
+      {collapsible ? (
+        <AnimatePresence initial={false}>
+          {showBody && (
+            <motion.div
+              key="section-body"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ ...spring.smooth, opacity: { duration: 0.2 } }}
+              style={{ overflow: 'hidden' }}
+            >
+              <div className="space-y-4">{children}</div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      ) : (
+        showBody && <div className="space-y-4">{children}</div>
+      )}
     </Card>
   );
 };
@@ -89,9 +118,17 @@ export const Toggle = ({ label, info, checked, onChange }) => (
       <span className="text-[13px] font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
       {info && <InfoBadge info={info} />}
     </span>
-    <div className={`relative shrink-0 mt-0.5 w-10 h-[22px] rounded-full transition-colors duration-200 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-white/[0.06] border-white/10 group-hover/toggle:border-white/20'}`}>
-      <span className={`absolute top-[2px] left-[2px] w-[16px] h-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)] transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${checked ? 'translate-x-[18px]' : ''}`} />
-    </div>
+    <motion.div
+      whileTap={{ scale: 0.9 }}
+      transition={spring.snappy}
+      className={`relative shrink-0 mt-0.5 w-10 h-[22px] rounded-full transition-colors duration-200 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-white/[0.06] border-white/10 group-hover/toggle:border-white/20'}`}
+    >
+      <motion.span
+        className="absolute top-[2px] left-[2px] w-[16px] h-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)]"
+        animate={{ x: checked ? 18 : 0 }}
+        transition={spring.bouncy}
+      />
+    </motion.div>
     <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
   </label>
 );
@@ -121,14 +158,17 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
     lg: 'px-6 py-3.5 text-sm tracking-wide rounded-xl',
   };
   return (
-    <button
+    <motion.button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`font-semibold text-center transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-px active:translate-y-0 active:scale-[0.98] active:duration-75 disabled:opacity-35 disabled:hover:translate-y-0 disabled:active:scale-100 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      whileHover={disabled ? undefined : { y: -2, scale: 1.03 }}
+      whileTap={disabled ? undefined : { scale: 0.95, y: 0 }}
+      transition={spring.snappy}
+      className={`font-semibold text-center transition-colors duration-200 disabled:opacity-35 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
-    </button>
+    </motion.button>
   );
 };
 
@@ -157,15 +197,21 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
             const itemInfo = info && info[i];
             const hasMultiFaces = itemInfo && itemInfo.count > 1;
             return (
-              <div
+              <motion.div
                 key={i}
+                layout
+                initial={{ opacity: 0, scale: 0.7 }}
+                animate={{ opacity: 1, scale: 1, transition: { ...spring.snappy, delay: Math.min(i * 0.025, 0.35) } }}
+                whileHover={vertical ? { x: 3 } : { y: -4, scale: 1.04, zIndex: 5 }}
+                whileTap={{ scale: 0.95 }}
+                transition={spring.snappy}
                 draggable={draggable}
                 onDragStart={draggable ? (e) => {
                   e.dataTransfer.setData('text/roop-source', String(i));
                   e.dataTransfer.effectAllowed = 'link';
                 } : undefined}
                 title={draggable ? `Face ${i + 1} — drag onto a person to assign` : undefined}
-                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'ring-2 ring-[var(--accent)]/30') : 'hover:border-white/30'}`}
+                className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 transition-colors duration-200 cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'ring-2 ring-[var(--accent)]/30') : 'hover:border-white/30'}`}
                 style={{ borderColor: selected === i ? (color || 'var(--accent)') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
               >
@@ -207,7 +253,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                     )}
                   </>
                 )}
-              </div>
+              </motion.div>
             );
           })}
         </div>
@@ -278,14 +324,23 @@ export const Confetti = ({ active }) => {
   );
 };
 
-export const Toast = ({ toast }) =>
-  !toast ? null : (
-    <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl animate-slide-up bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px]">
-      {toast.type === 'error' && <span className="text-lg">❌</span>}
-      {toast.type === 'info' && <span className="text-lg">ℹ️</span>}
-      {(!toast.type || toast.type === 'success') && <span className="text-lg">✅</span>}
-      <span className={`text-sm font-medium ${toast.type === 'error' ? 'text-red-400' : toast.type === 'info' ? 'text-blue-300' : 'text-green-400'}`}>
-        {toast.message}
-      </span>
-    </div>
-  );
+export const Toast = ({ toast }) => (
+  <AnimatePresence>
+    {toast && (
+      <motion.div
+        initial={{ opacity: 0, y: 24, scale: 0.9 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.95 }}
+        transition={spring.bouncy}
+        className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px]"
+      >
+        {toast.type === 'error' && <span className="text-lg">❌</span>}
+        {toast.type === 'info' && <span className="text-lg">ℹ️</span>}
+        {(!toast.type || toast.type === 'success') && <span className="text-lg">✅</span>}
+        <span className={`text-sm font-medium ${toast.type === 'error' ? 'text-red-400' : toast.type === 'info' ? 'text-blue-300' : 'text-green-400'}`}>
+          {toast.message}
+        </span>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);

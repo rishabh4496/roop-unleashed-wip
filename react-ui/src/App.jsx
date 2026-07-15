@@ -8,6 +8,7 @@ import FaceManager from './components/FaceManager';
 import Extras from './components/Extras';
 import Gallery from './components/Gallery';
 import { THEME_CLASSES, THEMES, themeByName } from './themes';
+import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
 
 const TABS = [
   { id: 'faceswap', label: '🎭 Face Swap' },
@@ -167,6 +168,7 @@ export default function App() {
   }, [settings]);
 
   return (
+    <MotionConfig reducedMotion="user">
     <div className="min-h-screen flex flex-col relative overflow-hidden select-none">
       {/* Floating Ambient Background Glows — subtle, slow */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
@@ -205,19 +207,29 @@ export default function App() {
           <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
         </div>
         <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-3.5 py-2 rounded-lg text-[12px] font-semibold tracking-wide whitespace-nowrap transition-all duration-200 flex items-center gap-1.5 ${
-                tab === t.id
-                  ? 'bg-white/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] border border-white/10'
-                  : 'text-white/45 hover:text-white/90 hover:bg-white/[0.04] border border-transparent'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const active = tab === t.id;
+            return (
+              <motion.button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                whileTap={{ scale: 0.94 }}
+                transition={spring.snappy}
+                className={`relative px-3.5 py-2 rounded-lg text-[12px] font-semibold tracking-wide whitespace-nowrap flex items-center gap-1.5 transition-colors duration-200 ${
+                  active ? 'text-white' : 'text-white/45 hover:text-white/90'
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="tab-pill"
+                    className="absolute inset-0 rounded-lg bg-white/[0.08] border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+                    transition={spring.snappy}
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1.5">{t.label}</span>
+              </motion.button>
+            );
+          })}
         </nav>
         </div>
       </header>
@@ -236,13 +248,21 @@ export default function App() {
           </div>
         )}
         {!error && meta && settings && (
-          <div key={tab} className="animate-slide-up">
-            {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
-            {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
-            {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
-            {tab === 'gallery' && <Gallery notify={notify} />}
-            {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
-          </div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={tab}
+              variants={viewTransition}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+            >
+              {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
+              {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
+              {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
+              {tab === 'gallery' && <Gallery notify={notify} />}
+              {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
+            </motion.div>
+          </AnimatePresence>
         )}
       </main>
 
@@ -259,5 +279,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </MotionConfig>
   );
 }
