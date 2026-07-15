@@ -104,6 +104,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [queue, setQueue] = useState([]);
   const [currentQueueIndex, setCurrentQueueIndex] = useState(null);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queuePaused, setQueuePaused] = useState(false);
 
   // Pasted Files Dialog State
   const [pastedFiles, setPastedFiles] = useState(null);
@@ -222,6 +223,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const clearQueue = () => {
     setQueue([]);
     setIsQueueRunning(false);
+    setQueuePaused(false);
     setCurrentQueueIndex(null);
   };
 
@@ -230,15 +232,54 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       notify('Queue is empty', 'error');
       return;
     }
+    setQueuePaused(false);
     setIsQueueRunning(true);
     setCurrentQueueIndex(0);
+  };
+
+  // Pause the whole queue: pause the job that's currently swapping (backend
+  // honours roop_globals.pause in ProcessMgr) and hold off dispatching the next
+  // job until resumed. The runner effect below bails out while queuePaused.
+  const pauseQueue = async () => {
+    setQueuePaused(true);
+    try {
+      if (progress.processing && !progress.paused) {
+        await postJSON('/api/pause', {});
+        setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
+      }
+      notify('Queue paused', 'info');
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  const resumeQueue = async () => {
+    setQueuePaused(false);
+    try {
+      if (progress.processing && progress.paused) {
+        await postJSON('/api/resume', {});
+        setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
+      }
+      notify('Queue resumed');
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  // Stop the queue: halt further dispatch and never leave the current job frozen
+  // in a paused state (resume the backend so it can finish under run-bar control).
+  const stopQueue = async () => {
+    setIsQueueRunning(false);
+    setQueuePaused(false);
+    if (progress.processing && progress.paused) {
+      try { await postJSON('/api/resume', {}); } catch { /* ignore */ }
+      setProgress((pr) => ({ ...pr, paused: false }));
+    }
   };
 
   // Queue Runner State Machine
   /* eslint-disable react-hooks/exhaustive-deps -- intentional: queue state machine reads latest state each tick without re-subscribing on every dep change */
   useEffect(() => {
     if (!isQueueRunning || currentQueueIndex === null) return;
-    
+    // Hold dispatch while the queue is paused — don't start the next job.
+    if (queuePaused) return;
+
     if (currentQueueIndex >= queue.length) {
       setIsQueueRunning(false);
       setCurrentQueueIndex(null);
@@ -247,10 +288,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     }
 
     const job = queue[currentQueueIndex];
-    if (job.status !== 'Pending') {
+    // Skip jobs that already reached a terminal state (e.g. re-running a queue
+    // with some Finished/Failed items). A 'Running' job — which is what we see
+    // when this effect re-fires on resume — must NOT be re-dispatched or skipped;
+    // the progress-monitor effect below advances it once it truly finishes.
+    if (job.status === 'Finished' || job.status === 'Failed') {
       setCurrentQueueIndex((idx) => idx + 1);
       return;
     }
+    if (job.status === 'Running') return;
 
     const executeJob = async () => {
       setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
@@ -305,7 +351,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       }
     };
     executeJob();
-  }, [isQueueRunning, currentQueueIndex]);
+  }, [isQueueRunning, currentQueueIndex, queuePaused]);
 
   // Monitor job progress to move to next queue item
   useEffect(() => {
@@ -2584,9 +2630,16 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add current to queue</Button>
                 {queue.length > 0 && (
                   <>
-                    <Button size="sm" variant={isQueueRunning ? 'stop' : 'primary'} onClick={isQueueRunning ? () => setIsQueueRunning(false) : startQueue}>
-                      {isQueueRunning ? '⏹ Stop queue' : '▶ Start queue'}
-                    </Button>
+                    {isQueueRunning ? (
+                      <>
+                        <Button size="sm" variant="secondary" onClick={queuePaused ? resumeQueue : pauseQueue}>
+                          {queuePaused ? '▶ Resume queue' : '⏸ Pause queue'}
+                        </Button>
+                        <Button size="sm" variant="stop" onClick={stopQueue}>⏹ Stop queue</Button>
+                      </>
+                    ) : (
+                      <Button size="sm" variant="primary" onClick={startQueue}>▶ Start queue</Button>
+                    )}
                     <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
                   </>
                 )}
@@ -2599,17 +2652,20 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   const statusColors = {
                     Pending: 'text-white/60 bg-white/5 border-white/5',
                     Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
+                    Paused: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
                     Finished: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
                     Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
                   };
+                  // Show the in-flight job as "Paused" while the queue is held.
+                  const displayStatus = (queuePaused && job.status === 'Running') ? 'Paused' : job.status;
                   return (
-                    <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[job.status] || 'text-white bg-white/5'}`}>
+                    <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[displayStatus] || 'text-white bg-white/5'}`}>
                       <div className="flex-1 min-w-0 pr-3">
                         <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
                         <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
-                        <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{job.status}</span>
+                        <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{displayStatus}</span>
                         {!isQueueRunning && (
                           <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
                         )}
