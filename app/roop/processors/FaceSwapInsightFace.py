@@ -311,6 +311,9 @@ class FaceSwapInsightFace():
         self.loaded_model_key = None
         self.devicename = None
         self.pool = None        # SessionPool of extra sessions (TRT multi-context)
+        self._swap_providers = None   # providers used to build the swap session(s)
+        self._model_arg = None        # onnx path or serialized bytes handed to ORT
+        self._trt_disabled = False    # set once we fall back off TensorRT for this model
         # Contract consumed by ProcessMgr — defaults match inswapper_128.
         self.model_output_size = 128
         self.model_mean = [0.0, 0.0, 0.0]
@@ -376,6 +379,12 @@ class FaceSwapInsightFace():
                 _changed = True
             if _changed:
                 model_arg = _model.SerializeToString()
+
+            # Remember what we built with so a run-time TensorRT failure can
+            # rebuild this exact model on CUDA/CPU (see _rebuild_without_trt).
+            self._swap_providers = swap_providers
+            self._model_arg = model_arg
+            self._trt_disabled = False
 
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
@@ -486,6 +495,55 @@ class FaceSwapInsightFace():
             return self._prepare_source_crop(source_face)
         return self._compute_latent(source_face)
 
+    @staticmethod
+    def _is_trt(p):
+        name = p[0] if isinstance(p, (tuple, list)) else p
+        return 'tensorrt' in str(name).lower()
+
+    def _rebuild_without_trt(self) -> bool:
+        """Rebuild the swap session(s) with the TensorRT provider stripped out,
+        keeping CUDA/CPU. Some torch_jit swap exports (notably GHOST) build a
+        TensorRT engine that then fails shape verification at run time
+        ('OrtValue shape verification failed. Current shape:{1,1024,2,2}
+        Requested shape:{1,512,1,1}') because TRT mis-fuses the identity
+        Reshape → ConvTranspose. The swap net is tiny (128-256px), so CUDA EP
+        costs almost nothing. Returns False (→ caller re-raises) when TRT was
+        already gone, so a genuine non-TRT error is not swallowed."""
+        if self._trt_disabled or not self._swap_providers:
+            return False
+        providers = [p for p in self._swap_providers if not self._is_trt(p)]
+        if len(providers) == len(self._swap_providers):
+            return False   # no TRT provider to strip — can't help, re-raise
+        def _build(_i=0):
+            sess_options = onnxruntime.SessionOptions()
+            sess_options.enable_cpu_mem_arena = False
+            return onnxruntime.InferenceSession(
+                self._model_arg, sess_options, providers=providers)
+        self.model_swap_insightface = _build()
+        if self.pool is not None:
+            n = session_pool.pool_size()
+            extras = [_build(i) for i in range(n - 1)]
+            self.pool = session_pool.SessionPool(
+                lambda i, _e=([self.model_swap_insightface] + extras): _e[i], n)
+        self._trt_disabled = True
+        print(f"[swap] '{self.loaded_model_key}' failed under TensorRT "
+              f"(shape verification); rebuilt on CUDA/CPU for this model.")
+        return True
+
+    def _infer(self, feed):
+        """Run the swap net, transparently falling back off a broken TensorRT
+        engine to CUDA/CPU the first time it fails (see _rebuild_without_trt).
+        Shared by Run / RunBatch / RunBatchMulti."""
+        try:
+            if self.pool is not None:
+                with self.pool.lease() as sess:
+                    return sess.run(None, feed)
+            return self.model_swap_insightface.run(None, feed)
+        except Exception:
+            if not self._rebuild_without_trt():
+                raise
+            return self.model_swap_insightface.run(None, feed)
+
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         latent = self._compute_source_input(source_face)
         if latent is None:
@@ -498,13 +556,9 @@ class FaceSwapInsightFace():
         # transfer path for. run() handles all device transfers internally and
         # works correctly across CPU, CUDA, and TensorRT execution providers.
         feed = {self.image_input_name: temp_frame, self.embed_input_name: latent}
-        if self.pool is not None:
-            # Lease an independent session so this thread's GPU work runs on its
-            # own TensorRT context, concurrently with other workers.
-            with self.pool.lease() as sess:
-                ort_outs = sess.run(None, feed)
-        else:
-            ort_outs = self.model_swap_insightface.run(None, feed)
+        # _infer leases an independent pool session (own TensorRT context) when
+        # pooling is on, and falls back off a broken TRT engine transparently.
+        ort_outs = self._infer(feed)
         # Some models (HyperSwap) emit (image, mask); the image is output [0].
         return ort_outs[0][0]
 
@@ -522,11 +576,7 @@ class FaceSwapInsightFace():
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
         latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512] or [B,3,Hs,Ws]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
-        if self.pool is not None:
-            with self.pool.lease() as sess:
-                ort_outs = sess.run(None, feed)
-        else:
-            ort_outs = self.model_swap_insightface.run(None, feed)
+        ort_outs = self._infer(feed)
         out = ort_outs[0]   # [B,3,H,W]
         return [out[i] for i in range(out.shape[0])]
 
@@ -542,11 +592,7 @@ class FaceSwapInsightFace():
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
-        if self.pool is not None:
-            with self.pool.lease() as sess:
-                ort_outs = sess.run(None, feed)
-        else:
-            ort_outs = self.model_swap_insightface.run(None, feed)
+        ort_outs = self._infer(feed)
         out = ort_outs[0]
         return [out[i] for i in range(out.shape[0])]
 
