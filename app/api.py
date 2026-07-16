@@ -1758,6 +1758,14 @@ def preview_upscale(payload: dict = Body(...)):
         return JSONResponse(status_code=400, content={"message": "no image to upscale"})
 
     subtype = payload.get("subtype") or getattr(roop_globals.CFG, "upscale_model_after", "esrganx2")
+
+    # Fast Lanczos: a plain resize, no model — spot-check it instantly.
+    lz = _lanczos_scale(subtype)
+    if lz is not None:
+        h, w = img.shape[:2]
+        out = cv2.resize(img, (w * lz, h * lz), interpolation=cv2.INTER_LANCZOS4)
+        return {"image": _bgr_to_dataurl(out), "width": int(w * lz), "height": int(h * lz)}
+
     if subtype not in _FRAME_UPSCALERS:
         subtype = "esrganx2"
 
@@ -2295,10 +2303,105 @@ def _upscale_video_inplace(proc, path):
         os.replace(tmp_silent, path)   # mux failed → keep silent upscaled video
 
 
+def _lanczos_scale(subtype):
+    """Return the integer scale for a 'lanczos_xN' subtype, else None."""
+    if isinstance(subtype, str) and subtype.startswith("lanczos_x"):
+        try:
+            return max(1, int(subtype.split("x")[-1]))
+        except ValueError:
+            return 2
+    return None
+
+
+def _lanczos_image_inplace(path, scale):
+    img = get_image_frame(path)
+    if img is None:
+        return
+    h, w = img.shape[:2]
+    out = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+    cv2.imwrite(path, out)
+
+
+def _lanczos_video_inplace(path, scale):
+    """Classical Lanczos upscale — one fast ffmpeg pass (scale + encode + audio
+    copy), no neural net, no VRAM. This is the 'Shutter Encoder'-style fast path:
+    it reconstructs no new detail (unlike the AI models) but is near-realtime."""
+    import subprocess
+    import time as _time
+    from roop.util_ffmpeg import _rate_control
+    from roop.ffmpeg_writer import FFMPEG_BINARY
+
+    ext = os.path.splitext(path)[1].lower() or ".mp4"
+    d = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    tmp = os.path.join(d, f".lanczos_{stem}{ext}")
+    enc = _select_upscale_encoder()
+    q = roop_globals.video_quality
+    # trunc(...*/2)*2 keeps both output dims even (required by yuv420p).
+    vf = (f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:flags=lanczos,"
+          f"format=yuv420p")
+    cmd = ([FFMPEG_BINARY, '-hide_banner', '-y', '-i', path, '-vf', vf,
+            '-c:v', enc] + _rate_control(enc, q) + ['-c:a', 'copy', tmp])
+    print(f"\n[Stage 3/4] LANCZOS ×{scale} upscale (ffmpeg, enc={enc}) — "
+          f"{os.path.basename(path)}", flush=True)
+    _progress["desc"] = f"Lanczos ×{scale} upscaling…"
+
+    popen_kwargs = {}
+    if os.name == 'nt':
+        popen_kwargs['creationflags'] = 0x08000000   # CREATE_NO_WINDOW
+    # stderr inherits the terminal so ffmpeg's own progress stats show in the log.
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, **popen_kwargs)
+    try:
+        while proc.poll() is None:
+            if not roop_globals.processing:      # Stop → kill ffmpeg, discard temp
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                break
+            _time.sleep(0.2)
+    finally:
+        ok = (proc.returncode == 0)
+    if ok and os.path.exists(tmp):
+        os.replace(tmp, path)
+    else:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
 def _run_post_swap_upscale(produced_files, subtype):
-    """AI-upscale each finished swap output in place (single file per target)."""
+    """Upscale each finished swap output in place (single file per target).
+    Classical Lanczos (fast, ffmpeg) or an AI super-resolution model."""
     if not produced_files:
         return
+
+    # ── Fast Lanczos path (no ONNX model / VRAM — one ffmpeg pass) ──────────
+    lz = _lanczos_scale(subtype)
+    if lz is not None:
+        roop_globals.processing = True
+        n = len(produced_files)
+        try:
+            for idx, path in enumerate(produced_files):
+                if not roop_globals.processing:
+                    break
+                _progress["desc"] = f"Lanczos upscaling {idx + 1}/{n}…"
+                _progress["progress"] = 0.0
+                try:
+                    if util.is_video(path):
+                        _lanczos_video_inplace(path, lz)
+                    elif util.is_image(path):
+                        _lanczos_image_inplace(path, lz)
+                except Exception:
+                    traceback.print_exc()
+        finally:
+            roop_globals.processing = False
+        return
+
+    # ── AI super-resolution path ───────────────────────────────────────────
     from ui.main import prepare_environment
     prepare_environment()   # ensure the Frame/* upscale model is downloaded
     try:

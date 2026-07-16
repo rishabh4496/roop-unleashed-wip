@@ -25,6 +25,8 @@ const AI_UPSCALE_MODELS = [
   { value: 'clear_reality_x4', label: 'Clear Reality ×4' },
   { value: 'span_x4', label: 'SPAN ×4' },
   { value: 'nomos8k_x4', label: 'Nomos8k ×4' },
+  { value: 'lanczos_x2', label: '⚡ Fast Lanczos ×2 (no AI)' },
+  { value: 'lanczos_x4', label: '⚡ Fast Lanczos ×4 (no AI)' },
 ];
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
