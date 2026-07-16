@@ -1767,6 +1767,12 @@ def _run_swap(payload):
         # (for the optional AI upscale second pass below).
         _pre_swap_outputs = _snapshot_output_mtimes()
 
+        _stages = "analyze → swap"
+        if roop_globals.upscale_after_swap:
+            _stages += " → upscale → combine"
+        print(f"\n===== SWAP PIPELINE: {_stages} =====", flush=True)
+        print("[Stage 1/2] ANALYZE + SWAP (per-frame detection & swapping)…", flush=True)
+
         with temp_mapped_facesets(payload.get("face_mapping")):
             batch_process_regular(
                 output_method, files_to_process, mask_engine, clip_text,
@@ -1888,6 +1894,8 @@ def _upscale_video_inplace(proc, path):
         oh, ow = out_first.shape[:2]
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        print(f"[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames "
+              f"({os.path.basename(path)})", flush=True)
         # audiofile=None → silent encode; audio is muxed afterwards via
         # restore_audio (explicit -map), matching the main pipeline's pattern.
         writer = FFMPEG_VideoWriter(
@@ -1908,10 +1916,20 @@ def _upscale_video_inplace(proc, path):
             done += 1
             if total > 0:
                 _progress["progress"] = min(0.999, done / total)
+                _progress["desc"] = f"Upscaling frame {done} / {total}"
+                # Periodic terminal progress so the upscale stage is visible in
+                # the log too (not just the React UI).
+                if done % 20 == 0 or done == total:
+                    print(f"  upscaling {done}/{total} "
+                          f"({100 * done / total:.0f}%)", flush=True)
     finally:
         cap.release()
         if writer is not None:
             writer.close()
+
+    if roop_globals.processing:
+        print("[Stage 4/4] COMBINING (encode + audio mux)…", flush=True)
+        _progress["desc"] = "Combining (encode + audio)…"
 
     # Aborted mid-way (Stop) → discard the partial temp, leave the finished
     # (un-upscaled) swap output intact so nothing is lost.

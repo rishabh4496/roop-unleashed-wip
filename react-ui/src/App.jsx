@@ -26,8 +26,11 @@ export default function App() {
   const [error, setError] = useState('');
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  useEffect(() => { isDraggingOverRef.current = isDraggingOver; }, [isDraggingOver]);
   const [showPalette, setShowPalette] = useState(false);
   const fileListenersRef = useRef([]);
+  const dragHideTimerRef = useRef(null);
+  const isDraggingOverRef = useRef(false);
 
   // App-level UI zoom (Chrome-style). Uses the CSS `zoom` property, which
   // reflows layout instead of just visually scaling, so the whole UI grows /
@@ -90,6 +93,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // The overlay is kept alive by a self-resetting timer: dragover fires
+    // continuously while a file is over the window, so we re-arm a short hide
+    // timer on every event. When the drag leaves the window, is dropped
+    // elsewhere, or is CANCELLED (Escape) — all of which stop the dragover
+    // stream — the timer fires and clears the overlay. This is far more robust
+    // than the old clientX/Y===0 corner check, which never fired on a cancelled
+    // drag and left the overlay stuck.
+    const armHideTimer = () => {
+      // 450ms comfortably exceeds Chromium's ~350ms stationary-dragover interval,
+      // so holding a file still over the window won't flicker the overlay off;
+      // once the drag actually leaves/cancels (no more dragover) it clears fast.
+      if (dragHideTimerRef.current) clearTimeout(dragHideTimerRef.current);
+      dragHideTimerRef.current = setTimeout(() => setIsDraggingOver(false), 450);
+    };
+    const clearOverlay = () => {
+      if (dragHideTimerRef.current) { clearTimeout(dragHideTimerRef.current); dragHideTimerRef.current = null; }
+      setIsDraggingOver(false);
+    };
     const handleDragOver = (e) => {
       // Only react to OS file drags — internal drags (e.g. dragging a source
       // face onto a person) carry custom types, not 'Files', and must not
@@ -97,16 +118,14 @@ export default function App() {
       if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
       e.preventDefault();
       setIsDraggingOver(true);
+      armHideTimer();
     };
     const handleDragLeave = (e) => {
       e.preventDefault();
-      if (e.clientX === 0 && e.clientY === 0) {
-        setIsDraggingOver(false);
-      }
     };
     const handleDrop = (e) => {
       e.preventDefault();
-      setIsDraggingOver(false);
+      clearOverlay();
       // A dedicated dropzone (FileDrop) already handled this drop.
       if (e.roopConsumed) return;
       const files = Array.from(e.dataTransfer.files);
@@ -128,15 +147,24 @@ export default function App() {
         fileListenersRef.current.forEach((listener) => listener(files));
       }
     };
+    // Extra safety nets so the overlay can never get stuck: a cancelled drag
+    // fires dragend, and any click/keydown dismisses a lingering overlay.
+    const handleDragEnd = () => clearOverlay();
+    const handlePointerDown = () => { if (dragHideTimerRef.current || isDraggingOverRef.current) clearOverlay(); };
     window.addEventListener('dragover', handleDragOver);
     window.addEventListener('dragleave', handleDragLeave);
     window.addEventListener('drop', handleDrop);
+    window.addEventListener('dragend', handleDragEnd);
+    window.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('paste', handlePaste);
     return () => {
       window.removeEventListener('dragover', handleDragOver);
       window.removeEventListener('dragleave', handleDragLeave);
       window.removeEventListener('drop', handleDrop);
+      window.removeEventListener('dragend', handleDragEnd);
+      window.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('paste', handlePaste);
+      if (dragHideTimerRef.current) clearTimeout(dragHideTimerRef.current);
     };
   }, []);
 

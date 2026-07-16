@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Confetti, Skeleton } from './ui';
 import PersonGroups from './PersonGroups';
@@ -2448,6 +2449,45 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     </motion.button>
                   </div>
 
+                  {/* Pipeline stage stepper — derived from the backend desc so
+                      it mirrors exactly what the terminal logs. */}
+                  {(() => {
+                    const d = (progress.desc || '').toLowerCase();
+                    const stages = [
+                      { key: 'analyze', label: 'Analyze', icon: '🔍' },
+                      { key: 'swap', label: 'Swap', icon: '🎭' },
+                      ...(p.upscale_after_swap ? [{ key: 'upscale', label: 'Upscale', icon: '🔎' }] : []),
+                      { key: 'combine', label: 'Combine', icon: '🎬' },
+                    ];
+                    let activeKey = 'swap';
+                    if (/combin|finaliz|encod|audio|mux/.test(d)) activeKey = 'combine';
+                    else if (/upscal/.test(d)) activeKey = 'upscale';
+                    else if (/processing frame|swapp/.test(d)) activeKey = 'swap';
+                    else if (/analy|track|extract|detect|start/.test(d)) activeKey = 'analyze';
+                    let activeIdx = stages.findIndex((s) => s.key === activeKey);
+                    if (activeIdx < 0) activeIdx = 1;
+                    return (
+                      <div className="w-full flex items-center gap-1.5">
+                        {stages.map((s, i) => {
+                          const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending';
+                          return (
+                            <React.Fragment key={s.key}>
+                              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-wide transition-colors duration-300 ${
+                                state === 'done' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                : state === 'active' ? 'border-[var(--accent)]/50 bg-[var(--accent)]/15 text-white'
+                                : 'border-white/10 bg-white/[0.02] text-white/35'}`}>
+                                <span>{state === 'done' ? '✓' : s.icon}</span>
+                                <span>{s.label}</span>
+                                {state === 'active' && !progress.paused && <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-ping" />}
+                              </div>
+                              {i < stages.length - 1 && <div className={`h-px flex-1 min-w-[6px] transition-colors duration-300 ${i < activeIdx ? 'bg-emerald-500/40' : 'bg-white/10'}`} />}
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
                   {/* Smooth animated progress line along the bottom edge */}
                   <div className="absolute inset-x-0 bottom-0 h-1 bg-white/[0.04]">
                     <div
@@ -3022,8 +3062,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             </div>
           </Section>
 
-          {/* Single-frame AI-upscale spot-check modal */}
-          {upscaledSrc && (
+          {/* Single-frame AI-upscale spot-check modal — portaled to <body> so
+              transformed ancestors (TiltCard / motion) can't clip the fixed
+              overlay. */}
+          {upscaledSrc && createPortal((
             <div
               className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6"
               onClick={() => setUpscaledSrc('')}
@@ -3058,7 +3100,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </div>
               </div>
             </div>
-          )}
+          ), document.body)}
 
           {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
             <TiltCard className="rounded-2xl w-full" max={6}>
