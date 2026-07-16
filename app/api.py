@@ -2328,6 +2328,41 @@ def _cas_strength():
         return 0.5
 
 
+# NVENC can't encode past a per-codec max dimension — h264_nvenc tops out at
+# 4096px, hevc/av1_nvenc at 8192px. Feeding it a larger frame fails with
+# "Could not open encoder" and (previously) the pass died silently. So the
+# classical upscale caps its output so the longest side fits both the encoder's
+# limit and a global 8K ceiling (>8K files are rarely playable anyway); when a
+# source is already large this reduces the *effective* scale rather than failing.
+_NVENC_MAX_DIM = {'h264_nvenc': 4096, 'hevc_nvenc': 8192, 'av1_nvenc': 8192}
+
+
+def _upscale_max_dim(enc=None):
+    """Longest output side allowed for a classical upscale with encoder *enc*.
+    min(global ceiling, encoder's NVENC cap). Override the ceiling with
+    ROOP_UPSCALE_MAX_DIM. CPU codecs have no practical cap here."""
+    try:
+        g = int(os.environ.get('ROOP_UPSCALE_MAX_DIM', '8192'))
+    except ValueError:
+        g = 8192
+    return max(2, min(g, _NVENC_MAX_DIM.get(enc, 16384)))
+
+
+def _classical_target_dims(in_w, in_h, scale, enc=None):
+    """Even output (w, h) for in×scale, shrunk uniformly so the longest side
+    fits _upscale_max_dim(enc). Returns (w, h, effective_scale)."""
+    raw_w, raw_h = in_w * scale, in_h * scale
+    cap = _upscale_max_dim(enc)
+    longest = max(raw_w, raw_h)
+    eff = float(scale)
+    if longest > cap:
+        f = cap / float(longest)
+        raw_w, raw_h, eff = raw_w * f, raw_h * f, scale * f
+    ew = max(2, int(raw_w) - (int(raw_w) % 2))   # yuv420p needs even dims
+    eh = max(2, int(raw_h) - (int(raw_h) % 2))
+    return ew, eh, eff
+
+
 def _classical_spec(subtype):
     """Return (mode, scale) for a classical '<mode>_xN' subtype, else None.
     Modes: lanczos, fsr, spline, sinc. Kept out of _FRAME_UPSCALERS — these are
@@ -2344,11 +2379,11 @@ def _classical_spec(subtype):
     return mode, scale
 
 
-def _classical_vf(mode, scale):
-    """ffmpeg -vf string for a classical upscale mode. trunc(...*/2)*2 keeps both
-    output dims even (required by yuv420p)."""
+def _classical_vf(mode, target_w, target_h):
+    """ffmpeg -vf string for a classical upscale mode, scaling to explicit even
+    target dims (already capped to the encoder's limit by the caller)."""
     flag = _CLASSICAL_SWFLAG.get(mode, "lanczos")
-    vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:flags={flag}"
+    vf = f"scale={target_w}:{target_h}:flags={flag}"
     if mode == "fsr":
         vf += f",cas=strength={_cas_strength():.3f}"
     return vf + ",format=yuv420p"
@@ -2390,12 +2425,29 @@ def _classical_video_inplace(path, mode, scale):
     tmp = os.path.join(d, f".classical_{stem}{ext}")
     enc = _select_upscale_encoder()
     q = roop_globals.video_quality
-    vf = _classical_vf(mode, scale)
     label = mode.upper()
+
+    # Resolve input dims so the output can be capped to the encoder's limit —
+    # NVENC rejects frames past 4096 (h264) / 8192 (hevc/av1), which is exactly
+    # how ×4 of an already-large source used to fail (silently) mid-run.
+    cap = cv2.VideoCapture(path)
+    in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    cap.release()
+    if in_w <= 0 or in_h <= 0:
+        _progress["error"] = f"{label} upscale: couldn't read video dimensions of {os.path.basename(path)}"
+        return
+    tw, th, eff = _classical_target_dims(in_w, in_h, scale, enc)
+    note = ""
+    if eff < scale - 1e-3:
+        note = (f" [capped ×{scale}→×{eff:.2f}: {in_w}×{in_h}×{scale} exceeds the "
+                f"{_upscale_max_dim(enc)}px {enc} limit — raise ROOP_UPSCALE_MAX_DIM "
+                f"and/or use a CPU encoder for true ×{scale}]")
+    vf = _classical_vf(mode, tw, th)
     cmd = ([FFMPEG_BINARY, '-hide_banner', '-y', '-i', path, '-vf', vf,
             '-c:v', enc] + _rate_control(enc, q) + ['-c:a', 'copy', tmp])
     print(f"\n[Stage 3/4] {label} ×{scale} upscale (ffmpeg, enc={enc}) — "
-          f"{os.path.basename(path)}", flush=True)
+          f"{os.path.basename(path)} → {tw}×{th}{note}", flush=True)
     _progress["desc"] = f"{label} ×{scale} upscaling…"
 
     popen_kwargs = {}
@@ -2403,9 +2455,11 @@ def _classical_video_inplace(path, mode, scale):
         popen_kwargs['creationflags'] = 0x08000000   # CREATE_NO_WINDOW
     # stderr inherits the terminal so ffmpeg's own progress stats show in the log.
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, **popen_kwargs)
+    stopped = False
     try:
         while proc.poll() is None:
             if not roop_globals.processing:      # Stop → kill ffmpeg, discard temp
+                stopped = True
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
@@ -2423,6 +2477,11 @@ def _classical_video_inplace(path, mode, scale):
                 os.remove(tmp)
         except OSError:
             pass
+        # Surface real failures (not user Stop) so the pass never dies silently.
+        if not stopped and roop_globals.processing:
+            _progress["error"] = (f"{label} ×{scale} upscale failed (ffmpeg exit "
+                                  f"{proc.returncode}) on {os.path.basename(path)} "
+                                  f"— see terminal log. The swap output is kept un-upscaled.")
 
 
 def _run_post_swap_upscale(produced_files, subtype):
