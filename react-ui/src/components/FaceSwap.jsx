@@ -3050,7 +3050,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     </button>
                   </div>
                 </div>
-                <div className="overflow-auto">
+                <div className="overflow-auto flex-1 min-h-0">
                   <img src={upscaledSrc} alt="Upscaled frame" className="block max-w-none" />
                 </div>
               </div>
