@@ -2270,7 +2270,7 @@ class ProcessMgr():
                 # single_person collapses two faces onto one source, (b) a person
                 # sits just over the distance threshold this frame, or (c) fewer
                 # source facesets than persons. Surface all three at a glance.
-                if getattr(self, 'is_preview', False) or os.environ.get('ROOP_DEBUG_MATCH'):
+                if os.environ.get('ROOP_DEBUG_MATCH'):
                     try:
                         dists = {fidx: {g: round(min(compute_cosine_distance(
                                     self.target_face_datas[ti].embedding, faces[fidx].embedding)
@@ -2292,7 +2292,7 @@ class ProcessMgr():
                     if src_index < len(self.input_face_datas):
                         temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
                         num_faces_found += 1
-                    elif getattr(self, 'is_preview', False) or os.environ.get('ROOP_DEBUG_MATCH'):
+                    elif os.environ.get('ROOP_DEBUG_MATCH'):
                         print(f"[MATCH] person g={g} matched face {fidx} but src_index="
                               f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
 
