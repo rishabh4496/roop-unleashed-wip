@@ -21,6 +21,9 @@ const AI_UPSCALE_MODELS = [
   { value: 'esrgan_anime_x4', label: 'Real-ESRGAN Anime ×4' },
   { value: 'ultrasharp_x4', label: 'Ultra-Sharp ×4' },
   { value: 'lsdirx4', label: 'LSDIR ×4' },
+  { value: 'clear_reality_x4', label: 'Clear Reality ×4' },
+  { value: 'span_x4', label: 'SPAN ×4' },
+  { value: 'nomos8k_x4', label: 'Nomos8k ×4' },
 ];
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {

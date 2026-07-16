@@ -289,6 +289,9 @@ def pre_check() -> bool:
                 'https://huggingface.co/countfloyd/deepfake/resolve/main/lsdir_x4.onnx',
                 'https://huggingface.co/deepghs/imgutils-models/resolve/main/real_esrgan/RealESRGAN_x4plus_anime_6B.onnx',
                 'https://huggingface.co/facefusion/models-3.3.0/resolve/main/ultra_sharp_2_x4.onnx',
+                'https://huggingface.co/JackCui/facefusion/resolve/main/clear_reality_x4.onnx',
+                'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/span_kendata_x4.onnx',
+                'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/nomos8k_sc_x4.onnx',
             ]),
         ]
         for subdir, urls in _pre_warm:

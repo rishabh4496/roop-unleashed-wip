@@ -2371,7 +2371,8 @@ async def extras_apply(file: UploadFile = File(...),
 # ── Extras: frame post-processors (AI upscale / colorize / stylize filters) ──
 # These reuse the roop frame processors that the swap pipeline never wired in.
 _FRAME_FILTERS = ["stylize", "detailenhance", "pencil", "cartoon", "C64"]
-_FRAME_UPSCALERS = ["esrganx2", "esrganx4", "esrgan_anime_x4", "ultrasharp_x4", "lsdirx4"]
+_FRAME_UPSCALERS = ["esrganx2", "esrganx4", "esrgan_anime_x4", "ultrasharp_x4", "lsdirx4",
+                    "clear_reality_x4", "span_x4", "nomos8k_x4"]
 _FRAME_COLORIZERS = ["deoldify_artistic", "deoldify_stable"]
 
 

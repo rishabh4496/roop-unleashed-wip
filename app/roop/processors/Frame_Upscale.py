@@ -67,6 +67,15 @@ class Frame_Upscale():
             elif self.prev_type == "lsdirx4":
                 model_path = resolve_relative_path('../models/Frame/lsdir_x4.onnx')
                 self.scale = 4
+            elif self.prev_type == "clear_reality_x4":
+                model_path = resolve_relative_path('../models/Frame/clear_reality_x4.onnx')
+                self.scale = 4
+            elif self.prev_type == "span_x4":
+                model_path = resolve_relative_path('../models/Frame/span_kendata_x4.onnx')
+                self.scale = 4
+            elif self.prev_type == "nomos8k_x4":
+                model_path = resolve_relative_path('../models/Frame/nomos8k_sc_x4.onnx')
+                self.scale = 4
 
             self.model_upscale = onnxruntime.InferenceSession(model_path, None, providers=_upscale_providers())
             self.model_inputs = self.model_upscale.get_inputs()
