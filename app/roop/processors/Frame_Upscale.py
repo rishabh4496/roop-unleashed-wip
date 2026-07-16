@@ -139,7 +139,19 @@ class Frame_Upscale():
 
 
     def Run(self, temp_frame: Frame) -> Frame:
-        size = (128, 8, 2)
+        # Tile canvas size. The model runs once per tile, so a small tile (the
+        # old fixed 128) means 100+ tiny inferences per 1080p×4 frame — mostly
+        # launch/copy overhead, and the fixed 2px overlap is re-computed on every
+        # tile edge. A larger tile does the SAME per-pixel work in far fewer,
+        # bigger inferences (better GPU efficiency) with proportionally less
+        # overlap waste, and — because each output pixel still comes from one
+        # tile's interior — the result is effectively unchanged. Tune with
+        # ROOP_UPSCALE_TILE (px); lower it if VRAM is tight on heavy ×4 models.
+        try:
+            tile_px = max(64, int(os.environ.get('ROOP_UPSCALE_TILE', '256')))
+        except ValueError:
+            tile_px = 256
+        size = (tile_px, 8, 2)
         temp_height, temp_width = temp_frame.shape[:2]
         upscale_tile_frames, pad_width, pad_height = self.create_tile_frames(temp_frame, size)
 

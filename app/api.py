@@ -2028,8 +2028,11 @@ def _upscale_video_inplace(proc, path):
     tmp_silent = os.path.join(d, f".upscale_silent_{stem}{ext}")
     tmp_final = os.path.join(d, f".upscale_final_{stem}{ext}")
 
+    from tqdm import tqdm
+
     cap = cv2.VideoCapture(path)
     writer = None
+    pbar = None
     try:
         ok, first = cap.read()
         if not ok or first is None:
@@ -2038,8 +2041,11 @@ def _upscale_video_inplace(proc, path):
         oh, ow = out_first.shape[:2]
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        print(f"[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames "
+        print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames "
               f"({os.path.basename(path)})", flush=True)
+        # Live terminal progress bar — same style as the swap's "Processing" bar
+        # (frame count, %, rate, ETA) so the upscale stage reads the same way.
+        pbar = tqdm(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
         # audiofile=None → silent encode; audio is muxed afterwards via
         # restore_audio (explicit -map), matching the main pipeline's pattern.
         writer = FFMPEG_VideoWriter(
@@ -2049,6 +2055,7 @@ def _upscale_video_inplace(proc, path):
             audiofile=None)
         writer.write_frame(out_first)
         done = 1
+        pbar.update(1)
         while roop_globals.processing:
             ok, fr = cap.read()
             if not ok or fr is None:
@@ -2058,16 +2065,16 @@ def _upscale_video_inplace(proc, path):
                 res = cv2.resize(res, (ow, oh))
             writer.write_frame(res)
             done += 1
+            pbar.update(1)
+            rate = pbar.format_dict.get('rate') or 0
+            fps_str = f" ({rate:.1f} FPS)" if rate else ""
             if total > 0:
                 _progress["progress"] = min(0.999, done / total)
-                _progress["desc"] = f"Upscaling frame {done} / {total}"
-                # Periodic terminal progress so the upscale stage is visible in
-                # the log too (not just the React UI).
-                if done % 20 == 0 or done == total:
-                    print(f"  upscaling {done}/{total} "
-                          f"({100 * done / total:.0f}%)", flush=True)
+                _progress["desc"] = f"Upscaling frame {done} / {total}{fps_str}"
     finally:
         cap.release()
+        if pbar is not None:
+            pbar.close()
         if writer is not None:
             writer.close()
 
