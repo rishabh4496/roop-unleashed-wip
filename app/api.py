@@ -1102,6 +1102,39 @@ def _faces_from_frame(idx, frame):
     return extract_face_images(target_path, (True, frame))
 
 
+def _face_data_at_index(idx, frame, fi):
+    """Return ``[[face, crop]]`` for the *fi*-th face using the SAME detection
+    and ordering (get_all_faces, sorted left-to-right by bbox[0]) that the
+    preview overlay draws its numbered boxes from — so clicking box *fi*
+    captures exactly that face.
+
+    Why not reuse ``extract_face_images``: it iterates the same get_all_faces
+    list but silently *skips* any face whose clamped crop is degenerate
+    (``face_temp.size < 1``), which shifts every later index and makes a click
+    capture the wrong person. Here we index into get_all_faces directly and
+    never drop the selected face (fall back to the whole frame as the crop)."""
+    from roop.face_util import get_all_faces, _attach_source_crops, clamp_cut_values
+    target_path = list_files_process[idx].filename
+    roop_globals.target_path = target_path
+    if util.is_image(target_path) and not target_path.lower().endswith("gif"):
+        img = get_image_frame(target_path)
+    else:
+        img = get_video_frame(target_path, frame)
+    if img is None:
+        return []
+    faces = get_all_faces(img)
+    if not (0 <= fi < len(faces)):
+        return []
+    face = faces[fi]
+    (sx, sy, ex, ey) = face["bbox"].astype("int")
+    sx, ex, sy, ey = clamp_cut_values(sx, ex, sy, ey, img)
+    crop = img[sy:ey, sx:ex]
+    if crop.size < 1:
+        crop = img          # never drop the clicked face — fall back to full frame
+    _attach_source_crops(face, img)
+    return [[face, crop]]
+
+
 @app.post("/api/target/use_face")
 def target_use_face(payload: dict = Body(...)):
     """Add target faces from the current frame, each as a NEW person (group).
@@ -1115,11 +1148,14 @@ def target_use_face(payload: dict = Body(...)):
     frame = int(payload.get("frame", 1))
     if idx >= len(list_files_process):
         return {"target_faces": [], "target_groups": []}
-    faces_data = _faces_from_frame(idx, frame)
     face_index = payload.get("face_index", None)
     if face_index is not None:
-        fi = int(face_index)
-        faces_data = [faces_data[fi]] if 0 <= fi < len(faces_data) else []
+        # Single box clicked: select by get_all_faces order (matches the overlay
+        # boxes exactly), NOT the extract_face_images list which can skip faces
+        # and shift indices → capturing the wrong person.
+        faces_data = _face_data_at_index(idx, frame, int(face_index))
+    else:
+        faces_data = _faces_from_frame(idx, frame)
     next_id = (max(roop_globals.TARGET_FACE_GROUP) + 1) if roop_globals.TARGET_FACE_GROUP else 0
     for fd in faces_data:
         roop_globals.TARGET_FACES.append(fd[0])
