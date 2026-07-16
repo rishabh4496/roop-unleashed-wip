@@ -28,6 +28,12 @@ const AI_UPSCALE_MODELS = [
   { value: 'nomos8k_x4', label: 'Nomos8k ×4' },
   { value: 'lanczos_x2', label: '⚡ Fast Lanczos ×2 (no AI)' },
   { value: 'lanczos_x4', label: '⚡ Fast Lanczos ×4 (no AI)' },
+  { value: 'fsr_x2', label: '⚡ FSR-lite ×2 · Lanczos+CAS (no AI)' },
+  { value: 'fsr_x4', label: '⚡ FSR-lite ×4 · Lanczos+CAS (no AI)' },
+  { value: 'spline_x2', label: '⚡ Spline36 ×2 (no AI)' },
+  { value: 'spline_x4', label: '⚡ Spline36 ×4 (no AI)' },
+  { value: 'sinc_x2', label: '⚡ Sinc ×2 · sharpest (no AI)' },
+  { value: 'sinc_x4', label: '⚡ Sinc ×4 · sharpest (no AI)' },
 ];
 
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {

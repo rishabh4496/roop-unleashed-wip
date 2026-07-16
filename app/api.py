@@ -1759,12 +1759,14 @@ def preview_upscale(payload: dict = Body(...)):
 
     subtype = payload.get("subtype") or getattr(roop_globals.CFG, "upscale_model_after", "esrganx2")
 
-    # Fast Lanczos: a plain resize, no model — spot-check it instantly.
-    lz = _lanczos_scale(subtype)
-    if lz is not None:
-        h, w = img.shape[:2]
-        out = cv2.resize(img, (w * lz, h * lz), interpolation=cv2.INTER_LANCZOS4)
-        return {"image": _bgr_to_dataurl(out), "width": int(w * lz), "height": int(h * lz)}
+    # Fast classical upscale (lanczos/fsr/spline/sinc): a plain resize, no model
+    # — spot-check it instantly.
+    spec = _classical_spec(subtype)
+    if spec is not None:
+        mode, scale = spec
+        out = _classical_image_apply(img, mode, scale)
+        oh, ow = out.shape[:2]
+        return {"image": _bgr_to_dataurl(out), "width": int(ow), "height": int(oh)}
 
     if subtype not in _FRAME_UPSCALERS:
         subtype = "esrganx2"
@@ -2303,29 +2305,80 @@ def _upscale_video_inplace(proc, path):
         os.replace(tmp_silent, path)   # mux failed → keep silent upscaled video
 
 
-def _lanczos_scale(subtype):
-    """Return the integer scale for a 'lanczos_xN' subtype, else None."""
-    if isinstance(subtype, str) and subtype.startswith("lanczos_x"):
-        try:
-            return max(1, int(subtype.split("x")[-1]))
-        except ValueError:
-            return 2
-    return None
+# Classical (non-AI) upscalers — plain resampling, no model, no VRAM. Each mode
+# is a swscale kernel, optionally with a post-sharpen. `fsr` is the achievable
+# half of AMD FidelityFX Super Resolution: Lanczos upsample + CAS (Contrast
+# Adaptive Sharpening, the native ffmpeg `cas` filter = FSR's RCAS stage). The
+# EASU edge-adaptive stage needs libplacebo, which this ffmpeg build lacks, so
+# `fsr` here is "Lanczos + CAS" — a halo-free sharpened Lanczos.
+_CLASSICAL_SWFLAG = {
+    "lanczos": "lanczos",   # separable Lanczos — the general default
+    "fsr":     "lanczos",   # Lanczos resample, then CAS sharpen (see _classical_vf)
+    "spline":  "spline",    # spline36 — softer, less ringing on gradients
+    "sinc":    "sinc",      # windowed sinc — sharpest, more ringing
+}
 
 
-def _lanczos_image_inplace(path, scale):
+def _cas_strength():
+    """CAS sharpening strength for the 'fsr' mode (0..1). Override with
+    ROOP_CAS_STRENGTH; 0 makes 'fsr' behave like plain Lanczos."""
+    try:
+        return max(0.0, min(1.0, float(os.environ.get('ROOP_CAS_STRENGTH', '0.5'))))
+    except ValueError:
+        return 0.5
+
+
+def _classical_spec(subtype):
+    """Return (mode, scale) for a classical '<mode>_xN' subtype, else None.
+    Modes: lanczos, fsr, spline, sinc. Kept out of _FRAME_UPSCALERS — these are
+    handled by the fast ffmpeg/cv2 path, not the ONNX model loader."""
+    if not isinstance(subtype, str) or "_x" not in subtype:
+        return None
+    mode, _, tail = subtype.rpartition("_x")
+    if mode not in _CLASSICAL_SWFLAG:
+        return None
+    try:
+        scale = max(1, int(tail))
+    except ValueError:
+        scale = 2
+    return mode, scale
+
+
+def _classical_vf(mode, scale):
+    """ffmpeg -vf string for a classical upscale mode. trunc(...*/2)*2 keeps both
+    output dims even (required by yuv420p)."""
+    flag = _CLASSICAL_SWFLAG.get(mode, "lanczos")
+    vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:flags={flag}"
+    if mode == "fsr":
+        vf += f",cas=strength={_cas_strength():.3f}"
+    return vf + ",format=yuv420p"
+
+
+def _classical_image_apply(img, mode, scale):
+    """Resample a single image for a classical mode. cv2 has no spline/sinc
+    kernels, so all modes resample with Lanczos here (near-identical at image
+    scales); 'fsr' additionally gets an unsharp-mask sharpen approximating CAS."""
+    h, w = img.shape[:2]
+    out = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+    if mode == "fsr":
+        amount = _cas_strength()
+        if amount > 0:
+            blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.0)
+            out = cv2.addWeighted(out, 1.0 + amount, blur, -amount, 0)
+    return out
+
+
+def _classical_image_inplace(path, mode, scale):
     img = get_image_frame(path)
     if img is None:
         return
-    h, w = img.shape[:2]
-    out = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
-    cv2.imwrite(path, out)
+    cv2.imwrite(path, _classical_image_apply(img, mode, scale))
 
 
-def _lanczos_video_inplace(path, scale):
-    """Classical Lanczos upscale — one fast ffmpeg pass (scale + encode + audio
-    copy), no neural net, no VRAM. This is the 'Shutter Encoder'-style fast path:
-    it reconstructs no new detail (unlike the AI models) but is near-realtime."""
+def _classical_video_inplace(path, mode, scale):
+    """Classical upscale — one fast ffmpeg pass (scale + encode + audio copy),
+    no neural net, no VRAM. This is the 'Shutter Encoder'-style fast path: it
+    reconstructs no new detail (unlike the AI models) but is near-realtime."""
     import subprocess
     import time as _time
     from roop.util_ffmpeg import _rate_control
@@ -2334,17 +2387,16 @@ def _lanczos_video_inplace(path, scale):
     ext = os.path.splitext(path)[1].lower() or ".mp4"
     d = os.path.dirname(path)
     stem = os.path.splitext(os.path.basename(path))[0]
-    tmp = os.path.join(d, f".lanczos_{stem}{ext}")
+    tmp = os.path.join(d, f".classical_{stem}{ext}")
     enc = _select_upscale_encoder()
     q = roop_globals.video_quality
-    # trunc(...*/2)*2 keeps both output dims even (required by yuv420p).
-    vf = (f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:flags=lanczos,"
-          f"format=yuv420p")
+    vf = _classical_vf(mode, scale)
+    label = mode.upper()
     cmd = ([FFMPEG_BINARY, '-hide_banner', '-y', '-i', path, '-vf', vf,
             '-c:v', enc] + _rate_control(enc, q) + ['-c:a', 'copy', tmp])
-    print(f"\n[Stage 3/4] LANCZOS ×{scale} upscale (ffmpeg, enc={enc}) — "
+    print(f"\n[Stage 3/4] {label} ×{scale} upscale (ffmpeg, enc={enc}) — "
           f"{os.path.basename(path)}", flush=True)
-    _progress["desc"] = f"Lanczos ×{scale} upscaling…"
+    _progress["desc"] = f"{label} ×{scale} upscaling…"
 
     popen_kwargs = {}
     if os.name == 'nt':
@@ -2379,22 +2431,23 @@ def _run_post_swap_upscale(produced_files, subtype):
     if not produced_files:
         return
 
-    # ── Fast Lanczos path (no ONNX model / VRAM — one ffmpeg pass) ──────────
-    lz = _lanczos_scale(subtype)
-    if lz is not None:
+    # ── Fast classical path (no ONNX model / VRAM — one ffmpeg pass) ────────
+    spec = _classical_spec(subtype)
+    if spec is not None:
+        mode, scale = spec
         roop_globals.processing = True
         n = len(produced_files)
         try:
             for idx, path in enumerate(produced_files):
                 if not roop_globals.processing:
                     break
-                _progress["desc"] = f"Lanczos upscaling {idx + 1}/{n}…"
+                _progress["desc"] = f"{mode.upper()} upscaling {idx + 1}/{n}…"
                 _progress["progress"] = 0.0
                 try:
                     if util.is_video(path):
-                        _lanczos_video_inplace(path, lz)
+                        _classical_video_inplace(path, mode, scale)
                     elif util.is_image(path):
-                        _lanczos_image_inplace(path, lz)
+                        _classical_image_inplace(path, mode, scale)
                 except Exception:
                     traceback.print_exc()
         finally:
