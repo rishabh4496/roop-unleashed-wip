@@ -59,6 +59,7 @@ export default function PersonGroups({
   const [editValue, setEditValue] = useState('');
   const [dropTarget, setDropTarget] = useState(null); // rank being hovered in a drag
   const [busy, setBusy] = useState(false);
+  const [harvesting, setHarvesting] = useState(null); // rank being auto-harvested
   const containerRef = useRef(null);
 
   const people = groupByPerson(targetGroups.slice(0, targetFaces.length));
@@ -102,6 +103,22 @@ export default function PersonGroups({
 
   const addAngle = (rank) => call('/api/target/add_angle', { person: rank, index: selTarget, frame },
     `Captured a new angle for ${labelFor(rank)}`);
+
+  // Scan the whole video and auto-capture this person at many poses, filling
+  // their angle bank so identity survives turns without manual capturing.
+  const autoAngles = async (rank) => {
+    setHarvesting(rank);
+    try {
+      const res = await postJSON('/api/target/auto_angles', { person: rank, index: selTarget });
+      applyPayload(res);
+      if (res.count) notify(`🎯 Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}`);
+      else notify(res.message || 'No new angles found', 'warning');
+    } catch (e) {
+      notify(e.message, 'error');
+    } finally {
+      setHarvesting(null);
+    }
+  };
 
   const autoCluster = async () => {
     const res = await call('/api/target/autocluster', {});
@@ -341,6 +358,15 @@ export default function PersonGroups({
                     )}
                   </div>
                 </div>
+
+                {/* Auto-capture angles from the whole video (fills coverage). */}
+                <button type="button" disabled={busy || harvesting !== null} onClick={() => autoAngles(rank)}
+                  title="Scan the whole video and automatically capture this person at many angles — fills pose coverage so their identity survives turns/profiles without hand-capturing frames. Wrong grabs can be removed with the ✕ on each angle."
+                  className="w-full py-1.5 rounded-lg text-[11px] font-bold bg-[var(--accent)]/12 border border-[var(--accent)]/35 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+                  {harvesting === rank
+                    ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Scanning video for angles…</>)
+                    : '🎯 Auto-capture angles (scan whole video)'}
+                </button>
 
                 {/* Grab angle at current frame */}
                 <button type="button" disabled={busy} onClick={() => addAngle(rank)}

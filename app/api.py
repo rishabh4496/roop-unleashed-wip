@@ -1195,6 +1195,114 @@ def target_add_angle(payload: dict = Body(...)):
     return _target_faces_payload({"count": 1, "distance": round(float(best_d), 3)})
 
 
+@app.post("/api/target/auto_angles")
+def target_auto_angles(payload: dict = Body(...)):
+    """Auto-harvest many pose angles of an EXISTING captured person from across
+    the whole video into their multi-angle bank — so their identity survives
+    turns/profiles without hand-capturing 30 frames.
+
+    Walks sampled frames in time order and matches each frame's faces to the
+    person's GROWING angle bank (so gradual turns chain: each newly-added angle
+    extends coverage for the next). Adds pose-diverse, embedding-novel angles,
+    de-duplicated and capped. Wrong grabs (rare) are removable via the per-angle
+    ✕ in the UI. The swap already matches min-distance across a person's angles,
+    so a fuller bank directly improves pose robustness."""
+    from roop.face_util import get_all_faces, _attach_source_crops, clamp_cut_values
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={"message": "busy processing"})
+
+    person = int(payload.get("person", 0))
+    idx = int(payload.get("index", selected_target_index))
+    if idx >= len(list_files_process):
+        return _target_faces_payload({"count": 0, "message": "no target"})
+    target_path = list_files_process[idx].filename
+    if util.is_image(target_path) and not target_path.lower().endswith("gif"):
+        return _target_faces_payload({"count": 0, "message": "auto-angles needs a video target"})
+
+    ranks = _target_groups_ranked()
+    raw_group = next((roop_globals.TARGET_FACE_GROUP[i] for i, r in enumerate(ranks) if r == person), None)
+    if raw_group is None:
+        return _target_faces_payload({"count": 0, "message": "no such person"})
+
+    # Seed the growing bank + pose coverage from the person's existing angles.
+    bank, covered_poses = [], {}
+    for i, g in enumerate(roop_globals.TARGET_FACE_GROUP):
+        if g != raw_group:
+            continue
+        f = roop_globals.TARGET_FACES[i]
+        e = getattr(f, 'embedding', None)
+        if e is not None:
+            bank.append(np.asarray(e, dtype=np.float32))
+        kps = getattr(f, 'kps', None)
+        pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
+        covered_poses[pose] = covered_poses.get(pose, 0) + 1
+    if not bank:
+        return _target_faces_payload({"count": 0, "message": "capture the person once first"})
+
+    ACCEPT = float(payload.get("accept", 0.60))       # same-identity cosine gate
+    NOVELTY = float(payload.get("novelty", 0.15))      # skip near-duplicate embeddings
+    MAX_ADD = int(payload.get("max_add", 24))
+    MAX_SAMPLES = int(payload.get("samples", 120))
+    PER_POSE_CAP = int(payload.get("per_pose_cap", 6))
+
+    total = get_video_frame_total(target_path) or 0
+    if total <= 1:
+        return _target_faces_payload({"count": 0, "message": "not a video"})
+    stride = max(1, total // MAX_SAMPLES)
+    roop_globals.target_path = target_path
+
+    added = 0
+    for fpos in range(1, total + 1, stride):
+        if added >= MAX_ADD:
+            break
+        img = get_video_frame(target_path, fpos)
+        if img is None:
+            continue
+        faces = get_all_faces(img)
+        if not faces:
+            continue
+        scored = []
+        for f in faces:
+            e = getattr(f, 'embedding', None)
+            if e is None:
+                continue
+            e = np.asarray(e, dtype=np.float32)
+            d = min(float(util.compute_cosine_distance(e, b)) for b in bank)
+            scored.append((d, f, e))
+        if not scored:
+            continue
+        scored.sort(key=lambda x: x[0])
+        best_d, best_f, best_e = scored[0]
+        if best_d > ACCEPT:
+            continue
+        # Ambiguity guard: if another face is nearly as close, this is a
+        # multi-person frame with look-alikes — skip rather than risk the wrong one.
+        if len(scored) > 1 and scored[1][0] < best_d + 0.04:
+            continue
+        kps = getattr(best_f, 'kps', None)
+        pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
+        # Skip only when it's BOTH a near-duplicate embedding AND that pose is
+        # already represented — otherwise a new pose is always worth adding.
+        if best_d < NOVELTY and covered_poses.get(pose, 0) >= 1:
+            continue
+        if covered_poses.get(pose, 0) >= PER_POSE_CAP:
+            continue
+        (sx, sy, ex, ey) = best_f["bbox"].astype("int")
+        sx, ex, sy, ey = clamp_cut_values(sx, ex, sy, ey, img)
+        crop = img[sy:ey, sx:ex]
+        if crop.size < 1:
+            continue
+        _attach_source_crops(best_f, img)
+        roop_globals.TARGET_FACES.append(best_f)
+        roop_globals.TARGET_FACE_GROUP.append(raw_group)
+        ui_globals.ui_target_thumbs.append(util.convert_to_gradio(crop))
+        bank.append(best_e)
+        covered_poses[pose] = covered_poses.get(pose, 0) + 1
+        added += 1
+
+    return _target_faces_payload({"count": added})
+
+
 @app.post("/api/target/remove_face")
 def target_remove_face(payload: dict = Body(...)):
     idx = int(payload.get("index", -1))
