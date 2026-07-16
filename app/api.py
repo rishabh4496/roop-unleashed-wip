@@ -1948,11 +1948,31 @@ def _run_swap(payload):
             # RAM and crawl (26s/frame). release_resources() drops the ProcessMgr
             # + FaceAnalysis pool + empties the CUDA cache, freeing VRAM for the
             # upscale. The next swap re-initialises them (TRT engines are cached).
+            # The printed "VRAM freed" line makes it visible whether it worked.
+            def _free_gb():
+                try:
+                    import torch as _t
+                    if _t.cuda.is_available():
+                        return _t.cuda.mem_get_info(roop_globals.cuda_device_id)[0] / (1024 ** 3)
+                except Exception:
+                    pass
+                return 0.0
+            free_before = _free_gb()
             try:
                 from roop.core import release_resources
                 release_resources()
+                import gc as _gc
+                _gc.collect()
+                import torch as _t
+                if _t.cuda.is_available():
+                    with _t.cuda.device(roop_globals.cuda_device_id):
+                        _t.cuda.empty_cache()
+                        _t.cuda.ipc_collect()
             except Exception:
                 traceback.print_exc()
+            free_after = _free_gb()
+            print(f"[Upscale] freed swap VRAM before upscale: "
+                  f"{free_before:.1f} → {free_after:.1f} GB free", flush=True)
             try:
                 _run_post_swap_upscale(
                     _outputs_since(_pre_swap_outputs),
