@@ -107,6 +107,29 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [swapperRenderTimers, setSwapperRenderTimers] = useState({});
   const swapperIntervalsRef = useRef({});
 
+  // ── AI-upscale comparison grid (mirrors the enhancer/mask/swapper grid) ──
+  // Keyed by the friendly MODEL LABEL (e.g. "Real-ESRGAN ×2"), which is also
+  // the caption CompareGrid shows; label→subtype is resolved when calling the
+  // backend. Each cell swaps the frame ONCE then upscales it with one model.
+  const [comparingUpscalers, setComparingUpscalers] = useState(false);
+  const [selectedGridUpscalers, setSelectedGridUpscalers] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('roop_grid_upscalers') || 'null');
+      const valid = AI_UPSCALE_MODELS.map(m => m.label);
+      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => valid.includes(x))) {
+        return saved;
+      }
+    } catch { /* fall through to default */ }
+    return AI_UPSCALE_MODELS.slice(0, 2).map(m => m.label);
+  });
+  useEffect(() => {
+    localStorage.setItem('roop_grid_upscalers', JSON.stringify(selectedGridUpscalers));
+  }, [selectedGridUpscalers]);
+  const [upscalePreviews, setUpscalePreviews] = useState({});
+  const [upscaleTimes, setUpscaleTimes] = useState({});
+  const [upscaleRenderTimers, setUpscaleRenderTimers] = useState({});
+  const upscaleIntervalsRef = useRef({});
+
   // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
   const telemetry = useTelemetry();
 
@@ -1018,6 +1041,110 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   }, [comparingSwappers, selectedGridSwappers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
+  // ── AI-upscale grid preview loader ─────────────────────────────────────
+  // Unlike the enhancer/swapper grids (which re-run the full swap per cell),
+  // this swaps the frame ONCE then upscales that single result with each
+  // selected model — so the grid isolates the upscaler's effect (and is much
+  // cheaper: one swap + N upscales instead of N full swaps).
+  const loadUpscalePreviews = async (activeCheck) => {
+    if (targets.length === 0) return;
+    const labels = AI_UPSCALE_MODELS.map(m => m.label);
+    const available = selectedGridUpscalers.filter(l => labels.includes(l));
+
+    const keepOnly = (prev) => {
+      const reset = {};
+      for (const l of available) if (prev[l]) reset[l] = prev[l];
+      return reset;
+    };
+    setUpscalePreviews(keepOnly);
+    setUpscaleTimes(keepOnly);
+    setUpscaleRenderTimers(keepOnly);
+
+    // Swap the frame ONCE to get the base image every cell upscales. fake_preview
+    // is forced on so the grid always compares upscalers on the swapped result
+    // (falls back to the raw frame server-side when there are no source faces).
+    let baseImage = '';
+    try {
+      const baseRes = await postJSON('/api/preview', {
+        index: selTarget, frame: frame, fake_preview: true,
+        enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
+        detection: p.face_detection_mode,
+        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
+        mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+        no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
+        show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
+        num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
+        use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
+        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
+        jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        swap_model: p.swap_model, default_det_size: p.default_det_size,
+        face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+        face_detector_nms: p.face_detector_nms,
+        color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
+        refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+        detector_engine: p.detector_engine,
+        face_mapping: getFaceMappingArray(),
+        mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
+        face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
+        mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
+        mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
+      });
+      baseImage = baseRes.image || '';
+    } catch {
+      // handled below (no base → nothing to upscale)
+    }
+    if (!activeCheck()) return;
+    if (!baseImage) return;
+
+    for (const label of available) {
+      if (!activeCheck()) return;
+      const subtype = AI_UPSCALE_MODELS.find(m => m.label === label)?.value || 'esrganx2';
+      try {
+        const start = Date.now();
+        setUpscaleRenderTimers(prev => ({ ...prev, [label]: '0.0s' }));
+        upscaleIntervalsRef.current[label] = setInterval(() => {
+          setUpscaleRenderTimers(prev => ({ ...prev, [label]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
+        }, 100);
+
+        const res = await postJSON('/api/preview_upscale', { image: baseImage, subtype });
+
+        const duration = ((Date.now() - start) / 1000).toFixed(2);
+        if (upscaleIntervalsRef.current[label]) {
+          clearInterval(upscaleIntervalsRef.current[label]);
+          delete upscaleIntervalsRef.current[label];
+        }
+        if (!activeCheck()) return;
+        if (res.image) {
+          setUpscalePreviews((prev) => ({ ...prev, [label]: res.image }));
+          setUpscaleTimes((prev) => ({ ...prev, [label]: `${duration}s` }));
+          setUpscaleRenderTimers((prev) => ({ ...prev, [label]: null }));
+        }
+      } catch {
+        if (upscaleIntervalsRef.current[label]) {
+          clearInterval(upscaleIntervalsRef.current[label]);
+          delete upscaleIntervalsRef.current[label];
+        }
+        setUpscaleRenderTimers((prev) => ({ ...prev, [label]: null }));
+        // Fail silently (a model may fail to download or init on a single frame)
+      }
+    }
+  };
+
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadUpscalePreviews is a stable closure invoked on trigger */
+  useEffect(() => {
+    if (!comparingUpscalers || targets.length === 0) return;
+    let active = true;
+    loadUpscalePreviews(() => active);
+    return () => {
+      active = false;
+      if (upscaleIntervalsRef.current) {
+        Object.values(upscaleIntervalsRef.current).forEach(clearInterval);
+        upscaleIntervalsRef.current = {};
+      }
+    };
+  }, [comparingUpscalers, selectedGridUpscalers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
   useEffect(() => {
@@ -1532,7 +1659,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           // enhancer grid are mutually exclusive.
           setCompare((c) => {
             const nextVal = !c;
-            if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); }
+            if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); }
             return nextVal;
           });
         }
@@ -1586,7 +1713,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         e.preventDefault();
         setCompare((prev) => {
           const nextVal = !prev;
-          if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); }
+          if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); }
           return nextVal;
         });
         return;
@@ -1657,7 +1784,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     start: () => { if (isQueueRunning) return; if (queue.length > 0) startQueue(); else start(); },
     stop,
     queue: addToQueue,
-    compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } return n; }),
+    compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; }),
     split: () => setSplitView((v) => !v),
     preview: () => refreshPreview(),
     shortcuts: () => setShowShortcutHUD(true),
@@ -2495,6 +2622,55 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     />
                   </div>
                 );
+              })() : comparingUpscalers ? (() => {
+                const activeUpscalers = selectedGridUpscalers.filter(l => AI_UPSCALE_MODELS.some(m => m.label === l));
+                const gridColsClass = activeUpscalers.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
+                return (
+                  <div className="space-y-4">
+                    {/* AI-upscaler selector row */}
+                    <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🔎 Compare AI Upscalers (Select up to 4)</span>
+                        <span className="text-[10px] text-white/30">Swaps once, then upscales each</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {AI_UPSCALE_MODELS.map((m) => {
+                          const isSelected = selectedGridUpscalers.includes(m.label);
+                          return (
+                            <button
+                              key={m.value}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  if (selectedGridUpscalers.length > 1) {
+                                    setSelectedGridUpscalers(prev => prev.filter(x => x !== m.label));
+                                  }
+                                } else {
+                                  if (selectedGridUpscalers.length >= 4) {
+                                    notify('You can select a maximum of 4 upscalers for grid comparison.', 'warning');
+                                  } else {
+                                    setSelectedGridUpscalers(prev => [...prev, m.label]);
+                                  }
+                                }
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                            >
+                              {m.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <CompareGrid
+                      items={activeUpscalers}
+                      gridColsClass={gridColsClass}
+                      previews={upscalePreviews}
+                      times={upscaleTimes}
+                      timers={upscaleRenderTimers}
+                    />
+                  </div>
+                );
               })() : (
                 <InteractivePreview
                   beforeSrc={rawUrl} 
@@ -2504,7 +2680,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   onSelectPerson={addPersonFromBox}
                   splitView={splitView}
                   compare={compare}
-                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } return n; })}
+                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; })}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}
@@ -2824,7 +3000,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
             <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
-              {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && (
+              {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
                 <Button size="sm" variant="secondary" disabled={upscaling} onClick={upscaleThisFrame}
                   title="AI-upscale just this frame to preview final quality">
                   {upscaling ? '🔎 Upscaling…' : `🔎 Upscale this frame (${AI_UPSCALE_MODELS.find(m => m.value === (p.upscale_model_after || 'esrganx2'))?.label || 'AI'})`}
@@ -2834,11 +3010,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
             <div className="flex items-center flex-wrap gap-3">
               <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } }} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); setComparingSwappers(false); } }} />
-              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingSwappers(false); } }} />
-              <Toggle label="🔀 Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); } }} />
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
+              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
+              <Toggle label="🔀 Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingUpscalers(false); } }} />
+              <Toggle label="🔎 Upscale Grid" checked={comparingUpscalers} onChange={(v) => { setComparingUpscalers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } }} />
             </div>
           </Section>
 
