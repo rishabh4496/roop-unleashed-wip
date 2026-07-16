@@ -21,6 +21,8 @@ export const FACESWAP_DEFAULTS = {
   codeformer_fidelity: 0.5,
   max_face_distance: 0.7,
   subsample_upscale: '128px',
+  upscale_after_swap: true,
+  upscale_model_after: 'esrganx2',
   color_transfer_mode: 'lct',
   blend_ratio: 1,
 

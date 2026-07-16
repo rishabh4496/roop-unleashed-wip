@@ -77,6 +77,10 @@ fm_files: list = []                    # uploaded source paths for the facemgr t
 # Live progress, polled by the React UI
 _progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
 _last_output = {"path": "", "kind": ""}
+# Set by /api/stop, reset at the start of each run — lets the post-swap upscale
+# pass know the run was aborted (so it doesn't start a long upscale on a
+# deliberately-stopped output).
+_stop_requested = {"flag": False}
 
 no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame",
                    "Skip Frame if no similar face", "Use last swapped"]
@@ -1610,6 +1614,7 @@ def _run_swap(payload):
     from roop.core import batch_process_regular
 
     roop_globals.pause = False
+    _stop_requested["flag"] = False
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     if hasattr(roop_globals, "latest_swapped_frame"):
         try:
@@ -1653,6 +1658,8 @@ def _run_swap(payload):
         roop_globals.vr_mode = bool(payload.get("vr_mode", roop_globals.CFG.vr_mode))
         roop_globals.autorotate_faces = bool(payload.get("autorotate", roop_globals.CFG.autorotate_faces))
         roop_globals.subsample_size = int(str(upsample)[:3])
+        roop_globals.upscale_after_swap = bool(payload.get("upscale_after_swap", getattr(roop_globals.CFG, "upscale_after_swap", True)))
+        roop_globals.upscale_model_after = payload.get("upscale_model_after", getattr(roop_globals.CFG, "upscale_model_after", "esrganx2"))
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", roop_globals.CFG.color_transfer_mode)
         roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", roop_globals.CFG.refine_landmarks))
@@ -1707,6 +1714,10 @@ def _run_swap(payload):
         except Exception:
             roop_globals._run_signature = None
 
+        # Snapshot the output dir so we can tell which files THIS run produces
+        # (for the optional AI upscale second pass below).
+        _pre_swap_outputs = _snapshot_output_mtimes()
+
         with temp_mapped_facesets(payload.get("face_mapping")):
             batch_process_regular(
                 output_method, files_to_process, mask_engine, clip_text,
@@ -1727,6 +1738,18 @@ def _run_swap(payload):
                 stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
                 stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)))
 
+        # ── AI upscale second pass (opt-in) ─────────────────────────────────
+        # Upscale each finished output in place so the final result is a single
+        # file per target (face swap + AI upscale baked in, audio preserved).
+        # Skipped when the run was deliberately stopped.
+        if getattr(roop_globals, "upscale_after_swap", False) and not _stop_requested["flag"]:
+            try:
+                _run_post_swap_upscale(
+                    _outputs_since(_pre_swap_outputs),
+                    getattr(roop_globals, "upscale_model_after", "esrganx2"))
+            except Exception:
+                traceback.print_exc()
+
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"
         _record_last_output()
@@ -1741,6 +1764,167 @@ def _run_swap(payload):
         roop_globals.batch_active = False
         _progress["processing"] = False
         _progress["paused"] = False
+
+
+# ── AI upscale second pass ───────────────────────────────────────────────────
+# Runs strictly AFTER the swap finishes: each produced output is upscaled in
+# place so the final result is a single file per target (face swap + AI upscale
+# baked in, audio preserved). This reuses the proven Extras Frame_Upscale model
+# and the main pipeline's FFMPEG_VideoWriter + restore_audio encode path, so it
+# never touches the (fragile, concurrent) swap pipeline itself.
+
+def _snapshot_output_mtimes():
+    """path -> mtime for every file currently in the output dir."""
+    out = roop_globals.output_path
+    snap = {}
+    if out and os.path.isdir(out):
+        for f in os.listdir(out):
+            full = os.path.join(out, f)
+            if os.path.isfile(full):
+                try:
+                    snap[full] = os.path.getmtime(full)
+                except OSError:
+                    pass
+    return snap
+
+
+def _outputs_since(before):
+    """Files that are new or newer than the pre-swap snapshot — i.e. the outputs
+    this run just produced (robust to multi-file batches and clear_output)."""
+    out = roop_globals.output_path
+    produced = []
+    if out and os.path.isdir(out):
+        for f in os.listdir(out):
+            if f.startswith("."):
+                continue
+            full = os.path.join(out, f)
+            if not os.path.isfile(full):
+                continue
+            try:
+                mt = os.path.getmtime(full)
+            except OSError:
+                continue
+            if full not in before or mt > before[full] + 1e-6:
+                produced.append(full)
+    return produced
+
+
+def _upscale_image_inplace(proc, path):
+    img = get_image_frame(path)
+    if img is None:
+        return
+    out = proc.Run(img)
+    cv2.imwrite(path, out)
+
+
+def _upscale_video_inplace(proc, path):
+    """Upscale every frame of *path* and rewrite it in place with the user's
+    configured video codec, muxing the original swapped audio back in."""
+    from roop.ffmpeg_writer import FFMPEG_VideoWriter
+    from roop.util_ffmpeg import restore_audio
+
+    ext = os.path.splitext(path)[1].lower() or ".mp4"
+    d = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    tmp_silent = os.path.join(d, f".upscale_silent_{stem}{ext}")
+    tmp_final = os.path.join(d, f".upscale_final_{stem}{ext}")
+
+    cap = cv2.VideoCapture(path)
+    writer = None
+    try:
+        ok, first = cap.read()
+        if not ok or first is None:
+            return
+        out_first = proc.Run(first)
+        oh, ow = out_first.shape[:2]
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        # audiofile=None → silent encode; audio is muxed afterwards via
+        # restore_audio (explicit -map), matching the main pipeline's pattern.
+        writer = FFMPEG_VideoWriter(
+            tmp_silent, (ow, oh), fps,
+            codec=roop_globals.video_encoder,
+            crf=roop_globals.video_quality,
+            audiofile=None)
+        writer.write_frame(out_first)
+        done = 1
+        while roop_globals.processing:
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                break
+            res = proc.Run(fr)
+            if res.shape[:2] != (oh, ow):
+                res = cv2.resize(res, (ow, oh))
+            writer.write_frame(res)
+            done += 1
+            if total > 0:
+                _progress["progress"] = min(0.999, done / total)
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.close()
+
+    # Aborted mid-way (Stop) → discard the partial temp, leave the finished
+    # (un-upscaled) swap output intact so nothing is lost.
+    if not roop_globals.processing:
+        try:
+            if os.path.exists(tmp_silent):
+                os.remove(tmp_silent)
+        except OSError:
+            pass
+        return
+
+    muxed = False
+    try:
+        muxed = restore_audio(tmp_silent, path, None, None, tmp_final)
+    except Exception:
+        traceback.print_exc()
+    if muxed and os.path.exists(tmp_final):
+        os.replace(tmp_final, path)
+        try:
+            if os.path.exists(tmp_silent):
+                os.remove(tmp_silent)
+        except OSError:
+            pass
+    elif os.path.exists(tmp_silent):
+        os.replace(tmp_silent, path)   # mux failed → keep silent upscaled video
+
+
+def _run_post_swap_upscale(produced_files, subtype):
+    """AI-upscale each finished swap output in place (single file per target)."""
+    if not produced_files:
+        return
+    from ui.main import prepare_environment
+    prepare_environment()   # ensure the Frame/* upscale model is downloaded
+    try:
+        proc = _make_frame_processor("upscale", subtype)
+    except Exception as e:
+        traceback.print_exc()
+        _progress["error"] = f"AI upscale model failed to load: {e}"
+        return
+    # end_processing() cleared roop_globals.processing when the swap finished;
+    # re-raise it so /api/stop can still abort this (potentially long) pass.
+    roop_globals.processing = True
+    n = len(produced_files)
+    try:
+        for idx, path in enumerate(produced_files):
+            if not roop_globals.processing:
+                break
+            _progress["desc"] = f"AI upscaling {idx + 1}/{n}…"
+            _progress["progress"] = 0.0
+            try:
+                if util.is_video(path):
+                    _upscale_video_inplace(proc, path)
+                elif util.is_image(path):
+                    _upscale_image_inplace(proc, path)
+            except Exception:
+                traceback.print_exc()
+    finally:
+        try:
+            proc.Release()
+        except Exception:
+            pass
+        roop_globals.processing = False
 
 
 def _record_last_output():
@@ -1761,6 +1945,7 @@ def stop_swap():
     # Clear pause too so a stop while paused fully aborts (wait loop checks both).
     roop_globals.pause = False
     roop_globals.processing = False
+    _stop_requested["flag"] = True
     _progress["paused"] = False
     _progress["desc"] = "Aborting…"
     return {"status": "stopping"}

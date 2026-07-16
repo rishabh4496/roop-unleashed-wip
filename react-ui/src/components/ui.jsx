@@ -90,9 +90,12 @@ export const Select = ({ label, info, value, onChange, options = [] }) => (
       onChange={(e) => onChange(e.target.value)}
       className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none cursor-pointer"
     >
-      {options.map((o) => (
-        <option key={o} value={o} className="bg-[#121420]">{o}</option>
-      ))}
+      {options.map((o) => {
+        // Accept plain strings (value === label) or {value, label} objects.
+        const val = typeof o === 'object' && o !== null ? o.value : o;
+        const lbl = typeof o === 'object' && o !== null ? o.label : o;
+        return <option key={val} value={val} className="bg-[#121420]">{lbl}</option>;
+      })}
     </select>
   </Field>
 );

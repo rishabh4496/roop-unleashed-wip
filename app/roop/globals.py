@@ -30,6 +30,10 @@ log_level = 'error'
 selected_enhancer = None
 codeformer_fidelity = 0.5
 subsample_size = 256
+# AI upscale folded into the swap pipeline (runs as the last frame processor,
+# strictly after the face is swapped/enhanced, producing one output file).
+upscale_after_swap = True
+upscale_model_after = 'esrganx2'
 face_swap_mode = 'DFL XSeg'
 blend_ratio = 0.80
 distance_threshold = 1

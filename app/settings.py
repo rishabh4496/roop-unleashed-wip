@@ -132,6 +132,8 @@ class Settings:
         self.selected_enhancer = self.default_get(data, 'selected_enhancer', 'GPEN')
         self.codeformer_fidelity = float(self.default_get(data, 'codeformer_fidelity', 0.5))
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')
+        self.upscale_after_swap = self.default_get(data, 'upscale_after_swap', True)
+        self.upscale_model_after = self.default_get(data, 'upscale_model_after', 'esrganx2')
         self.blend_ratio = self.default_get(data, 'blend_ratio', 0.80)
         self.video_swapping_method = self.default_get(data, 'video_swapping_method', 'In-Memory processing')
         self.no_face_action = self.default_get(data, 'no_face_action', 'Retry rotated')
@@ -228,6 +230,8 @@ class Settings:
             'selected_enhancer': self.selected_enhancer,
             'codeformer_fidelity': self.codeformer_fidelity,
             'subsample_upscale': self.subsample_upscale,
+            'upscale_after_swap': self.upscale_after_swap,
+            'upscale_model_after': self.upscale_model_after,
             'blend_ratio': self.blend_ratio,
             'video_swapping_method': self.video_swapping_method,
             'no_face_action': self.no_face_action,

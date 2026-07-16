@@ -13,6 +13,16 @@ import useTelemetry from './faceswap/useTelemetry';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 import { motion, spring, TiltCard } from '../motion';
 
+// AI upscale models folded into the swap pass (mirrors the Extras post-processor
+// list). value = backend subtype, label = friendly name.
+const AI_UPSCALE_MODELS = [
+  { value: 'esrganx2', label: 'Real-ESRGAN ×2' },
+  { value: 'esrganx4', label: 'Real-ESRGAN ×4' },
+  { value: 'esrgan_anime_x4', label: 'Real-ESRGAN Anime ×4' },
+  { value: 'ultrasharp_x4', label: 'Ultra-Sharp ×4' },
+  { value: 'lsdirx4', label: 'LSDIR ×4' },
+];
+
 export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [sourceFacesInfo, setSourceFacesInfo] = useState([]);
@@ -1433,6 +1443,9 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         num_swap_steps: num(p.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
         target_index: selTarget,
+        // Quick 5s preview clip: skip the heavy post-swap AI upscale so the
+        // preview stays fast (the real render still upscales).
+        upscale_after_swap: false,
       });
 
       startTimeRef.current = Date.now();
@@ -1796,6 +1809,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face similarity" info="0=identical 1=any" min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />
           <Select label="Subsample upscale" value={p.subsample_upscale} onChange={(v) => set('subsample_upscale', v)} options={meta.upscale} />
+          <Toggle label="🔎 AI upscale (after swap)" info="Runs an AI upscaler as the final step of the swap pass — each frame is swapped & enhanced first, then upscaled, producing a single output file (no second pass). Full-frame upscaling is heavy: ×4 on video is slow and VRAM-hungry." checked={!!p.upscale_after_swap} onChange={(v) => set('upscale_after_swap', v)} />
+          {p.upscale_after_swap && (
+            <Select label="AI upscale model" value={p.upscale_model_after} onChange={(v) => set('upscale_model_after', v)} options={AI_UPSCALE_MODELS} />
+          )}
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
         </Section>
