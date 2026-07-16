@@ -2086,14 +2086,15 @@ def _upscale_video_inplace(proc, path):
     tmp_silent = os.path.join(d, f".upscale_silent_{stem}{ext}")
     tmp_final = os.path.join(d, f".upscale_final_{stem}{ext}")
 
-    # Worker count. DEFAULT 1 (single session) — reliable: a heavy ×4 model on a
-    # big frame can need several GB per session, and 3 concurrent sessions spill
-    # into shared system RAM (the "freeze"). Opt into more with ROOP_UPSCALE_THREADS;
-    # the extra sessions are only created while there's real VRAM headroom (below).
+    # Worker count. Requested default 4, but the VRAM-aware probe below only
+    # actually keeps a session while >3GB headroom remains — so LIGHT/fast models
+    # (SPAN: ~0.6GB each, ~2x faster with 2-4 streams because one stream doesn't
+    # saturate the GPU) get the parallelism, while HEAVY ×4 models (Ultra-Sharp:
+    # ~5GB each) auto-cap to 1 and never spill. Override with ROOP_UPSCALE_THREADS.
     try:
-        n_workers = max(1, int(os.environ.get('ROOP_UPSCALE_THREADS', '1')))
+        n_workers = max(1, int(os.environ.get('ROOP_UPSCALE_THREADS', '4')))
     except ValueError:
-        n_workers = 1
+        n_workers = 4
     n_workers = min(n_workers, 6)
 
     cap = cv2.VideoCapture(path)
@@ -2128,6 +2129,9 @@ def _upscale_video_inplace(proc, path):
         import queue as _queue
         from roop.processors.Frame_Upscale import Frame_Upscale as _FU
 
+        import time as _time
+        import threading as _threading
+
         def _free_gb():
             try:
                 import torch as _t
@@ -2137,32 +2141,54 @@ def _upscale_video_inplace(proc, path):
                 pass
             return 99.0
 
+        def _min_free_running(sessions, probe):
+            """Run *sessions* concurrently on *probe* and return the LOWEST free
+            VRAM observed — the real concurrent peak, which is what actually
+            spills (a single-session steady-state probe underestimates it)."""
+            lo = [_free_gb()]
+            stop = [False]
+            def _sampler():
+                while not stop[0]:
+                    lo[0] = min(lo[0], _free_gb())
+                    _time.sleep(0.008)
+            st = _threading.Thread(target=_sampler, daemon=True)
+            st.start()
+            ts = [_threading.Thread(target=lambda ss=ss: ss.RunThreadSafe(probe)) for ss in sessions]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            stop[0] = True
+            st.join(timeout=1)
+            return lo[0]
+
         pool = _queue.Queue()
         pool.put(proc)
+        active = [proc]
         if n_workers > 1:
-            # Add extra sessions ONLY while there's clear VRAM headroom. Each new
-            # session is probed with a synthetic full-size frame to realise its
-            # arena/activations, then kept only if we still have margin — so heavy
-            # ×4 models never over-subscribe VRAM and spill into shared RAM.
-            RESERVE_GB = 3.0
-            probe_h, probe_w = max(1, oh // scale), max(1, ow // scale)
-            probe = np.zeros((probe_h, probe_w, 3), dtype=np.uint8)
+            # Add extra sessions ONLY while a CONCURRENT run of all of them keeps
+            # >RESERVE_GB free. Light models (SPAN) stay tiny → all sessions kept
+            # (real ~2x); heavy ×4 models blow the budget at 2 → auto-capped to 1,
+            # so they never over-subscribe VRAM and spill into shared RAM.
+            RESERVE_GB = 2.0
+            probe = np.zeros((max(1, oh // scale), max(1, ow // scale), 3), dtype=np.uint8)
             for _ in range(n_workers - 1):
-                if _free_gb() < RESERVE_GB:
-                    break
                 try:
                     s = _FU()
                     s.Initialize(dict(proc.plugin_options))
-                    s.RunThreadSafe(probe)            # realise its VRAM footprint
-                    if _free_gb() < RESERVE_GB:       # this one pushed us too low
-                        s.Release()
-                        break
-                    extra_sessions.append(s)
-                    pool.put(s)
                 except Exception:
                     traceback.print_exc()
                     break
-        n_sessions = 1 + len(extra_sessions)   # sessions actually built
+                if _min_free_running(active + [s], probe) < RESERVE_GB:
+                    try:
+                        s.Release()
+                    except Exception:
+                        pass
+                    break
+                extra_sessions.append(s)
+                pool.put(s)
+                active.append(s)
+        n_sessions = len(active)   # sessions actually kept
 
         enc = _select_upscale_encoder()
         print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames, "
