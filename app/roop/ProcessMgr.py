@@ -2264,6 +2264,24 @@ class ProcessMgr():
                             candidates.append((d, g, fidx))
                 candidates.sort(key=lambda c: c[0])   # greedily assign closest pairs first
 
+                # ── Diagnostic (preview / ROOP_DEBUG_MATCH) ──────────────────
+                # Multi-person "person 2 never swaps" bugs are almost always one
+                # of: (a) the backend only has ONE captured person group so
+                # single_person collapses two faces onto one source, (b) a person
+                # sits just over the distance threshold this frame, or (c) fewer
+                # source facesets than persons. Surface all three at a glance.
+                if getattr(self, 'is_preview', False) or os.environ.get('ROOP_DEBUG_MATCH'):
+                    try:
+                        dists = {fidx: {g: round(min(compute_cosine_distance(
+                                    self.target_face_datas[ti].embedding, faces[fidx].embedding)
+                                    for ti in tis), 3) for g, tis in persons.items()}
+                                 for fidx in range(len(faces))}
+                        print(f"[MATCH] persons={len(persons)} single_person={single_person} "
+                              f"faces={len(faces)} sources={len(self.input_face_datas)} "
+                              f"thr={threshold} dist(face->person)={dists}")
+                    except Exception as _e:
+                        print(f"[MATCH] diag failed: {_e}")
+
                 claimed_faces, claimed_persons = set(), set()
                 for d, g, fidx in candidates:
                     if fidx in claimed_faces or g in claimed_persons:
@@ -2274,6 +2292,9 @@ class ProcessMgr():
                     if src_index < len(self.input_face_datas):
                         temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
                         num_faces_found += 1
+                    elif getattr(self, 'is_preview', False) or os.environ.get('ROOP_DEBUG_MATCH'):
+                        print(f"[MATCH] person g={g} matched face {fidx} but src_index="
+                              f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
                 gender = 'F' if self.options.swap_mode == "all_female" else 'M'
