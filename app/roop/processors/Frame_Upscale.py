@@ -1,11 +1,32 @@
-import cv2 
+import cv2
 import numpy as np
 import onnxruntime
+import os
 import roop.globals
 import threading
 
 from roop.utilities import resolve_relative_path
 from roop.typing import Frame
+
+
+def _upscale_providers():
+    """Providers for the frame upscaler — TensorRT excluded.
+
+    The ESRGAN-family x4 nets (ultra_sharp, lsdir, esrgan x4, …) overflow /
+    mis-convert under TensorRT 'mixed' (FP16), producing all-BLACK output, and
+    each model also triggers a slow one-time TRT engine build. They are verified
+    correct on CUDA/CPU (FP32), which also starts instantly, so run them there.
+    Opt back into TensorRT with ROOP_UPSCALE_TRT=1 (not recommended)."""
+    provs = list(roop.globals.execution_providers or [])
+    if os.environ.get('ROOP_UPSCALE_TRT', '0') == '1':
+        return provs
+    def _is_trt(p):
+        name = p[0] if isinstance(p, (tuple, list)) else p
+        return 'tensorrt' in str(name).lower()
+    filtered = [p for p in provs if not _is_trt(p)]
+    if not filtered:
+        filtered = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    return filtered
 
 class Frame_Upscale():
     plugin_options:dict = None
@@ -47,7 +68,7 @@ class Frame_Upscale():
                 model_path = resolve_relative_path('../models/Frame/lsdir_x4.onnx')
                 self.scale = 4
 
-            self.model_upscale = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_upscale = onnxruntime.InferenceSession(model_path, None, providers=_upscale_providers())
             self.model_inputs = self.model_upscale.get_inputs()
             model_outputs = self.model_upscale.get_outputs()
             self.io_binding = self.model_upscale.io_binding()
