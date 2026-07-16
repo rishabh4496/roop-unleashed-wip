@@ -39,6 +39,10 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [previewSrc, setPreviewSrc] = useState('');
   const [previewFaces, setPreviewFaces] = useState([]);
   const [previewPersonIds, setPreviewPersonIds] = useState([]);
+  // Single-frame AI-upscale spot-check (result shown in a modal).
+  const [upscaledSrc, setUpscaledSrc] = useState('');
+  const [upscaledDims, setUpscaledDims] = useState(null);
+  const [upscaling, setUpscaling] = useState(false);
   const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
@@ -1136,6 +1140,27 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       set('face_detection_mode', 'Selected face');
       notify(`Added ${res.count} target person(s)`);
     } catch (e) { notify(e.message, 'error'); }
+  };
+
+  // Spot-check the AI upscale on just the current preview frame — sends the
+  // exact swapped image the preview shows to the backend, which upscales the
+  // one frame and returns it for inspection in a modal.
+  const upscaleThisFrame = async () => {
+    if (!previewSrc) { notify('No preview to upscale', 'error'); return; }
+    setUpscaling(true);
+    try {
+      const res = await postJSON('/api/preview_upscale', {
+        image: previewSrc,
+        subtype: p.upscale_model_after || 'esrganx2',
+      });
+      if (!res.image) throw new Error(res.message || 'upscale failed');
+      setUpscaledSrc(res.image);
+      setUpscaledDims(res.width && res.height ? { w: res.width, h: res.height } : null);
+    } catch (e) {
+      notify(e.message, 'error');
+    } finally {
+      setUpscaling(false);
+    }
   };
 
   // Click a numbered face box in the live preview to capture just that person
@@ -2796,9 +2821,15 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </div>
             )}
 
-            <div className={`flex items-center gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
+            <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
+              {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && (
+                <Button size="sm" variant="secondary" disabled={upscaling} onClick={upscaleThisFrame}
+                  title="AI-upscale just this frame to preview final quality">
+                  {upscaling ? '🔎 Upscaling…' : `🔎 Upscale this frame (${AI_UPSCALE_MODELS.find(m => m.value === (p.upscale_model_after || 'esrganx2'))?.label || 'AI'})`}
+                </Button>
+              )}
             </div>
 
             <div className="flex items-center flex-wrap gap-3">
@@ -2810,6 +2841,44 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               <Toggle label="🔀 Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); } }} />
             </div>
           </Section>
+
+          {/* Single-frame AI-upscale spot-check modal */}
+          {upscaledSrc && (
+            <div
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6"
+              onClick={() => setUpscaledSrc('')}
+            >
+              <div
+                className="relative flex flex-col max-w-[95vw] max-h-[92vh] rounded-2xl border border-white/10 bg-[var(--card-bg)] shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-4 px-4 py-2.5 border-b border-white/10">
+                  <span className="text-xs font-semibold text-white/80">
+                    🔎 Upscaled frame{upscaledDims ? ` · ${upscaledDims.w}×${upscaledDims.h}` : ''}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={upscaledSrc}
+                      download={`upscaled_frame_${frame}.png`}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
+                    >
+                      ⬇ Download
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setUpscaledSrc('')}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-auto">
+                  <img src={upscaledSrc} alt="Upscaled frame" className="block max-w-none" />
+                </div>
+              </div>
+            </div>
+          )}
 
           {targets.length > 0 && sourceFaces.length > 0 && estFrames > 1 && (
             <TiltCard className="rounded-2xl w-full" max={6}>

@@ -137,6 +137,19 @@ def _bgr_to_jpg_dataurl(bgr) -> str:
         return ""
 
 
+def _dataurl_to_bgr(data_url: str):
+    """Decode a base64 data-URL (as produced by _bgr_to_dataurl) back into a BGR
+    frame. Returns None on any failure."""
+    if not data_url or "," not in data_url:
+        return None
+    try:
+        raw = base64.b64decode(data_url.split(",", 1)[1])
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
 def _mask_offsets_from_cfg():
     c = roop_globals.CFG
     return [c.mask_top, c.mask_bottom, c.mask_left, c.mask_right,
@@ -1588,6 +1601,42 @@ def preview(payload: dict = Body(...)):
     except Exception:
         traceback.print_exc()
         return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "error": "swap failed"}
+
+
+@app.post("/api/preview_upscale")
+def preview_upscale(payload: dict = Body(...)):
+    """AI-upscale a single already-swapped preview frame — a cheap spot-check of
+    the final upscale quality on one frame. Operates on the image the client
+    currently shows (passed in as a data-URL); it does NOT re-run the swap
+    pipeline, so it can't race the live preview's GPU sessions."""
+    img = _dataurl_to_bgr(payload.get("image", ""))
+    if img is None:
+        return JSONResponse(status_code=400, content={"message": "no image to upscale"})
+
+    subtype = payload.get("subtype") or getattr(roop_globals.CFG, "upscale_model_after", "esrganx2")
+    if subtype not in _FRAME_UPSCALERS:
+        subtype = "esrganx2"
+
+    from ui.main import prepare_environment
+    prepare_environment()   # ensure the Frame/* upscale model is downloaded
+    try:
+        proc = _make_frame_processor("upscale", subtype)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": f"failed to load model: {e}"})
+    try:
+        out = proc.Run(img)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"message": f"upscale failed: {e}"})
+    finally:
+        try:
+            proc.Release()
+        except Exception:
+            pass
+
+    h, w = out.shape[:2]
+    return {"image": _bgr_to_dataurl(out), "width": int(w), "height": int(h)}
 
 
 # ── Run the swap ─────────────────────────────────────────────────────────────
