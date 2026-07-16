@@ -2086,13 +2086,14 @@ def _upscale_video_inplace(proc, path):
     tmp_silent = os.path.join(d, f".upscale_silent_{stem}{ext}")
     tmp_final = os.path.join(d, f".upscale_final_{stem}{ext}")
 
-    # Worker count. Each concurrent upscale holds its own tile activations, so
-    # cap it (VRAM), independent of the swap's thread count. Tune / disable
-    # (=1) with ROOP_UPSCALE_THREADS.
+    # Worker count. DEFAULT 1 (single session) — reliable: a heavy ×4 model on a
+    # big frame can need several GB per session, and 3 concurrent sessions spill
+    # into shared system RAM (the "freeze"). Opt into more with ROOP_UPSCALE_THREADS;
+    # the extra sessions are only created while there's real VRAM headroom (below).
     try:
-        n_workers = max(1, int(os.environ.get('ROOP_UPSCALE_THREADS', '3')))
+        n_workers = max(1, int(os.environ.get('ROOP_UPSCALE_THREADS', '1')))
     except ValueError:
-        n_workers = 3
+        n_workers = 1
     n_workers = min(n_workers, 6)
 
     cap = cv2.VideoCapture(path)
@@ -2126,13 +2127,36 @@ def _upscale_video_inplace(proc, path):
         # the extras in this function's finally.
         import queue as _queue
         from roop.processors.Frame_Upscale import Frame_Upscale as _FU
+
+        def _free_gb():
+            try:
+                import torch as _t
+                if _t.cuda.is_available():
+                    return _t.cuda.mem_get_info(roop_globals.cuda_device_id)[0] / (1024 ** 3)
+            except Exception:
+                pass
+            return 99.0
+
         pool = _queue.Queue()
         pool.put(proc)
         if n_workers > 1:
+            # Add extra sessions ONLY while there's clear VRAM headroom. Each new
+            # session is probed with a synthetic full-size frame to realise its
+            # arena/activations, then kept only if we still have margin — so heavy
+            # ×4 models never over-subscribe VRAM and spill into shared RAM.
+            RESERVE_GB = 3.0
+            probe_h, probe_w = max(1, oh // scale), max(1, ow // scale)
+            probe = np.zeros((probe_h, probe_w, 3), dtype=np.uint8)
             for _ in range(n_workers - 1):
+                if _free_gb() < RESERVE_GB:
+                    break
                 try:
                     s = _FU()
                     s.Initialize(dict(proc.plugin_options))
+                    s.RunThreadSafe(probe)            # realise its VRAM footprint
+                    if _free_gb() < RESERVE_GB:       # this one pushed us too low
+                        s.Release()
+                        break
                     extra_sessions.append(s)
                     pool.put(s)
                 except Exception:
