@@ -51,7 +51,8 @@ class Enhance_CodeFormer():
         # float64 for this ONNX export).
         io_binding = self.model_codeformer.io_binding()
         io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame.astype(np.float32))
-        io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([0.5], dtype=np.float64))
+        cf_fidelity = getattr(roop.globals, 'codeformer_fidelity', 0.5)
+        io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([cf_fidelity], dtype=np.float64))
         io_binding.bind_output(self.model_outputs[0].name, self.devicename)
         self.model_codeformer.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()

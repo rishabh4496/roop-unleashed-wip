@@ -18,6 +18,7 @@ export const FACESWAP_DEFAULTS = {
   rescue_small_faces: true,
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',
+  codeformer_fidelity: 0.5,
   max_face_distance: 0.7,
   subsample_upscale: '128px',
   color_transfer_mode: 'lct',

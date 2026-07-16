@@ -130,6 +130,7 @@ class Settings:
         self.track_identities = self.default_get(data, 'track_identities', False)
         self.num_swap_steps = self.default_get(data, 'num_swap_steps', 1)
         self.selected_enhancer = self.default_get(data, 'selected_enhancer', 'GPEN')
+        self.codeformer_fidelity = float(self.default_get(data, 'codeformer_fidelity', 0.5))
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')
         self.blend_ratio = self.default_get(data, 'blend_ratio', 0.80)
         self.video_swapping_method = self.default_get(data, 'video_swapping_method', 'In-Memory processing')
@@ -225,6 +226,7 @@ class Settings:
             'face_detector_threshold': self.face_detector_threshold,
             'num_swap_steps': self.num_swap_steps,
             'selected_enhancer': self.selected_enhancer,
+            'codeformer_fidelity': self.codeformer_fidelity,
             'subsample_upscale': self.subsample_upscale,
             'blend_ratio': self.blend_ratio,
             'video_swapping_method': self.video_swapping_method,

@@ -1542,6 +1542,7 @@ def preview(payload: dict = Body(...)):
 
         roop_globals.face_swap_mode = translate_swap_mode(payload.get("detection", "All faces"))
         roop_globals.selected_enhancer = payload.get("enhancer", "None")
+        roop_globals.codeformer_fidelity = float(payload.get("codeformer_fidelity", 0.5))
         roop_globals.distance_threshold = float(payload.get("face_distance", 0.85))
         roop_globals.blend_ratio = float(payload.get("blend_ratio", 0.8))
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", "Retry rotated"))
@@ -1634,6 +1635,7 @@ def _run_swap(payload):
         clip_text = payload.get("clip_text", roop_globals.CFG.mask_clip_text)
 
         roop_globals.selected_enhancer = enhancer
+        roop_globals.codeformer_fidelity = float(payload.get("codeformer_fidelity", getattr(roop_globals.CFG, "codeformer_fidelity", 0.5)))
         roop_globals.target_path = None
         roop_globals.distance_threshold = float(payload.get("face_distance", roop_globals.CFG.max_face_distance))
         roop_globals.blend_ratio = float(payload.get("blend_ratio", roop_globals.CFG.blend_ratio))

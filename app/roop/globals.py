@@ -28,6 +28,7 @@ execution_threads = None
 headless = None
 log_level = 'error'
 selected_enhancer = None
+codeformer_fidelity = 0.5
 subsample_size = 256
 face_swap_mode = 'DFL XSeg'
 blend_ratio = 0.80

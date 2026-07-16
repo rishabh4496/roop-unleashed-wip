@@ -403,6 +403,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     uf: p.use_frontalization, fth: p.frontalization_threshold,
     jr: p.jaw_reshape, jrs: p.jaw_reshape_strength,
     ctm: p.color_transfer_mode, s2: p.sam2_model_size,
+    cf_fid: p.codeformer_fidelity,
     rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
     dds: p.default_det_size,
     fds: p.face_detector_size,
@@ -549,7 +550,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     try {
       const res = await postJSON('/api/preview', {
         index: idx, frame: fr, fake_preview: fake,
-        enhancer: p.selected_enhancer, detection: p.face_detection_mode,
+        enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
+        detection: p.face_detection_mode,
         face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
         mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
         no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
@@ -636,6 +638,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
         jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
         ctm: localParams.color_transfer_mode,
+        cf_fid: localParams.codeformer_fidelity,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
@@ -671,7 +674,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
         const res = await postJSON('/api/preview', {
           index: selTarget, frame: frame, fake_preview: fakePreview,
-          enhancer: enh, detection: p.face_detection_mode,
+          enhancer: enh, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
+          detection: p.face_detection_mode,
           face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
           mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
           no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
@@ -765,6 +769,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
         jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
         ctm: localParams.color_transfer_mode,
+        cf_fid: localParams.codeformer_fidelity,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
@@ -797,7 +802,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
         const res = await postJSON('/api/preview', {
           index: selTarget, frame: frame, fake_preview: fakePreview,
-          enhancer: p.selected_enhancer, detection: p.face_detection_mode,
+          enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
+          detection: p.face_detection_mode,
           face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
           mask_engine: me, clip_text: p.mask_clip_text,
           no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
@@ -1868,6 +1874,17 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               </>
             )}
             <Toggle label="Restore original mouth area" checked={!!p.restore_original_mouth} onChange={(v) => set('restore_original_mouth', v)} />
+            {p.selected_enhancer && p.selected_enhancer.toLowerCase() === 'codeformer' && (
+              <Slider
+                label="CodeFormer fidelity weight"
+                info="Balances restoration quality vs original identity. 0.1 = maximum sharpness (may shift face geometry), 0.9 = maximum similarity to source (but less restoration detail)."
+                min={0.1}
+                max={0.9}
+                step={0.05}
+                value={num(p.codeformer_fidelity, 0.5)}
+                onChange={(v) => set('codeformer_fidelity', v)}
+              />
+            )}
           </Section>
 
           <Section title="Target file(s)">
