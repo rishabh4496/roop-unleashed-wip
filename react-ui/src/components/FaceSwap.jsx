@@ -74,6 +74,25 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [maskRenderTimers, setMaskRenderTimers] = useState({});
   const maskIntervalsRef = useRef({});
 
+  // ── Swapper-model comparison grid (mirrors the enhancer/mask grid) ──
+  const [comparingSwappers, setComparingSwappers] = useState(false);
+  const [selectedGridSwappers, setSelectedGridSwappers] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('roop_grid_swappers') || 'null');
+      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
+        return saved;
+      }
+    } catch { /* fall through to default */ }
+    return ['inswapper', 'reswapper', 'hyperswap', 'simswap'];
+  });
+  useEffect(() => {
+    localStorage.setItem('roop_grid_swappers', JSON.stringify(selectedGridSwappers));
+  }, [selectedGridSwappers]);
+  const [swapperPreviews, setSwapperPreviews] = useState({});
+  const [swapperTimes, setSwapperTimes] = useState({});
+  const [swapperRenderTimers, setSwapperRenderTimers] = useState({});
+  const swapperIntervalsRef = useRef({});
+
   // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
   const telemetry = useTelemetry();
 
@@ -862,6 +881,129 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   }, [comparingMasks, selectedGridMasks, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
+  // ── Swapper-model grid preview loader ──────────────────────────────────
+  // Identical shape to loadMaskPreviews/loadEnhancerPreviews, but varies
+  // `swap_model` instead of mask_engine/enhancer. Each selected swapper model
+  // downloads on first use, so the live per-cell timer matters here.
+  const loadSwapperPreviews = async (activeCheck) => {
+    if (targets.length === 0) return;
+    const available = selectedGridSwappers.filter(m => meta.swap_models?.includes(m));
+
+    const keepOnly = (prev) => {
+      const reset = {};
+      for (const m of available) if (prev[m]) reset[m] = prev[m];
+      return reset;
+    };
+    setSwapperPreviews(keepOnly);
+    setSwapperTimes(keepOnly);
+    setSwapperRenderTimers(keepOnly);
+
+    for (const sm of available) {
+      if (!activeCheck()) return;
+      const localParams = { ...p, swap_model: sm };
+      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
+        fp: fakePreview,
+        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
+        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
+        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
+        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
+        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
+        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
+        ctm: localParams.color_transfer_mode,
+        cf_fid: localParams.codeformer_fidelity,
+        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
+        dds: localParams.default_det_size,
+        fds: localParams.face_detector_size,
+        fdt: localParams.face_detector_threshold,
+        mask_top: localParams.mask_top,
+        mask_bottom: localParams.mask_bottom,
+        mask_left: localParams.mask_left,
+        mask_right: localParams.mask_right,
+        face_mask_blend: localParams.face_mask_blend,
+        mouth_mask_blend: localParams.mouth_mask_blend,
+        mouth_top_scale: localParams.mouth_top_scale,
+        mouth_bottom_scale: localParams.mouth_bottom_scale,
+        mouth_left_scale: localParams.mouth_left_scale,
+        mouth_right_scale: localParams.mouth_right_scale,
+      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+
+      if (previewCacheRef.current[cacheKey]) {
+        if (!activeCheck()) return;
+        setSwapperPreviews((prev) => ({ ...prev, [sm]: previewCacheRef.current[cacheKey].image }));
+        setSwapperTimes((prev) => ({ ...prev, [sm]: 'Cached' }));
+        continue;
+      }
+
+      try {
+        const start = Date.now();
+        setSwapperRenderTimers(prev => ({ ...prev, [sm]: '0.0s' }));
+        swapperIntervalsRef.current[sm] = setInterval(() => {
+          setSwapperRenderTimers(prev => ({ ...prev, [sm]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
+        }, 100);
+
+        const res = await postJSON('/api/preview', {
+          index: selTarget, frame: frame, fake_preview: fakePreview,
+          enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
+          detection: p.face_detection_mode,
+          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
+          mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
+          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
+          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
+          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
+          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
+          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
+          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+          swap_model: sm, default_det_size: p.default_det_size,
+          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
+          face_detector_nms: p.face_detector_nms,
+          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
+          refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          detector_engine: p.detector_engine,
+          face_mapping: getFaceMappingArray(),
+          mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
+          face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
+          mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
+          mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
+        });
+        const duration = ((Date.now() - start) / 1000).toFixed(2);
+        if (swapperIntervalsRef.current[sm]) {
+          clearInterval(swapperIntervalsRef.current[sm]);
+          delete swapperIntervalsRef.current[sm];
+        }
+        if (!activeCheck()) return;
+        if (res.image) {
+          setSwapperPreviews((prev) => ({ ...prev, [sm]: res.image }));
+          setSwapperTimes((prev) => ({ ...prev, [sm]: `${duration}s` }));
+          setSwapperRenderTimers((prev) => ({ ...prev, [sm]: null }));
+          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
+        }
+      } catch {
+        if (swapperIntervalsRef.current[sm]) {
+          clearInterval(swapperIntervalsRef.current[sm]);
+          delete swapperIntervalsRef.current[sm];
+        }
+        setSwapperRenderTimers((prev) => ({ ...prev, [sm]: null }));
+        // Fail silently (a model may fail to download or init on a single frame)
+      }
+    }
+  };
+
+  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadSwapperPreviews is a stable closure invoked on trigger */
+  useEffect(() => {
+    if (!comparingSwappers || targets.length === 0) return;
+    let active = true;
+    loadSwapperPreviews(() => active);
+    return () => {
+      active = false;
+      if (swapperIntervalsRef.current) {
+        Object.values(swapperIntervalsRef.current).forEach(clearInterval);
+        swapperIntervalsRef.current = {};
+      }
+    };
+  }, [comparingSwappers, selectedGridSwappers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
   // working, not hung.
   useEffect(() => {
@@ -1352,7 +1494,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           // enhancer grid are mutually exclusive.
           setCompare((c) => {
             const nextVal = !c;
-            if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); }
+            if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); }
             return nextVal;
           });
         }
@@ -1406,7 +1548,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         e.preventDefault();
         setCompare((prev) => {
           const nextVal = !prev;
-          if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); }
+          if (nextVal) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); }
           return nextVal;
         });
         return;
@@ -1477,7 +1619,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     start: () => { if (isQueueRunning) return; if (queue.length > 0) startQueue(); else start(); },
     stop,
     queue: addToQueue,
-    compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); } return n; }),
+    compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } return n; }),
     split: () => setSplitView((v) => !v),
     preview: () => refreshPreview(),
     shortcuts: () => setShowShortcutHUD(true),
@@ -2262,6 +2404,55 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                     />
                   </div>
                 );
+              })() : comparingSwappers ? (() => {
+                const activeSwappers = selectedGridSwappers.filter(m => meta.swap_models?.includes(m));
+                const gridColsClass = activeSwappers.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
+                return (
+                  <div className="space-y-4">
+                    {/* Swapper-model selector row */}
+                    <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🔀 Compare Swapper Models (Select up to 4)</span>
+                        <span className="text-[10px] text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {meta.swap_models?.map((sM) => {
+                          const isSelected = selectedGridSwappers.includes(sM);
+                          return (
+                            <button
+                              key={sM}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  if (selectedGridSwappers.length > 1) {
+                                    setSelectedGridSwappers(prev => prev.filter(x => x !== sM));
+                                  }
+                                } else {
+                                  if (selectedGridSwappers.length >= 4) {
+                                    notify('You can select a maximum of 4 swapper models for grid comparison.', 'warning');
+                                  } else {
+                                    setSelectedGridSwappers(prev => [...prev, sM]);
+                                  }
+                                }
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                            >
+                              {sM}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <CompareGrid
+                      items={activeSwappers}
+                      gridColsClass={gridColsClass}
+                      previews={swapperPreviews}
+                      times={swapperTimes}
+                      timers={swapperRenderTimers}
+                    />
+                  </div>
+                );
               })() : (
                 <InteractivePreview
                   beforeSrc={rawUrl} 
@@ -2271,7 +2462,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                   onSelectPerson={addPersonFromBox}
                   splitView={splitView}
                   compare={compare}
-                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); } return n; })}
+                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } return n; })}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}
@@ -2595,10 +2786,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
             <div className="flex items-center flex-wrap gap-3">
               <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); } }} />
+              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); } }} />
-              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); } }} />
+              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); setComparingSwappers(false); } }} />
+              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingSwappers(false); } }} />
+              <Toggle label="🔀 Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); } }} />
             </div>
           </Section>
 
