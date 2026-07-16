@@ -138,7 +138,7 @@ class Frame_Upscale():
         return merge_frame
 
 
-    def Run(self, temp_frame: Frame) -> Frame:
+    def _run_impl(self, temp_frame: Frame, thread_safe: bool) -> Frame:
         # Tile canvas size. The model runs once per tile, so a small tile (the
         # old fixed 128) means 100+ tiny inferences per 1080p×4 frame — mostly
         # launch/copy overhead, and the fixed 2px overlap is re-computed on every
@@ -154,20 +154,36 @@ class Frame_Upscale():
         size = (tile_px, 8, 2)
         temp_height, temp_width = temp_frame.shape[:2]
         upscale_tile_frames, pad_width, pad_height = self.create_tile_frames(temp_frame, size)
+        input_name = self.model_inputs[0].name
 
         for index, tile_frame in enumerate(upscale_tile_frames):
             tile_frame = self.prepare_tile_frame(tile_frame)
-            with self.THREAD_LOCK_UPSCALE:
-                self.io_binding.bind_cpu_input(self.model_inputs[0].name, tile_frame)
-                self.model_upscale.run_with_iobinding(self.io_binding)
-                ort_outs = self.io_binding.copy_outputs_to_cpu()
-                result = ort_outs[0]
+            if thread_safe:
+                # ORT session.run() is safe to call concurrently on one shared
+                # session; io_binding is NOT (shared per-instance state). So the
+                # parallel path uses a plain run — no io_binding, no lock — which
+                # lets N worker threads keep the GPU busy at once.
+                result = self.model_upscale.run(None, {input_name: tile_frame})[0]
+            else:
+                with self.THREAD_LOCK_UPSCALE:
+                    self.io_binding.bind_cpu_input(input_name, tile_frame)
+                    self.model_upscale.run_with_iobinding(self.io_binding)
+                    result = self.io_binding.copy_outputs_to_cpu()[0]
             upscale_tile_frames[index] = self.normalize_tile_frame(result)
         final_frame = self.merge_tile_frames(upscale_tile_frames, temp_width * self.scale
                                                     , temp_height * self.scale
                                                     , pad_width * self.scale, pad_height * self.scale
                                                     , (size[0] * self.scale, size[1] * self.scale, size[2] * self.scale))
         return final_frame.astype(np.uint8)
+
+    def Run(self, temp_frame: Frame) -> Frame:
+        """Single-thread / shared-instance path (uses io_binding + lock)."""
+        return self._run_impl(temp_frame, thread_safe=False)
+
+    def RunThreadSafe(self, temp_frame: Frame) -> Frame:
+        """Concurrency-safe path — multiple threads may call this on ONE shared
+        session at once (plain ORT run, no io_binding, no lock)."""
+        return self._run_impl(temp_frame, thread_safe=True)
 
 
 

@@ -2016,11 +2016,38 @@ def _upscale_image_inplace(proc, path):
     cv2.imwrite(path, out)
 
 
+def _select_upscale_encoder():
+    """Encoder for the upscale pass. Prefer NVENC (GPU's dedicated encode engine,
+    which the compute-bound upscale leaves idle) so encoding overlaps inference
+    for free; probe it and fall back to the configured CPU codec if unavailable.
+    Opt out with ROOP_UPSCALE_NVENC=0."""
+    base = roop_globals.video_encoder or 'libx264'
+    if os.environ.get('ROOP_UPSCALE_NVENC', '1') != '1':
+        return base
+    nvenc = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc',
+             'h264_nvenc': 'h264_nvenc', 'hevc_nvenc': 'hevc_nvenc'}.get(base, 'hevc_nvenc')
+    try:
+        from roop.ffmpeg_writer import probe_encoder
+        ok, msg = probe_encoder(nvenc, crf=roop_globals.video_quality)
+        if ok:
+            return nvenc
+        print(f"[Upscale] NVENC ({nvenc}) unavailable — using {base}: {msg[:100]}", flush=True)
+    except Exception:
+        pass
+    return base
+
+
 def _upscale_video_inplace(proc, path):
-    """Upscale every frame of *path* and rewrite it in place with the user's
-    configured video codec, muxing the original swapped audio back in."""
+    """Upscale every frame of *path* and rewrite it in place, muxing the original
+    swapped audio back in. Multi-threaded: N worker threads run the (thread-safe)
+    upscaler on ONE shared session concurrently to keep the GPU saturated, while
+    frames are submitted and written back strictly IN ORDER. Encode goes through
+    NVENC when available so it overlaps the compute on a separate GPU engine."""
     from roop.ffmpeg_writer import FFMPEG_VideoWriter
     from roop.util_ffmpeg import restore_audio
+    from concurrent.futures import ThreadPoolExecutor
+    from collections import deque
+    from tqdm import tqdm
 
     ext = os.path.splitext(path)[1].lower() or ".mp4"
     d = os.path.dirname(path)
@@ -2028,55 +2055,134 @@ def _upscale_video_inplace(proc, path):
     tmp_silent = os.path.join(d, f".upscale_silent_{stem}{ext}")
     tmp_final = os.path.join(d, f".upscale_final_{stem}{ext}")
 
-    from tqdm import tqdm
+    # Worker count. Each concurrent upscale holds its own tile activations, so
+    # cap it (VRAM), independent of the swap's thread count. Tune / disable
+    # (=1) with ROOP_UPSCALE_THREADS.
+    try:
+        n_workers = max(1, int(os.environ.get('ROOP_UPSCALE_THREADS', '3')))
+    except ValueError:
+        n_workers = 3
+    n_workers = min(n_workers, 6)
 
     cap = cv2.VideoCapture(path)
+    scale = int(getattr(proc, 'scale', 2) or 2)
+    in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     writer = None
     pbar = None
+    executor = None
+    extra_sessions = []
+    done = 0
     try:
-        ok, first = cap.read()
-        if not ok or first is None:
-            return
-        out_first = proc.Run(first)
-        oh, ow = out_first.shape[:2]
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames "
-              f"({os.path.basename(path)})", flush=True)
-        # Live terminal progress bar — same style as the swap's "Processing" bar
-        # (frame count, %, rate, ETA) so the upscale stage reads the same way.
+        if in_w <= 0 or in_h <= 0:
+            # Container didn't report dims — derive them from the first frame.
+            ok, first = cap.read()
+            if not ok or first is None:
+                return
+            o = proc.Run(first)
+            oh, ow = o.shape[:2]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        else:
+            ow, oh = in_w * scale, in_h * scale
+
+        # Session pool for real GPU parallelism: ORT uses one CUDA stream per
+        # session, so N threads sharing ONE session still serialize on the GPU.
+        # Give each concurrent worker its OWN session (own stream) — weights are
+        # tiny (~60MB) so the cost is mostly per-session activations. Built from
+        # the primary `proc`'s options; the primary is released by the caller,
+        # the extras in this function's finally.
+        import queue as _queue
+        from roop.processors.Frame_Upscale import Frame_Upscale as _FU
+        pool = _queue.Queue()
+        pool.put(proc)
+        if n_workers > 1:
+            for _ in range(n_workers - 1):
+                try:
+                    s = _FU()
+                    s.Initialize(dict(proc.plugin_options))
+                    extra_sessions.append(s)
+                    pool.put(s)
+                except Exception:
+                    traceback.print_exc()
+                    break
+        n_sessions = 1 + len(extra_sessions)   # sessions actually built
+
+        enc = _select_upscale_encoder()
+        print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames, "
+              f"{n_sessions} session(s), enc={enc} ({os.path.basename(path)})", flush=True)
         pbar = tqdm(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
-        # audiofile=None → silent encode; audio is muxed afterwards via
-        # restore_audio (explicit -map), matching the main pipeline's pattern.
+        # audiofile=None → silent encode; audio muxed afterwards via restore_audio.
         writer = FFMPEG_VideoWriter(
             tmp_silent, (ow, oh), fps,
-            codec=roop_globals.video_encoder,
-            crf=roop_globals.video_quality,
-            audiofile=None)
-        writer.write_frame(out_first)
-        done = 1
-        pbar.update(1)
-        while roop_globals.processing:
-            ok, fr = cap.read()
-            if not ok or fr is None:
-                break
-            res = proc.Run(fr)
+            codec=enc, crf=roop_globals.video_quality, audiofile=None)
+
+        def _do(frame):
+            sess = pool.get()
+            try:
+                res = sess.RunThreadSafe(frame)
+            except Exception:
+                # A single frame's GPU failure (e.g. transient OOM) shouldn't
+                # abort the whole pass — write an upscaled-by-resize fallback so
+                # the output stays continuous.
+                traceback.print_exc()
+                res = cv2.resize(frame, (ow, oh))
+            finally:
+                pool.put(sess)
             if res.shape[:2] != (oh, ow):
                 res = cv2.resize(res, (ow, oh))
+            return res
+
+        def _write(res):
+            nonlocal done
             writer.write_frame(res)
             done += 1
             pbar.update(1)
             rate = pbar.format_dict.get('rate') or 0
-            fps_str = f" ({rate:.1f} FPS)" if rate else ""
             if total > 0:
                 _progress["progress"] = min(0.999, done / total)
-                _progress["desc"] = f"Upscaling frame {done} / {total}{fps_str}"
+                _progress["desc"] = f"Upscaling frame {done} / {total}" + (f" ({rate:.1f} FPS)" if rate else "")
+
+        if n_sessions <= 1:
+            while roop_globals.processing:
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    break
+                _write(_do(fr))
+        else:
+            executor = ThreadPoolExecutor(max_workers=n_sessions, thread_name_prefix='upscale')
+            in_flight = deque()
+            max_inflight = n_sessions * 2
+            while roop_globals.processing:
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    break
+                in_flight.append(executor.submit(_do, fr))   # submitted in order
+                if len(in_flight) >= max_inflight:
+                    _write(in_flight.popleft().result())      # drained/written in order
+            # Flush the pipeline (unless the user aborted).
+            while in_flight and roop_globals.processing:
+                _write(in_flight.popleft().result())
     finally:
         cap.release()
+        if executor is not None:
+            # wait=True: block until in-flight workers finish BEFORE we close the
+            # writer / release their sessions — otherwise a still-running upscale
+            # would touch a released session. cancel_futures drops any not-yet-
+            # started frames (relevant on Stop).
+            executor.shutdown(wait=True, cancel_futures=True)
         if pbar is not None:
             pbar.close()
         if writer is not None:
             writer.close()
+        # Free the extra worker sessions' VRAM (the primary `proc` is the
+        # caller's to release).
+        for s in extra_sessions:
+            try:
+                s.Release()
+            except Exception:
+                pass
 
     if roop_globals.processing:
         print("[Stage 4/4] COMBINING (encode + audio mux)…", flush=True)
