@@ -291,6 +291,7 @@ def pre_check() -> bool:
                 'https://huggingface.co/facefusion/models-3.3.0/resolve/main/ultra_sharp_2_x4.onnx',
                 'https://huggingface.co/JackCui/facefusion/resolve/main/clear_reality_x4.onnx',
                 'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/span_kendata_x4.onnx',
+                'https://huggingface.co/MonsterMMORPG/Wan_GGUF/resolve/main/Viso_Master_Models/realesr-general-x4v3.onnx',
                 'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/nomos8k_sc_x4.onnx',
             ]),
         ]

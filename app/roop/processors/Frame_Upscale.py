@@ -73,6 +73,14 @@ class Frame_Upscale():
             elif self.prev_type == "span_x4":
                 model_path = resolve_relative_path('../models/Frame/span_kendata_x4.onnx')
                 self.scale = 4
+            elif self.prev_type == "compact_x4":
+                # Real-ESRGAN "general" v3 — SRVGGNetCompact. The fastest of the
+                # ×4 nets here (fully-convolutional, ~4-5× the RRDB ESRGAN models)
+                # while matching Real-ESRGAN quality on real footage. Dynamic-shape
+                # ONNX, verified ×4, output in [0,1]. Runs on the CUDA/CPU FP32 path
+                # like the other ESRGAN-family nets (see _upscale_providers).
+                model_path = resolve_relative_path('../models/Frame/realesr-general-x4v3.onnx')
+                self.scale = 4
             elif self.prev_type == "nomos8k_x4":
                 model_path = resolve_relative_path('../models/Frame/nomos8k_sc_x4.onnx')
                 self.scale = 4

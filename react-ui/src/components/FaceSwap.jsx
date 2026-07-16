@@ -24,6 +24,7 @@ const AI_UPSCALE_MODELS = [
   { value: 'lsdirx4', label: 'LSDIR ×4' },
   { value: 'clear_reality_x4', label: 'Clear Reality ×4' },
   { value: 'span_x4', label: 'SPAN ×4' },
+  { value: 'compact_x4', label: 'Compact ×4 (fast AI)' },
   { value: 'nomos8k_x4', label: 'Nomos8k ×4' },
   { value: 'lanczos_x2', label: '⚡ Fast Lanczos ×2 (no AI)' },
   { value: 'lanczos_x4', label: '⚡ Fast Lanczos ×4 (no AI)' },
