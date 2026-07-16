@@ -1942,6 +1942,17 @@ def _run_swap(payload):
         # file per target (face swap + AI upscale baked in, audio preserved).
         # Skipped when the run was deliberately stopped.
         if getattr(roop_globals, "upscale_after_swap", False) and not _stop_requested["flag"]:
+            # CRITICAL: free the swap's GPU memory FIRST. The swap (TensorRT +
+            # detection pool + enhancer/mask) leaves ~12GB resident; if the
+            # upscale sessions run on top of that they spill into shared system
+            # RAM and crawl (26s/frame). release_resources() drops the ProcessMgr
+            # + FaceAnalysis pool + empties the CUDA cache, freeing VRAM for the
+            # upscale. The next swap re-initialises them (TRT engines are cached).
+            try:
+                from roop.core import release_resources
+                release_resources()
+            except Exception:
+                traceback.print_exc()
             try:
                 _run_post_swap_upscale(
                     _outputs_since(_pre_swap_outputs),
