@@ -1,14 +1,28 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { getJSON, postJSON } from './api';
 import { Toast } from './components/ui';
 import CommandPalette from './components/CommandPalette';
-import FaceSwap from './components/FaceSwap';
-import Settings from './components/Settings';
-import FaceManager from './components/FaceManager';
-import Extras from './components/Extras';
-import Gallery from './components/Gallery';
+// Tab panels are code-split so the initial bundle only ships the shell + the
+// first tab's dependencies. Each is fetched on first visit (Vite emits one
+// chunk per lazy import), trimming a ~530 KB single bundle into per-tab pieces.
+const FaceSwap = lazy(() => import('./components/FaceSwap'));
+const Settings = lazy(() => import('./components/Settings'));
+const FaceManager = lazy(() => import('./components/FaceManager'));
+const Extras = lazy(() => import('./components/Extras'));
+const Gallery = lazy(() => import('./components/Gallery'));
 import { THEME_CLASSES, THEMES, themeByName } from './themes';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
+
+// Lightweight fallback while a tab chunk loads — mirrors the app's connecting
+// spinner so the swap reads as intentional, not a flash of empty space.
+function TabFallback() {
+  return (
+    <div className="flex flex-col items-center justify-center h-[40vh] gap-3">
+      <div className="h-7 w-7 rounded-full border-4 border-white/10 border-t-[var(--accent)] animate-spin" />
+      <div className="text-white/35 text-xs font-medium">Loading…</div>
+    </div>
+  );
+}
 
 const TABS = [
   { id: 'faceswap', label: '🎭 Face Swap' },
@@ -291,11 +305,13 @@ export default function App() {
               animate="animate"
               exit="exit"
             >
-              {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
-              {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
-              {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
-              {tab === 'gallery' && <Gallery notify={notify} />}
-              {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
+              <Suspense fallback={<TabFallback />}>
+                {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
+                {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
+                {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
+                {tab === 'gallery' && <Gallery notify={notify} />}
+                {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
+              </Suspense>
             </motion.div>
           </AnimatePresence>
         )}

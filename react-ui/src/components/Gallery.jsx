@@ -248,6 +248,26 @@ export default function Gallery({ notify }) {
 function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, isBusy }) {
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef(null);
+  const cardRef = useRef(null);
+  const isVideo = file.kind === 'video';
+
+  // Only spin up a <video> (and its metadata fetch / decoder) once the card is
+  // near the viewport. Otherwise opening a large Outputs folder would mount a
+  // decoder for every file at once and stutter. `inView` latches true so a card
+  // that's been seen doesn't reload while scrolling — bounding the initial
+  // stampede is what matters. Images already use native loading="lazy".
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    if (!isVideo || inView) return;
+    const el = cardRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setInView(true); return; }
+    const obs = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { setInView(true); obs.disconnect(); }
+    }, { rootMargin: '300px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [isVideo, inView]);
 
   useEffect(() => {
     if (!videoRef.current) return;
@@ -259,8 +279,6 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
     }
   }, [hovered]);
 
-  const isVideo = file.kind === 'video';
-
   return (
     <Card
       className="tap overflow-hidden border border-white/5 flex flex-col group/card hover:border-[#E94560]/40 hover:shadow-[0_12px_36px_rgba(233,69,96,0.15)]"
@@ -268,8 +286,9 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
       onMouseLeave={() => setHovered(false)}
     >
       {/* File preview box */}
-      <div className="relative aspect-video bg-black/45 flex items-center justify-center overflow-hidden border-b border-white/5 shrink-0 select-none">
+      <div ref={cardRef} className="relative aspect-video bg-black/45 flex items-center justify-center overflow-hidden border-b border-white/5 shrink-0 select-none">
         {isVideo ? (
+          inView ? (
           <video
             ref={videoRef}
             src={srcUrl}
@@ -279,6 +298,9 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
             preload="metadata"
             className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-102"
           />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-white/15 text-3xl">🎬</div>
+          )
         ) : (
           <img
             src={srcUrl}
