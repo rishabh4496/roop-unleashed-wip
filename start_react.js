@@ -56,7 +56,12 @@ module.exports = async (kernel) => {
       {
         method: "local.set",
         params: {
-          url: "{{input.event[1]}}"
+          url: "{{input.event[1]}}",
+          // Direct address of the FastAPI backend (api.py binds 127.0.0.1:ROOP_API_PORT).
+          // Surfaced so pinokio.js can offer a graceful "Stop Swap" that POSTs
+          // /api/stop — which finalizes the output video (moov atom) instead of
+          // the hard process-kill the Terminal square does.
+          api_url: `http://127.0.0.1:${API_PORT}`
         }
       }
     ]
