@@ -72,10 +72,18 @@ export const Reveal = ({ children, className = '', as = 'div', ...rest }) => {
   );
 };
 
-// Mouse-follow 3D tilt with spring physics + a soft accent glare that tracks
-// the cursor. For hero / discrete cards where the depth pays off (not dense
-// form cards — the movement fights inputs there).
-export const TiltCard = ({ children, className = '', max = 8, glare = true, ...rest }) => {
+// ── Mouse-follow tilt + cursor-tracking glare ─────────────────────────────
+// The signature "premium" hover: the surface tilts a few degrees toward the
+// cursor with spring physics while a soft accent glow tracks the pointer. All
+// of this runs on Framer motion values (not React state), so hovering never
+// triggers a re-render — cheap even when many cards mount it.
+//
+// Shared hook so both the punchy hero <TiltCard> and the gentle, form-safe
+// tilt baked into the <Card> primitive draw from one implementation. We
+// deliberately DON'T set transformStyle: preserve-3d — nothing inside needs a
+// real 3D layer, and omitting it avoids z-stacking surprises with dropdowns
+// and overlays inside cards.
+export const useTilt = ({ max = 8, perspective = 1000 } = {}) => {
   const ref = useRef(null);
   const reduce = useReducedMotion();
   const px = useMotionValue(0.5);
@@ -87,31 +95,49 @@ export const TiltCard = ({ children, className = '', max = 8, glare = true, ...r
   // Computed unconditionally (hook rules) — only rendered when glare is on.
   const glareBg = useTransform([gx, gy], ([x, y]) => `radial-gradient(600px circle at ${x} ${y}, var(--accent-glow), transparent 40%)`);
 
-  const onMove = (e) => {
+  const onMouseMove = (e) => {
     if (reduce || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
     px.set((e.clientX - r.left) / r.width);
     py.set((e.clientY - r.top) / r.height);
   };
-  const onLeave = () => { px.set(0.5); py.set(0.5); };
+  const onMouseLeave = () => { px.set(0.5); py.set(0.5); };
 
+  const style = reduce ? undefined : { rotateX: rx, rotateY: ry, transformPerspective: perspective };
+  return { ref, reduce, onMouseMove, onMouseLeave, style, glareBg };
+};
+
+// Glare overlay element — shared between TiltCard and Card. Fades in on hover
+// of the given group name so multiple nested groups don't cross-trigger.
+// NOTE: the group-hover classes MUST be written as complete literal strings,
+// or Tailwind's JIT won't generate them (a `group-hover/${group}` template
+// would silently drop the rule and the glare would never show).
+const GLARE_HOVER = {
+  tilt: 'group-hover/tilt:opacity-100',
+  spot: 'group-hover/spot:opacity-100',
+};
+export const TiltGlare = ({ glareBg, group = 'tilt' }) => (
+  <motion.div
+    aria-hidden
+    className={`pointer-events-none absolute inset-0 rounded-[inherit] opacity-0 transition-opacity duration-300 ${GLARE_HOVER[group] || GLARE_HOVER.tilt}`}
+    style={{ background: glareBg }}
+  />
+);
+
+// Punchy hero tilt — for discrete display cards where the depth pays off.
+export const TiltCard = ({ children, className = '', max = 8, glare = true, ...rest }) => {
+  const t = useTilt({ max, perspective: 900 });
   return (
     <motion.div
-      ref={ref}
-      onMouseMove={onMove}
-      onMouseLeave={onLeave}
-      style={reduce ? undefined : { rotateX: rx, rotateY: ry, transformPerspective: 900, transformStyle: 'preserve-3d' }}
+      ref={t.ref}
+      onMouseMove={t.onMouseMove}
+      onMouseLeave={t.onMouseLeave}
+      style={t.style}
       className={`group/tilt relative ${className}`}
       {...rest}
     >
       {children}
-      {glare && !reduce && (
-        <motion.div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover/tilt:opacity-100"
-          style={{ background: glareBg }}
-        />
-      )}
+      {glare && !t.reduce && <TiltGlare glareBg={t.glareBg} group="tilt" />}
     </motion.div>
   );
 };

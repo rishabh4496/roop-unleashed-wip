@@ -1,23 +1,44 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PERSON_COLORS } from './constants';
-import { motion, AnimatePresence, fadeUp, spring } from '../motion';
+import { motion, AnimatePresence, fadeUp, spring, useTilt, TiltGlare } from '../motion';
 
-// Panels rise + de-blur in on mount (cinematic reveal). Hover depth is done in
-// CSS (.card-lift) — a shadow/border swell, deliberately no positional "bob",
-// so large form panels don't jitter as the cursor crosses them. Pass
-// animate={false} to opt a card out of the entrance (e.g. rows inside a list
-// that already animates itself).
-export const Card = ({ children, className = '', animate = true, hover = true, ...rest }) => (
-  <motion.div
-    className={`rounded-2xl glass-panel ${hover ? 'card-lift' : ''} ${className}`}
-    variants={fadeUp}
-    initial={animate ? 'hidden' : false}
-    animate={animate ? 'show' : false}
-    {...rest}
-  >
-    {children}
-  </motion.div>
-);
+// Panels rise + de-blur in on mount (cinematic reveal), and carry the app's
+// signature hover: a GENTLE mouse-follow tilt plus a cursor-tracking accent
+// glare (the same effect as the runtime-estimation card, dialed down so it
+// reads as premium polish without fighting the inputs inside form panels).
+// It's opt-out via tilt={false} and collapses to nothing under reduced-motion.
+// The tilt runs on motion values, so hovering never re-renders the card.
+// Pass animate={false} to opt a card out of the entrance.
+export const Card = ({
+  children, className = '', animate = true, hover = true,
+  tilt = true, tiltMax = 3.5, glare = true,
+  onMouseMove, onMouseLeave, ...rest
+}) => {
+  const t = useTilt({ max: tiltMax });
+  // Glare and tilt are independent so a tall/dense card can keep the premium
+  // cursor glow while opting out of the physical tilt (tilt={false}). Both
+  // collapse under reduced-motion. The pointer handlers are needed whenever
+  // either is on, since the glare also tracks the cursor.
+  const tiltOn = tilt && !t.reduce;
+  const glareOn = glare && !t.reduce;
+  const active = tiltOn || glareOn;
+  return (
+    <motion.div
+      ref={active ? t.ref : undefined}
+      onMouseMove={active ? (e) => { t.onMouseMove(e); onMouseMove?.(e); } : onMouseMove}
+      onMouseLeave={active ? (e) => { t.onMouseLeave(e); onMouseLeave?.(e); } : onMouseLeave}
+      style={tiltOn ? t.style : undefined}
+      className={`rounded-2xl glass-panel ${hover ? 'card-lift' : ''} ${active ? 'group/spot relative' : ''} ${className}`}
+      variants={fadeUp}
+      initial={animate ? 'hidden' : false}
+      animate={animate ? 'show' : false}
+      {...rest}
+    >
+      {children}
+      {glareOn && <TiltGlare glareBg={t.glareBg} group="spot" />}
+    </motion.div>
+  );
+};
 
 export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true }) => {
   const [open, setOpen] = useState(defaultOpen);
