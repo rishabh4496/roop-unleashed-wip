@@ -197,6 +197,26 @@ export default function App() {
       .catch(() => setError('Cannot reach backend on 127.0.0.1:8001. Make sure the server (run.py) is running.'));
   }, []);
 
+  // Autosave settings to the backend CFG (debounced) on every in-session edit.
+  // Previously settings were only persisted at swap-start / explicit Save, so
+  // switching Pinokio's Run<->Dev view — which reloads this webview and remounts
+  // React — reverted any unsaved edits to the backend's last-saved values (the
+  // load effect above re-fetches /api/settings on every mount). Persisting each
+  // change makes the backend the durable source of truth across reloads.
+  const settingsLoadedRef = useRef(false);
+  const settingsSaveRef = useRef(null);
+  useEffect(() => {
+    if (!settings) return;
+    // Skip the first value (just fetched from the backend) so we don't re-POST
+    // exactly what we loaded on mount.
+    if (!settingsLoadedRef.current) { settingsLoadedRef.current = true; return; }
+    if (settingsSaveRef.current) clearTimeout(settingsSaveRef.current);
+    settingsSaveRef.current = setTimeout(() => {
+      postJSON('/api/settings', settings).catch(() => { /* backend offline — persists on next edit/run */ });
+    }, 500);
+    return () => { if (settingsSaveRef.current) clearTimeout(settingsSaveRef.current); };
+  }, [settings]);
+
   // Apply selected theme class to body/html
   useEffect(() => {
     if (!settings || !settings.selected_theme) return;

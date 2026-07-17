@@ -2554,7 +2554,12 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           </div>
 
           <Section title="Preview">
-            {previewSrc ? (
+            {/* Mount the preview when there's a static preview OR a live swap in
+                flight. previewSrc is React-only state and is empty after a remount
+                (e.g. Pinokio Run<->Dev reload); without the live-frame clause the
+                whole area would fall back to "No preview yet" mid-render and the
+                live swap wouldn't show even though /api/progress is streaming it. */}
+            {(previewSrc || (progress.processing && progress.live_frame)) ? (
               comparingEnhancers ? (() => {
                 const activeList = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
                 const gridColsClass = activeList.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
