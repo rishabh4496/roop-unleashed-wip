@@ -1239,7 +1239,17 @@ def target_auto_angles(payload: dict = Body(...)):
     if not bank:
         return _target_faces_payload({"count": 0, "message": "capture the person once first"})
 
+    # Immutable anchor: the angles that were ALREADY trusted for this person
+    # before this run (hand-captured, or previously accepted). The bank below is
+    # allowed to grow so gradual turns chain in, but every newly accepted angle
+    # must stay within SEED_MAX of one of THESE — otherwise a long video lets the
+    # bank drift angle-by-angle onto a look-alike/bystander, and each drifted
+    # angle then widens the person's match region so OTHER faces get swapped.
+    seed = list(bank)
+
     ACCEPT = float(payload.get("accept", 0.60))       # same-identity cosine gate
+    SEED_MAX = float(payload.get("seed_max", 0.90))   # max drift from an original angle
+    AMBIG_MARGIN = float(payload.get("ambig_margin", 0.10))  # min gap to the runner-up
     NOVELTY = float(payload.get("novelty", 0.15))      # skip near-duplicate embeddings
     MAX_ADD = int(payload.get("max_add", 24))
     MAX_SAMPLES = int(payload.get("samples", 120))
@@ -1275,9 +1285,18 @@ def target_auto_angles(payload: dict = Body(...)):
         best_d, best_f, best_e = scored[0]
         if best_d > ACCEPT:
             continue
-        # Ambiguity guard: if another face is nearly as close, this is a
-        # multi-person frame with look-alikes — skip rather than risk the wrong one.
-        if len(scored) > 1 and scored[1][0] < best_d + 0.04:
+        # Anti-drift anchor: chaining against the growing bank follows gradual
+        # turns, but is unbounded — over a long/crowded video it can walk onto a
+        # different identity. Require every accepted angle to also stay within
+        # SEED_MAX of an ORIGINAL angle, so the bank covers new poses but can
+        # never drift to a new person (the cause of "other faces get swapped").
+        seed_d = min(float(util.compute_cosine_distance(best_e, s)) for s in seed)
+        if seed_d > SEED_MAX:
+            continue
+        # Ambiguity guard: in a multi-person frame, only accept when the winner
+        # is CLEARLY the closest. A near-tie means look-alikes are present and
+        # grabbing the wrong one would poison the bank for the whole swap run.
+        if len(scored) > 1 and scored[1][0] < best_d + AMBIG_MARGIN:
             continue
         kps = getattr(best_f, 'kps', None)
         pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
