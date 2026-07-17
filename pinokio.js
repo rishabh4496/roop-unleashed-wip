@@ -37,6 +37,16 @@ module.exports = {
             href: "stop.js",
             params: { api_url: local.api_url },
           }, {
+            icon: "fa-solid fa-pause",
+            text: "<div><strong>Pause</strong><div>Hold the running job</div></div>",
+            href: "pause.js",
+            params: { api_url: local.api_url },
+          }, {
+            icon: "fa-solid fa-play",
+            text: "<div><strong>Resume</strong><div>Continue a paused job</div></div>",
+            href: "resume.js",
+            params: { api_url: local.api_url },
+          }, {
             icon: 'fa-solid fa-terminal',
             text: "Terminal",
             href: "start_react.js",
