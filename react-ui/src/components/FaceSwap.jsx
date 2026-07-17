@@ -447,6 +447,11 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [hoverFrame, setHoverFrame] = useState(null);
   const [frameInput, setFrameInput] = useState(null); // non-null while typing a frame to jump to
   const timelineRef = useRef(null);
+  // Coalesces timeline hover/scrub pointer-move work to one update per frame.
+  // Pointer-move fires faster than this large component can re-render, so
+  // without batching the events pile up and scrubbing/hovering feels sticky.
+  const timelineRafRef = useRef(null);
+  const timelinePendingRef = useRef(null);
   const playIntervalRef = useRef(null);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
@@ -1489,35 +1494,54 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   const handleTimelinePointerMove = (e) => {
     if (!timelineRef.current) return;
-    const rect = timelineRef.current.getBoundingClientRect();
     const clientX = e.clientX ?? e.touches?.[0]?.clientX;
     if (clientX === undefined) return;
-    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-    const pct = x / rect.width;
-    const f = Math.max(1, Math.min(Math.round(pct * (maxFrames - 1)) + 1, maxFrames));
-    setHoverFrame(f);
+    timelinePendingRef.current = clientX;
+    if (timelineRafRef.current) return;
+    timelineRafRef.current = requestAnimationFrame(() => {
+      timelineRafRef.current = null;
+      if (!timelineRef.current || timelinePendingRef.current === null) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(timelinePendingRef.current - rect.left, rect.width));
+      const pct = x / rect.width;
+      const f = Math.max(1, Math.min(Math.round(pct * (maxFrames - 1)) + 1, maxFrames));
+      setHoverFrame((prev) => (prev === f ? prev : f));
+    });
   };
 
   const handleTimelinePointerLeave = () => {
+    if (timelineRafRef.current) { cancelAnimationFrame(timelineRafRef.current); timelineRafRef.current = null; }
+    timelinePendingRef.current = null;
     setHoverFrame(null);
   };
+  useEffect(() => () => { if (timelineRafRef.current) cancelAnimationFrame(timelineRafRef.current); }, []);
 
   /* eslint-disable react-hooks/exhaustive-deps -- intentional: scrub handlers bind latest markers via helpers, no re-subscribe wanted */
   useEffect(() => {
     if (!isScrubbing) return;
 
-    const handlePointerMove = (e) => {
-      if (!timelineRef.current) return;
+    // Coalesce scrub moves to one state update per animation frame so dragging
+    // doesn't queue up more re-renders of this large component than the display
+    // can paint.
+    let rafId = null;
+    let pendingX = null;
+    const flush = () => {
+      rafId = null;
+      if (!timelineRef.current || pendingX === null) return;
       const rect = timelineRef.current.getBoundingClientRect();
-      const clientX = e.clientX ?? e.touches?.[0]?.clientX;
-      if (clientX === undefined) return;
-      const x = clientX - rect.left;
-      const pct = Math.max(0, Math.min(x / rect.width, 1));
+      const pct = Math.max(0, Math.min((pendingX - rect.left) / rect.width, 1));
       const targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
       updateTimelinePos(targetFrame, dragType);
     };
+    const handlePointerMove = (e) => {
+      const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+      if (clientX === undefined) return;
+      pendingX = clientX;
+      if (rafId === null) rafId = requestAnimationFrame(flush);
+    };
 
     const handlePointerUp = () => {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
       setIsScrubbing(false);
       if (dragType === 'start') {
         const val = targets[selTarget]?.start_frame ?? 1;
@@ -1531,6 +1555,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import AIScannerOverlay from './AIScannerOverlay';
 
 export default function InteractivePreview({
@@ -99,14 +99,31 @@ export default function InteractivePreview({
     }
   };
 
+  // Pan/slider updates are coalesced to one per animation frame. Pointer-move
+  // fires faster than React can re-render this whole subtree, so without this
+  // the events queue up and the image visibly lags behind the cursor. rAF
+  // batching keeps panning locked to the display refresh instead.
+  const rafRef = useRef(null);
+  const pendingRef = useRef(null);
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+
   const handlePointerMove = (e) => {
     const cx = e.clientX ?? e.touches?.[0]?.clientX;
     const cy = e.clientY ?? e.touches?.[0]?.clientY;
-    if (isDraggingSlider) {
-      handleSliderMove(cx);
-    } else if (isPanning && zoom > 1) {
-      setPan({ x: cx - startPan.x, y: cy - startPan.y });
-    }
+    if (cx === undefined) return;
+    if (!isDraggingSlider && !(isPanning && zoom > 1)) return;
+    pendingRef.current = { cx, cy };
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const p = pendingRef.current;
+      if (!p) return;
+      if (isDraggingSlider) {
+        handleSliderMove(p.cx);
+      } else if (isPanning && zoom > 1) {
+        setPan({ x: p.cx - startPan.x, y: p.cy - startPan.y });
+      }
+    });
   };
 
   // Double click toggles between fit-to-screen and 2.5x zoom
@@ -129,7 +146,10 @@ export default function InteractivePreview({
     }
   };
 
-  const renderFaces = () => {
+  // Face boxes are pure geometry derived from the detections + image size, so
+  // memoise them. Otherwise every pan/zoom re-render (many per second) would
+  // rebuild the entire box list, which is wasted work while the user drags.
+  const faceBoxes = useMemo(() => {
     if (!faces.length || !imgDim || !showBoxes) return null;
     const clickable = typeof onSelectPerson === 'function';
     return faces.map((bbox, i) => {
@@ -159,9 +179,17 @@ export default function InteractivePreview({
         </div>
       );
     });
-  };
+  }, [faces, imgDim, showBoxes, personIds, onSelectPerson]);
 
-  const transformStyle = { transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`, transformOrigin: 'center' };
+  // Skip the smoothing transition while the user is actively panning or the
+  // slider is being dragged — otherwise every frame chases a 75ms ease and the
+  // image trails the cursor. Discrete zoom (buttons/wheel) still eases nicely.
+  const interacting = isPanning || isDraggingSlider;
+  const transformStyle = {
+    transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+    transformOrigin: 'center',
+    willChange: zoom > 1 || interacting ? 'transform' : 'auto',
+  };
   const aspectStyle = { aspectRatio: imgDim ? `${imgDim.w}/${imgDim.h}` : '1', maxHeight: '100%', maxWidth: '100%', display: 'flex' };
 
   const triggerFullscreen = () => {
@@ -220,12 +248,12 @@ export default function InteractivePreview({
         className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
         onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
       >
-        <div className="flex w-full h-full transition-transform duration-75" style={transformStyle}>
+        <div className={`flex w-full h-full ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
           <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/50">
             <div className="relative" style={aspectStyle}>
               <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none"
                    onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} />
-              <div className="absolute inset-0 pointer-events-none">{renderFaces()}</div>
+              <div className="absolute inset-0 pointer-events-none">{faceBoxes}</div>
             </div>
             <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold text-white/80 uppercase">Before</span>
           </div>
@@ -279,13 +307,13 @@ export default function InteractivePreview({
         </div>
       )}
 
-      <div className="absolute inset-0 transition-transform duration-75 flex items-center justify-center" style={transformStyle}>
+      <div className={`absolute inset-0 flex items-center justify-center ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
 
         {/* Before Image & Bounding Boxes Wrapper */}
         <div className="relative z-10" style={aspectStyle} ref={imageRef}>
           <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none"
                onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
-          <div className="absolute inset-0 pointer-events-none z-30">{renderFaces()}</div>
+          <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
           {/* After Image Overlay with Clip-path */}
           <div className="absolute inset-0 pointer-events-none z-20"

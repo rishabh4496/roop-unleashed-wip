@@ -771,8 +771,12 @@
 /* Premium glass surface — calm elevation, hairline border, quiet hover. */
 .glass-panel {
   background: var(--card-bg);
-  backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  /* Backdrop blur is re-sampled every time content scrolls behind the panel
+     (and the sticky header does this on every scroll frame). The cost scales
+     with the blur radius, so we keep it modest — 14px reads as the same frosted
+     glass as 20px but is markedly cheaper to composite during scroll. */
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   border: 1px solid var(--border-color);
   color: var(--text-main);
   box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -1002,8 +1006,8 @@ input[type="range"]::-webkit-slider-thumb:active {
 
 .hud-glass {
   background: rgba(10, 10, 15, 0.75) !important;
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5) !important;
 }

@@ -198,10 +198,17 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
     <div className="min-h-screen flex flex-col relative overflow-hidden select-none">
-      {/* Floating Ambient Background Glows — subtle, slow */}
+      {/* Floating Ambient Background Glows — static.
+          These are two very large filter-blur discs. When they animated
+          (transform translate/scale on an infinite loop) the compositor had to
+          re-rasterize an enormous blurred layer every single frame, which
+          taxed the GPU continuously and made scrolling, zooming and the live
+          preview feel laggy across the whole app. Static blurred layers are
+          rasterized once and cached for free, so we keep the exact same look
+          without the per-frame cost. */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute top-[-28%] left-[-18%] w-[55%] h-[55%] rounded-full bg-[var(--accent)]/[0.04] blur-[170px] animate-float-1" />
-        <div className="absolute bottom-[-24%] right-[-18%] w-[60%] h-[60%] rounded-full bg-[#8B5CF6]/[0.03] blur-[190px] animate-float-2" />
+        <div className="absolute top-[-28%] left-[-18%] w-[55%] h-[55%] rounded-full bg-[var(--accent)]/[0.04] blur-[150px]" />
+        <div className="absolute bottom-[-24%] right-[-18%] w-[60%] h-[60%] rounded-full bg-[#8B5CF6]/[0.03] blur-[160px]" />
       </div>
 
       {/* Floating Header Capsule */}
