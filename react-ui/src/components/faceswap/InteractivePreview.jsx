@@ -84,13 +84,28 @@ export default function InteractivePreview({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const zoomSpeed = 0.15;
-    const newZoom = Math.min(Math.max(1, zoom + (e.deltaY < 0 ? zoomSpeed : -zoomSpeed)), 5);
-    if (newZoom === 1) setPan({ x: 0, y: 0 });
-    setZoom(newZoom);
-  };
+  // Wheel-to-zoom must be a NATIVE, non-passive listener. React registers its
+  // onWheel handlers as passive, so calling preventDefault() there is silently
+  // ignored — the page scrolls behind the zoom and the console warns. Binding
+  // the listener ourselves with { passive: false } lets us actually stop the
+  // page from scrolling while zooming the preview. Re-bind when the compare /
+  // split branch swaps the container node. Functional setState avoids stale
+  // zoom/pan captured in the effect closure.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 0.15 : -0.15;
+      setZoom((z) => {
+        const nz = Math.min(Math.max(1, z + dir), 5);
+        if (nz === 1) setPan({ x: 0, y: 0 });
+        return nz;
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [compare, splitView]);
 
   const handlePointerDown = (e) => {
     if (zoom > 1 && !isDraggingSlider) {
@@ -246,7 +261,7 @@ export default function InteractivePreview({
       <div
         ref={containerRef}
         className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
-        onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+        onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
       >
         <div className={`flex w-full h-full ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
           <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/50">
@@ -275,7 +290,7 @@ export default function InteractivePreview({
   return (
     <div
       className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
-      ref={containerRef} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+      ref={containerRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
     >
       {previewing && <AIScannerOverlay />}
       {previewing && (
