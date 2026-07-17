@@ -19,6 +19,9 @@ export const postJSON = (path, body, opts = {}) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
     signal: opts.signal,
+    // keepalive lets the request outlive a page teardown (e.g. Pinokio's
+    // Run<->Dev webview reload) so a last-moment flush still reaches the server.
+    keepalive: opts.keepalive,
   }).then(handle);
 
 export const postFiles = (path, files, fields) => {

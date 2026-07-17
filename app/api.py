@@ -2593,7 +2593,11 @@ def stop_swap():
 @app.post("/api/pause")
 def pause_swap():
     if not _progress["processing"]:
-        return JSONResponse(status_code=409, content={"message": "not processing"})
+        # No active job — clicking Pause (e.g. the Pinokio sidebar button) while
+        # idle is a harmless no-op, not an error. Returning 200 keeps the sidebar
+        # script from surfacing a red failure on a misclick. The React run-bar
+        # only shows Pause while processing, so it never relies on the 409.
+        return {"status": "idle"}
     roop_globals.pause = True
     _progress["paused"] = True
     _progress["desc"] = "Paused"

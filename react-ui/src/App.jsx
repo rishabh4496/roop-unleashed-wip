@@ -205,17 +205,38 @@ export default function App() {
   // change makes the backend the durable source of truth across reloads.
   const settingsLoadedRef = useRef(false);
   const settingsSaveRef = useRef(null);
+  const settingsDirtyRef = useRef(null); // latest not-yet-persisted settings, or null when clean
+  // Persist the pending edit now. keepalive lets it survive the webview teardown
+  // when this fires from pagehide/visibilitychange during a Run<->Dev reload.
+  const flushSettings = useCallback((keepalive = false) => {
+    const body = settingsDirtyRef.current;
+    if (!body) return;
+    settingsDirtyRef.current = null;
+    if (settingsSaveRef.current) { clearTimeout(settingsSaveRef.current); settingsSaveRef.current = null; }
+    postJSON('/api/settings', body, { keepalive }).catch(() => { /* offline — persists on next edit/run */ });
+  }, []);
   useEffect(() => {
     if (!settings) return;
     // Skip the first value (just fetched from the backend) so we don't re-POST
     // exactly what we loaded on mount.
     if (!settingsLoadedRef.current) { settingsLoadedRef.current = true; return; }
+    settingsDirtyRef.current = settings;
     if (settingsSaveRef.current) clearTimeout(settingsSaveRef.current);
-    settingsSaveRef.current = setTimeout(() => {
-      postJSON('/api/settings', settings).catch(() => { /* backend offline — persists on next edit/run */ });
-    }, 500);
+    settingsSaveRef.current = setTimeout(() => flushSettings(false), 500);
     return () => { if (settingsSaveRef.current) clearTimeout(settingsSaveRef.current); };
-  }, [settings]);
+  }, [settings, flushSettings]);
+  // Flush a pending edit immediately when the webview is hidden/torn down, so a
+  // change made <500ms before a Run<->Dev toggle isn't dropped by the debounce.
+  useEffect(() => {
+    const onPageHide = () => flushSettings(true);
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flushSettings(true); };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [flushSettings]);
 
   // Apply selected theme class to body/html
   useEffect(() => {
