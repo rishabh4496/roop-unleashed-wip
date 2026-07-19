@@ -990,6 +990,45 @@ class ProcessMgr():
             width = processed_resolution[0]
             height = processed_resolution[1]
 
+        self.output_to_file = output_method != "Virtual Camera"
+        self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
+
+        # Writer creation happens HERE (before the pre-passes) because resume
+        # detection may shift frame_start forward — the temporal/SAM2/track
+        # pre-passes and the 2-pass stabilizer must then only scan the frames
+        # that still need encoding.
+        if self.output_to_file:
+            use_resume = (not is_awebp) and os.environ.get('ROOP_RESUME', '1') == '1'
+            if use_resume:
+                from roop.segment_writer import SegmentedVideoWriter
+                self.videowriter = SegmentedVideoWriter(
+                    target_video, (width, height), fps,
+                    codec=roop.globals.video_encoder, crf=roop.globals.video_quality,
+                    source_video=source_video, frame_start=frame_start, frame_end=frame_end,
+                    signature=str(getattr(roop.globals, '_run_signature', '') or ''))
+                skip = self.videowriter.resume_frames
+                if skip >= frame_count > 0:
+                    # Everything was already encoded by the interrupted run —
+                    # just finalize (concat) and return; the caller's audio
+                    # restore / renaming flow proceeds as if freshly rendered.
+                    print(f'[Resume] all {frame_count} frames were already encoded '
+                          f'by a previous run — finalizing without re-rendering.')
+                    self.videowriter.close()
+                    self.videowriter = None
+                    if cap is not None:
+                        cap.release()
+                    return
+                if skip > 0:
+                    print(f'[Resume] found {skip} already-encoded frames from an '
+                          f'interrupted run — resuming at frame {frame_start + skip}. '
+                          f'(Delete {os.path.basename(target_video)}.resume.json to force a fresh render.)')
+                    frame_start += skip
+                    frame_count -= skip
+            else:
+                self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
+        if self.output_to_cam:
+            self.streamwriter = StreamWriter((width, height), int(fps))
+
         # 2-pass stabilization, pass 1: precompute smoothed kps sequentially so
         # pass 2 (the swap) can run multi-threaded. Done before auto-tuning so the
         # tuner calibrates the real pass-2 workload.
@@ -1014,14 +1053,6 @@ class ProcessMgr():
         for _ in range(threads):
             self.frames_queue.append(Queue(qdepth))
             self.processed_queue.append(Queue(qdepth))
-
-        self.output_to_file = output_method != "Virtual Camera"
-        self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
-
-        if self.output_to_file:
-            self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
-        if self.output_to_cam:
-            self.streamwriter = StreamWriter((width, height), int(fps))
 
         # SAM2 temporal-mask pre-pass: track the faces across the trimmed clip and
         # cache a full-frame mask per frame, so the (still parallel) swap below can
