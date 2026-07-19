@@ -2076,16 +2076,33 @@ def _upscale_image_inplace(proc, path):
     cv2.imwrite(path, out)
 
 
-def _select_upscale_encoder():
+def _select_upscale_encoder(out_w=None, out_h=None):
     """Encoder for the upscale pass. Prefer NVENC (GPU's dedicated encode engine,
     which the compute-bound upscale leaves idle) so encoding overlaps inference
     for free; probe it and fall back to the configured CPU codec if unavailable.
-    Opt out with ROOP_UPSCALE_NVENC=0."""
+    Opt out with ROOP_UPSCALE_NVENC=0.
+
+    Pass the output dimensions when known: NVENC rejects frames past its
+    per-codec max dimension (h264_nvenc: 4096px), and an AI ×4 model on a 1080p
+    source already produces 7680×4320 — those must encode on a CPU codec, the
+    same overflow the classical path handles via _classical_target_dims."""
+    def _fits(codec):
+        return (out_w is None or out_h is None
+                or max(out_w, out_h) <= _NVENC_MAX_DIM.get(codec, 16384))
     base = roop_globals.video_encoder or 'libx264'
+    if not _fits(base):
+        cpu = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}.get(base, 'libx265')
+        print(f"[Upscale] {out_w}x{out_h} exceeds the {_NVENC_MAX_DIM.get(base)}px "
+              f"{base} limit — encoding with {cpu}", flush=True)
+        base = cpu
     if os.environ.get('ROOP_UPSCALE_NVENC', '1') != '1':
         return base
     nvenc = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc',
              'h264_nvenc': 'h264_nvenc', 'hevc_nvenc': 'hevc_nvenc'}.get(base, 'hevc_nvenc')
+    if not _fits(nvenc):
+        print(f"[Upscale] {out_w}x{out_h} exceeds the {_NVENC_MAX_DIM.get(nvenc)}px "
+              f"{nvenc} limit — using {base}", flush=True)
+        return base
     try:
         from roop.ffmpeg_writer import probe_encoder
         ok, msg = probe_encoder(nvenc, crf=roop_globals.video_quality)
@@ -2219,7 +2236,7 @@ def _upscale_video_inplace(proc, path):
                 active.append(s)
         n_sessions = len(active)   # sessions actually kept
 
-        enc = _select_upscale_encoder()
+        enc = _select_upscale_encoder(ow, oh)
         print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames, "
               f"{n_sessions} session(s), enc={enc} ({os.path.basename(path)})", flush=True)
         pbar = tqdm(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
