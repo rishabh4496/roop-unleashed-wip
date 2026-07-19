@@ -134,6 +134,9 @@ class Settings:
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')
         self.upscale_after_swap = self.default_get(data, 'upscale_after_swap', True)
         self.upscale_model_after = self.default_get(data, 'upscale_model_after', 'esrganx2')
+        # Frame interpolation pass after the swap (and after any upscale):
+        # 'off' | 'rife_2x' | 'rife_4x' | 'minterpolate_2x'
+        self.interp_after_swap = self.default_get(data, 'interp_after_swap', 'off')
         self.blend_ratio = self.default_get(data, 'blend_ratio', 0.80)
         self.video_swapping_method = self.default_get(data, 'video_swapping_method', 'In-Memory processing')
         self.no_face_action = self.default_get(data, 'no_face_action', 'Retry rotated')
@@ -235,6 +238,7 @@ class Settings:
             'subsample_upscale': self.subsample_upscale,
             'upscale_after_swap': self.upscale_after_swap,
             'upscale_model_after': self.upscale_model_after,
+            'interp_after_swap': self.interp_after_swap,
             'blend_ratio': self.blend_ratio,
             'video_swapping_method': self.video_swapping_method,
             'no_face_action': self.no_face_action,

@@ -293,6 +293,7 @@ def pre_check() -> bool:
                 'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/span_kendata_x4.onnx',
                 'https://huggingface.co/MonsterMMORPG/Wan_GGUF/resolve/main/Viso_Master_Models/realesr-general-x4v3.onnx',
                 'https://huggingface.co/wanesoft/faceswap_pack/resolve/main/nomos8k_sc_x4.onnx',
+                'https://huggingface.co/yuvraj108c/rife-onnx/resolve/main/rife49_ensemble_True_scale_1_sim.onnx',
             ]),
         ]
         for subdir, urls in _pre_warm:

@@ -2009,6 +2009,18 @@ def _run_swap(payload):
             except Exception:
                 traceback.print_exc()
 
+        # ── Frame interpolation pass (opt-in) ───────────────────────────────
+        # Raises the output frame rate with motion-interpolated in-betweens
+        # (RIFE, or ffmpeg minterpolate). Runs after the upscale pass so the
+        # heavy AI upscaler only touches the original frame count.
+        interp_mode = str(payload.get("interp_after_swap",
+                                      getattr(roop_globals.CFG, "interp_after_swap", "off")) or "off")
+        if interp_mode != "off" and not _stop_requested["flag"]:
+            try:
+                _run_post_swap_interp(_outputs_since(_pre_swap_outputs), interp_mode)
+            except Exception:
+                traceback.print_exc()
+
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"
         _record_last_output()
@@ -2580,6 +2592,197 @@ def _run_post_swap_upscale(produced_files, subtype):
             proc.Release()
         except Exception:
             pass
+        roop_globals.processing = False
+
+
+# ── Frame interpolation pass ─────────────────────────────────────────────────
+# interp_after_swap modes: 'rife_2x' | 'rife_4x' | 'minterpolate_2x'.
+# RIFE synthesizes true motion-compensated in-between frames (AI, fast, 21MB
+# model); minterpolate is ffmpeg's classical motion-estimation filter (no
+# model, much slower). Both keep the clip duration identical — frame count and
+# fps are multiplied together — and mux the original audio back untouched.
+
+def _parse_interp_mode(mode):
+    """'rife_2x' → ('rife', 2); 'rife_4x' → ('rife', 4); 'minterpolate_2x' →
+    ('minterpolate', 2). Unknown strings fall back to ('rife', 2)."""
+    s = str(mode)
+    engine, _, tail = s.rpartition("_")
+    if not engine:
+        engine, tail = s, ""
+    try:
+        factor = int(tail.rstrip("xX") or 2)
+    except ValueError:
+        factor = 2
+    return engine or "rife", max(2, min(4, factor))
+
+
+def _interp_video_rife(path, factor):
+    from roop.rife import RIFE
+    from roop.ffmpeg_writer import FFMPEG_VideoWriter
+    from roop.util_ffmpeg import restore_audio
+    from tqdm import tqdm
+
+    ext = os.path.splitext(path)[1].lower() or ".mp4"
+    d = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    tmp_silent = os.path.join(d, f".interp_silent_{stem}{ext}")
+    tmp_final = os.path.join(d, f".interp_final_{stem}{ext}")
+
+    cap = cv2.VideoCapture(path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if w <= 0 or h <= 0:
+        cap.release()
+        _progress["error"] = f"Interpolation: couldn't read dimensions of {os.path.basename(path)}"
+        return
+
+    enc = _select_upscale_encoder(w, h)
+    out_total = max(0, (total - 1)) * factor + 1 if total else 0
+    print(f"\n[Stage] RIFE x{factor} INTERPOLATE → {fps * factor:.2f} fps, "
+          f"~{out_total or '?'} frames, enc={enc} ({os.path.basename(path)})", flush=True)
+    rife = RIFE()
+    writer = None
+    pbar = None
+    written = 0
+    try:
+        writer = FFMPEG_VideoWriter(tmp_silent, (w, h), fps * factor,
+                                    codec=enc, crf=roop_globals.video_quality, audiofile=None)
+        pbar = tqdm(total=out_total or None, desc="Interpolating", unit="frame", dynamic_ncols=True)
+
+        def _emit(fr):
+            nonlocal written
+            writer.write_frame(fr)
+            written += 1
+            pbar.update(1)
+            if out_total:
+                _progress["progress"] = min(0.999, written / out_total)
+                _progress["desc"] = f"Interpolating frame {written} / {out_total}"
+
+        ok, prev = cap.read()
+        if ok and prev is not None:
+            _emit(prev)
+            while roop_globals.processing:
+                ok, cur = cap.read()
+                if not ok or cur is None:
+                    break
+                for k in range(1, factor):
+                    _emit(rife.interpolate(prev, cur, k / factor))
+                    if not roop_globals.processing:
+                        break
+                if not roop_globals.processing:
+                    break
+                _emit(cur)
+                prev = cur
+    finally:
+        cap.release()
+        if pbar is not None:
+            pbar.close()
+        if writer is not None:
+            writer.close()
+        rife.release()
+
+    if not roop_globals.processing:   # aborted → keep the un-interpolated output
+        try:
+            if os.path.exists(tmp_silent):
+                os.remove(tmp_silent)
+        except OSError:
+            pass
+        return
+
+    _progress["desc"] = "Combining (encode + audio)…"
+    muxed = False
+    try:
+        muxed = restore_audio(tmp_silent, path, None, None, tmp_final)
+    except Exception:
+        traceback.print_exc()
+    if muxed and os.path.exists(tmp_final):
+        os.replace(tmp_final, path)
+        try:
+            if os.path.exists(tmp_silent):
+                os.remove(tmp_silent)
+        except OSError:
+            pass
+    elif os.path.exists(tmp_silent):
+        os.replace(tmp_silent, path)
+
+
+def _interp_video_minterpolate(path, factor):
+    """Classical fallback: ffmpeg's motion-estimation interpolation filter.
+    No model / VRAM, but far slower than RIFE at the same factor."""
+    import time as _time
+    from roop.util_ffmpeg import _rate_control
+    from roop.ffmpeg_writer import FFMPEG_BINARY
+
+    ext = os.path.splitext(path)[1].lower() or ".mp4"
+    d = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    tmp = os.path.join(d, f".interp_{stem}{ext}")
+
+    cap = cv2.VideoCapture(path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    cap.release()
+    enc = _select_upscale_encoder(w, h)
+    q = roop_globals.video_quality
+    vf = f"minterpolate=fps={fps * factor:.6f}:mi_mode=mci:mc_mode=aobmc:vsbmc=1"
+    cmd = ([FFMPEG_BINARY, "-hide_banner", "-y", "-i", path, "-vf", vf,
+            "-c:v", enc] + _rate_control(enc, q) + ["-c:a", "copy", tmp])
+    print(f"\n[Stage] minterpolate x{factor} (ffmpeg, enc={enc}) — {os.path.basename(path)}", flush=True)
+    _progress["desc"] = f"Interpolating x{factor} (ffmpeg)…"
+    popen_kwargs = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = 0x08000000
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, **popen_kwargs)
+    stopped = False
+    try:
+        while proc.poll() is None:
+            if not roop_globals.processing:
+                stopped = True
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                break
+            _time.sleep(0.2)
+    finally:
+        ok = (proc.returncode == 0)
+    if ok and os.path.exists(tmp):
+        os.replace(tmp, path)
+    else:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        if not stopped and roop_globals.processing:
+            _progress["error"] = (f"minterpolate x{factor} failed (ffmpeg exit {proc.returncode}) "
+                                  f"on {os.path.basename(path)} — output kept un-interpolated.")
+
+
+def _run_post_swap_interp(produced_files, mode):
+    videos = [p for p in produced_files if util.is_video(p)]
+    if not videos:
+        return
+    engine, factor = _parse_interp_mode(mode)
+    roop_globals.processing = True   # so /api/stop can abort this pass too
+    try:
+        for idx, path in enumerate(videos):
+            if not roop_globals.processing:
+                break
+            _progress["progress"] = 0.0
+            _progress["desc"] = f"Interpolating {idx + 1}/{len(videos)}…"
+            try:
+                if engine.startswith("rife"):
+                    _interp_video_rife(path, factor)
+                else:
+                    _interp_video_minterpolate(path, factor)
+            except Exception:
+                traceback.print_exc()
+    finally:
         roop_globals.processing = False
 
 

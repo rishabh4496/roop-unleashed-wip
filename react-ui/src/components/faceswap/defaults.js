@@ -23,6 +23,7 @@ export const FACESWAP_DEFAULTS = {
   subsample_upscale: '128px',
   upscale_after_swap: true,
   upscale_model_after: 'esrganx2',
+  interp_after_swap: 'off',
   color_transfer_mode: 'lct',
   blend_ratio: 1,
 

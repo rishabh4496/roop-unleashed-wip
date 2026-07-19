@@ -2003,6 +2003,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           {p.upscale_after_swap && (
             <Select label="AI upscale model" value={p.upscale_model_after} onChange={(v) => set('upscale_model_after', v)} options={AI_UPSCALE_MODELS} />
           )}
+          <Select label="🎞 Frame interpolation (after swap)" info="Raises the output frame rate with motion-interpolated in-between frames as the final pass (after any upscale). RIFE = AI motion interpolation (recommended, fast); minterpolate = classical ffmpeg motion estimation (no model, much slower). Duration is unchanged — frame count and fps are multiplied together, audio untouched." value={p.interp_after_swap || 'off'} onChange={(v) => set('interp_after_swap', v)}
+            options={[{ value: 'off', label: 'Off' }, { value: 'rife_2x', label: 'RIFE ×2 fps' }, { value: 'rife_4x', label: 'RIFE ×4 fps' }, { value: 'minterpolate_2x', label: 'ffmpeg minterpolate ×2' }]} />
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
         </Section>
