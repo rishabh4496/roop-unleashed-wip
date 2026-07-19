@@ -1935,6 +1935,46 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     setAdvice(null);
   };
 
+  // ── Live camera (webcam → live swap → optional OBS virtual camera) ──
+  const [liveActive, setLiveActive] = useState(false);
+  const [liveBusy, setLiveBusy] = useState(false);
+  const [liveCamNum, setLiveCamNum] = useState(0);
+  const [liveRes, setLiveRes] = useState('1280x720');
+  const [liveObs, setLiveObs] = useState(false);
+  const [liveTick, setLiveTick] = useState(0);
+  useEffect(() => {
+    if (!liveActive) return;
+    const id = setInterval(() => setLiveTick((t) => t + 1), 200);   // ~5fps preview
+    return () => clearInterval(id);
+  }, [liveActive]);
+  // If the tab remounts while a cam session is running, pick its state back up.
+  useEffect(() => {
+    getJSON('/api/livecam/status').then((st) => setLiveActive(!!st.active)).catch(() => {});
+  }, []);
+  const startLiveCam = async () => {
+    setLiveBusy(true);
+    try {
+      await postJSON('/api/livecam/start', { cam_number: liveCamNum, resolution: liveRes, stream_obs: liveObs });
+      // The device opens asynchronously in the capture thread — confirm it came up.
+      setTimeout(async () => {
+        try {
+          const st = await getJSON('/api/livecam/status');
+          setLiveActive(!!st.active);
+          if (!st.active) notify(`Camera ${liveCamNum} could not be opened — check the index / close other apps using it`, 'error');
+          else notify('Live camera running' + (liveObs ? ' → streaming to virtual camera' : ''));
+        } catch { /* backend gone */ }
+        setLiveBusy(false);
+      }, 1500);
+    } catch (e) { notify(e.message, 'error'); setLiveBusy(false); }
+  };
+  const stopLiveCam = async () => {
+    setLiveBusy(true);
+    try { await postJSON('/api/livecam/stop', {}); } catch { /* already down */ }
+    setLiveActive(false);
+    setLiveBusy(false);
+    notify('Live camera stopped');
+  };
+
   // Derived values for the estimation box.
   const estFps = targets[selTarget]?.fps || 0;
   const estDurationS = estFps ? estFrames / estFps : 0;
@@ -2034,6 +2074,45 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
                 </>
               )}
             </div>
+          )}
+        </Section>
+
+        <Section title="Live camera" collapsible defaultOpen={false}>
+          <div className="text-[10px] text-white/40 leading-relaxed -mt-1">
+            Swap your webcam feed live using the loaded source face{liveObs ? ',' : ''} — optionally
+            published as a system <b>virtual camera</b> for OBS / video calls.
+          </div>
+          <div className="flex gap-2">
+            <TextInput label="Camera #" type="number" value={liveCamNum}
+              onChange={(v) => setLiveCamNum(Math.max(0, parseInt(v, 10) || 0))} />
+            <Select label="Resolution" value={liveRes} onChange={setLiveRes}
+              options={['640x480', '1280x720', '1920x1080']} />
+          </div>
+          <Toggle label="Stream to virtual camera (OBS)" info="Publishes the swapped feed as a system camera device via pyvirtualcam — pick 'OBS Virtual Camera' in any app." checked={liveObs} onChange={setLiveObs} />
+          {!liveActive ? (
+            <button type="button" disabled={liveBusy || progress.processing} onClick={startLiveCam}
+              className="w-full py-2 rounded-lg text-[12px] font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+              {liveBusy
+                ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Opening camera…</>)
+                : '📷 Start live camera'}
+            </button>
+          ) : (
+            <>
+              <div className="relative rounded-xl overflow-hidden bg-black/50 border border-white/10 aspect-video">
+                <img src={`${API}/api/livecam/frame?t=${liveTick}`} alt="Live camera"
+                  className="w-full h-full object-contain" draggable={false} />
+                <span className="absolute top-2 left-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 text-[10px] font-bold text-white/90 border border-white/10">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" /> LIVE
+                </span>
+              </div>
+              <button type="button" disabled={liveBusy} onClick={stopLiveCam}
+                className="w-full py-2 rounded-lg text-[12px] font-bold bg-white/[0.04] border border-white/10 text-white/70 hover:text-white hover:border-white/25 transition-colors disabled:opacity-40">
+                ⏹ Stop live camera
+              </button>
+            </>
+          )}
+          {sourceFaces.length === 0 && (
+            <div className="text-[10px] text-amber-300/70">No source face loaded — the feed will pass through unswapped.</div>
           )}
         </Section>
 
