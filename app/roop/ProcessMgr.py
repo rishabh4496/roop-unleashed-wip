@@ -980,6 +980,11 @@ class ProcessMgr():
             frame_count = (frame_end - frame_start) + 1
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # NVDEC: swap the cv2 reader for a GPU-decode ffmpeg pipe when the
+            # file probes OK (no-op otherwise; ROOP_NVDEC=0 disables). Must use
+            # the SOURCE dims, before any processed_resolution override.
+            from roop.nvdec_reader import wrap_capture
+            cap = wrap_capture(cap, source_video, width, height, fps, tag='swap decode')
 
         processed_resolution = None
         for p in self.processors:
@@ -1217,6 +1222,11 @@ class ProcessMgr():
                     yield fr
             else:
                 cap = cv2.VideoCapture(source_video)
+                from roop.nvdec_reader import wrap_capture
+                cap = wrap_capture(cap, source_video,
+                                   int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                   int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                                   cap.get(cv2.CAP_PROP_FPS), tag='stabilized decode')
                 if frame_start > 0:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
                 produced = 0
@@ -1795,6 +1805,11 @@ class ProcessMgr():
             frame_iter = iter(subset)
         else:
             cap = cv2.VideoCapture(source_video)
+            from roop.nvdec_reader import wrap_capture
+            cap = wrap_capture(cap, source_video,
+                               int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                               int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                               cap.get(cv2.CAP_PROP_FPS), tag='track decode')
         # (frame_idx, Future) pairs, oldest-submitted first — bounded to pool_workers
         # and always drained in this order, so consumption stays in frame order.
         in_flight = _deque()

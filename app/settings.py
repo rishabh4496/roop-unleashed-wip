@@ -190,6 +190,9 @@ class Settings:
         # behaviour untouched). Applied to os.environ at startup by run.py, so
         # changes take effect after an app restart.
         self.perf_trt_pool = self.default_get(data, 'perf_trt_pool', 'auto')
+        # NVDEC GPU video decode (ffmpeg -hwaccel cuda pipe). auto = enabled
+        # behind a per-file probe with automatic cv2 fallback; off disables.
+        self.perf_nvdec = self.default_get(data, 'perf_nvdec', 'auto')
         self.perf_detmask_pool = self.default_get(data, 'perf_detmask_pool', 'auto')
         self.perf_encoder_preset = self.default_get(data, 'perf_encoder_preset', 'auto')
         self.perf_profile = self.default_get(data, 'perf_profile', 'auto')       # auto|on|off
@@ -282,6 +285,7 @@ class Settings:
             'face_detector_nms': self.face_detector_nms,
             'temporal_detection': self.temporal_detection,
             'perf_trt_pool': self.perf_trt_pool,
+            'perf_nvdec': self.perf_nvdec,
             'perf_detmask_pool': self.perf_detmask_pool,
             'perf_encoder_preset': self.perf_encoder_preset,
             'perf_profile': self.perf_profile,
