@@ -350,7 +350,7 @@ export default function App() {
                 {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
-                {tab === 'gallery' && <Gallery notify={notify} />}
+                {tab === 'gallery' && <Gallery notify={notify} setSettings={setSettings} setTab={setTab} />}
                 {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
               </Suspense>
             </motion.div>

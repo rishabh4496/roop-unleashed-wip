@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { getJSON, postJSON, postFiles, fileUrl } from '../api';
 import { Button, Card } from './ui';
 
-export default function Gallery({ notify }) {
+export default function Gallery({ notify, setSettings, setTab }) {
   const [files, setFiles] = useState([]);
   const [outputPath, setOutputPath] = useState('');
   const [loading, setLoading] = useState(true);
@@ -10,6 +10,8 @@ export default function Gallery({ notify }) {
   const [filterType, setFilterType] = useState('all'); // 'all', 'video', 'image'
   const [sortBy, setSortBy] = useState('new'); // 'new' | 'old' | 'big' | 'name'
   const [busyFile, setBusyFile] = useState(''); // tracking loading reuse actions
+  // Run-history entries keyed by output basename → "how was this file made?"
+  const [historyByName, setHistoryByName] = useState({});
 
   const fetchOutputs = async () => {
     setLoading(true);
@@ -22,6 +24,23 @@ export default function Gallery({ notify }) {
     } finally {
       setLoading(false);
     }
+    // History is best-effort — the gallery works fine without it.
+    try {
+      const h = await getJSON('/api/history');
+      const map = {};
+      (h.entries || []).forEach((entry) => {
+        (entry.outputs || []).forEach((name) => { if (!map[name]) map[name] = entry; });
+      });
+      setHistoryByName(map);
+    } catch { /* no history yet */ }
+  };
+
+  // Re-apply the exact settings a past run used, then jump to the Face Swap tab.
+  const loadRunSettings = (entry) => {
+    if (!setSettings || !entry?.settings) return;
+    setSettings((s) => ({ ...(s || {}), ...entry.settings }));
+    notify(`Loaded the settings this file was rendered with (${new Date(entry.time * 1000).toLocaleString()})`);
+    if (setTab) setTab('faceswap');
   };
 
   /* eslint-disable react-hooks/exhaustive-deps -- intentional: fetch once on mount */
@@ -235,6 +254,8 @@ export default function Gallery({ notify }) {
                 onReveal={() => revealFile(file.name)}
                 onReuseTarget={() => reuseAsTarget(file.name)}
                 onReuseSource={() => reuseAsSource(file.name)}
+                historyEntry={historyByName[file.name]}
+                onLoadSettings={loadRunSettings}
                 isBusy={busyFile === file.name}
               />
             );
@@ -245,7 +266,7 @@ export default function Gallery({ notify }) {
   );
 }
 
-function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, isBusy }) {
+function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, historyEntry, onLoadSettings, isBusy }) {
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef(null);
   const cardRef = useRef(null);
@@ -357,6 +378,20 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
               ⬇ Get
             </a>
           </div>
+          {historyEntry && (
+            <div className="w-full max-w-[200px]">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onLoadSettings(historyEntry)}
+                disabled={isBusy}
+                title={`Re-apply the exact settings this file was rendered with (${historyEntry.settings?.swap_model || ''} · ${historyEntry.settings?.selected_enhancer || 'no enhancer'})`}
+                className="w-full justify-center whitespace-nowrap"
+              >
+                ⚙️ Load run settings
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 

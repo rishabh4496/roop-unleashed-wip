@@ -33,3 +33,6 @@ react-ui-v1-backup/
 
 # Learned runtime-estimate store (per-machine, grows over time)
 app/runtime_calibration.json
+app/run_history.json
+app/profiles.json
+app/facesets/

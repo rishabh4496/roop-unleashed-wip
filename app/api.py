@@ -15,6 +15,7 @@ import base64
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import contextlib
 
@@ -1415,6 +1416,74 @@ def target_autocluster(payload: dict = Body(...)):
     return _target_faces_payload({"people": next_id})
 
 
+# ── Run history (settings snapshot per produced output) ──────────────────────
+# Every completed swap stores the exact settings payload next to the output
+# names it produced, so any file in the Gallery can answer "how was this made?"
+# and reload those settings for an A/B re-run.
+HISTORY_FILE = "run_history.json"
+_HISTORY_MAX = 200
+# Payload keys that are per-run aliases/derived values, not settings — loading
+# them back into the settings object would be stale or redundant.
+_HISTORY_STRIP = {"face_mapping", "enhancer", "detection", "video_method",
+                  "upscale", "clip_text", "face_distance", "autorotate"}
+
+
+def _load_history() -> list:
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_history(entries: list):
+    try:
+        tmp = HISTORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(entries[:_HISTORY_MAX], fh, indent=1)
+        os.replace(tmp, HISTORY_FILE)
+    except Exception:
+        traceback.print_exc()
+
+
+def _record_run_history(payload: dict, produced_files: list):
+    """Called after a completed swap run. Never fatal."""
+    try:
+        if not produced_files:
+            return
+        snap = {k: v for k, v in payload.items() if k not in _HISTORY_STRIP}
+        entry = {
+            "id": int(time.time() * 1000),
+            "time": time.time(),
+            "outputs": [os.path.basename(f) for f in produced_files],
+            "settings": snap,
+        }
+        entries = _load_history()
+        entries.insert(0, entry)
+        _save_history(entries)
+    except Exception:
+        traceback.print_exc()
+
+
+@app.get("/api/history")
+def get_history():
+    return {"entries": _load_history()}
+
+
+@app.post("/api/history/delete")
+def delete_history(payload: dict = Body(...)):
+    try:
+        rid = int(payload.get("id", 0))
+    except (TypeError, ValueError):
+        rid = 0
+    entries = [e for e in _load_history() if e.get("id") != rid]
+    _save_history(entries)
+    return {"entries": entries}
+
+
 # ── Profiles (persisted settings presets) ────────────────────────────────────
 PROFILES_FILE = "profiles.json"
 
@@ -2023,6 +2092,7 @@ def _run_swap(payload):
 
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"
+        _record_run_history(payload, _outputs_since(_pre_swap_outputs))
         _record_last_output()
     except Exception as e:
         traceback.print_exc()
