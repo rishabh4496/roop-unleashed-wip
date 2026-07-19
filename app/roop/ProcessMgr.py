@@ -419,6 +419,7 @@ class ProcessMgr():
         'dmdnet'            : 'Enhance_DMDNet',
         'gpen'              : 'Enhance_GPEN',
         'restoreformer++'   : 'Enhance_RestoreFormerPPlus',
+        'keep'              : 'Enhance_KEEP',
         'colorizer'         : 'Frame_Colorizer',
         'filter_generic'    : 'Frame_Filter',
         'removebg'          : 'Frame_Masking',

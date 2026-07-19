@@ -378,6 +378,11 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         processors.update({"gpen": {"size": 2048}})
     elif roop.globals.selected_enhancer == 'Restoreformer++':
         processors.update({"restoreformer++": {}})
+    elif roop.globals.selected_enhancer == 'KEEP (sidecar)':
+        # Experimental: runs in sidecar_keep/.venv as a separate process
+        # (dependency conflict with the main env); passes through unenhanced
+        # when the sidecar isn't installed. See app/sidecar_keep/README.md.
+        processors.update({"keep": {}})
 
     if masking_engine is not None:
         processors.update({masking_engine: {}})
