@@ -1694,15 +1694,6 @@ class ProcessMgr():
             with _prof('track_detect'), _gpu_guard(pooled=True):
                 return _run_detect(fr, crop_bbox)
 
-        # Occlusion guard: a face crossed by a hand/object usually still detects,
-        # but with a LOWER det_score and a corrupted embedding. Such frames must
-        # neither steal another person's track via embedding Re-ID nor be folded
-        # into the track's mean embedding (both cause "swap jumps to the wrong
-        # face" mid-occlusion). Quality floor is relative to the configured
-        # detection threshold (all surviving faces score above it by design).
-        Q_MIN = min(0.85, float(getattr(roop.globals, 'face_detector_threshold', 0.5) or 0.5) + 0.05)
-        REID_MARGIN = 0.08   # best re-ID candidate must beat the runner-up by this
-
         def _consume(f_idx, faces):
             nonlocal active, retired, next_id
             # Retire tracks not seen for STALE frames so matching stays O(active).
@@ -1715,7 +1706,6 @@ class ProcessMgr():
             for face in faces:
                 bbox = np.asarray(face.bbox, dtype=np.float32)
                 emb = np.asarray(face.embedding, dtype=np.float32)
-                quality = float(getattr(face, 'det_score', 1.0) or 1.0)
                 best, best_score = None, -1.0
                 for t in active:
                     if t['id'] in used:
@@ -1735,21 +1725,14 @@ class ProcessMgr():
                         best, best_score = t, score
 
                 is_reid = False
-                if best is None and quality >= Q_MIN:
+                if best is None:
                     # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces.
                     # Cutoff matches EMB_MAX (the primary spatial-match path's embedding gate) rather than being
                     # stricter than it — Re-ID only runs once spatial continuity is already lost (occlusion/motion
                     # blur/fast turn), so it's the fallback for exactly the hard frames where embeddings also drift
                     # most; being stricter than the path it falls back from just fragments one real face into many
                     # short-lived tracks instead of reconnecting them.
-                    # Guards against IDENTITY THEFT during occlusion:
-                    #   - low-quality (occluded/blurred) faces never re-ID at all
-                    #     (gate above) — they may only continue a track spatially;
-                    #   - the winner must beat the runner-up track by REID_MARGIN,
-                    #     because a corrupted embedding that lands between two
-                    #     people is exactly how person A's swap bleeds onto B.
                     best_reid, best_reid_dist = None, EMB_MAX
-                    second_dist = EMB_MAX
                     is_retired = False
 
                     for t in active:
@@ -1757,22 +1740,16 @@ class ProcessMgr():
                             continue
                         dist = compute_cosine_distance(t['emb_mean'], emb)
                         if dist < best_reid_dist:
-                            second_dist = best_reid_dist
                             best_reid, best_reid_dist = t, dist
                             is_retired = False
-                        elif dist < second_dist:
-                            second_dist = dist
 
                     for t in retired:
                         dist = compute_cosine_distance(t['emb_mean'], emb)
                         if dist < best_reid_dist:
-                            second_dist = best_reid_dist
                             best_reid, best_reid_dist = t, dist
                             is_retired = True
-                        elif dist < second_dist:
-                            second_dist = dist
 
-                    if best_reid is not None and (second_dist - best_reid_dist) >= REID_MARGIN:
+                    if best_reid is not None:
                         best = best_reid
                         if is_retired:
                             retired.remove(best)
@@ -1803,13 +1780,9 @@ class ProcessMgr():
                     best['bbox'] = bbox
                     best['last_seen'] = f_idx
 
-                    # Outlier filter: only fold this frame into the mean embedding
-                    # when it's clean (close to the mean) AND the detection itself
-                    # is high-quality — an occluded face's corrupted embedding can
-                    # sit within 0.5 of the mean and still drag it toward another
-                    # identity over a long occlusion.
+                    # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
                     dist = compute_cosine_distance(best['emb_mean'], emb)
-                    if dist <= 0.5 and quality >= Q_MIN:
+                    if dist <= 0.5:
                         alpha = 0.25
                         best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
                         best['emb_sum'] += emb
@@ -1995,84 +1968,17 @@ class ProcessMgr():
         return f
 
 
-    @staticmethod
-    def _repair_track_kps(merged):
-        """Occlusion glitch repair: when a hand/object crosses a face, the face
-        usually keeps detecting but its LANDMARKS jump to garbage for a few
-        frames — the alignment warp built from them then visibly distorts the
-        swapped face. Within a track we know where the landmarks should be:
-        flag any frame whose kps deviate hard from the WINDOWED MEDIAN of its
-        neighbourhood (±2 frames; a median can't be dragged by up to two
-        corrupted frames per window, unlike neighbour interpolation) while the
-        bbox centre stays on its median path — real head motion moves box and
-        kps together, occlusion corrupts only the kps. Flagged frames get their
-        kps/lm106 replaced by the interpolation of the nearest UNflagged
-        neighbours. Returns #frames repaired."""
-        idxs = [i for i in sorted(merged)
-                if getattr(merged[i], 'kps', None) is not None
-                and getattr(merged[i], 'bbox', None) is not None]
-        n = len(idxs)
-        if n < 3:
-            return 0
-        try:
-            K = np.stack([np.asarray(merged[i].kps, np.float32) for i in idxs])
-            B = np.stack([np.asarray(merged[i].bbox, np.float32) for i in idxs])
-        except Exception:
-            return 0   # heterogeneous kps shapes — skip repair for this track
-        ctr = np.stack([(B[:, 0] + B[:, 2]) * 0.5, (B[:, 1] + B[:, 3]) * 0.5], axis=1)
-        diag = np.maximum(1.0, np.hypot(B[:, 2] - B[:, 0], B[:, 3] - B[:, 1]))
-
-        flagged = []
-        for j in range(n):
-            lo, hi = max(0, j - 2), min(n, j + 3)
-            if hi - lo < 3:
-                continue
-            med_k = np.median(K[lo:hi], axis=0)
-            med_c = np.median(ctr[lo:hi], axis=0)
-            kdev = float(np.linalg.norm(K[j] - med_k, axis=1).mean())
-            cdev = float(np.linalg.norm(ctr[j] - med_c))
-            if kdev > 0.12 * diag[j] and cdev < 0.08 * diag[j]:
-                flagged.append(j)
-        if not flagged:
-            return 0
-
-        fl = set(flagged)
-        repaired = 0
-        for j in flagged:
-            p = j - 1
-            while p in fl:
-                p -= 1
-            q = j + 1
-            while q in fl:
-                q += 1
-            if p < 0 or q >= n:
-                continue   # corrupted run touches the track edge — leave as-is
-            a, b, c = idxs[p], idxs[j], idxs[q]
-            w = (b - a) / float(c - a)
-            f = merged[b]
-            f['kps'] = ((1.0 - w) * K[p] + w * K[q]).astype(np.float32)
-            la = getattr(merged[a], 'landmark_2d_106', None)
-            lc = getattr(merged[c], 'landmark_2d_106', None)
-            if la is not None and lc is not None and np.shape(la) == np.shape(lc):
-                f['landmark_2d_106'] = ((1.0 - w) * np.asarray(la, np.float32)
-                                        + w * np.asarray(lc, np.float32)).astype(np.float32)
-            f['_kps_repaired'] = True
-            repaired += 1
-        return repaired
-
     def _build_temporal_faces(self, tracks, gap_max):
         """Build {frame_idx: [Face, ...]} from tracked observations: gap-fill
-        detection misses ≤ gap_max frames, repair occlusion-corrupted landmarks,
-        then (when stabilize_face is on) smooth kps/lm106/bbox per track with
-        the configured filter. Faces per frame are sorted by x so ordering
-        matches get_all_faces."""
+        detection misses ≤ gap_max frames, then (when stabilize_face is on)
+        smooth kps/lm106/bbox per track with the configured filter. Faces per
+        frame are sorted by x so ordering matches get_all_faces."""
         from roop.one_euro import OneEuroFilter
         stab_on = bool(getattr(self.options, 'stabilize_face', False))
         method = getattr(self.options, 'stabilize_method', 'one_euro')
         mc = float(getattr(self.options, 'stabilize_min_cutoff', 0.05))
         bt = float(getattr(self.options, 'stabilize_beta', 0.02))
         out = {}
-        n_repaired = 0
         for t in tracks:
             obs = t.get('obs') or {}
             if not obs:
@@ -2088,7 +1994,6 @@ class ProcessMgr():
                     for g in range(prev + 1, i):
                         merged[g] = self._interp_face(a, b, (g - prev) / span, emb_mean)
                 prev = i
-            n_repaired += self._repair_track_kps(merged)
             if stab_on:
                 # Per-track sequential smoothing. The default-arg captures keep
                 # each track's filter state independent of the loop variable.
@@ -2115,17 +2020,7 @@ class ProcessMgr():
                     if bb is not None:
                         f['bbox'] = _smooth('bbox', np.asarray(bb, np.float64), i).astype(np.float32)
             for i, f in merged.items():
-                # Identity comes from the TRACK, not the frame: matching against
-                # the track's outlier-filtered mean embedding instead of each
-                # frame's raw one keeps the person ↔ source assignment stable
-                # through occlusion/blur frames whose own embedding is corrupted
-                # (the "swap flips to a different face mid-clip" failure). The
-                # raw embedding was only ever used for matching, so nothing else
-                # changes. (normed_embedding derives from this automatically.)
-                f['embedding'] = emb_mean
                 out.setdefault(i, []).append(f)
-        if n_repaired:
-            print(f'[Temporal] repaired occlusion-corrupted landmarks on {n_repaired} frame(s)')
         for i in out:
             out[i].sort(key=lambda f: f.bbox[0])
         return out
