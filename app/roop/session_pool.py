@@ -50,7 +50,8 @@ def _auto_pool_defaults():
 
         < 7 GB    (e.g. RTX 3060 6GB)       -> 0 / 0  (single context + lock)
         7-11.5 GB (e.g. 3080 10GB)          -> 2 / 2
-        >= 11.5 GB (e.g. RTX 4070 12GB)     -> 4 / 2  (validated)
+        11.5-15.5 GB (e.g. RTX 4070 12GB)   -> 4 / 4
+        >= 15.5 GB (e.g. RTX 3090 24GB)     -> 8 / 8
 
     Note the 11.5 boundary: a nominal "12GB" card reports ~11.99GB to torch
     (RTX 4070 = 12282 MiB), so the large-card tier must sit just below 12 to
@@ -63,7 +64,9 @@ def _auto_pool_defaults():
         return 0, 0
     if gb < 11.5:
         return 2, 2
-    return 4, 2
+    if gb < 15.5:
+        return 4, 4          # 12GB cards (e.g. RTX 4070): 4 swapper, 4 detmask
+    return 8, 8              # 16GB+ cards (e.g. RTX 3090/4080/4090): 8 swapper, 8 detmask
 
 
 def _resolve(env_name, auto_value) -> int:
