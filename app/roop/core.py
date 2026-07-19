@@ -635,8 +635,42 @@ def batch_process_with_options(files:list[ProcessEntry], options, progress):
 
 
 
+# Set once the first run starts, so each NEW run clears the previous run's
+# terminal output while the very first run keeps the startup logs visible.
+_terminal_has_previous_run = False
+
+def _clear_terminal_for_new_run() -> None:
+    """Clear the terminal when a new processing run starts.
+
+    Long runs print thousands of progress/profiling lines; without this each
+    subsequent run piles onto the last and the terminal becomes unreadable.
+    Uses ANSI escapes (clear scrollback + clear screen + cursor home), which
+    xterm.js (Pinokio's terminal), Windows Terminal, and Unix terminals all
+    honour. On classic Windows conhost, VT processing is enabled first.
+    Defensive: a failure here must never break processing.
+    """
+    global _terminal_has_previous_run
+    if not _terminal_has_previous_run:
+        _terminal_has_previous_run = True
+        return
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            h = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+                # 0x4 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                kernel32.SetConsoleMode(h, mode.value | 0x0004)
+        print('\x1b[3J\x1b[2J\x1b[H', end='', flush=True)
+    except Exception:
+        pass
+
+
 def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> None:
     global clip_text, process_mgr
+
+    _clear_terminal_for_new_run()
 
     roop.globals.processing = True
     # Marks the encode as live so a terminal Ctrl-C (destroy()) can wait for the
