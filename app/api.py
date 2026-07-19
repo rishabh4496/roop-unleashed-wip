@@ -3333,6 +3333,143 @@ def runtime_estimate(payload: dict = Body(...)):
     return out
 
 
+@app.post("/api/advisor")
+def settings_advisor(payload: dict = Body(...)):
+    """Analyze the selected target clip (face count/size, detection coverage,
+    motion, brightness) and recommend concrete Face Swap settings for it.
+    Pass the current settings object as `settings` so only actual CHANGES come
+    back. Read-only: nothing is applied server-side — the UI applies the
+    recommendations the user accepts."""
+    import statistics
+
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={"message": "busy processing"})
+    idx = int(payload.get("index", selected_target_index))
+    if idx < 0 or idx >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target loaded"})
+    path = list_files_process[idx].filename
+    is_vid = util.is_video(path) or path.lower().endswith("gif") or util.is_animated_webp(path)
+    roop_globals.target_path = path
+
+    frames, pairs = [], []
+    if is_vid:
+        total = int(get_video_frame_total(path) or 0)
+        n = min(12, max(1, total))
+        idxs = sorted({int(i * (total - 1) / max(1, n - 1)) + 1 for i in range(n)})
+        for fi in idxs:
+            img = get_video_frame(path, fi)
+            if img is not None:
+                frames.append(img)
+        # Adjacent-frame pairs at 25/50/75% for a motion estimate.
+        for frac in (0.25, 0.5, 0.75):
+            fi = max(1, int(total * frac))
+            a = get_video_frame(path, fi)
+            b = get_video_frame(path, min(total, fi + 1))
+            if a is not None and b is not None and fi < total:
+                pairs.append((a, b))
+    else:
+        img = get_image_frame(path)
+        if img is not None:
+            frames.append(img)
+    if not frames:
+        return JSONResponse(status_code=500, content={"message": "could not read target frames"})
+
+    counts, rel_sizes, brightness = [], [], []
+    detected_frames = 0
+    for img in frames:
+        h, w = img.shape[:2]
+        faces = get_all_faces(img) or []
+        counts.append(len(faces))
+        if faces:
+            detected_frames += 1
+        for f in faces:
+            bb = f.bbox
+            rel_sizes.append(float(max((bb[3] - bb[1]) / h, (bb[2] - bb[0]) / w)))
+        brightness.append(float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean()))
+    motion = []
+    for a, b in pairs:
+        ga = cv2.cvtColor(cv2.resize(a, (96, 96)), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gb = cv2.cvtColor(cv2.resize(b, (96, 96)), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        motion.append(float(np.abs(ga - gb).mean()))
+
+    coverage = detected_frames / len(frames)
+    med_count = statistics.median(counts) if counts else 0
+    min_rel = min(rel_sizes) if rel_sizes else 0.0
+    max_rel = max(rel_sizes) if rel_sizes else 0.0
+    bright = statistics.median(brightness) if brightness else 0.0
+    mot = statistics.median(motion) if motion else 0.0
+
+    stats = {
+        "sampled_frames": len(frames),
+        "detection_coverage": round(coverage * 100, 1),
+        "median_faces": med_count,
+        "min_face_size_pct": round(min_rel * 100, 1),
+        "max_face_size_pct": round(max_rel * 100, 1),
+        "brightness": round(bright, 1),
+        "motion": round(mot, 2),
+    }
+    if not rel_sizes:
+        return {"ok": True, "is_video": is_vid, "stats": stats, "recommendations": [],
+                "message": "No faces detected in the sampled frames — nothing to recommend. "
+                           "Try lowering the detection threshold manually."}
+
+    cur = payload.get("settings") or {}
+    recs = []
+
+    def rec(key, value, reason):
+        if any(r["key"] == key for r in recs):
+            return
+        if cur.get(key) == value:
+            return
+        recs.append({"key": key, "value": value, "reason": reason})
+
+    if is_vid and coverage < 0.9:
+        miss = round((1 - coverage) * 100)
+        rec("temporal_detection", True,
+            f"Faces went undetected on ~{miss}% of sampled frames — the temporal pre-pass "
+            f"gap-fills misses so the swap can't blink out.")
+        if (cur.get("detector_engine") or "scrfd") == "scrfd":
+            rec("detector_engine", "retinaface",
+                "RetinaFace has higher recall on hard poses/lighting than SCRFD — fewer missed detections.")
+    if min_rel < 0.05:
+        rec("rescue_small_faces", True,
+            f"Smallest face is only {stats['min_face_size_pct']}% of the frame — the 2x-upscale "
+            f"rescue catches tiny faces without raising the global detection resolution.")
+        if str(cur.get("face_detector_size") or "640") == "320":
+            rec("face_detector_size", "640", "Small faces need the full 640px detection resolution.")
+    if max_rel > 0.45 and str(cur.get("subsample_upscale") or "") != "512px":
+        rec("subsample_upscale", "512px",
+            f"Largest face fills {stats['max_face_size_pct']}% of the frame — 512px pixel boost "
+            f"keeps close-ups sharp (the swapper's native output is much smaller).")
+    elif max_rel > 0.22 and str(cur.get("subsample_upscale") or "") == "128px":
+        rec("subsample_upscale", "256px",
+            "Faces are fairly large — 128px subsampling will look soft; 256px is a better floor.")
+    if med_count > 1:
+        rec("face_detection_mode", "Selected face",
+            f"Multiple people per frame (median {med_count:g}) — select who to swap instead of "
+            f"swapping every face.")
+        if is_vid:
+            rec("track_identities", True,
+                "Multiple people in a video — identity tracking locks each person to one source "
+                "so identities can't flip mid-clip.")
+    if bright < 55:
+        cur_thr = float(cur.get("face_detector_threshold") or 0.5)
+        if cur_thr > 0.4:
+            rec("face_detector_threshold", 0.4,
+                f"Dark footage (median brightness {stats['brightness']}/255) — detections score "
+                f"lower in low light; a lower threshold keeps them.")
+    if is_vid and mot < 2.5 and not cur.get("stabilize_face"):
+        rec("stabilize_face", True,
+            "Near-static shot — keypoint smoothing removes residual frame-to-frame jitter "
+            "with no downside at this motion level.")
+    if is_vid and mot > 14:
+        rec("temporal_detection", True,
+            f"Fast motion (score {stats['motion']}) — motion blur causes detection dropouts; "
+            f"the temporal pre-pass bridges them.")
+
+    return {"ok": True, "is_video": is_vid, "stats": stats, "recommendations": recs}
+
+
 @app.get("/api/system/telemetry")
 def get_telemetry():
     telemetry = {

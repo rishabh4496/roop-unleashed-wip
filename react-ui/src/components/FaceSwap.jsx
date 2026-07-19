@@ -1903,6 +1903,38 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const heavyVram = (p.selected_enhancer && p.selected_enhancer !== 'None') &&
     (parseInt(p.face_detector_size || '640', 10) >= 960);
 
+  // ── Clip advisor: sample the target, get recommended settings, apply. ──
+  const [advice, setAdvice] = useState(null);
+  const [advisorBusy, setAdvisorBusy] = useState(false);
+  const ADVISOR_LABELS = {
+    temporal_detection: 'Temporal detection',
+    detector_engine: 'Detector engine',
+    rescue_small_faces: 'Rescue small faces',
+    face_detector_size: 'Detection resolution',
+    subsample_upscale: 'Subsample upscale',
+    face_detection_mode: 'Face selection',
+    track_identities: 'Track identities',
+    face_detector_threshold: 'Detection threshold',
+    stabilize_face: 'Stabilize face',
+  };
+  const fmtAdviceVal = (v) => (v === true ? 'On' : v === false ? 'Off' : String(v));
+  const runAdvisor = async () => {
+    if (!targets.length) { notify('Load a target first', 'error'); return; }
+    setAdvisorBusy(true);
+    setAdvice(null);
+    try {
+      const res = await postJSON('/api/advisor', { index: selTarget, settings: p });
+      setAdvice(res);
+      if (res.recommendations?.length === 0 && !res.message) notify('Settings already fit this clip ✓');
+    } catch (e) { notify(e.message, 'error'); } finally { setAdvisorBusy(false); }
+  };
+  const applyAdvice = () => {
+    if (!advice?.recommendations?.length) return;
+    advice.recommendations.forEach((r) => set(r.key, r.value));
+    notify(`Applied ${advice.recommendations.length} recommended setting${advice.recommendations.length === 1 ? '' : 's'}`);
+    setAdvice(null);
+  };
+
   // Derived values for the estimation box.
   const estFps = targets[selTarget]?.fps || 0;
   const estDurationS = estFps ? estFrames / estFps : 0;
@@ -1952,6 +1984,57 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
               ? ' “Reset” restores all Face Swap tab settings to the default you saved.'
               : ' “Save as default” stores the current Face Swap tab settings so “Reset” restores to them.'}
           </div>
+        </Section>
+
+        <Section title="Clip advisor">
+          <button type="button" disabled={advisorBusy || !targets.length || progress.processing} onClick={runAdvisor}
+            title="Samples the selected target (face sizes, count, detection coverage, motion, lighting) and recommends settings tuned to it. Nothing changes until you apply."
+            className="w-full py-2 rounded-lg text-[12px] font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+            {advisorBusy
+              ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Analyzing target…</>)
+              : '🧭 Analyze target & recommend settings'}
+          </button>
+          {advice && (
+            <div className="space-y-2 mt-2">
+              <div className="text-[10px] text-white/40 leading-relaxed">
+                {advice.stats.sampled_frames} frame{advice.stats.sampled_frames === 1 ? '' : 's'} sampled ·
+                faces found on {advice.stats.detection_coverage}% ·
+                face size {advice.stats.min_face_size_pct}–{advice.stats.max_face_size_pct}% ·
+                brightness {advice.stats.brightness}
+                {advice.is_video ? ` · motion ${advice.stats.motion}` : ''}
+              </div>
+              {advice.message && <div className="text-[11px] text-amber-300/80">{advice.message}</div>}
+              {advice.recommendations.length === 0 && !advice.message ? (
+                <div className="text-[11px] font-bold text-emerald-400">✓ Current settings already fit this clip</div>
+              ) : advice.recommendations.length > 0 && (
+                <>
+                  {advice.recommendations.map((r) => (
+                    <div key={r.key} className="rounded-lg bg-black/25 border border-white/5 px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-white/85">{ADVISOR_LABELS[r.key] || r.key}</span>
+                        <span className="text-[11px] font-mono shrink-0">
+                          <span className="text-white/35">{fmtAdviceVal(p[r.key] ?? '—')}</span>
+                          <span className="text-white/30"> → </span>
+                          <span className="text-[var(--accent)] font-bold">{fmtAdviceVal(r.value)}</span>
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-white/40 leading-snug mt-0.5">{r.reason}</div>
+                    </div>
+                  ))}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={applyAdvice}
+                      className="flex-1 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--accent)] text-white hover:opacity-90 transition-opacity">
+                      ✓ Apply all {advice.recommendations.length}
+                    </button>
+                    <button type="button" onClick={() => setAdvice(null)}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-white/[0.04] border border-white/10 text-white/60 hover:text-white/90 transition-colors">
+                      Dismiss
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </Section>
 
         <div className="space-y-5">
