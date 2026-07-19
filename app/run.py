@@ -92,6 +92,12 @@ globals.execution_providers = [_PROVIDER_NAMES.get(
     args.execution_provider.lower(), args.execution_provider + 'ExecutionProvider')]
 
 if __name__ == '__main__':
+    # Opt out of Windows background throttling (EcoQoS) and raise process
+    # priority so analysis/processing speed is identical whether the app
+    # window is foreground or covered by other windows.
+    from roop import keep_awake
+    keep_awake.boost_process_priority()
+
     import threading
     from api import run_api
     threading.Thread(target=run_api, daemon=True).start()

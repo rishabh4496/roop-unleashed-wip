@@ -23,6 +23,7 @@ thread and is automatically cleared when that thread exits, so acquire() and
 release() must run on the same (processing) thread — which they do, since
 batch_process() runs synchronously on one thread from start to finish.
 """
+import os
 import sys
 
 # SetThreadExecutionState flags (winbase.h)
@@ -31,6 +32,79 @@ _ES_SYSTEM_REQUIRED = 0x00000001
 _ES_DISPLAY_REQUIRED = 0x00000002
 
 _active = False
+
+# SetPriorityClass flags (winbase.h)
+_PRIORITY_CLASSES = {
+    'high': 0x00000080,          # HIGH_PRIORITY_CLASS
+    'above_normal': 0x00008000,  # ABOVE_NORMAL_PRIORITY_CLASS
+    'normal': 0x00000020,        # NORMAL_PRIORITY_CLASS
+}
+
+# SetProcessInformation / PROCESS_POWER_THROTTLING_STATE (processthreadsapi.h)
+_ProcessPowerThrottling = 4
+_PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
+_PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+_PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4
+
+
+def boost_process_priority() -> None:
+    """Keep processing at full speed while the app window is in the background.
+
+    Windows 11 applies EcoQoS ("efficiency mode") power throttling to processes
+    it considers backgrounded: as soon as another window covers the app, the
+    scheduler moves the process to efficiency cores / reduced clock speed, and
+    analysis + processing throughput visibly drops until the window is
+    foreground again. Opting the process out of power throttling via
+    SetProcessInformation removes that penalty entirely — speed no longer
+    depends on window focus.
+
+    Additionally the process priority class is raised (HIGH by default,
+    override with ROOP_PRIORITY=above_normal|normal) so its threads keep
+    winning CPU time against foreground apps during a run.
+
+    Process-wide and permanent for the process lifetime, so it is called once
+    at startup. Windows-only; harmless no-op elsewhere. Defensive: a failure
+    here must never break the app.
+    """
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetCurrentProcess()
+
+        # 1) Opt out of EcoQoS background power throttling. StateMask=0 with
+        #    the control bits set means "throttling explicitly disabled"
+        #    (leaving the bits unset would mean "let Windows decide", which is
+        #    exactly the behaviour we are escaping). Also keep the 1ms timer
+        #    resolution honoured while backgrounded.
+        class _POWER_THROTTLING_STATE(ctypes.Structure):
+            _fields_ = [('Version', ctypes.c_ulong),
+                        ('ControlMask', ctypes.c_ulong),
+                        ('StateMask', ctypes.c_ulong)]
+
+        state = _POWER_THROTTLING_STATE(
+            _PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            _PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | _PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0)
+        ok = kernel32.SetProcessInformation(
+            handle, _ProcessPowerThrottling,
+            ctypes.byref(state), ctypes.sizeof(state))
+
+        # 2) Raise the scheduling priority class.
+        pri_name = os.environ.get('ROOP_PRIORITY', 'high').strip().lower()
+        pri = _PRIORITY_CLASSES.get(pri_name)
+        if pri is None:
+            pri_name, pri = 'high', _PRIORITY_CLASSES['high']
+        ok2 = kernel32.SetPriorityClass(handle, pri)
+
+        print(f'[KeepAwake] background throttling (EcoQoS) '
+              f'{"disabled" if ok else "opt-out unavailable"}, '
+              f'process priority set to {pri_name if ok2 else "unchanged (failed)"} '
+              f'- speed no longer depends on window focus')
+    except Exception as e:
+        print(f'[KeepAwake] could not boost process priority: {e}')
 
 
 def acquire() -> None:
