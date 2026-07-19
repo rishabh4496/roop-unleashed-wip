@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { getJSON, postJSON } from './api';
-import { Toast } from './components/ui';
+import { Toast, Confetti } from './components/ui';
 import CommandPalette from './components/CommandPalette';
+import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
 // Tab panels are code-split so the initial bundle only ships the shell + the
 // first tab's dependencies. Each is fetched on first visit (Vite emits one
 // chunk per lazy import), trimming a ~530 KB single bundle into per-tab pieces.
@@ -38,6 +39,61 @@ export default function App() {
   const [settings, setSettings] = useState(null);
   const [toast, setToast] = useState(null);
   const [error, setError] = useState('');
+
+  const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
+  const [startTime, setStartTime] = useState(null);
+  const [confetti, setConfetti] = useState(false);
+  const pollRef = useRef(null);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const pr = await getJSON('/api/progress');
+        setProgress(pr);
+        if (!pr.processing) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      } catch { /* ignore */ }
+    }, 1000);
+  }, []);
+
+  useEffect(() => {
+    if (progress.processing && !pollRef.current) {
+      startPolling();
+    }
+    return () => {
+      if (!progress.processing && pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [progress.processing, startPolling]);
+
+  const prevProcessingRef = useRef(false);
+  useEffect(() => {
+    const was = prevProcessingRef.current;
+    prevProcessingRef.current = progress.processing;
+    if (progress.processing && !was) {
+      if (!startTime) setStartTime(Date.now());
+    } else if (!progress.processing && was) {
+      setStartTime(null);
+    }
+  }, [progress.processing, startTime]);
+
+  const prevProcessingCelebrationRef = useRef(false);
+  useEffect(() => {
+    const was = prevProcessingCelebrationRef.current;
+    prevProcessingCelebrationRef.current = progress.processing;
+    if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
+      playChime();
+      notifyDesktop('✨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
+      setConfetti(false);
+      requestAnimationFrame(() => setConfetti(true));
+      setTimeout(() => setConfetti(false), 2600);
+    }
+  }, [progress.processing, progress.error, progress.progress, progress.output]);
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   useEffect(() => { isDraggingOverRef.current = isDraggingOver; }, [isDraggingOver]);
@@ -195,7 +251,14 @@ export default function App() {
     Promise.all([getJSON('/api/meta'), getJSON('/api/settings')])
       .then(([m, s]) => { setMeta(m); setSettings(s); })
       .catch(() => setError('Cannot reach backend on 127.0.0.1:8001. Make sure the server (run.py) is running.'));
-  }, []);
+
+    getJSON('/api/progress').then((pr) => {
+      setProgress(pr);
+      if (pr.processing) startPolling();
+    }).catch(() => {});
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [startPolling]);
 
   // Autosave settings to the backend CFG (debounced) on every in-session edit.
   // Previously settings were only persisted at swap-start / explicit Save, so
@@ -280,6 +343,67 @@ export default function App() {
               </span>
             )}
           </div>
+          {progress.processing && (
+            <div className="ml-2 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-[10px] font-bold tracking-wide uppercase">
+              <span className={`h-1.5 w-1.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
+              <span className={progress.paused ? 'text-amber-400/90' : 'text-[var(--accent)]'}>
+                {progress.paused ? 'Paused' : `Processing ${Math.round((progress.progress || 0) * 100)}%`}
+              </span>
+              {startTime && (progress.progress || 0) > 0.01 && (
+                <span className="text-white/40 normal-case font-mono font-medium ml-1">
+                  ETA: {fmtTime(((Date.now() - startTime) * (1 - progress.progress)) / progress.progress)}
+                </span>
+              )}
+              <div className="flex items-center gap-1.5 border-l border-white/10 pl-2 ml-1">
+                {progress.paused ? (
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try {
+                        await postJSON('/api/resume', {});
+                        setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
+                      } catch {}
+                    }}
+                    className="hover:text-white text-white/60 transition-colors cursor-pointer"
+                    title="Resume Job"
+                  >
+                    ▶
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try {
+                        await postJSON('/api/pause', {});
+                        setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
+                      } catch {}
+                    }}
+                    className="hover:text-white text-white/60 transition-colors cursor-pointer"
+                    title="Pause Job"
+                  >
+                    ⏸
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (window.confirm('Stop the active job?')) {
+                      try {
+                        await postJSON('/api/stop', {});
+                      } catch {}
+                    }
+                  }}
+                  className="hover:text-red-400 text-white/60 transition-colors cursor-pointer"
+                  title="Stop Job"
+                >
+                  ⏹
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 w-full md:w-auto">
         <button
@@ -347,7 +471,19 @@ export default function App() {
               exit="exit"
             >
               <Suspense fallback={<TabFallback />}>
-                {tab === 'faceswap' && <FaceSwap meta={meta} settings={settings} setSettings={setSettings} notify={notify} registerFileListener={registerFileListener} />}
+                {tab === 'faceswap' && (
+                  <FaceSwap
+                    meta={meta}
+                    settings={settings}
+                    setSettings={setSettings}
+                    notify={notify}
+                    registerFileListener={registerFileListener}
+                    progress={progress}
+                    setProgress={setProgress}
+                    startTime={startTime}
+                    setStartTime={setStartTime}
+                  />
+                )}
                 {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'gallery' && <Gallery notify={notify} setSettings={setSettings} setTab={setTab} />}
@@ -359,6 +495,15 @@ export default function App() {
       </main>
 
       <Toast toast={toast} />
+
+      <Confetti active={confetti} />
+
+      {progress.processing && (
+        <div
+          className="fixed top-0 left-0 h-[3px] bg-[var(--accent)] z-[60] transition-all duration-300 shadow-[0_0_8px_var(--accent-glow)]"
+          style={{ width: `${Math.round((progress.progress || 0) * 100)}%` }}
+        />
+      )}
 
       <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} commands={commands} />
 

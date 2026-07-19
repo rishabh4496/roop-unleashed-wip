@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getJSON, postJSON, postFiles, API } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Confetti, Skeleton } from './ui';
+import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Skeleton } from './ui';
 import PersonGroups from './PersonGroups';
 import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import FacesetLibrary from './faceswap/FacesetLibrary';
-import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
+import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
@@ -36,7 +36,10 @@ const AI_UPSCALE_MODELS = [
   { value: 'sinc_x4', label: '⚡ Sinc ×4 · sharpest (no AI)' },
 ];
 
-export default function FaceSwap({ meta, settings, setSettings, notify, registerFileListener }) {
+export default function FaceSwap({
+  meta, settings, setSettings, notify, registerFileListener,
+  progress, setProgress, startTime, setStartTime
+}) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [sourceFacesInfo, setSourceFacesInfo] = useState([]);
   const [targetFaces, setTargetFaces] = useState([]);
@@ -59,7 +62,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
-  const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
+
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
@@ -411,9 +414,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
           target_index: resolvedIndex,
         });
 
-        startTimeRef.current = Date.now();
+        setStartTime(Date.now());
         setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
-        startPolling();
       } catch (e) {
         notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
         setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
@@ -456,8 +458,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
 
-  const pollRef = useRef(null);
-  const startTimeRef = useRef(null);
+
   const previewBusyRef = useRef(false);   // a /api/preview call is in flight
   const previewPendingRef = useRef(null); // latest queued request while busy (coalesced)
 
@@ -582,8 +583,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     getJSON('/api/progress').then((pr) => {
       setProgress(pr);
       if (pr.processing) {
-        if (!startTimeRef.current) startTimeRef.current = Date.now();
-        startPolling();
+        if (!startTime) setStartTime(Date.now());
       }
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1347,7 +1347,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         num_swap_steps: num(p.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
       });
-      startTimeRef.current = Date.now();
+      setStartTime(Date.now());
       // Ask for desktop-notification permission so we can ping on completion if
       // the tab is backgrounded (no-op if already decided).
       try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* ignore */ }
@@ -1355,7 +1355,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
       // immediately, before the first poll tick (~1s) confirms it.
       setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Starting…' }));
       notify('Processing started');
-      startPolling();
     } catch (e) { notify(e.message, 'error'); }
   };
 
@@ -1377,18 +1376,6 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
     } catch (e) { notify(e.message, 'error'); }
   };
 
-  const startPolling = () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const pr = await getJSON('/api/progress');
-        setProgress(pr);
-        if (!pr.processing) { clearInterval(pollRef.current); pollRef.current = null; }
-      } catch { /* ignore */ }
-    }, 1000);
-  };
-  useEffect(() => () => pollRef.current && clearInterval(pollRef.current), []);
-
   // Hide the previous "Latest output" while a job is running so a new upload +
   // run never shows a stale result. The poll keeps reporting the old _last_output
   // until the new job finishes, so we gate on `processing` rather than clearing
@@ -1397,22 +1384,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
   const outUrl = out?.path ? `${API}/api/file?path=${encodeURIComponent(out.path)}&t=${progress.progress}` : '';
   const prog = progress.progress || 0;
 
-  // ── Completion celebration: chime + desktop notification + confetti ──
-  const [confetti, setConfetti] = useState(false);
-  const prevProcessingRef = useRef(false);
-  useEffect(() => {
-    const was = prevProcessingRef.current;
-    prevProcessingRef.current = progress.processing;
-    // Only celebrate a genuine finish (near-100%), not a manual Stop.
-    if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
-      playChime();
-      notifyDesktop('✨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
-      setConfetti(false);
-      requestAnimationFrame(() => setConfetti(true));
-      setTimeout(() => setConfetti(false), 2600);
-    }
-  }, [progress.processing, progress.error, progress.progress, progress.output]);
-  const elapsedMs = progress.processing && startTimeRef.current ? Date.now() - startTimeRef.current : 0;
+  const elapsedMs = progress.processing && startTime ? Date.now() - startTime : 0;
   const etaMs = progress.processing && prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0;
   const rawUrl = targets.length > 0 ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}` : '';
 
@@ -1638,9 +1610,8 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
         upscale_after_swap: false,
       });
 
-      startTimeRef.current = Date.now();
+      setStartTime(Date.now());
       notify('Generating 5-second preview clip...');
-      startPolling();
     } catch (e) {
       notify(e.message, 'error');
       setIsGeneratingPreviewClip(false);
@@ -1986,7 +1957,7 @@ export default function FaceSwap({ meta, settings, setSettings, notify, register
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
-      <Confetti active={confetti} />
+
       {/* COLUMN 1: Settings & Controls — sticky sidebar on large viewports so it
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
