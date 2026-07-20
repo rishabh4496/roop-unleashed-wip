@@ -88,7 +88,10 @@ export default function App() {
     prevProcessingCelebrationRef.current = progress.processing;
     if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
       playChime();
-      notifyDesktop('✨ Swap complete', progress.output?.name ? `${progress.output.name} is ready` : 'Your render is ready');
+      // Backend /api/progress returns output as { path, kind } (no `name`), so
+      // derive the filename from the path for the notification body.
+      const outName = (progress.output?.path || '').split(/[\\/]/).pop();
+      notifyDesktop('✨ Swap complete', outName ? `${outName} is ready` : 'Your render is ready');
       setConfetti(false);
       requestAnimationFrame(() => setConfetti(true));
       setTimeout(() => setConfetti(false), 2600);
