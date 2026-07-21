@@ -460,6 +460,7 @@ export default function FaceSwap({
   // real time instead of refetching each frame from the server per tick.
   const playBufRef = useRef(new Map());     // frame -> object URL
   const playFetchRef = useRef(new Set());   // frames currently in flight
+  const playBufIdxRef = useRef('');         // signature of the video the buffer was built for
   const [bufferedSrc, setBufferedSrc] = useState(null);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
@@ -1428,6 +1429,7 @@ export default function FaceSwap({
   useEffect(() => {
     if (!isPlaying) {
       clearPlayBuffer();
+      playBufIdxRef.current = '';
       setBufferedSrc(null);
       return;
     }
@@ -1439,7 +1441,14 @@ export default function FaceSwap({
     const AHEAD = 120;   // frames kept buffered ahead of the playhead
     const BEHIND = 8;    // frames retained behind before eviction
 
-    clearPlayBuffer();   // fresh buffer for this session (target/range may differ)
+    // Keep the buffered frames across speed/loop changes (they're still valid);
+    // only discard and rebuild when the effect is (re)bound to a different video.
+    const sig = `${idx}:${maxFrames}`;
+    if (playBufIdxRef.current !== sig) {
+      clearPlayBuffer();
+      setBufferedSrc(null);
+      playBufIdxRef.current = sig;
+    }
     let cur = Math.max(start, Math.min(frame, end));
     let rendered = -1;
     let cancelled = false;
@@ -1458,9 +1467,16 @@ export default function FaceSwap({
     };
 
     const pump = () => {
+      // When looping and the look-ahead window runs past the out point, warm the
+      // wrap-around frames near `start` too, otherwise the loop seam would stall
+      // forever waiting on a frame nothing ever prefetches.
+      const overflow = isLooping ? Math.max(0, cur + AHEAD - end) : 0;
       for (let f = cur; f <= Math.min(end, cur + AHEAD); f++) fetchFrame(f);
+      if (overflow > 0) for (let f = start; f <= Math.min(end, start + overflow); f++) fetchFrame(f);
       for (const k of [...playBufRef.current.keys()]) {
-        if (k < cur - BEHIND || k > cur + AHEAD + 60) {
+        const keep = (k >= cur - BEHIND && k <= cur + AHEAD) ||
+                     (overflow > 0 && k >= start && k <= start + overflow);
+        if (!keep) {
           URL.revokeObjectURL(playBufRef.current.get(k));
           playBufRef.current.delete(k);
         }
@@ -1476,20 +1492,26 @@ export default function FaceSwap({
       // Advance whole frames for the elapsed time, but never onto a frame that
       // isn't buffered yet — hold there (buffering) so playback never skips.
       let guard = 0;
+      let stop = false;
       while (acc >= frameDur && guard++ < 240) {
-        let next = cur + 1;
-        if (next > end) {
+        let next;
+        if (cur >= end) {
           if (isLooping) { next = start; }
-          else { setIsPlaying(false); return; }
+          else { stop = true; break; }
+        } else {
+          next = cur + 1;
         }
         if (!playBufRef.current.has(next)) { acc = Math.min(acc, frameDur); break; }
         acc -= frameDur;
         cur = next;
       }
+      // Paint the current frame before honouring a non-loop stop, so playback
+      // ends showing the out point rather than one frame short of it.
       if (cur !== rendered) {
         const url = playBufRef.current.get(cur);
         if (url) { setBufferedSrc(url); setFrame(cur); rendered = cur; }
       }
+      if (stop) { setIsPlaying(false); return; }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
