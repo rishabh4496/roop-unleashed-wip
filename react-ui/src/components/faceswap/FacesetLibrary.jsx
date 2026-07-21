@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFile, fileUrl } from '../../api';
 import { Button } from '../ui';
+import { confirmDialog, promptDialog } from '../confirm';
 
 // Persistent, named .fsz facesets on disk. Save the selected source faceset here
 // once and reload it any time without re-uploading. Point the library folder
@@ -39,7 +40,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   }, [pickerOpen]);
 
   const saveCurrent = async () => {
-    const name = window.prompt('Name this faceset', '');
+    const name = await promptDialog({ title: 'Save faceset', message: 'Name this faceset', placeholder: 'e.g. Scarlett — hero angles', confirmLabel: 'Save' });
     if (name == null) return;
     setBusy(true);
     try {
@@ -62,7 +63,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
   };
 
   const del = async (entry) => {
-    if (!window.confirm(`Delete “${entry.name}” from the library? This removes the file on disk.`)) return;
+    if (!(await confirmDialog({ title: 'Delete faceset?', message: `Delete “${entry.name}” from the library? This removes the file on disk.`, confirmLabel: 'Delete', danger: true }))) return;
     try {
       const r = await postJSON('/api/faceset/library/delete', { filename: entry.filename });
       setEntries(r.entries || []);

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { getJSON, postJSON, postFiles, fileUrl } from '../api';
 import { Button, Card } from './ui';
+import { confirmDialog } from './confirm';
 
 export default function Gallery({ notify, setSettings, setTab }) {
   const [files, setFiles] = useState([]);
@@ -69,7 +70,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
   };
 
   const deleteFile = async (name) => {
-    if (!window.confirm(`Are you sure you want to delete ${name}?`)) return;
+    if (!(await confirmDialog({ title: 'Delete output?', message: `Delete “${name}”? This removes the file from the output folder.`, confirmLabel: 'Delete', danger: true }))) return;
     try {
       await postJSON('/api/output/delete', { name });
       notify(`Deleted ${name}`);

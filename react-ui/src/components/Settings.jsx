@@ -1,11 +1,29 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button } from './ui';
 import ThemeGallery from './ThemeGallery';
 
+// A Section that participates in the settings search: with a query active it
+// keeps only the controls whose label/info match (or the whole section when the
+// section title itself matches), and hides itself when nothing matches. With no
+// query it behaves exactly like a plain Section.
+function FilterSection({ title, query, children, ...rest }) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return <Section title={title} {...rest}>{children}</Section>;
+  const titleMatch = title.toLowerCase().includes(q);
+  const kids = React.Children.toArray(children).filter((c) => {
+    if (titleMatch) return true;
+    const pr = (c && c.props) || {};
+    return [pr.label, pr.info].some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
+  });
+  if (kids.length === 0) return null;
+  return <Section title={title} {...rest}>{kids}</Section>;
+}
+
 export default function Settings({ meta, settings, setSettings, notify }) {
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  const [query, setQuery] = useState('');
 
   const apply = async () => {
     try {
@@ -21,25 +39,36 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
   return (
     <div className="space-y-6">
+      <div className="relative max-w-md">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search settings… (e.g. thread, nvenc, codec)"
+          aria-label="Search settings"
+          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
+        />
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
-        <Section title="Server">
+        <FilterSection title="Server" query={query}>
           <Toggle label="Public server (share)" checked={!!p.server_share} onChange={(v) => set('server_share', v)} />
           <Toggle label="Clear output folder before each run" checked={!!p.clear_output} onChange={(v) => set('clear_output', v)} />
           <TextInput label="Server name" info="blank = local" value={p.server_name} onChange={(v) => set('server_name', v)} placeholder="127.0.0.1" />
           <TextInput label="Server port" info="0 = default" type="number" value={p.server_port} onChange={(v) => set('server_port', v)} />
           <TextInput label="Filename output template" info="{file} {time} {date} {i} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
           <TextInput label="Faceset library folder" info="Where saved facesets live. Blank = app/facesets. Point at a cloud folder (OneDrive/Dropbox/Google Drive) to sync facesets across devices." value={p.faceset_library_path || ''} onChange={(v) => set('faceset_library_path', v)} placeholder="e.g. C:\Users\you\OneDrive\roop-facesets" />
-        </Section>
+        </FilterSection>
 
-        <Section title="Appearance">
+        <FilterSection title="Appearance" query={query}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-medium text-white/70">Interface Theme</span>
             <span className="text-[10px] text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>
           </div>
           <ThemeGallery value={p.selected_theme} onChange={(v) => { set('selected_theme', v); postJSON('/api/settings', { selected_theme: v }).catch(() => {}); }} />
-        </Section>
+        </FilterSection>
 
-        <Section title="Performance">
+        <FilterSection title="Performance" query={query}>
           <Select label="Provider" info="Inference sessions are built at startup — provider and precision changes take effect after restarting the app." value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
           {p.provider === 'tensorrt' && (
             <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
@@ -64,9 +93,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           />
           <Slider label="Max threads" info="default 3" min={1} max={32} step={1} value={p.max_threads ?? 3} onChange={(v) => set('max_threads', v)} />
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} value={p.memory_limit ?? 0} onChange={(v) => set('memory_limit', v)} />
-        </Section>
+        </FilterSection>
 
-        <Section title="Advanced performance (restart to apply)">
+        <FilterSection title="Advanced performance (restart to apply)" query={query}>
           <p className="text-xs text-white/40 -mt-2">These override the launcher env and the VRAM auto-tuner. Leave on "auto" unless you know what you're tuning. Changes take effect after restarting the app.</p>
           <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — Number of TensorRT contexts for the swapper. 'auto' selects based on GPU VRAM: <7GB = 0 (disabled), 7-11.5GB = 2, >=11.5GB = 4." value={p.perf_trt_pool || 'auto'} onChange={(v) => set('perf_trt_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking; each worker thread needs its own leased instance to detect concurrently. 'auto' picks a small VRAM-safe default (2 on most cards) that is often LESS than Max threads below — if 'detect' dominates the terminal's STAGE TIMING breakdown, your threads are likely queueing for a free instance. Try raising this to match Max threads (watch VRAM; each instance loads its own small model set)." value={p.perf_detmask_pool || 'auto'} onChange={(v) => set('perf_detmask_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
@@ -74,9 +103,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Select label="GPU video decode (NVDEC)" info="ROOP_NVDEC — Decode the source video on the GPU's dedicated NVDEC engine (ffmpeg -hwaccel cuda) instead of CPU cv2, speeding up the analysis pre-pass and the swap pass decode. 'auto'/'on' = enabled behind a per-file probe with automatic CPU fallback; 'off' = always CPU." value={p.perf_nvdec || 'auto'} onChange={(v) => set('perf_nvdec', v)} options={meta.tristate || ['auto', 'on', 'off']} />
           <Select label="Batched swap" info="ROOP_BATCH_SWAP — Groups face tiles to process them in a single batched GPU pass. 'auto' defaults to 'on'." value={p.perf_batch_swap || 'auto'} onChange={(v) => set('perf_batch_swap', v)} options={meta.tristate || ['auto', 'on', 'off']} />
           <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed performance execution breakdown in the terminal window. 'auto' defaults to 'on'." value={p.perf_profile || 'auto'} onChange={(v) => set('perf_profile', v)} options={meta.tristate || ['auto', 'on', 'off']} />
-        </Section>
+        </FilterSection>
 
-        <Section title="Output">
+        <FilterSection title="Output" query={query}>
           <Select label="Image format" value={p.output_image_format} onChange={(v) => set('output_image_format', v)} options={meta.image_formats} />
           <Select label="Video format" value={p.output_video_format} onChange={(v) => set('output_video_format', v)} options={meta.video_formats} />
           <Select label="Video codec" value={p.output_video_codec} onChange={(v) => set('output_video_codec', v)} options={meta.video_codecs} />
@@ -95,7 +124,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           })()}
           <Toggle label="Use OS temp folder" checked={!!p.use_os_temp_folder} onChange={(v) => set('use_os_temp_folder', v)} />
           <Toggle label="Show video in browser (re-encodes)" checked={!!p.output_show_video} onChange={(v) => set('output_show_video', v)} />
-        </Section>
+        </FilterSection>
       </div>
 
       <div className="flex flex-wrap gap-3">

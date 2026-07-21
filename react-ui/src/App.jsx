@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { getJSON, postJSON } from './api';
-import { Toast, Confetti } from './components/ui';
+import { Toasts, Confetti } from './components/ui';
 import CommandPalette from './components/CommandPalette';
+import ShortcutsModal from './components/ShortcutsModal';
+import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
 // Tab panels are code-split so the initial bundle only ships the shell + the
 // first tab's dependencies. Each is fetched on first visit (Vite emits one
@@ -37,7 +39,7 @@ export default function App() {
   const [tab, setTab] = useState('faceswap');
   const [meta, setMeta] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [toasts, setToasts] = useState([]);
   const [error, setError] = useState('');
 
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
@@ -101,6 +103,7 @@ export default function App() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   useEffect(() => { isDraggingOverRef.current = isDraggingOver; }, [isDraggingOver]);
   const [showPalette, setShowPalette] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const fileListenersRef = useRef([]);
   const dragHideTimerRef = useRef(null);
   const isDraggingOverRef = useRef(false);
@@ -118,10 +121,17 @@ export default function App() {
     localStorage.setItem('roop_zoom', String(zoom));
   }, [zoom]);
 
-  // Global keyboard shortcuts: ⌘/Ctrl-K palette, and ⌘/Ctrl +/-/0 zoom.
+  // Global keyboard shortcuts: ⌘/Ctrl-K palette, ⌘/Ctrl +/-/0 zoom, and `?`
+  // for the shortcut cheat-sheet.
   useEffect(() => {
     const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
+        || document.activeElement?.isContentEditable;
+      if (!(e.metaKey || e.ctrlKey)) {
+        // `?` (Shift + /) opens the shortcuts sheet, but not while typing.
+        if (e.key === '?' && !typing) { e.preventDefault(); setShowShortcuts((v) => !v); }
+        return;
+      }
       const k = e.key.toLowerCase();
       if (k === 'k') { e.preventDefault(); setShowPalette((v) => !v); }
       else if (e.key === '=' || e.key === '+') { e.preventDefault(); bumpZoom(0.05); }
@@ -241,13 +251,16 @@ export default function App() {
     };
   }, []);
 
-  const toastTimerRef = useRef(null);
+  // Latest message mirrored into an aria-live region for screen readers.
+  const [liveMsg, setLiveMsg] = useState('');
+  const dismissToast = useCallback((id) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
   const notify = useCallback((message, type = 'success') => {
-    setToast({ message, type });
-    // Reset the dismiss timer, otherwise an earlier toast's timeout hides a
-    // newer toast prematurely.
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
+    const id = Date.now() + Math.random();
+    // Stack toasts (newest wins visually) instead of clobbering — each dismisses
+    // on its own timer, and the whole set is capped so a burst can't pile up.
+    setToasts((ts) => [...ts, { id, message, type }].slice(-4));
+    setLiveMsg(`${type}: ${message}`);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
   }, []);
 
   useEffect(() => {
@@ -369,7 +382,7 @@ export default function App() {
                       } catch {}
                     }}
                     className="hover:text-white text-white/60 transition-colors cursor-pointer"
-                    title="Resume Job"
+                    title="Resume Job" aria-label="Resume job"
                   >
                     ▶
                   </button>
@@ -384,7 +397,7 @@ export default function App() {
                       } catch {}
                     }}
                     className="hover:text-white text-white/60 transition-colors cursor-pointer"
-                    title="Pause Job"
+                    title="Pause Job" aria-label="Pause job"
                   >
                     ⏸
                   </button>
@@ -393,14 +406,14 @@ export default function App() {
                   type="button"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    if (window.confirm('Stop the active job?')) {
+                    if (await confirmDialog({ title: 'Stop job?', message: 'Stop the active job? The partial output so far is finalized and kept.', confirmLabel: 'Stop', danger: true })) {
                       try {
                         await postJSON('/api/stop', {});
                       } catch {}
                     }
                   }}
                   className="hover:text-red-400 text-white/60 transition-colors cursor-pointer"
-                  title="Stop Job"
+                  title="Stop Job" aria-label="Stop job"
                 >
                   ⏹
                 </button>
@@ -418,10 +431,16 @@ export default function App() {
           <span className="text-sm">⌘</span> Search
           <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
+        <button
+          type="button"
+          onClick={() => setShowShortcuts(true)}
+          title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"
+          className="hidden md:grid place-items-center h-9 w-9 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-sm font-bold"
+        >?</button>
         <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">
-          <button type="button" onClick={() => bumpZoom(-0.05)} title="Zoom out (Ctrl −)" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">−</button>
-          <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" className="min-w-[44px] text-[11px] font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
-          <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
+          <button type="button" onClick={() => bumpZoom(-0.05)} title="Zoom out (Ctrl −)" aria-label="Zoom out" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">−</button>
+          <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" aria-label="Reset zoom" className="min-w-[44px] text-[11px] font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
+          <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" aria-label="Zoom in" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
         </div>
         <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
           {TABS.map((t) => {
@@ -454,7 +473,7 @@ export default function App() {
       {/* Main Container Layout */}
       <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
-          <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up">
+          <div role="alert" className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up selectable">
             ⚠️ {error}
           </div>
         )}
@@ -497,7 +516,14 @@ export default function App() {
         )}
       </main>
 
-      <Toast toast={toast} />
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Screen-reader status channel: toast messages + live processing state,
+          announced politely without stealing focus. */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveMsg}</div>
+      <div className="sr-only" role="status" aria-live="polite">
+        {progress.processing ? `${progress.paused ? 'Paused' : 'Processing'} ${Math.round((progress.progress || 0) * 100)} percent` : ''}
+      </div>
 
       <Confetti active={confetti} />
 
@@ -509,6 +535,10 @@ export default function App() {
       )}
 
       <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} commands={commands} />
+
+      <ShortcutsModal open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+      <ConfirmHost />
 
       {isDraggingOver && (
         <div className="fixed inset-0 bg-[var(--accent)]/10 backdrop-blur-[2px] border-4 border-dashed border-[var(--accent)] z-50 flex items-center justify-center pointer-events-none">

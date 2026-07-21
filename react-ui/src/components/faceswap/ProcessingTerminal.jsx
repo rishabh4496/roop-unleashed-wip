@@ -49,7 +49,7 @@ export default function ProcessingTerminal({ log = [], paused }) {
       </div>
 
       {/* Scrolling log body */}
-      <div ref={scrollRef} className="h-40 overflow-y-auto px-3 py-2 text-[11px] leading-relaxed scroll-smooth">
+      <div ref={scrollRef} className="selectable h-40 overflow-y-auto px-3 py-2 text-[11px] leading-relaxed scroll-smooth">
         {log.length === 0 ? (
           <div className="text-white/30">waiting for output…</div>
         ) : (

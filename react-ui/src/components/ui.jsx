@@ -348,23 +348,37 @@ export const Confetti = ({ active }) => {
   );
 };
 
+const toastIcon = (type) => (type === 'error' ? '❌' : type === 'info' ? 'ℹ️' : '✅');
+const toastColor = (type) => (type === 'error' ? 'text-red-400' : type === 'info' ? 'text-blue-300' : 'text-green-400');
+
+// Stacked toasts. Multiple can be visible at once (a batch run or several errors
+// no longer clobber each other), newest on top. Dismissable by click. The stack
+// is not the accessibility channel — App renders a separate aria-live region so
+// screen readers are announced regardless of the visual stack.
+export const Toasts = ({ toasts = [], onDismiss }) => (
+  <div className="fixed bottom-6 right-6 z-50 flex flex-col-reverse items-end gap-2 pointer-events-none">
+    <AnimatePresence initial={false}>
+      {toasts.map((t) => (
+        <motion.div
+          key={t.id}
+          layout
+          initial={{ opacity: 0, y: 24, scale: 0.9 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, x: 24, scale: 0.95 }}
+          transition={spring.bouncy}
+          onClick={() => onDismiss?.(t.id)}
+          title="Dismiss"
+          className="pointer-events-auto cursor-pointer px-4 py-3 rounded-xl shadow-2xl bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px] max-w-sm"
+        >
+          <span className="text-lg shrink-0">{toastIcon(t.type)}</span>
+          <span className={`text-sm font-medium ${toastColor(t.type)}`}>{t.message}</span>
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
+
+// Legacy single-toast (kept for any caller still passing one object).
 export const Toast = ({ toast }) => (
-  <AnimatePresence>
-    {toast && (
-      <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.9 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 12, scale: 0.95 }}
-        transition={spring.bouncy}
-        className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px]"
-      >
-        {toast.type === 'error' && <span className="text-lg">❌</span>}
-        {toast.type === 'info' && <span className="text-lg">ℹ️</span>}
-        {(!toast.type || toast.type === 'success') && <span className="text-lg">✅</span>}
-        <span className={`text-sm font-medium ${toast.type === 'error' ? 'text-red-400' : toast.type === 'info' ? 'text-blue-300' : 'text-green-400'}`}>
-          {toast.message}
-        </span>
-      </motion.div>
-    )}
-  </AnimatePresence>
+  <Toasts toasts={toast ? [{ ...toast, id: 'single' }] : []} />
 );

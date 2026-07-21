@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { postJSON } from '../api';
 import { PERSON_COLORS } from './constants';
+import { confirmDialog } from './confirm';
 
 // Coarse pose buckets we consider "primary coverage" for a person. Anything the
 // backend labels (e.g. "Left Profile + Up Tilt") is matched against these by
@@ -128,7 +129,7 @@ export default function PersonGroups({
   // Remove every captured person/angle from the layout (keeps target media).
   const clearAllFaces = async () => {
     if (!targetFaces.length) return;
-    if (!window.confirm('Remove all captured target faces? This clears every person in this layout.')) return;
+    if (!(await confirmDialog({ title: 'Clear all faces?', message: 'Remove all captured target faces? This clears every person in this layout.', confirmLabel: 'Clear all', danger: true }))) return;
     const res = await call('/api/target/clear_faces', {}, 'Cleared all target faces');
     if (res) {
       setExpanded({});

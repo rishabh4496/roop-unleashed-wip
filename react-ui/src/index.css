@@ -1029,3 +1029,34 @@ input[type="range"]::-webkit-slider-thumb:active {
 .hud-glass-button:active {
   transform: translateY(1px);
 }
+
+/* ── Accessibility ─────────────────────────────────────────────────────────
+   The app root sets `select-none` for a native-app feel; `.selectable` (and its
+   children) opt specific text back in — paths, errors, log lines, filenames —
+   so users can actually copy them. */
+.selectable, .selectable * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+}
+
+/* Keyboard focus ring. Mouse clicks don't show it (:focus-visible only), so the
+   premium look is untouched for pointer users while keyboard users get a clear,
+   theme-accent focus indicator on every interactive control. */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+*:focus:not(:focus-visible) { outline: none; }
+
+/* Visually-hidden but exposed to screen readers (aria-live status region). */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
