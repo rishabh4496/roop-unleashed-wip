@@ -1908,12 +1908,6 @@ def _run_swap(payload):
     roop_globals.pause = False
     _stop_requested["flag"] = False
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
-    if hasattr(roop_globals, "latest_swapped_frame"):
-        try:
-            delattr(roop_globals, "latest_swapped_frame")
-        except Exception:
-            pass
-    _live_cache.update({"seq": -1, "data": ""})
     try:
         # Inside the try so any failure (e.g. CFG.save() I/O error) still hits
         # the finally block and clears the processing flag.

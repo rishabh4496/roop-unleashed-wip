@@ -17,9 +17,6 @@ export default function InteractivePreview({
   setIsPlaying,
   previewing = false,
   previewSecs = 0,
-  processing = false,
-  liveFrame = null,
-  liveSeq = 0
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -309,14 +306,6 @@ export default function InteractivePreview({
           </div>
         </div>
       )}
-      {processing && liveFrame && (
-        <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--accent)] backdrop-blur-md text-[11px] font-semibold tracking-wide text-white border border-white/15 shadow-lg">
-            <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />
-            Live swapping{liveSeq > 0 ? ` · ${liveSeq} frames` : ''}
-          </div>
-        </div>
-      )}
 
       {/* Frame navigation shortcuts popup guide (visible when video) */}
       {maxFrames > 1 && (
@@ -355,6 +344,7 @@ export default function InteractivePreview({
               className="absolute inset-0 w-full h-full object-contain opacity-0 transition-opacity duration-200 ease-out"
               draggable={false}
               onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
+              ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
             />
           </div>
 
