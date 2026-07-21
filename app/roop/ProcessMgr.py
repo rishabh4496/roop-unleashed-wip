@@ -1488,13 +1488,11 @@ class ProcessMgr():
 
 
     def _publish_live(self, frame):
-        # Feed the UI's live view during batch processing only — the preview
-        # ProcessMgr shares this code path and must not leak preview renders.
-        if not self.is_preview and frame is not None:
-            roop.globals.latest_swapped_frame = frame.copy()
-            # Version stamp so /api/progress can skip re-encoding an unchanged
-            # frame (approximate under threads is fine — it only gates a cache).
-            roop.globals.latest_swapped_seq = getattr(roop.globals, 'latest_swapped_seq', 0) + 1
+        # The UI's live preview-frame view was removed in favour of a progress
+        # bar, so there's no consumer for latest_swapped_frame anymore. Skip the
+        # per-frame full-frame copy that used to feed it (pure overhead on the
+        # hot swap path). Kept as a no-op so the existing call sites stay valid.
+        return
 
     def process_frame(self, frame:Frame, frame_idx=None):
         # ── Pause support ────────────────────────────────────────────────────

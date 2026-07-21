@@ -2689,12 +2689,49 @@ export default function FaceSwap({
           </div>
 
           <Section title="Preview">
-            {/* Mount the preview when there's a static preview OR a live swap in
-                flight. previewSrc is React-only state and is empty after a remount
-                (e.g. Pinokio Run<->Dev reload); without the live-frame clause the
-                whole area would fall back to "No preview yet" mid-render and the
-                live swap wouldn't show even though /api/progress is streaming it. */}
-            {(previewSrc || (progress.processing && progress.live_frame)) ? (
+            {/* While a job runs we no longer stream live swapped frames into the
+                preview box (they thrashed the GPU and jittered). Instead we show a
+                progress panel that mirrors the terminal: percent, frame X / Y,
+                FPS (from progress.desc), elapsed and time-left. previewSrc is
+                React-only state and is empty after a remount, so the processing
+                branch is keyed off progress.processing rather than previewSrc. */}
+            {progress.processing ? (
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center justify-center select-none px-6 sm:px-10">
+                <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 40%, var(--accent-glow), transparent 60%)' }} />
+                <div className="relative w-full max-w-xl flex flex-col items-center gap-5">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
+                    <span className={`text-xs font-bold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                      {progress.paused ? 'Paused' : 'Processing'}
+                    </span>
+                  </div>
+
+                  {/* desc mirrors the terminal line: "Processing frame X / Y (Z FPS)" */}
+                  <div className="text-sm font-semibold text-white/85 text-center tabular-nums break-words">
+                    {progress.desc || 'Swapping faces…'}
+                  </div>
+
+                  <div className="w-full space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
+                      <span className="text-white/85 font-bold tabular-nums">{Math.round(prog * 100)}%</span>
+                      <span className="tabular-nums">{fmtTime(elapsedMs)} elapsed</span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
+                      <div
+                        className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
+                        style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
+                      <span className="tabular-nums text-emerald-400/90 font-semibold">{etaMs > 0 ? `${fmtTime(etaMs)} left` : '—'}</span>
+                      <span className="tabular-nums">ETA {etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
+                    </div>
+                  </div>
+
+                  {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
+                </div>
+              </div>
+            ) : previewSrc ? (
               comparingEnhancers ? (() => {
                 const activeList = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
                 const gridColsClass = activeList.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
@@ -2890,8 +2927,8 @@ export default function FaceSwap({
                 );
               })() : (
                 <InteractivePreview
-                  beforeSrc={rawUrl} 
-                  afterSrc={progress.processing && progress.live_frame ? progress.live_frame : ((!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
+                  beforeSrc={rawUrl}
+                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)}
                   faces={previewFaces}
                   personIds={previewPersonIds}
                   onSelectPerson={addPersonFromBox}
@@ -2905,9 +2942,6 @@ export default function FaceSwap({
                   previewing={previewing}
                   previewSecs={previewSecs}
                   setIsPlaying={setIsPlaying}
-                  processing={progress.processing}
-                  liveFrame={progress.live_frame}
-                  liveSeq={progress.live_seq || 0}
                 />
               )
             ) : (

@@ -2903,25 +2903,13 @@ def resume_swap():
     return {"status": "resumed"}
 
 
-# Cache of the last encoded live frame, keyed by its publish sequence number,
-# so a 1 Hz poll doesn't re-encode a frame that hasn't changed.
-_live_cache = {"seq": -1, "data": ""}
-
-
 @app.get("/api/progress")
 def get_progress():
-    live_frame = ""
-    live_seq = 0
-    if _progress["processing"] and hasattr(roop_globals, "latest_swapped_frame"):
-        frame = getattr(roop_globals, "latest_swapped_frame", None)
-        live_seq = getattr(roop_globals, "latest_swapped_seq", 0)
-        if frame is not None:
-            if _live_cache["seq"] == live_seq and _live_cache["data"]:
-                live_frame = _live_cache["data"]
-            else:
-                live_frame = _bgr_to_jpg_dataurl(frame)
-                _live_cache.update({"seq": live_seq, "data": live_frame})
-    return {**_progress, "output": _last_output, "live_frame": live_frame, "live_seq": live_seq}
+    # The UI no longer streams live swapped frames into the preview box (it shows
+    # a progress bar + elapsed/ETA instead), so we skip the per-poll JPEG encode
+    # of the latest frame entirely. The fields are kept (empty) for shape
+    # compatibility with any older client.
+    return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0}
 
 
 @app.get("/api/output")
