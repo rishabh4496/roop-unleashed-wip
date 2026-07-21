@@ -17,7 +17,6 @@ export default function InteractivePreview({
   setIsPlaying,
   previewing = false,
   previewSecs = 0,
-  scrubbing = false,
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -32,27 +31,6 @@ export default function InteractivePreview({
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [imgDim, setImgDim] = useState(null);
-
-  // Cross-fade the swapped "after" image so scrubbing / preview refreshes don't
-  // flash the original frame underneath between image loads. Keep the last
-  // decoded frame painted (base) while the incoming one (top) fades in on load.
-  const [afterLayers, setAfterLayers] = useState({ base: afterSrc, top: afterSrc });
-  useEffect(() => {
-    setAfterLayers((prev) => (prev.top === afterSrc ? prev : { base: prev.top, top: afterSrc }));
-  }, [afterSrc]);
-
-  // Same double-buffer for the raw "before" frame. Without it, swapping the img
-  // src (every timeline frame) blanks the element while the next frame decodes,
-  // which reads as a flicker while dragging. Holding the last decoded frame
-  // underneath makes scrubbing look like a continuous strip of film.
-  const [beforeLayers, setBeforeLayers] = useState({ base: beforeSrc, top: beforeSrc });
-  useEffect(() => {
-    setBeforeLayers((prev) => (prev.top === beforeSrc ? prev : { base: prev.top, top: beforeSrc }));
-  }, [beforeSrc]);
-
-  // Snap frames in fast while actively scrubbing (a long ease makes the image
-  // trail the playhead); ease gently on discrete jumps / preview refreshes.
-  const fadeMs = scrubbing ? 60 : 200;
 
   const handleSliderMove = (clientX) => {
     const target = imageRef.current || containerRef.current;
@@ -338,42 +316,34 @@ export default function InteractivePreview({
 
       <div className={`absolute inset-0 flex items-center justify-center ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
 
-        {/* Before Image & Bounding Boxes Wrapper */}
+        {/* Before Image & Bounding Boxes Wrapper.
+
+            Both frames use a single PERSISTENT <img> each (no React `key`, so the
+            element is never remounted on a frame change). Changing an <img>'s src
+            makes the browser keep the previously decoded frame painted until the
+            new one is ready, then swap atomically — so clicking to a new frame
+            never flashes the black container through while the next frame decodes.
+            (Remounting via `key` mounts a fresh, empty <img> that paints blank
+            until load — that blank was the black flicker.) */}
         <div className="relative z-10" style={aspectStyle} ref={imageRef}>
-          {/* Held previous frame, painted underneath so a src swap never flashes
-              blank while the next frame decodes. */}
-          {beforeLayers.base && beforeLayers.base !== beforeLayers.top && (
-            <img src={beforeLayers.base} alt="" aria-hidden draggable={false}
-                 className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
-          )}
           <img
-            key={beforeLayers.top}
-            src={beforeLayers.top}
+            src={beforeSrc}
             alt="Before"
-            className="relative z-[1] w-full h-full object-contain pointer-events-none opacity-0 ease-out"
-            style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
-            onLoad={(e) => { e.currentTarget.style.opacity = '1'; setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight }); }}
-            ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
+            className="relative z-[1] w-full h-full object-contain pointer-events-none"
+            onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
             draggable={false}
           />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
-          {/* After Image Overlay with Clip-path — cross-faded so frame swaps
-              don't flicker through to the original underneath. */}
+          {/* Swapped "after" overlay (clip-path only in compare mode). Falls back
+              to the before frame when no swap is available so it never blanks. */}
           <div className="absolute inset-0 pointer-events-none z-20"
                style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
-            {afterLayers.base && afterLayers.base !== afterLayers.top && (
-              <img src={afterLayers.base} alt="" aria-hidden className="absolute inset-0 w-full h-full object-contain" draggable={false} />
-            )}
             <img
-              key={afterLayers.top}
-              src={afterLayers.top}
+              src={afterSrc || beforeSrc}
               alt="After"
-              className="absolute inset-0 w-full h-full object-contain opacity-0 ease-out"
-              style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
+              className="absolute inset-0 w-full h-full object-contain"
               draggable={false}
-              onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
-              ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
             />
           </div>
 
