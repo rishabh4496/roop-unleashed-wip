@@ -84,7 +84,7 @@ _last_output = {"path": "", "kind": ""}
 # regardless of which stage produced it (swap / upscale / interpolate / combine).
 from collections import deque as _deque
 _log_lines = _deque(maxlen=250)
-_log_state = {"last": "", "last_ts": 0.0, "seq": 0}
+_log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": ""}
 
 
 def _push_log(msg, force=False):
@@ -1940,7 +1940,7 @@ def _run_swap(payload):
     _stop_requested["flag"] = False
     # Fresh terminal feed for this run.
     _log_lines.clear()
-    _log_state.update({"last": "", "last_ts": 0.0, "seq": 0})
+    _log_state.update({"last": "", "last_ts": 0.0, "seq": 0, "last_err": ""})
     _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     try:
@@ -2945,8 +2945,12 @@ def get_progress():
     # (rather than at every _progress["desc"] = ... site) captures every stage's
     # output — swap, upscale, interpolate, combine — from one place.
     if _progress["processing"]:
-        if _progress.get("error"):
-            _push_log("⚠ " + _progress["error"], force=True)
+        # Dedup the error against its own key — otherwise the desc push below
+        # overwrites _log_state["last"] and the same error re-appends every poll.
+        err = _progress.get("error")
+        if err and err != _log_state.get("last_err"):
+            _log_state["last_err"] = err
+            _push_log("⚠ " + err, force=True)
         _push_log(_progress.get("desc", ""))
     return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0,
             "log": list(_log_lines)}

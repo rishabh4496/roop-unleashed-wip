@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, laz
 import { getJSON, postJSON } from './api';
 import { Toasts, Confetti } from './components/ui';
 import CommandPalette from './components/CommandPalette';
-import ShortcutsModal from './components/ShortcutsModal';
 import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
 // Tab panels are code-split so the initial bundle only ships the shell + the
@@ -103,7 +102,6 @@ export default function App() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   useEffect(() => { isDraggingOverRef.current = isDraggingOver; }, [isDraggingOver]);
   const [showPalette, setShowPalette] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
   const fileListenersRef = useRef([]);
   const dragHideTimerRef = useRef(null);
   const isDraggingOverRef = useRef(false);
@@ -121,17 +119,12 @@ export default function App() {
     localStorage.setItem('roop_zoom', String(zoom));
   }, [zoom]);
 
-  // Global keyboard shortcuts: ⌘/Ctrl-K palette, ⌘/Ctrl +/-/0 zoom, and `?`
-  // for the shortcut cheat-sheet.
+  // Global keyboard shortcuts: ⌘/Ctrl-K palette, and ⌘/Ctrl +/-/0 zoom.
+  // (The `?` shortcuts HUD is owned by the FaceSwap tab, which has the full
+  // playback/timeline/queue shortcut list — no duplicate here.)
   useEffect(() => {
     const onKey = (e) => {
-      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
-        || document.activeElement?.isContentEditable;
-      if (!(e.metaKey || e.ctrlKey)) {
-        // `?` (Shift + /) opens the shortcuts sheet, but not while typing.
-        if (e.key === '?' && !typing) { e.preventDefault(); setShowShortcuts((v) => !v); }
-        return;
-      }
+      if (!(e.metaKey || e.ctrlKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'k') { e.preventDefault(); setShowPalette((v) => !v); }
       else if (e.key === '=' || e.key === '+') { e.preventDefault(); bumpZoom(0.05); }
@@ -431,12 +424,6 @@ export default function App() {
           <span className="text-sm">⌘</span> Search
           <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
-        <button
-          type="button"
-          onClick={() => setShowShortcuts(true)}
-          title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"
-          className="hidden md:grid place-items-center h-9 w-9 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-sm font-bold"
-        >?</button>
         <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">
           <button type="button" onClick={() => bumpZoom(-0.05)} title="Zoom out (Ctrl −)" aria-label="Zoom out" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">−</button>
           <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" aria-label="Reset zoom" className="min-w-[44px] text-[11px] font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
@@ -535,8 +522,6 @@ export default function App() {
       )}
 
       <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} commands={commands} />
-
-      <ShortcutsModal open={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
       <ConfirmHost />
 
