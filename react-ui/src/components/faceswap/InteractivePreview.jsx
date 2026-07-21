@@ -1,6 +1,50 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import AIScannerOverlay from './AIScannerOverlay';
 
+// Cross-fades between src changes using TWO persistent <img> layers that are
+// never remounted. The incoming frame is loaded into the hidden (back) layer
+// while the current frame stays painted on the front layer; only once the back
+// layer has fully decoded do we flip which layer is on top, so the fade always
+// runs from one complete frame to the next and never blanks to black in between.
+// (Remounting a single <img> via a changing `key` is what caused the old black
+// flicker — a fresh <img> paints nothing until it decodes.)
+function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
+  const [layers, setLayers] = useState({ a: src, b: src, front: 'a' });
+
+  useEffect(() => {
+    setLayers((s) => {
+      if (src === s[s.front]) return s;              // already the visible frame
+      const back = s.front === 'a' ? 'b' : 'a';
+      if (src === s[back]) return s;                 // already loading it
+      return { ...s, [back]: src };                  // start decoding into back
+    });
+  }, [src]);
+
+  const promote = (which, e) => {
+    if (onLoad) onLoad(e);
+    setLayers((s) => {
+      if (s.front === which) return s;               // already front
+      if (s[which] !== src) return s;                // stale load — newer src pending
+      return { ...s, front: which };
+    });
+  };
+
+  const renderLayer = (which) => (
+    <img
+      key={which}
+      src={layers[which]}
+      alt=""
+      aria-hidden
+      draggable={false}
+      onLoad={(e) => promote(which, e)}
+      className={className}
+      style={{ ...style, opacity: layers.front === which ? 1 : 0, transition: `opacity ${fadeMs}ms ease-out` }}
+    />
+  );
+
+  return <>{renderLayer('a')}{renderLayer('b')}</>;
+}
+
 export default function InteractivePreview({
   beforeSrc,
   afterSrc,
@@ -17,6 +61,7 @@ export default function InteractivePreview({
   setIsPlaying,
   previewing = false,
   previewSecs = 0,
+  scrubbing = false,
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -335,15 +380,18 @@ export default function InteractivePreview({
           />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
-          {/* Swapped "after" overlay (clip-path only in compare mode). Falls back
-              to the before frame when no swap is available so it never blanks. */}
+          {/* Swapped "after" overlay (clip-path only in compare mode). Cross-faded
+              between frames via two persistent layers (see CrossfadeImage) — smooth
+              transition on frame/preview changes with no black flash. Falls back to
+              the before frame when no swap is available so it never blanks. Snap the
+              fade short while actively scrubbing so the image doesn't trail the
+              playhead; ease gently on discrete jumps / preview refreshes. */}
           <div className="absolute inset-0 pointer-events-none z-20"
                style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
-            <img
+            <CrossfadeImage
               src={afterSrc || beforeSrc}
-              alt="After"
+              fadeMs={scrubbing ? 60 : 200}
               className="absolute inset-0 w-full h-full object-contain"
-              draggable={false}
             />
           </div>
 
