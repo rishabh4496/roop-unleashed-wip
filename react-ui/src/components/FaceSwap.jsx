@@ -2650,7 +2650,7 @@ export default function FaceSwap({
             {progress.processing ? (
               <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center justify-center select-none px-6 sm:px-10">
                 <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 38%, var(--accent-glow), transparent 60%)' }} />
-                <div className="relative w-full max-w-xl flex flex-col items-center gap-4">
+                <div className="relative w-full max-w-4xl flex flex-col items-center gap-4">
                   <div className="flex flex-col items-center gap-1.5">
                     <div className="flex items-center gap-2">
                       <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
