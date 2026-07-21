@@ -477,7 +477,7 @@ export default function FaceSwap({
     rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
     r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
     uf: p.use_frontalization, fth: p.frontalization_threshold,
-    jr: p.jaw_reshape, jrs: p.jaw_reshape_strength,
+    jr: p.jaw_reshape, jrs: p.jaw_reshape_strength, dts: p.detail_transfer_strength,
     ctm: p.color_transfer_mode, s2: p.sam2_model_size,
     cf_fid: p.codeformer_fidelity,
     rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
@@ -635,6 +635,7 @@ export default function FaceSwap({
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
         jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        detail_transfer_strength: num(p.detail_transfer_strength, 0),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
@@ -711,7 +712,7 @@ export default function FaceSwap({
         rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
@@ -759,6 +760,7 @@ export default function FaceSwap({
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
           jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        detail_transfer_strength: num(p.detail_transfer_strength, 0),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
@@ -842,7 +844,7 @@ export default function FaceSwap({
         rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
@@ -887,6 +889,7 @@ export default function FaceSwap({
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
           jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        detail_transfer_strength: num(p.detail_transfer_strength, 0),
           swap_model: p.swap_model, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
@@ -965,7 +968,7 @@ export default function FaceSwap({
         rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
         r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
         uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength,
+        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
         rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
@@ -1010,6 +1013,7 @@ export default function FaceSwap({
           use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
           use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
           jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        detail_transfer_strength: num(p.detail_transfer_strength, 0),
           swap_model: sm, default_det_size: p.default_det_size,
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
@@ -1096,6 +1100,7 @@ export default function FaceSwap({
         use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
         use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
         jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
+        detail_transfer_strength: num(p.detail_transfer_strength, 0),
         swap_model: p.swap_model, default_det_size: p.default_det_size,
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
@@ -2161,6 +2166,7 @@ export default function FaceSwap({
             options={[{ value: 'off', label: 'Off' }, { value: 'rife_2x', label: 'RIFE ×2 fps' }, { value: 'rife_4x', label: 'RIFE ×4 fps' }, { value: 'minterpolate_2x', label: 'ffmpeg minterpolate ×2' }]} />
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
+          <Slider label="Skin detail transfer" info="Adds the ORIGINAL footage's real high-frequency texture (pores, stubble, grain) onto the swapped face. The generator smooths skin and the enhancer fakes flickery pores; this uses genuine detail from the scene instead. 0 = off. Start ~0.3–0.5; too high reintroduces the target's skin identity." min={0} max={1} step={0.05} value={num(p.detail_transfer_strength, 0)} onChange={(v) => set('detail_transfer_strength', v)} />
         </Section>
 
         <Section title="Masking parameters" collapsible defaultOpen={false}>

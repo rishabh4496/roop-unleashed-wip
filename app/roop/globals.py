@@ -56,6 +56,9 @@ refine_landmarks = False
 # geometry). strength 0..1 = amount of the shape difference applied.
 jaw_reshape = False
 jaw_reshape_strength = 0.5
+# Skin detail transfer: inject the original footage's high-frequency texture
+# (pores, grain) onto the swapped/enhanced face. 0 = off (no-op), 0..1 = amount.
+detail_transfer_strength = 0.0
 # Small-face rescue: when a frame yields no detections, retry on a 2x upscale
 # so tiny/distant faces get picked up (without raising the global det size).
 rescue_small_faces = False

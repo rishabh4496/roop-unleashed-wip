@@ -184,6 +184,8 @@ class Settings:
         # Jaw / chin reshape toward the source face shape
         self.jaw_reshape = self.default_get(data, 'jaw_reshape', False)
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
+        # Skin detail transfer strength (high-frequency texture from footage)
+        self.detail_transfer_strength = self.default_get(data, 'detail_transfer_strength', 0.0)
         self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
         self.detector_engine = self.default_get(data, 'detector_engine', 'scrfd')
         # Temporal detection pre-pass (video anti-flicker): tracked detection with
@@ -284,6 +286,7 @@ class Settings:
             'refine_landmarks': self.refine_landmarks,
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
+            'detail_transfer_strength': self.detail_transfer_strength,
             'rescue_small_faces': self.rescue_small_faces,
             'detector_engine': self.detector_engine,
             'face_detector_nms': self.face_detector_nms,

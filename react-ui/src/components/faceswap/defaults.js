@@ -50,6 +50,7 @@ export const FACESWAP_DEFAULTS = {
   frontalization_threshold: 25,
   jaw_reshape: false,
   jaw_reshape_strength: 0.5,
+  detail_transfer_strength: 0,
 
   // Video parameters
   video_swapping_method: 'In-Memory processing',

@@ -2731,6 +2731,23 @@ class ProcessMgr():
                 and enhanced_frame is not None and rotation_action is None):
             enhanced_frame = _es.apply(enhanced_frame, target_face.kps, self._cur_stab_t())
 
+        # ── Skin detail transfer ──────────────────────────────────────────────
+        # The generator produces smooth 256px skin and the enhancer hallucinates
+        # flickery pores; inject the REAL high-frequency layer (pores, fine
+        # texture, grain) from the actual target footage instead. aligned_img and
+        # the swapped/enhanced crop share the same face-template space, so the
+        # detail lands registered. High-pass is zero-mean → color/lighting are
+        # untouched. strength<=0 is a bit-identical no-op.
+        _dt = float(getattr(roop.globals, 'detail_transfer_strength', 0.0) or 0.0)
+        if _dt > 0.0:
+            try:
+                if enhanced_frame is not None:
+                    enhanced_frame = self.apply_detail_transfer(enhanced_frame, aligned_img, _dt)
+                else:
+                    fake_frame = self.apply_detail_transfer(fake_frame, aligned_img, _dt)
+            except Exception as e:
+                print(f"[ProcessMgr] Detail transfer failed: {e}")
+
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
         # combined=0 → keep swapped pixels  (fake_frame)
@@ -3342,6 +3359,36 @@ class ProcessMgr():
         except Exception as e:
             print(f'Error in apply_mouth_area: {e}')
         return frame
+
+    def apply_detail_transfer(self, face_img, orig_crop, strength):
+        """Inject the original target crop's high-frequency detail onto the
+        swapped/enhanced face.
+
+        `face_img` = swapped or enhanced crop, `orig_crop` = original aligned
+        crop (same face-template space, possibly a different resolution). We take
+        the zero-mean high-pass of the original (orig − Gaussian-blur(orig)) and
+        add `strength`× of it to the face, so the face keeps its own low
+        frequencies (identity, color, lighting from the swap/enhancer) but gains
+        the REAL fine texture (pores, stubble, grain) from the footage — which
+        the generator smooths away and the enhancer only fakes. Because the
+        high-pass is zero-mean, brightness/color are unchanged.
+
+        strength<=0 returns the input untouched (bit-identical no-op)."""
+        s = float(strength)
+        if s <= 0.0:
+            return face_img
+        fh, fw = face_img.shape[:2]
+        orig = orig_crop
+        if orig.shape[:2] != (fh, fw):
+            orig = cv2.resize(orig, (fw, fh), interpolation=cv2.INTER_CUBIC)
+        orig = orig.astype(np.float32)
+        face = face_img.astype(np.float32)
+        # Blur radius scales with crop resolution so the split between "texture"
+        # and "structure" stays perceptually constant across 256 / 512 / 1024 crops.
+        sigma = max(1.0, fw / 256.0)
+        high_freq = orig - cv2.GaussianBlur(orig, (0, 0), sigma)
+        out = face + s * high_freq
+        return np.clip(out, 0, 255).astype(np.uint8)
 
     def apply_color_transfer(self, source, target):
         """Match the swapped crop's color/lighting to the original target crop.
