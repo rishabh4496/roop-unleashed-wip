@@ -8,6 +8,7 @@ import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import FacesetLibrary from './faceswap/FacesetLibrary';
+import ProcessingTerminal from './faceswap/ProcessingTerminal';
 import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
@@ -2728,6 +2729,10 @@ export default function FaceSwap({
                       <span>Threads <span className="text-white/70 font-semibold tabular-nums">{telemetry.threads}</span></span>
                     </div>
                   )}
+
+                  {/* Live terminal feed — mirrors what the real console prints
+                      (stage changes, per-frame FPS, encode/combine, done/errors). */}
+                  <ProcessingTerminal log={progress.log || []} paused={progress.paused} />
 
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
                 </div>

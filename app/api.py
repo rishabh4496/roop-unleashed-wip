@@ -78,6 +78,36 @@ fm_files: list = []                    # uploaded source paths for the facemgr t
 # Live progress, polled by the React UI
 _progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
 _last_output = {"path": "", "kind": ""}
+
+# Rolling terminal-style log tail surfaced to the preview box while a job runs.
+# Capture is centralized in get_progress() (see below) so it mirrors _progress["desc"]
+# regardless of which stage produced it (swap / upscale / interpolate / combine).
+from collections import deque as _deque
+_log_lines = _deque(maxlen=250)
+_log_state = {"last": "", "last_ts": 0.0, "seq": 0}
+
+
+def _push_log(msg, force=False):
+    """Append a line to the rolling terminal feed, de-duped + throttled.
+
+    High-frequency per-frame updates ("Processing frame 120 / 300") would flood
+    the feed, so identical lines are skipped and frame-style lines are rate-limited
+    to read like a live `tail` rather than a wall of text. `force=True` bypasses the
+    throttle for meaningful one-off events (start, done, errors, stage changes).
+    """
+    import time as _time
+    if not msg:
+        return
+    msg = str(msg).strip()
+    if not msg or msg == _log_state["last"]:
+        return
+    now = _time.time()
+    if not force and "frame" in msg.lower() and (now - _log_state["last_ts"]) < 0.6:
+        return
+    _log_state["last"] = msg
+    _log_state["last_ts"] = now
+    _log_state["seq"] += 1
+    _log_lines.append({"t": _time.strftime("%H:%M:%S"), "msg": msg, "seq": _log_state["seq"]})
 # Set by /api/stop, reset at the start of each run — lets the post-swap upscale
 # pass know the run was aborted (so it doesn't start a long upscale on a
 # deliberately-stopped output).
@@ -1907,6 +1937,10 @@ def _run_swap(payload):
 
     roop_globals.pause = False
     _stop_requested["flag"] = False
+    # Fresh terminal feed for this run.
+    _log_lines.clear()
+    _log_state.update({"last": "", "last_ts": 0.0, "seq": 0})
+    _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     try:
         # Inside the try so any failure (e.g. CFG.save() I/O error) still hits
@@ -2087,11 +2121,13 @@ def _run_swap(payload):
 
         _progress["progress"] = 1.0
         _progress["desc"] = "Done"
+        _push_log("✓ Done", force=True)
         _record_run_history(payload, _outputs_since(_pre_swap_outputs))
         _record_last_output()
     except Exception as e:
         traceback.print_exc()
         _progress["error"] = str(e)
+        _push_log("⚠ " + str(e), force=True)
     finally:
         roop_globals.pause = False
         # Safety net: normally end_processing() clears this, but if batch_process
@@ -2903,7 +2939,15 @@ def get_progress():
     # a progress bar + elapsed/ETA instead), so we skip the per-poll JPEG encode
     # of the latest frame entirely. The fields are kept (empty) for shape
     # compatibility with any older client.
-    return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0}
+    # Mirror the current status line into the rolling terminal feed. Doing it here
+    # (rather than at every _progress["desc"] = ... site) captures every stage's
+    # output — swap, upscale, interpolate, combine — from one place.
+    if _progress["processing"]:
+        if _progress.get("error"):
+            _push_log("⚠ " + _progress["error"], force=True)
+        _push_log(_progress.get("desc", ""))
+    return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0,
+            "log": list(_log_lines)}
 
 
 @app.get("/api/output")
