@@ -1387,7 +1387,14 @@ export default function FaceSwap({
 
   const elapsedMs = progress.processing && startTime ? Date.now() - startTime : 0;
   const etaMs = progress.processing && prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0;
-  const rawUrl = targets.length > 0 ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}` : '';
+  // While actively scrubbing the timeline (or playing back) each frame is a
+  // fresh server fetch, so request a lightweight downscaled frame — a full-res
+  // HD/4K JPEG per frame makes dragging feel sluggish. Snap back to full
+  // resolution the instant the user settles on a frame.
+  const scrubbingNow = isScrubbing || isPlaying;
+  const rawUrl = targets.length > 0
+    ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}${scrubbingNow ? '&width=960' : ''}`
+    : '';
 
   const revealOutput = async () => {
     try { await postJSON('/api/reveal', { path: out?.path }); }
@@ -2935,6 +2942,7 @@ export default function FaceSwap({
                 <InteractivePreview
                   beforeSrc={rawUrl}
                   afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)}
+                  scrubbing={scrubbingNow}
                   faces={previewFaces}
                   personIds={previewPersonIds}
                   onSelectPerson={addPersonFromBox}

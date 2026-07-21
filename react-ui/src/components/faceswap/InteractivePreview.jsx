@@ -17,6 +17,7 @@ export default function InteractivePreview({
   setIsPlaying,
   previewing = false,
   previewSecs = 0,
+  scrubbing = false,
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
@@ -39,6 +40,19 @@ export default function InteractivePreview({
   useEffect(() => {
     setAfterLayers((prev) => (prev.top === afterSrc ? prev : { base: prev.top, top: afterSrc }));
   }, [afterSrc]);
+
+  // Same double-buffer for the raw "before" frame. Without it, swapping the img
+  // src (every timeline frame) blanks the element while the next frame decodes,
+  // which reads as a flicker while dragging. Holding the last decoded frame
+  // underneath makes scrubbing look like a continuous strip of film.
+  const [beforeLayers, setBeforeLayers] = useState({ base: beforeSrc, top: beforeSrc });
+  useEffect(() => {
+    setBeforeLayers((prev) => (prev.top === beforeSrc ? prev : { base: prev.top, top: beforeSrc }));
+  }, [beforeSrc]);
+
+  // Snap frames in fast while actively scrubbing (a long ease makes the image
+  // trail the playhead); ease gently on discrete jumps / preview refreshes.
+  const fadeMs = scrubbing ? 60 : 200;
 
   const handleSliderMove = (clientX) => {
     const target = imageRef.current || containerRef.current;
@@ -326,8 +340,22 @@ export default function InteractivePreview({
 
         {/* Before Image & Bounding Boxes Wrapper */}
         <div className="relative z-10" style={aspectStyle} ref={imageRef}>
-          <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none"
-               onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
+          {/* Held previous frame, painted underneath so a src swap never flashes
+              blank while the next frame decodes. */}
+          {beforeLayers.base && beforeLayers.base !== beforeLayers.top && (
+            <img src={beforeLayers.base} alt="" aria-hidden draggable={false}
+                 className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+          )}
+          <img
+            key={beforeLayers.top}
+            src={beforeLayers.top}
+            alt="Before"
+            className="relative z-[1] w-full h-full object-contain pointer-events-none opacity-0 ease-out"
+            style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
+            onLoad={(e) => { e.currentTarget.style.opacity = '1'; setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight }); }}
+            ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
+            draggable={false}
+          />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
           {/* After Image Overlay with Clip-path — cross-faded so frame swaps
@@ -341,7 +369,8 @@ export default function InteractivePreview({
               key={afterLayers.top}
               src={afterLayers.top}
               alt="After"
-              className="absolute inset-0 w-full h-full object-contain opacity-0 transition-opacity duration-200 ease-out"
+              className="absolute inset-0 w-full h-full object-contain opacity-0 ease-out"
+              style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
               draggable={false}
               onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
               ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
