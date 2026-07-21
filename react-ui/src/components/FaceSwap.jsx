@@ -3080,12 +3080,28 @@ export default function FaceSwap({
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-7 w-1.5 rounded-full bg-[var(--text-main)] shadow-[0_1px_3px_rgba(0,0,0,0.6)] pointer-events-none" />
                   </div>
 
-                  {/* Playhead */}
+                  {/* Hover scrub indicator — a faint line showing exactly where a
+                      click will drop the playhead, tracking the cursor. */}
+                  {hoverFrame !== null && (
+                    <div
+                      className="absolute top-0 bottom-0 w-px -translate-x-1/2 bg-white/35 z-20 pointer-events-none"
+                      style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
+                    />
+                  )}
+
+                  {/* Playhead — white core stays legible over any thumbnail, an
+                      accent pin-head reads as the grabbable cursor. Glides while
+                      playing/stepping; tracks the pointer exactly while scrubbing. */}
                   <div
-                    className="absolute top-0 bottom-0 w-px -translate-x-1/2 bg-[var(--accent)] z-30 pointer-events-none"
+                    className={`absolute top-0 bottom-0 z-30 pointer-events-none ${isScrubbing ? '' : 'transition-[left] duration-100 ease-out'}`}
                     style={{ left: `${currentPct}%` }}
                   >
-                    <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[5px] border-r-[5px] border-t-[7px] border-l-transparent border-r-transparent border-t-[var(--accent)]" />
+                    {/* vertical line */}
+                    <div className="absolute inset-y-0 left-0 -translate-x-1/2 w-[2px] bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.4),0_0_8px_var(--accent-glow)]" />
+                    {/* top pin-head knob (accent, brand identity) */}
+                    <div className="absolute top-[3px] left-0 -translate-x-1/2 h-3.5 w-3.5 rounded-full bg-[var(--accent)] border-2 border-white shadow-[0_1px_5px_rgba(0,0,0,0.6)]" />
+                    {/* bottom cap knob */}
+                    <div className="absolute bottom-[3px] left-0 -translate-x-1/2 h-2.5 w-2.5 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
                   </div>
                 </div>
               </div>
