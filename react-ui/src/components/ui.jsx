@@ -40,13 +40,13 @@ export const Card = ({
   );
 };
 
-export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true }) => {
+export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true, tilt, glare, hover }) => {
   const [open, setOpen] = useState(defaultOpen);
   const showBody = !collapsible || open;
   const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
   const label = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40';
   return (
-    <Card className={`p-5 ${className}`}>
+    <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover}>
       {title && (
         <div className={`flex items-center justify-between gap-3 ${showBody ? 'mb-4' : 'mb-0'}`}>
           {collapsible ? (

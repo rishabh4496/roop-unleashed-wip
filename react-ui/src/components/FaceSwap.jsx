@@ -2507,11 +2507,11 @@ export default function FaceSwap({
               const circumference = radius * 2 * Math.PI;
               const strokeDashoffset = circumference - prog * circumference;
               return (
-                <div className="relative overflow-hidden rounded-2xl glass-panel px-6 py-5 flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                <div className="relative overflow-hidden rounded-2xl glass-panel px-5 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl border border-white/5 w-full">
                   {/* Left: Circular Progress Ring & Info */}
-                  <div className="flex items-center gap-5">
-                    <div className={`relative flex items-center justify-center h-20 w-20 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_18px_var(--accent-glow)]' : ''}`}>
-                      <svg className="transform -rotate-90 w-[72px] h-[72px]" viewBox="0 0 48 48">
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className={`relative flex items-center justify-center h-14 w-14 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_14px_var(--accent-glow)]' : ''}`}>
+                      <svg className="transform -rotate-90 w-[52px] h-[52px]" viewBox="0 0 48 48">
                         <circle
                           stroke="rgba(255, 255, 255, 0.08)"
                           fill="transparent"
@@ -2533,58 +2533,35 @@ export default function FaceSwap({
                           strokeLinecap="round"
                         />
                       </svg>
-                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-base font-extrabold text-white tabular-nums" />
+                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-[13px] font-extrabold text-white tabular-nums" />
                     </div>
 
-                    <div className="space-y-1">
+                    <div className="space-y-0.5 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className={`h-2 w-2 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
                         <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
                           {progress.paused ? 'Paused' : 'Processing'}
                         </span>
                       </div>
-                      <div className="text-sm font-bold text-white truncate max-w-[360px]">
+                      <div className="text-sm font-bold text-white truncate max-w-[340px]">
                         {progress.desc || 'Swapping faces…'}
                       </div>
                       {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
                     </div>
                   </div>
 
-                  {/* Center: Live Telemetry HUD */}
-                  <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs font-mono bg-black/20 px-5 py-2.5 rounded-xl border border-white/5 min-w-0">
-                    <div className="flex flex-col shrink-0">
+                  {/* Elapsed / ETA compact readout (the full telemetry HUD now
+                      lives in the Preview panel, so the run-bar stays a slim strip). */}
+                  <div className="flex items-center gap-3 text-xs font-mono shrink-0">
+                    <div className="flex flex-col">
                       <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
                       <span className="text-white font-bold tabular-nums whitespace-nowrap">{fmtTime(elapsedMs)}</span>
                     </div>
-                    <div className="h-6 w-px bg-white/10 shrink-0" />
-                    <div className="flex flex-col shrink-0">
+                    <div className="h-6 w-px bg-white/10" />
+                    <div className="flex flex-col">
                       <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
-                      <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">
-                        {etaMs > 0 ? fmtTime(etaMs) : '--:--'}
-                      </span>
+                      <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
                     </div>
-                    {telemetry && (
-                      <>
-                        <div className="h-6 w-px bg-white/10 shrink-0" />
-                        <div className="flex flex-col shrink-0 relative group/telemetry cursor-help">
-                          <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">VRAM</span>
-                          <span className="text-blue-300 font-bold tabular-nums whitespace-nowrap">
-                            {telemetry.vram_used} / {telemetry.vram_total} GB
-                          </span>
-                          
-                          {/* Hardware diagnostics tooltip hover card */}
-                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover/telemetry:block z-50 w-64 p-4 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-left font-sans">
-                            <h4 className="text-[9px] font-bold text-[var(--accent)] uppercase tracking-widest mb-2 border-b border-white/10 pb-1">System Telemetry</h4>
-                            <div className="space-y-1.5 text-xs text-white/80">
-                              <div className="flex justify-between gap-2"><span className="text-white/40">GPU:</span><span className="font-semibold text-white truncate max-w-[130px]" title={telemetry.gpu}>{telemetry.gpu}</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">RAM Used:</span><span className="font-semibold text-white">{telemetry.ram_used} / {telemetry.ram_total} GB</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">CPU Load:</span><span className="font-semibold text-white">{telemetry.cpu_percent}%</span></div>
-                              <div className="flex justify-between"><span className="text-white/40">Active Threads:</span><span className="font-semibold text-white">{telemetry.threads}</span></div>
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    )}
                   </div>
 
                   {/* Right: big icon action buttons */}
@@ -2593,8 +2570,8 @@ export default function FaceSwap({
                       <motion.button type="button" onClick={resume} title="Resume (Space)"
                         whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-colors duration-200 group-hover:bg-emerald-500/25">
-                          <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
+                        <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-colors duration-200 group-hover:bg-emerald-500/25">
+                          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
                       </motion.button>
@@ -2602,8 +2579,8 @@ export default function FaceSwap({
                       <motion.button type="button" onClick={pause} title="Pause (Space)"
                         whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                         className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-colors duration-200 group-hover:bg-amber-500/25">
-                          <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
+                        <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-colors duration-200 group-hover:bg-amber-500/25">
+                          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
                         </span>
                         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
                       </motion.button>
@@ -2611,15 +2588,86 @@ export default function FaceSwap({
                     <motion.button type="button" onClick={stop} title="Stop"
                       whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
                       className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                      <span className="h-14 w-14 rounded-2xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-colors duration-200 group-hover:bg-red-500/25">
-                        <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
+                      <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-colors duration-200 group-hover:bg-red-500/25">
+                        <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                       </span>
                       <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
                     </motion.button>
                   </div>
 
-                  {/* Pipeline stage stepper — derived from the backend desc so
-                      it mirrors exactly what the terminal logs. */}
+                  {/* Smooth animated progress line along the bottom edge */}
+                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/[0.04]">
+                    <div
+                      className={`h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
+                      style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
+                    />
+                  </div>
+                </div>
+              );
+            })() : (
+             <div className="w-full space-y-4">
+              <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
+                  {maxFrames > 1 && (
+                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
+                      ⚡ Render 5s Preview
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
+                    <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
+                    {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                  </div>
+                </div>
+              </div>
+             </div>
+            )}
+          </div>
+
+          <Section title="Preview" tilt={false} glare={false} hover={false}>
+            {/* While a job runs we no longer stream live swapped frames into the
+                preview box (they thrashed the GPU and jittered). Instead we show a
+                progress panel that mirrors the terminal: percent, frame X / Y,
+                FPS (from progress.desc), elapsed and time-left. previewSrc is
+                React-only state and is empty after a remount, so the processing
+                branch is keyed off progress.processing rather than previewSrc. */}
+            {progress.processing ? (
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center justify-center select-none px-6 sm:px-10">
+                <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 38%, var(--accent-glow), transparent 60%)' }} />
+                <div className="relative w-full max-w-xl flex flex-col items-center gap-4">
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
+                      <span className={`text-xs font-bold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                        {progress.paused ? 'Paused' : 'Processing'}
+                      </span>
+                    </div>
+                    {/* desc mirrors the terminal line: "Processing frame X / Y (Z FPS)" */}
+                    <div className="text-sm font-semibold text-white/85 text-center tabular-nums break-words">
+                      {progress.desc || 'Swapping faces…'}
+                    </div>
+                  </div>
+
+                  <div className="w-full space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
+                      <span className="text-white/85 font-bold tabular-nums">{Math.round(prog * 100)}%</span>
+                      <span className="tabular-nums">{fmtTime(elapsedMs)} elapsed</span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
+                      <div
+                        className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
+                        style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
+                      <span className="tabular-nums text-emerald-400/90 font-semibold">{etaMs > 0 ? `${fmtTime(etaMs)} left` : '—'}</span>
+                      <span className="tabular-nums">ETA {etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
+                    </div>
+                  </div>
+
+                  {/* Pipeline stage stepper — mirrors the terminal phases. */}
                   {(() => {
                     const d = (progress.desc || '').toLowerCase();
                     const stages = [
@@ -2657,76 +2705,16 @@ export default function FaceSwap({
                     );
                   })()}
 
-                  {/* Smooth animated progress line along the bottom edge */}
-                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/[0.04]">
-                    <div
-                      className={`h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
-                      style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
-                    />
-                  </div>
-                </div>
-              );
-            })() : (
-             <div className="w-full space-y-4">
-              <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
-                <div className="flex items-center gap-3 w-full md:w-auto">
-                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
-                  {maxFrames > 1 && (
-                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
-                      ⚡ Render 5s Preview
-                    </Button>
+                  {/* Live hardware telemetry — the HUD that used to live in the run-bar. */}
+                  {telemetry && (
+                    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[10px] font-mono text-white/40">
+                      <span>VRAM <span className="text-blue-300 font-semibold tabular-nums">{telemetry.vram_used} / {telemetry.vram_total} GB</span></span>
+                      <span className="text-white/15">·</span>
+                      <span>CPU <span className="text-white/70 font-semibold tabular-nums">{telemetry.cpu_percent}%</span></span>
+                      <span className="text-white/15">·</span>
+                      <span>Threads <span className="text-white/70 font-semibold tabular-nums">{telemetry.threads}</span></span>
+                    </div>
                   )}
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
-                    <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
-                    {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
-                  </div>
-                </div>
-              </div>
-             </div>
-            )}
-          </div>
-
-          <Section title="Preview">
-            {/* While a job runs we no longer stream live swapped frames into the
-                preview box (they thrashed the GPU and jittered). Instead we show a
-                progress panel that mirrors the terminal: percent, frame X / Y,
-                FPS (from progress.desc), elapsed and time-left. previewSrc is
-                React-only state and is empty after a remount, so the processing
-                branch is keyed off progress.processing rather than previewSrc. */}
-            {progress.processing ? (
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center justify-center select-none px-6 sm:px-10">
-                <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 40%, var(--accent-glow), transparent 60%)' }} />
-                <div className="relative w-full max-w-xl flex flex-col items-center gap-5">
-                  <div className="flex items-center gap-2">
-                    <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-                    <span className={`text-xs font-bold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
-                      {progress.paused ? 'Paused' : 'Processing'}
-                    </span>
-                  </div>
-
-                  {/* desc mirrors the terminal line: "Processing frame X / Y (Z FPS)" */}
-                  <div className="text-sm font-semibold text-white/85 text-center tabular-nums break-words">
-                    {progress.desc || 'Swapping faces…'}
-                  </div>
-
-                  <div className="w-full space-y-2">
-                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
-                      <span className="text-white/85 font-bold tabular-nums">{Math.round(prog * 100)}%</span>
-                      <span className="tabular-nums">{fmtTime(elapsedMs)} elapsed</span>
-                    </div>
-                    <div className="h-2.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
-                      <div
-                        className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
-                        style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
-                      <span className="tabular-nums text-emerald-400/90 font-semibold">{etaMs > 0 ? `${fmtTime(etaMs)} left` : '—'}</span>
-                      <span className="tabular-nums">ETA {etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
-                    </div>
-                  </div>
 
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
                 </div>
