@@ -1435,8 +1435,11 @@ export default function FaceSwap({
     }
     const idx = selTarget;
     const fps = targets[idx]?.fps || 25;
-    const start = targets[idx]?.start_frame ?? 1;
-    const end = targets[idx]?.end_frame ?? maxFrames;
+    // The timeline is 1-based (a fresh target reports start_frame 0), so clamp
+    // the loop/start point to 1 — otherwise looping jumps to "Frame 0" and
+    // double-shows the first frame.
+    const start = Math.max(1, targets[idx]?.start_frame ?? 1);
+    const end = Math.max(start, targets[idx]?.end_frame ?? maxFrames);
     const frameDur = 1000 / (fps * (playbackRate || 1));
     const AHEAD = 120;   // frames kept buffered ahead of the playhead
     const BEHIND = 8;    // frames retained behind before eviction
@@ -1456,23 +1459,43 @@ export default function FaceSwap({
     let lastTs = null;
     let acc = 0;
 
+    // Prefetch is deliberately SINGLE-FLIGHT and strictly ascending: the server
+    // decodes the next in-order frame cheaply but re-seeks (seconds per frame for
+    // long-GOP video) whenever a request breaks sequence. Firing the whole window
+    // in parallel would arrive out of order and force a seek per frame, so we
+    // request exactly one frame at a time, always the lowest un-buffered frame
+    // ahead of the playhead, keeping the server on its fast sequential path.
+    let inFlight = 0;
+    const CONC = 1;
+
+    const nextNeeded = () => {
+      for (let f = cur; f <= Math.min(end, cur + AHEAD); f++) {
+        if (!playBufRef.current.has(f) && !playFetchRef.current.has(f)) return f;
+      }
+      // When looping and the look-ahead overruns the out point, warm the
+      // wrap-around frames near `start` so the loop seam doesn't stall.
+      if (isLooping) {
+        const overflow = Math.max(0, cur + AHEAD - end);
+        for (let f = start; f <= Math.min(end, start + overflow); f++) {
+          if (!playBufRef.current.has(f) && !playFetchRef.current.has(f)) return f;
+        }
+      }
+      return null;
+    };
+
     const fetchFrame = (fr) => {
-      if (fr < start || fr > end || playBufRef.current.has(fr) || playFetchRef.current.has(fr)) return;
       playFetchRef.current.add(fr);
+      inFlight++;
       fetch(`${API}/api/target/preview?index=${idx}&frame=${fr}&width=960`)
         .then((r) => (r.ok ? r.blob() : Promise.reject()))
         .then((blob) => { if (!cancelled) playBufRef.current.set(fr, URL.createObjectURL(blob)); })
         .catch(() => {})
-        .finally(() => { playFetchRef.current.delete(fr); });
+        .finally(() => { playFetchRef.current.delete(fr); inFlight--; });
     };
 
     const pump = () => {
-      // When looping and the look-ahead window runs past the out point, warm the
-      // wrap-around frames near `start` too, otherwise the loop seam would stall
-      // forever waiting on a frame nothing ever prefetches.
+      // Evict frames outside the retained window (and outside the loop wrap set).
       const overflow = isLooping ? Math.max(0, cur + AHEAD - end) : 0;
-      for (let f = cur; f <= Math.min(end, cur + AHEAD); f++) fetchFrame(f);
-      if (overflow > 0) for (let f = start; f <= Math.min(end, start + overflow); f++) fetchFrame(f);
       for (const k of [...playBufRef.current.keys()]) {
         const keep = (k >= cur - BEHIND && k <= cur + AHEAD) ||
                      (overflow > 0 && k >= start && k <= start + overflow);
@@ -1480,6 +1503,12 @@ export default function FaceSwap({
           URL.revokeObjectURL(playBufRef.current.get(k));
           playBufRef.current.delete(k);
         }
+      }
+      // Top up the single in-flight sequential request.
+      while (inFlight < CONC) {
+        const fr = nextNeeded();
+        if (fr === null) break;
+        fetchFrame(fr);
       }
     };
 
