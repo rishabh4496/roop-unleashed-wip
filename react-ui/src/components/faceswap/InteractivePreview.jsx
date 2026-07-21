@@ -390,7 +390,7 @@ export default function InteractivePreview({
                style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
             <CrossfadeImage
               src={afterSrc || beforeSrc}
-              fadeMs={scrubbing ? 60 : 200}
+              fadeMs={isPlaying ? 0 : (scrubbing ? 60 : 200)}
               className="absolute inset-0 w-full h-full object-contain"
             />
           </div>

@@ -455,7 +455,12 @@ export default function FaceSwap({
   // without batching the events pile up and scrubbing/hovering feels sticky.
   const timelineRafRef = useRef(null);
   const timelinePendingRef = useRef(null);
-  const playIntervalRef = useRef(null);
+  // Buffered, video-style playback (see the playback effect below): a rolling
+  // window of upcoming frames decoded into blob URLs so the playhead can run at
+  // real time instead of refetching each frame from the server per tick.
+  const playBufRef = useRef(new Map());     // frame -> object URL
+  const playFetchRef = useRef(new Set());   // frames currently in flight
+  const [bufferedSrc, setBufferedSrc] = useState(null);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
 
@@ -1406,36 +1411,90 @@ export default function FaceSwap({
     catch (e) { notify(e.message, 'error'); }
   };
 
-  // Playback timer effect
+  // ── Buffered, video-style playback ──────────────────────────────────────
+  // Each frame is a fresh server JPEG (a video seek + decode), which can't keep
+  // up with real time — a naive setInterval(setFrame) makes the browser refetch
+  // per tick and the video stutters through "cut" frames. Instead we prefetch a
+  // rolling window of upcoming frames into decoded blob URLs and drive the
+  // playhead off a requestAnimationFrame clock, only advancing onto frames that
+  // are already buffered. The result plays back continuously like a real player.
+  const clearPlayBuffer = () => {
+    for (const url of playBufRef.current.values()) URL.revokeObjectURL(url);
+    playBufRef.current.clear();
+    playFetchRef.current.clear();
+  };
+  useEffect(() => clearPlayBuffer, []);  // revoke any buffered blobs on unmount
+
   useEffect(() => {
-    if (isPlaying) {
-      const fps = targets[selTarget]?.fps || 25;
-      const intervalMs = 1000 / (fps * (playbackRate || 1));
-      playIntervalRef.current = setInterval(() => {
-        setFrame((f) => {
-          const start = targets[selTarget]?.start_frame ?? 1;
-          const end = targets[selTarget]?.end_frame ?? maxFrames;
-          let next = f + 1;
-          if (next > end) {
-            if (isLooping) {
-              next = start;
-            } else {
-              setIsPlaying(false);
-              return f;
-            }
-          }
-          return next;
-        });
-      }, intervalMs);
-    } else {
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current);
-        playIntervalRef.current = null;
-      }
+    if (!isPlaying) {
+      clearPlayBuffer();
+      setBufferedSrc(null);
+      return;
     }
-    return () => {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
+    const idx = selTarget;
+    const fps = targets[idx]?.fps || 25;
+    const start = targets[idx]?.start_frame ?? 1;
+    const end = targets[idx]?.end_frame ?? maxFrames;
+    const frameDur = 1000 / (fps * (playbackRate || 1));
+    const AHEAD = 120;   // frames kept buffered ahead of the playhead
+    const BEHIND = 8;    // frames retained behind before eviction
+
+    clearPlayBuffer();   // fresh buffer for this session (target/range may differ)
+    let cur = Math.max(start, Math.min(frame, end));
+    let rendered = -1;
+    let cancelled = false;
+    let rafId = null;
+    let lastTs = null;
+    let acc = 0;
+
+    const fetchFrame = (fr) => {
+      if (fr < start || fr > end || playBufRef.current.has(fr) || playFetchRef.current.has(fr)) return;
+      playFetchRef.current.add(fr);
+      fetch(`${API}/api/target/preview?index=${idx}&frame=${fr}&width=960`)
+        .then((r) => (r.ok ? r.blob() : Promise.reject()))
+        .then((blob) => { if (!cancelled) playBufRef.current.set(fr, URL.createObjectURL(blob)); })
+        .catch(() => {})
+        .finally(() => { playFetchRef.current.delete(fr); });
     };
+
+    const pump = () => {
+      for (let f = cur; f <= Math.min(end, cur + AHEAD); f++) fetchFrame(f);
+      for (const k of [...playBufRef.current.keys()]) {
+        if (k < cur - BEHIND || k > cur + AHEAD + 60) {
+          URL.revokeObjectURL(playBufRef.current.get(k));
+          playBufRef.current.delete(k);
+        }
+      }
+    };
+
+    const tick = (ts) => {
+      if (cancelled) return;
+      if (lastTs === null) lastTs = ts;
+      acc += ts - lastTs;
+      lastTs = ts;
+      pump();
+      // Advance whole frames for the elapsed time, but never onto a frame that
+      // isn't buffered yet — hold there (buffering) so playback never skips.
+      let guard = 0;
+      while (acc >= frameDur && guard++ < 240) {
+        let next = cur + 1;
+        if (next > end) {
+          if (isLooping) { next = start; }
+          else { setIsPlaying(false); return; }
+        }
+        if (!playBufRef.current.has(next)) { acc = Math.min(acc, frameDur); break; }
+        acc -= frameDur;
+        cur = next;
+      }
+      if (cur !== rendered) {
+        const url = playBufRef.current.get(cur);
+        if (url) { setBufferedSrc(url); setFrame(cur); rendered = cur; }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => { cancelled = true; if (rafId) cancelAnimationFrame(rafId); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `frame` is read only as the start position; excluding it keeps playback from restarting every frame.
   }, [isPlaying, isLooping, playbackRate, selTarget, maxFrames, targets]);
 
   // Storyboard loading effect
@@ -2950,8 +3009,8 @@ export default function FaceSwap({
                 );
               })() : (
                 <InteractivePreview
-                  beforeSrc={rawUrl}
-                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl)}
+                  beforeSrc={(isPlaying && bufferedSrc) ? bufferedSrc : rawUrl}
+                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : ((isPlaying && bufferedSrc) ? bufferedSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
                   scrubbing={scrubbingNow}
                   faces={previewFaces}
                   personIds={previewPersonIds}
