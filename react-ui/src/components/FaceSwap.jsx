@@ -1677,6 +1677,10 @@ export default function FaceSwap({
       // Ignore key events if the user is typing in form controls
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
 
+      // Ignore while a modal dialog is open (confirm/prompt, command palette),
+      // so playback/timeline hotkeys don't fire on the page behind it.
+      if (document.querySelector('[role="dialog"]')) return;
+
       // Toggle shortcuts HUD: '?' or 'h'
       if (e.key === '?' || e.key === 'h' || e.key === 'H') {
         e.preventDefault();
