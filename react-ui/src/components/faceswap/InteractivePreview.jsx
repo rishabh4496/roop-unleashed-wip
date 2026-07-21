@@ -35,6 +35,14 @@ export default function InteractivePreview({
 
   const [imgDim, setImgDim] = useState(null);
 
+  // Cross-fade the swapped "after" image so scrubbing / preview refreshes don't
+  // flash the original frame underneath between image loads. Keep the last
+  // decoded frame painted (base) while the incoming one (top) fades in on load.
+  const [afterLayers, setAfterLayers] = useState({ base: afterSrc, top: afterSrc });
+  useEffect(() => {
+    setAfterLayers((prev) => (prev.top === afterSrc ? prev : { base: prev.top, top: afterSrc }));
+  }, [afterSrc]);
+
   const handleSliderMove = (clientX) => {
     const target = imageRef.current || containerRef.current;
     if (!target) return;
@@ -312,13 +320,16 @@ export default function InteractivePreview({
 
       {/* Frame navigation shortcuts popup guide (visible when video) */}
       {maxFrames > 1 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/50 backdrop-blur text-[10px] font-bold text-white/50 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-2">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/50 backdrop-blur text-[10px] font-bold text-white/50 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5">
           <span>Shortcuts:</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">←</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">→</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">←/→</span>
           <span>Frame</span>
-          <span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">Space</span>
-          <span>Compare</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">⇧</span>
+          <span>×10</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">[ ]</span>
+          <span>In/Out</span>
+          <span className="bg-white/10 px-1.5 py-0.5 rounded text-white font-mono">Space</span>
+          <span>Play</span>
         </div>
       )}
 
@@ -330,10 +341,21 @@ export default function InteractivePreview({
                onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} draggable={false} />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
-          {/* After Image Overlay with Clip-path */}
+          {/* After Image Overlay with Clip-path — cross-faded so frame swaps
+              don't flicker through to the original underneath. */}
           <div className="absolute inset-0 pointer-events-none z-20"
                style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
-            <img src={afterSrc} alt="After" className="w-full h-full object-contain" draggable={false} />
+            {afterLayers.base && afterLayers.base !== afterLayers.top && (
+              <img src={afterLayers.base} alt="" aria-hidden className="absolute inset-0 w-full h-full object-contain" draggable={false} />
+            )}
+            <img
+              key={afterLayers.top}
+              src={afterLayers.top}
+              alt="After"
+              className="absolute inset-0 w-full h-full object-contain opacity-0 transition-opacity duration-200 ease-out"
+              draggable={false}
+              onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
+            />
           </div>
 
           {/* Slider Line & Handle (only when compare) */}

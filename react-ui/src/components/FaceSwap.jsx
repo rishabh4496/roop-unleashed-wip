@@ -1502,7 +1502,20 @@ export default function FaceSwap({
       if (!timelineRef.current || pendingX === null) return;
       const rect = timelineRef.current.getBoundingClientRect();
       const pct = Math.max(0, Math.min((pendingX - rect.left) / rect.width, 1));
-      const targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+      let targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+      // Magnetic snap: while dragging the playhead, pull it onto the In/Out
+      // points and the clip ends when it lands within ~10px, so lining the
+      // playhead up with a marker doesn't require pixel-perfect aim.
+      if (dragType === 'playhead' && maxFrames > 1) {
+        const snapFrames = Math.max(1, Math.round((10 / rect.width) * (maxFrames - 1)));
+        const snapPoints = [1, maxFrames, targets[selTarget]?.start_frame ?? 1, targets[selTarget]?.end_frame ?? maxFrames];
+        let best = null, bestDist = Infinity;
+        for (const sp of snapPoints) {
+          const d = Math.abs(sp - targetFrame);
+          if (d <= snapFrames && d < bestDist) { best = sp; bestDist = d; }
+        }
+        if (best !== null) targetFrame = best;
+      }
       updateTimelinePos(targetFrame, dragType);
     };
     const handlePointerMove = (e) => {
@@ -2940,21 +2953,40 @@ export default function FaceSwap({
                     <div className="h-9 w-9 rounded-full border-2 border-white/10 border-t-[var(--accent)] animate-spin" />
                     <span className="text-sm font-medium text-white/50">Rendering preview…</span>
                   </div>
-                ) : (
-                  <div className="relative flex flex-col items-center gap-3 text-center px-6">
-                    <div className="grid place-items-center h-14 w-14 rounded-2xl bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-2xl">🎭</div>
-                    <div>
-                      <div className="text-sm font-semibold text-white/80">No preview yet</div>
-                      <div className="text-xs text-white/40 mt-1 max-w-[280px] leading-relaxed">
-                        {targets.length === 0
-                          ? 'Add a target image or video, then a source face, to see the live swap here.'
-                          : sourceFaces.length === 0
-                            ? 'Add a source face to preview the swap on your target.'
-                            : 'Scrub the timeline or adjust settings to render a live preview.'}
+                ) : (() => {
+                  const hasTarget = targets.length > 0;
+                  const hasSource = sourceFaces.length > 0;
+                  const ready = hasTarget && hasSource;
+                  const steps = [
+                    { done: hasTarget, label: 'Add a target image or video' },
+                    { done: hasSource, label: 'Add a source face' },
+                  ];
+                  return (
+                    <div className="relative flex flex-col items-center gap-4 text-center px-6 w-full max-w-sm">
+                      <div className={`grid place-items-center h-14 w-14 rounded-2xl border text-2xl ${ready ? 'bg-emerald-500/10 border-emerald-500/25' : 'bg-[var(--accent)]/10 border-[var(--accent)]/20'}`}>
+                        {ready ? '✨' : '🎭'}
                       </div>
+                      <div>
+                        <div className="text-sm font-semibold text-white/85">{ready ? 'Ready to preview' : 'No preview yet'}</div>
+                        <div className="text-xs text-white/40 mt-1 leading-relaxed">
+                          {ready
+                            ? 'Scrub the timeline or press ▶ Start Swapping to render.'
+                            : 'Two quick steps and the live swap shows up right here.'}
+                        </div>
+                      </div>
+                      {!ready && (
+                        <div className="w-full space-y-1.5">
+                          {steps.map((s, i) => (
+                            <div key={i} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${s.done ? 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-300/90' : 'border-white/10 bg-white/[0.02] text-white/55'}`}>
+                              <span className={`grid place-items-center h-4 w-4 rounded-full text-[9px] font-bold shrink-0 ${s.done ? 'bg-emerald-500 text-black' : 'bg-white/10 text-white/50'}`}>{s.done ? '✓' : i + 1}</span>
+                              <span className={s.done ? 'line-through opacity-70' : ''}>{s.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             )}
             
@@ -3002,9 +3034,9 @@ export default function FaceSwap({
                     >
                       <div className="flex flex-col items-center gap-1.5 p-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] backdrop-blur-xl shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
                         <img
-                          src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=240`}
+                          src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=384`}
                           alt="Hover Preview"
-                          className="w-28 h-16 object-cover rounded-md border border-[var(--border-color)] bg-black/50"
+                          className="w-40 h-[90px] object-cover rounded-md border border-[var(--border-color)] bg-black/50"
                           onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
                           onLoad={(e) => { e.currentTarget.style.visibility = 'visible'; }}
                         />
