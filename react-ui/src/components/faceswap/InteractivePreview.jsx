@@ -35,19 +35,28 @@ export default function InteractivePreview({
 
   // Cross-fade the swapped "after" image so scrubbing / preview refreshes don't
   // flash the original frame underneath between image loads. Keep the last
-  // decoded frame painted (base) while the incoming one (top) fades in on load.
+  // *decoded* frame painted (base) while the incoming one (top) fades in on load.
+  //
+  // The base MUST be a frame we know finished decoding — never merely "the
+  // previous top". A single frame click flips the src twice in quick succession
+  // (the scrub `&width=960` variant toggles on, then off on settle), so promoting
+  // an un-decoded top to base would paint the black container through → a flash.
+  // `lastLoaded*` tracks the newest src whose onLoad actually fired, and only that
+  // becomes the base.
+  const lastLoadedAfter = useRef(afterSrc);
   const [afterLayers, setAfterLayers] = useState({ base: afterSrc, top: afterSrc });
   useEffect(() => {
-    setAfterLayers((prev) => (prev.top === afterSrc ? prev : { base: prev.top, top: afterSrc }));
+    setAfterLayers((prev) => (prev.top === afterSrc ? prev : { base: lastLoadedAfter.current, top: afterSrc }));
   }, [afterSrc]);
 
-  // Same double-buffer for the raw "before" frame. Without it, swapping the img
-  // src (every timeline frame) blanks the element while the next frame decodes,
-  // which reads as a flicker while dragging. Holding the last decoded frame
-  // underneath makes scrubbing look like a continuous strip of film.
+  // Same decoded-frame double-buffer for the raw "before" frame. Without it,
+  // swapping the img src (every timeline frame) blanks the element while the next
+  // frame decodes, which reads as a flicker while dragging. Holding the last
+  // decoded frame underneath makes scrubbing look like a continuous strip of film.
+  const lastLoadedBefore = useRef(beforeSrc);
   const [beforeLayers, setBeforeLayers] = useState({ base: beforeSrc, top: beforeSrc });
   useEffect(() => {
-    setBeforeLayers((prev) => (prev.top === beforeSrc ? prev : { base: prev.top, top: beforeSrc }));
+    setBeforeLayers((prev) => (prev.top === beforeSrc ? prev : { base: lastLoadedBefore.current, top: beforeSrc }));
   }, [beforeSrc]);
 
   // Snap frames in fast while actively scrubbing (a long ease makes the image
@@ -349,11 +358,12 @@ export default function InteractivePreview({
           <img
             key={beforeLayers.top}
             src={beforeLayers.top}
+            data-src={beforeLayers.top}
             alt="Before"
             className="relative z-[1] w-full h-full object-contain pointer-events-none opacity-0 ease-out"
             style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
-            onLoad={(e) => { e.currentTarget.style.opacity = '1'; setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight }); }}
-            ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
+            onLoad={(e) => { e.currentTarget.style.opacity = '1'; lastLoadedBefore.current = e.currentTarget.dataset.src; setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight }); }}
+            ref={(el) => { if (el && el.complete && el.naturalWidth) { el.style.opacity = '1'; lastLoadedBefore.current = el.dataset.src; } }}
             draggable={false}
           />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
@@ -368,12 +378,13 @@ export default function InteractivePreview({
             <img
               key={afterLayers.top}
               src={afterLayers.top}
+              data-src={afterLayers.top}
               alt="After"
               className="absolute inset-0 w-full h-full object-contain opacity-0 ease-out"
               style={{ transitionProperty: 'opacity', transitionDuration: `${fadeMs}ms` }}
               draggable={false}
-              onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
-              ref={(el) => { if (el && el.complete && el.naturalWidth) el.style.opacity = '1'; }}
+              onLoad={(e) => { e.currentTarget.style.opacity = '1'; lastLoadedAfter.current = e.currentTarget.dataset.src; }}
+              ref={(el) => { if (el && el.complete && el.naturalWidth) { el.style.opacity = '1'; lastLoadedAfter.current = el.dataset.src; } }}
             />
           </div>
 
