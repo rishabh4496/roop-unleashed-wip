@@ -11,18 +11,40 @@ async function handle(res) {
   return ct.includes('application/json') ? res.json() : res.text();
 }
 
-export const getJSON = (path) => fetch(`${API}${path}`).then(handle);
+// Opt-in request deadline. Fetch has no default timeout, so a backend that
+// accepts the socket and then stalls (mid-GPU-stall, or killed between accept
+// and response) leaves the promise pending forever — a polled request that
+// never settles silently stops the poll loop. Callers that must notice a dead
+// server pass `timeout`; long-running endpoints (start, auto-capture, upscale)
+// deliberately pass nothing and wait as long as it takes.
+//
+// An explicit `signal` still wins: aborting it aborts the request, and we clear
+// our timer either way so no stray abort fires after the response lands.
+const withDeadline = (opts = {}) => {
+  if (!opts.timeout) return { signal: opts.signal, done: () => {} };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('Request timed out')), opts.timeout);
+  opts.signal?.addEventListener('abort', () => ctrl.abort(opts.signal.reason), { once: true });
+  return { signal: ctrl.signal, done: () => clearTimeout(timer) };
+};
 
-export const postJSON = (path, body, opts = {}) =>
-  fetch(`${API}${path}`, {
+export const getJSON = (path, opts = {}) => {
+  const d = withDeadline(opts);
+  return fetch(`${API}${path}`, { signal: d.signal }).then(handle).finally(d.done);
+};
+
+export const postJSON = (path, body, opts = {}) => {
+  const d = withDeadline(opts);
+  return fetch(`${API}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
-    signal: opts.signal,
+    signal: d.signal,
     // keepalive lets the request outlive a page teardown (e.g. Pinokio's
     // Run<->Dev webview reload) so a last-moment flush still reaches the server.
     keepalive: opts.keepalive,
-  }).then(handle);
+  }).then(handle).finally(d.done);
+};
 
 export const postFiles = (path, files, fields) => {
   const fd = new FormData();

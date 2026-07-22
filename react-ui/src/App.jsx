@@ -2,24 +2,42 @@ import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, laz
 import { getJSON, postJSON } from './api';
 import { Toasts, Confetti } from './components/ui';
 import CommandPalette from './components/CommandPalette';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
-// Tab panels are code-split so the initial bundle only ships the shell + the
-// first tab's dependencies. Each is fetched on first visit (Vite emits one
-// chunk per lazy import), trimming a ~530 KB single bundle into per-tab pieces.
-const FaceSwap = lazy(() => import('./components/FaceSwap'));
-const Settings = lazy(() => import('./components/Settings'));
-const FaceManager = lazy(() => import('./components/FaceManager'));
-const Extras = lazy(() => import('./components/Extras'));
-const Gallery = lazy(() => import('./components/Gallery'));
 import { THEME_CLASSES, THEMES, themeByName } from './themes';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
 
+// Tab panels are code-split so the initial bundle only ships the shell + the
+// first tab's dependencies. Each is fetched on first visit (Vite emits one
+// chunk per lazy import), trimming a ~530 KB single bundle into per-tab pieces.
+//
+// The raw importer is kept alongside the lazy component so we can WARM a chunk
+// before it is needed (pointer/focus on its tab button, and an idle sweep after
+// first paint). Code-splitting bought a smaller first load but paid for it with
+// a spinner on every first tab visit; prefetching keeps the win and removes the
+// spinner, so a tab change is a pure animation instead of a network round trip.
+// A rejected prefetch is ignored — React.lazy retries on real render, and the
+// ErrorBoundary below owns the failure case.
+const loadFaceSwap = () => import('./components/FaceSwap');
+const loadSettings = () => import('./components/Settings');
+const loadFaceManager = () => import('./components/FaceManager');
+const loadExtras = () => import('./components/Extras');
+const loadGallery = () => import('./components/Gallery');
+
+const FaceSwap = lazy(loadFaceSwap);
+const Settings = lazy(loadSettings);
+const FaceManager = lazy(loadFaceManager);
+const Extras = lazy(loadExtras);
+const Gallery = lazy(loadGallery);
+
 // Lightweight fallback while a tab chunk loads — mirrors the app's connecting
-// spinner so the swap reads as intentional, not a flash of empty space.
+// spinner so the swap reads as intentional, not a flash of empty space. It
+// fades in on a delay (see `.deferred-fallback`) so a chunk that resolves in a
+// few frames shows nothing at all rather than a jarring spinner blink.
 function TabFallback() {
   return (
-    <div className="flex flex-col items-center justify-center h-[40vh] gap-3">
+    <div className="deferred-fallback flex flex-col items-center justify-center h-[40vh] gap-3">
       <div className="h-7 w-7 rounded-full border-4 border-white/10 border-t-[var(--accent)] animate-spin" />
       <div className="text-white/35 text-xs font-medium">Loading…</div>
     </div>
@@ -27,12 +45,21 @@ function TabFallback() {
 }
 
 const TABS = [
-  { id: 'faceswap', label: '🎭 Face Swap' },
-  { id: 'facemgr', label: '👥 Face Manager' },
-  { id: 'extras', label: '✏️ Editor' },
-  { id: 'gallery', label: '📂 Outputs' },
-  { id: 'settings', label: '⚙️ Settings' },
+  { id: 'faceswap', label: '🎭 Face Swap', preload: loadFaceSwap },
+  { id: 'facemgr', label: '👥 Face Manager', preload: loadFaceManager },
+  { id: 'extras', label: '✏️ Editor', preload: loadExtras },
+  { id: 'gallery', label: '📂 Outputs', preload: loadGallery },
+  { id: 'settings', label: '⚙️ Settings', preload: loadSettings },
 ];
+
+// Fire each importer at most once; repeated hovers must not re-request.
+const warmed = new Set();
+const warmTab = (id) => {
+  if (warmed.has(id)) return;
+  warmed.add(id);
+  const t = TABS.find((x) => x.id === id);
+  t?.preload?.().catch(() => warmed.delete(id));
+};
 
 export default function App() {
   const [tab, setTab] = useState('faceswap');
@@ -46,19 +73,58 @@ export default function App() {
   const [confetti, setConfetti] = useState(false);
   const pollRef = useRef(null);
 
+  // ── Connection health ────────────────────────────────────────────────────
+  // Every backend call in this shell reports its outcome here. A single blip is
+  // ignored (the server briefly stalls during heavy GPU work); three in a row
+  // flips the UI to "reconnecting", which starts a cheap heartbeat that clears
+  // itself the moment the backend answers again. Costs nothing while healthy —
+  // the heartbeat only exists while we believe we are offline.
+  const [offline, setOffline] = useState(false);
+  const failsRef = useRef(0);
+  const beatRef = useRef(null);
+  const reportNet = useCallback((ok) => {
+    if (ok) {
+      failsRef.current = 0;
+      setOffline(false);
+    } else if (++failsRef.current >= 3) {
+      setOffline(true);
+    }
+  }, []);
+
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
-        const pr = await getJSON('/api/progress');
+        const pr = await getJSON('/api/progress', { timeout: 8000 });
+        reportNet(true);
         setProgress(pr);
         if (!pr.processing) {
           clearInterval(pollRef.current);
           pollRef.current = null;
         }
-      } catch { /* ignore */ }
+      } catch {
+        // Keep polling: a job can outlive a transient backend stall, and the
+        // health banner tells the user what is happening meanwhile.
+        reportNet(false);
+      }
     }, 1000);
-  }, []);
+  }, [reportNet]);
+
+  // Heartbeat while offline — reconnects and refreshes core state on recovery.
+  useEffect(() => {
+    if (!offline) {
+      if (beatRef.current) { clearInterval(beatRef.current); beatRef.current = null; }
+      return undefined;
+    }
+    beatRef.current = setInterval(async () => {
+      try {
+        const pr = await getJSON('/api/progress', { timeout: 5000 });
+        setProgress(pr);
+        reportNet(true);
+      } catch { /* still down */ }
+    }, 3000);
+    return () => { if (beatRef.current) { clearInterval(beatRef.current); beatRef.current = null; } };
+  }, [offline, reportNet]);
 
   useEffect(() => {
     if (progress.processing && !pollRef.current) {
@@ -149,7 +215,7 @@ export default function App() {
 
   const commands = useMemo(() => {
     const cmds = [];
-    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.label.split(' ')[0], title: `Go to ${t.label.replace(/^\S+\s/, '')}`, run: () => setTab(t.id) }));
+    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.label.split(' ')[0], title: `Go to ${t.label.replace(/^\S+\s/, '')}`, run: () => { warmTab(t.id); setTab(t.id); } }));
     cmds.push({ id: 'act-start', section: 'Actions', icon: '▶', title: 'Start swapping', subtitle: 'Run the current job', run: () => runFaceswap('start') });
     cmds.push({ id: 'act-stop', section: 'Actions', icon: '⏹', title: 'Stop processing', run: () => runFaceswap('stop') });
     cmds.push({ id: 'act-queue', section: 'Actions', icon: '➕', title: 'Add current to batch queue', run: () => runFaceswap('queue') });
@@ -256,18 +322,77 @@ export default function App() {
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
   }, []);
 
+  // Core bootstrap (meta + settings + in-flight job), retryable. The backend is
+  // often still binding its port when this webview first paints — especially on
+  // a cold Pinokio start — so a first failure schedules its own backoff retry
+  // instead of parking the user on a dead-end error screen.
+  const [retrying, setRetrying] = useState(false);
+  const bootAttemptRef = useRef(0);
+  const bootTimerRef = useRef(null);
+  const loadCore = useCallback(async () => {
+    setRetrying(true);
+    try {
+      const [m, s] = await Promise.all([
+        getJSON('/api/meta', { timeout: 10000 }),
+        getJSON('/api/settings', { timeout: 10000 }),
+      ]);
+      setMeta(m);
+      // Mark the incoming value as "just fetched" so the autosave effect below
+      // skips it — otherwise a retry would immediately POST back the settings
+      // we only just read.
+      settingsLoadedRef.current = false;
+      setSettings(s);
+      setError('');
+      reportNet(true);
+      bootAttemptRef.current = 0;
+      try {
+        const pr = await getJSON('/api/progress', { timeout: 8000 });
+        setProgress(pr);
+        if (pr.processing) startPolling();
+      } catch { /* progress is non-critical for boot */ }
+    } catch {
+      setError('Cannot reach backend on 127.0.0.1:8001. Make sure the server (run.py) is running.');
+      // 1s, 2s, 4s … capped at 8s, forever — a launcher window left open should
+      // heal itself the moment the server comes up.
+      const wait = Math.min(8000, 1000 * 2 ** bootAttemptRef.current++);
+      if (bootTimerRef.current) clearTimeout(bootTimerRef.current);
+      bootTimerRef.current = setTimeout(() => loadCore(), wait);
+    } finally {
+      setRetrying(false);
+    }
+  }, [reportNet, startPolling]);
+
   useEffect(() => {
-    Promise.all([getJSON('/api/meta'), getJSON('/api/settings')])
-      .then(([m, s]) => { setMeta(m); setSettings(s); })
-      .catch(() => setError('Cannot reach backend on 127.0.0.1:8001. Make sure the server (run.py) is running.'));
+    loadCore();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (bootTimerRef.current) clearTimeout(bootTimerRef.current);
+    };
+  }, [loadCore]);
 
-    getJSON('/api/progress').then((pr) => {
-      setProgress(pr);
-      if (pr.processing) startPolling();
-    }).catch(() => {});
+  // Warm the remaining tab chunks once the app is idle, so the very first visit
+  // to any tab is instant even without a hover. requestIdleCallback keeps this
+  // off the critical path; Safari/older webviews fall back to a timeout.
+  useEffect(() => {
+    if (!meta) return undefined;
+    const run = () => TABS.forEach((t) => warmTab(t.id));
+    const ric = window.requestIdleCallback;
+    if (ric) {
+      const h = ric(run, { timeout: 3000 });
+      return () => window.cancelIdleCallback?.(h);
+    }
+    const h = setTimeout(run, 1500);
+    return () => clearTimeout(h);
+  }, [meta]);
 
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [startPolling]);
+  // A tab change swaps the entire view; keeping the old scroll offset drops the
+  // user into the middle of a panel they have never seen. Snap to the top as
+  // the outgoing view fades so the incoming one always starts at its header.
+  const firstTabRenderRef = useRef(true);
+  useEffect(() => {
+    if (firstTabRenderRef.current) { firstTabRenderRef.current = false; return; }
+    if (window.scrollY > 4) window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [tab]);
 
   // Autosave settings to the backend CFG (debounced) on every in-session edit.
   // Previously settings were only persisted at swap-start / explicit Save, so
@@ -436,6 +561,13 @@ export default function App() {
               <motion.button
                 key={t.id}
                 onClick={() => setTab(t.id)}
+                // Start fetching the panel's chunk the instant the pointer or
+                // keyboard focus lands on the tab — by the time the click
+                // registers the module is usually already parsed, so the view
+                // swap is a pure animation with no loading state in between.
+                onPointerEnter={() => warmTab(t.id)}
+                onFocus={() => warmTab(t.id)}
+                aria-current={active ? 'page' : undefined}
                 whileTap={{ scale: 0.94 }}
                 transition={spring.snappy}
                 className={`relative px-3.5 py-2 rounded-lg text-[12px] font-semibold tracking-wide whitespace-nowrap flex items-center gap-1.5 transition-colors duration-200 ${
@@ -460,8 +592,21 @@ export default function App() {
       {/* Main Container Layout */}
       <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
-          <div role="alert" className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up selectable">
-            ⚠️ {error}
+          <div role="alert" className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up flex flex-wrap items-center justify-between gap-3">
+            <span className="selectable">⚠️ {error}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] text-red-300/50">
+                {retrying ? 'Retrying…' : 'Retrying automatically…'}
+              </span>
+              <button
+                type="button"
+                onClick={() => { bootAttemptRef.current = 0; loadCore(); }}
+                disabled={retrying}
+                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-[11px] font-semibold text-red-200 disabled:opacity-50"
+              >
+                Retry now
+              </button>
+            </div>
           </div>
         )}
         {!error && !meta && (
@@ -479,6 +624,7 @@ export default function App() {
               animate="animate"
               exit="exit"
             >
+              <ErrorBoundary resetKey={tab}>
               <Suspense fallback={<TabFallback />}>
                 {tab === 'faceswap' && (
                   <FaceSwap
@@ -498,12 +644,32 @@ export default function App() {
                 {tab === 'gallery' && <Gallery notify={notify} setSettings={setSettings} setTab={setTab} />}
                 {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
               </Suspense>
+              </ErrorBoundary>
             </motion.div>
           </AnimatePresence>
         )}
       </main>
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Backend went quiet mid-session (server restart, GPU stall, sleep).
+          Non-blocking: the UI stays usable and this clears itself the moment a
+          heartbeat lands, so a brief hiccup never forces a manual reload. */}
+      <AnimatePresence>
+        {offline && !error && (
+          <motion.div
+            initial={{ opacity: 0, y: 16, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 16, scale: 0.96 }}
+            transition={spring.snappy}
+            role="status"
+            className="fixed bottom-6 left-6 z-50 px-4 py-3 rounded-xl bg-[#0E0F15]/95 backdrop-blur-xl border border-amber-400/25 shadow-2xl flex items-center gap-3"
+          >
+            <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+            <span className="text-xs font-semibold text-amber-200/90">Reconnecting to the engine…</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Screen-reader status channel: toast messages + live processing state,
           announced politely without stealing focus. */}

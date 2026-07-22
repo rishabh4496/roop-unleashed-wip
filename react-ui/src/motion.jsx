@@ -41,10 +41,25 @@ export const staggerParent = {
 };
 
 // Full-view swap (tab changes): depth cross-slide.
+//
+// Deliberately compositor-only — opacity + transform, no animated `filter`.
+// A tab panel is the single largest layer in the app (the Face Swap view is
+// thousands of nodes deep, most of them already inside backdrop-blur glass
+// panels); animating blur() on that wrapper forced the whole subtree to be
+// re-rasterized every frame and made every tab change stutter on its first
+// few frames. Opacity/translate/scale run entirely on the compositor, so the
+// same depth read costs nothing.
+//
+// The exit is short and the enter travel small on purpose: AnimatePresence
+// runs in mode="wait", so exit + enter are serialised and their durations add
+// up into the perceived latency of a tab click.
 export const viewTransition = {
-  initial: { opacity: 0, y: 18, scale: 0.985, filter: 'blur(10px)' },
-  animate: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px)', transition: { ...spring.smooth, opacity: { duration: 0.35 }, filter: { duration: 0.35 } } },
-  exit: { opacity: 0, y: -14, scale: 0.99, filter: 'blur(8px)', transition: { duration: 0.2, ease: [0.4, 0, 1, 1] } },
+  initial: { opacity: 0, y: 12, scale: 0.99 },
+  animate: {
+    opacity: 1, y: 0, scale: 1,
+    transition: { ...spring.snappy, opacity: { duration: 0.22, ease: [0.16, 1, 0.3, 1] } },
+  },
+  exit: { opacity: 0, y: -8, scale: 0.995, transition: { duration: 0.13, ease: [0.4, 0, 1, 1] } },
 };
 
 // Drop-in staggered container. Children should be <Reveal> (or any motion

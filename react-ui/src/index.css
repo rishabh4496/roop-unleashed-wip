@@ -682,6 +682,18 @@
   transform: scale(0.9);
 }
 
+/* Deferred loading state. A Suspense fallback that appears and disappears
+   within a couple of frames reads as a flicker, which is worse than showing
+   nothing. Holding it invisible for 220ms means a warm/prefetched chunk swaps
+   in silently, while a genuinely slow load still gets its spinner. */
+.deferred-fallback {
+  animation: deferred-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) 0.22s both;
+}
+@keyframes deferred-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Accessibility & battery: honour the OS "reduce motion" setting. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
