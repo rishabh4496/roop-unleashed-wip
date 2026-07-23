@@ -1088,6 +1088,51 @@ def target_preview(index: int = 0, frame: int = 1, width: int = 0, fmt: str = "j
     return StreamingResponse(io.BytesIO(buf.tobytes()), media_type=media)
 
 
+@app.get("/api/target/preview_seq")
+def target_preview_seq(index: int = 0, start: int = 1, count: int = 16,
+                       width: int = 0, quality: int = 82):
+    """Return `count` CONSECUTIVE target frames in ONE response.
+
+    Timeline playback used to fetch frames one at a time, which capped the frame
+    rate at 1/round-trip no matter how fast the decode was: the request had to be
+    single-flight (parallel requests arrive out of order and break capturer.py's
+    sequential fast path, costing a full long-GOP seek per frame), so every frame
+    paid a fresh HTTP round trip, a FastAPI dispatch and a lock acquire on top of
+    its ~1 ms sequential decode. Batching amortises all of that over `count`
+    frames while keeping the decode strictly in order, which is exactly the
+    access pattern the capturer is fastest at.
+
+    Body is a length-prefixed stream so the client can slice it without base64:
+        [4-byte big-endian JPEG length][JPEG bytes] ... repeated
+    A short body simply means the clip ended; the client stops there.
+    """
+    if index < 0 or index >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target"})
+    filename = list_files_process[index].filename
+    if not (util.is_video(filename) or filename.lower().endswith("gif")
+            or util.is_animated_webp(filename)):
+        return JSONResponse(status_code=400, content={"message": "not a video"})
+
+    count = max(1, min(int(count), 64))
+    quality = max(30, min(int(quality), 95))
+    parts = []
+    for i in range(count):
+        frame_img = get_video_frame(filename, start + i)
+        if frame_img is None:
+            break
+        if width and width > 0 and frame_img.shape[1] > width:
+            h = max(1, round(frame_img.shape[0] * width / frame_img.shape[1]))
+            frame_img = cv2.resize(frame_img, (width, h), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", frame_img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        if not ok:
+            break
+        data = buf.tobytes()
+        parts.append(len(data).to_bytes(4, "big"))
+        parts.append(data)
+    return StreamingResponse(io.BytesIO(b"".join(parts)),
+                             media_type="application/octet-stream")
+
+
 def _target_groups_ranked():
     """Map raw group ids in TARGET_FACE_GROUP to contiguous 0-based person ranks
     (sorted by group id) so person N → source faceset N regardless of removals.
