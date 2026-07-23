@@ -45,6 +45,19 @@ _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 
+# ── Identity-lock source veto ────────────────────────────────────────────────
+# Guards against a tracked source being applied to the wrong face (people
+# crossing, an ID switch, or an unselected bystander standing where a track
+# was). Deliberately LOOSER than the face-distance threshold: this is a veto on
+# clear mismatches, not a re-selection, so a blurred or turned frame of the
+# right person still swaps. Same-person frames measured up to ~0.66 on a hard
+# clip while different people sat at ~0.93-1.07, so 0.85 separates them.
+_TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
+# Reject when a DIFFERENT selected person explains the face this much better.
+_TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
+# ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
+# source is applied wherever the spatial association points).
+
 
 # ── Jaw / chin reshape warp ──────────────────────────────────────────────────
 # inswapper-family swappers transfer identity but keep the TARGET's face
@@ -2273,7 +2286,33 @@ class ProcessMgr():
                 rank = {g: r for r, g in enumerate(uniq)}
                 single_person = len(uniq) <= 1
                 threshold = self.options.face_distance_threshold
-                
+
+                # person group id -> its captured target-face (angle) indices.
+                # Hoisted out of the per-face fallback below because the source
+                # veto (next block) needs it for every face, not just the ones
+                # that fall through.
+                persons = {}
+                for i, g in enumerate(groups[:len(self.target_face_datas)]):
+                    persons.setdefault(g, []).append(i)
+                # source index -> the captured angles of the person that source
+                # belongs to, so a track's source can be checked against the face
+                # actually in front of us.
+                rank_to_tis = {}
+                for g, tis in persons.items():
+                    r = self.options.selected_index if single_person else rank[g]
+                    rank_to_tis.setdefault(r, []).extend(tis)
+
+                def _dist_to_source(face, src):
+                    """Cosine distance from *face* to the closest captured angle of
+                    the person that source index *src* belongs to (None if unknown)."""
+                    tis = rank_to_tis.get(src)
+                    if not tis or getattr(face, 'embedding', None) is None:
+                        return None
+                    ds = [compute_cosine_distance(self.target_face_datas[ti].embedding, face.embedding)
+                          for ti in tis
+                          if getattr(self.target_face_datas[ti], 'embedding', None) is not None]
+                    return min(ds) if ds else None
+
                 for face in faces:
                     best_j, best_cost = -1, float('inf')
                     if entries:
@@ -2295,18 +2334,63 @@ class ProcessMgr():
                                 best_cost, best_j = cost, j
                                 
                     src_index = None
+                    veto = None
                     if best_j >= 0:
-                        # Claim the entry even if its source is unresolved, so a
-                        # second face this frame can't re-match the same track.
-                        claimed.add(best_j)
                         cand = entries[best_j][1]
                         if cand is not None and cand < len(self.input_face_datas):
                             src_index = cand
+                        # ── Source veto ──────────────────────────────────────
+                        # The entry above is chosen by POSITION (cost is spatial,
+                        # only nudged by cosine), so on its own it will happily
+                        # hand person A's faceset to person B when they cross, or
+                        # swap an unselected bystander who happens to stand where
+                        # a track was. Identity locking is meant to stabilise WHICH
+                        # source a person gets, never to override WHO the person is.
+                        # So the track's source is accepted only if this face really
+                        # is that person:
+                        #   - reject if another selected person explains the face
+                        #     distinctly better (relative test — catches crossings
+                        #     and look-alikes without needing an absolute cutoff);
+                        #   - reject if the face matches the assigned person no
+                        #     better than VETO (absolute test — catches bystanders
+                        #     and hard ID switches);
+                        #   - reject if that source was already used in this frame
+                        #     (one source per face, one face per source).
+                        # A rejected face falls through to per-frame matching below,
+                        # which is threshold-gated and strictly 1:1 — so it either
+                        # gets its OWN person's source or stays unswapped.
+                        # The gate is deliberately looser than the match threshold:
+                        # it is a veto on clear mismatches, not a re-selection, so a
+                        # blurred/turned frame of the right person still swaps
+                        # (that anti-flicker property is the point of tracking).
+                        if src_index is not None and _TRACK_VETO_DIST > 0:
+                            d_own = _dist_to_source(face, src_index)
+                            d_other = None
+                            if not single_person:
+                                others = [d for r2 in rank_to_tis if r2 != src_index
+                                          for d in [_dist_to_source(face, r2)] if d is not None]
+                                d_other = min(others) if others else None
+                            if src_index in claimed_sources_in_frame:
+                                veto = 'source already used this frame'
+                            elif d_own is not None and d_own > _TRACK_VETO_DIST:
+                                veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
+                            elif (d_own is not None and d_other is not None
+                                    and d_other + _TRACK_VETO_MARGIN < d_own):
+                                veto = f'another person fits better ({d_other:.2f} vs {d_own:.2f})'
+                            if veto:
+                                src_index = None
+                        # Claim the entry even when its source is unresolved, so a
+                        # second face this frame can't re-match the same track —
+                        # but NOT when we vetoed on identity, because then this
+                        # entry most likely belongs to one of the other faces.
+                        if veto is None:
+                            claimed.add(best_j)
 
                     if os.environ.get('ROOP_DEBUG_MATCH'):
                         print(f"[TRACKMATCH] f={frame_idx} faces={len(faces)} "
                               f"entry_srcs={[e[1] for e in entries]} best_j={best_j} "
-                              f"src={src_index} claimed={sorted(claimed)}")
+                              f"src={src_index} claimed={sorted(claimed)}"
+                              + (f" VETO: {veto}" if veto else ""))
 
                     if src_index is not None:
                         claimed_sources_in_frame.add(src_index)
@@ -2315,11 +2399,9 @@ class ProcessMgr():
                     else:
                         # Fall back to per-frame multi-angle matching — the same
                         # logic live preview uses — so these frames still swap
-                        # instead of being silently skipped.
-                        persons = {}
-                        for i, g in enumerate(groups[:len(self.target_face_datas)]):
-                            persons.setdefault(g, []).append(i)
-
+                        # instead of being silently skipped. Threshold-gated and
+                        # 1:1 (a source already used this frame is skipped), so a
+                        # face here can only ever get its OWN person's source.
                         best_g, best_d = None, threshold
                         for g, tis in persons.items():
                             r_src = self.options.selected_index if single_person else rank.get(g, 0)
