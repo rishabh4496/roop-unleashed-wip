@@ -57,6 +57,10 @@ _TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 # ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
 # source is applied wherever the spatial association points).
+# Fraction of a track's frames that must overlap an already-assigned track of the
+# same person before the track is treated as a genuinely concurrent second body
+# (and so refused that person's source) rather than an occlusion handoff.
+_TRACK_OVERLAP_FRAC = float(os.environ.get('ROOP_TRACK_OVERLAP_FRAC', '0.15'))
 
 
 # ── Jaw / chin reshape warp ──────────────────────────────────────────────────
@@ -1946,7 +1950,15 @@ class ProcessMgr():
                 continue
             t = track_map[tid]
             t_frames = set(t.get('obs', {}).keys())
-            if person_assigned_frames[g].intersection(t_frames):
+            # One person can't be in two places at once, so a track that runs
+            # CONCURRENTLY with one already given to this person is someone else.
+            # But a handoff — the same person's track breaking and restarting over
+            # an occlusion or a turn — overlaps by only a frame or two, and
+            # rejecting those fragments leaves them with no source at all: every
+            # one of their frames falls to per-frame matching and the person
+            # flickers in and out. Require a real overlap, not an incidental one.
+            overlap = len(person_assigned_frames[g].intersection(t_frames))
+            if overlap and overlap > _TRACK_OVERLAP_FRAC * max(1, len(t_frames)):
                 continue
             track_src[tid] = self.options.selected_index if single_person else rank[g]
             person_assigned_frames[g].update(t_frames)
@@ -2370,9 +2382,24 @@ class ProcessMgr():
                                 others = [d for r2 in rank_to_tis if r2 != src_index
                                           for d in [_dist_to_source(face, r2)] if d is not None]
                                 d_other = min(others) if others else None
+                            # The ABSOLUTE test is only meaningful when there is
+                            # someone else's faceset to protect. With a single
+                            # selected person it can only ever take swaps away:
+                            # d_own is computed from the CURRENT frame's embedding,
+                            # and a profile / motion-blurred / steeply pitched frame
+                            # of the right person routinely exceeds 0.85 in scipy
+                            # cosine distance (0..2). Vetoing there drops the face
+                            # to per-frame matching at the TIGHTER match threshold,
+                            # which also fails — so the swap blinks off for exactly
+                            # the hard frames tracking exists to carry, and blinks
+                            # back on when the head comes round. That on/off is the
+                            # shaking. There is no bystander risk to trade against
+                            # when only one person is selected, so skip it.
+                            multi_person = len(rank_to_tis) > 1
                             if src_index in claimed_sources_in_frame:
                                 veto = 'source already used this frame'
-                            elif d_own is not None and d_own > _TRACK_VETO_DIST:
+                            elif (multi_person and d_own is not None
+                                    and d_own > _TRACK_VETO_DIST):
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
                             elif (d_own is not None and d_other is not None
                                     and d_other + _TRACK_VETO_MARGIN < d_own):

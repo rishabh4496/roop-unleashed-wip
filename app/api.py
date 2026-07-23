@@ -63,6 +63,16 @@ def temp_mapped_facesets(mapping):
 API_TEMP = os.path.join(os.getcwd(), "temp", "api_uploads")
 os.makedirs(API_TEMP, exist_ok=True)
 
+# ── Multi-angle target bank gates ────────────────────────────────────────────
+# All in scipy cosine distance (0..2). A same-person PROFILE is routinely 0.7-1.0
+# from a frontal angle, so these have to stay loose or the bank ends up holding
+# only near-frontal angles and the person stops being recognised the moment they
+# turn. Wrong-person capture is prevented by the relative cross-person checks at
+# the call sites, not by these absolute cutoffs.
+_ANGLE_MANUAL_MAX = float(os.environ.get('ROOP_ANGLE_MANUAL_MAX', '0.90'))  # /target/add_angle
+_ANGLE_ACCEPT     = float(os.environ.get('ROOP_ANGLE_ACCEPT', '0.60'))      # /target/auto_angles
+_ANGLE_SEED_MAX   = float(os.environ.get('ROOP_ANGLE_SEED_MAX', '0.85'))    # /target/auto_angles
+
 # ── Shared server-side state (mirrors the Gradio module globals) ──────────────
 list_files_process: list = []          # list[ProcessEntry] – the target media queue
 selected_input_face_index = 0          # which source faceset is "selected"
@@ -1227,7 +1237,16 @@ def target_add_angle(payload: dict = Body(...)):
         if d < best_d:
             best_d, best_fd = d, fd
     if best_fd is not None:
-        if best_d > 0.65:
+        # Absolute sanity gate for a MANUAL capture. Deliberately loose: the user
+        # picked this face on purpose, and a profile/steep-pitch frame of the same
+        # person sits 0.7-1.0 from a frontal angle in scipy cosine distance (range
+        # 0..2), so a tight gate here rejects exactly the lateral angles the bank
+        # exists to collect — and a bank with no profiles is why lateral frames
+        # stop being recognised mid-render. The meaningful protection against
+        # capturing the wrong person is the RELATIVE check below (is some other
+        # captured person a better explanation of this face?), which does not
+        # depend on an absolute cutoff.
+        if best_d > _ANGLE_MANUAL_MAX:
             return _target_faces_payload({"count": 0, "message": "face does not match this person"})
         other_embeddings = [np.asarray(roop_globals.TARGET_FACES[i].embedding, dtype=np.float32)
                             for i, g in enumerate(roop_globals.TARGET_FACE_GROUP)
@@ -1298,8 +1317,15 @@ def target_auto_angles(payload: dict = Body(...)):
     # angle then widens the person's match region so OTHER faces get swapped.
     seed = list(bank)
 
-    ACCEPT = float(payload.get("accept", 0.55))       # same-identity cosine gate
-    SEED_MAX = float(payload.get("seed_max", 0.60))   # max drift from an original angle
+    # Defaults are tuned so PROFILE angles still qualify. In scipy cosine distance
+    # (0..2) a true profile of the same person sits ~0.7-1.0 from a frontal seed,
+    # so a SEED_MAX near 0.6 silently harvests only near-frontal angles — the bank
+    # then fails to recognise the person the moment they turn, which reads as
+    # "doesn't recognise faces sometimes" and makes the swap blink on and off.
+    # Bank pollution is held off by the cross-person checks below (other_d /
+    # AMBIG_MARGIN), which are relative and therefore don't punish hard poses.
+    ACCEPT = float(payload.get("accept", _ANGLE_ACCEPT))       # same-identity cosine gate
+    SEED_MAX = float(payload.get("seed_max", _ANGLE_SEED_MAX))  # max drift from an original angle
     AMBIG_MARGIN = float(payload.get("ambig_margin", 0.10))  # min gap to the runner-up
     NOVELTY = float(payload.get("novelty", 0.15))      # skip near-duplicate embeddings
     MAX_ADD = int(payload.get("max_add", 24))
