@@ -3269,6 +3269,53 @@ class ProcessMgr():
         final_frame = final_frame.transpose(2, 0, 3, 1, 4).reshape(pixel_boost_size, pixel_boost_size, 3)
         return final_frame
 
+    @staticmethod
+    def _mask_crop_box(target_face, orig_frame):
+        """Padded, frame-clamped crop box around *target_face* for the unwarped
+        (non-frontal) masking path: (x0, y0, x1, y1, cx0, cy0, cx1, cy1) where the
+        first four are the padded box in frame coords and the last four are that
+        box clamped to the frame.
+
+        Returns None when the clamped box is empty — a face can be (almost)
+        entirely off-screen: leaving the shot, an extrapolated/gap-filled or
+        temporally smoothed bbox, or a bbox from a rotated cut. The crop → resize
+        → paste chain below assumes a real rectangle, and on an empty slice
+        cv2.resize raises
+            (-215:Assertion failed) !ssize.empty() in function 'cv::resize'
+        which aborted the whole swap/preview. Callers fall back to masking in
+        canonical crop space, which has no off-frame geometry to get wrong.
+        """
+        h_frame, w_frame = orig_frame.shape[:2]
+        xmin, ymin, xmax, ymax = target_face.bbox
+
+        w_box = xmax - xmin
+        h_box = ymax - ymin
+        cx = xmin + w_box / 2.0
+        cy = ymin + h_box / 2.0
+
+        box_size = max(w_box, h_box)
+        # Add 50% padding on all sides to cover face + hair + background/occluders
+        crop_size = box_size * 2.0
+
+        x0 = int(cx - crop_size / 2.0)
+        y0 = int(cy - crop_size / 2.0)
+        x1 = int(cx + crop_size / 2.0)
+        y1 = int(cy + crop_size / 2.0)
+
+        crop_x0 = max(0, x0)
+        crop_y0 = max(0, y0)
+        crop_x1 = min(w_frame, x1)
+        crop_y1 = min(h_frame, y1)
+
+        if (crop_x1 - crop_x0) < 2 or (crop_y1 - crop_y0) < 2:
+            if os.environ.get('ROOP_DEBUG_MATCH'):
+                print(f"[Mask] non-frontal crop is off-frame "
+                      f"(bbox={[round(float(v), 1) for v in target_face.bbox]}, "
+                      f"frame={w_frame}x{h_frame}) — masking in aligned-crop space instead")
+            return None
+        return x0, y0, x1, y1, crop_x0, crop_y0, crop_x1, crop_y1
+
+
     def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None, tgt_pitch_deg:float=0.0):
         # SAM2 is temporally tracked: instead of running per-crop inference it warps
         # its precomputed full-frame mask into this crop via the affine M stashed in
@@ -3315,33 +3362,21 @@ class ProcessMgr():
             is_non_frontal = True
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
-        
+
+        # The unwarped-crop path needs a real, on-screen rectangle. _mask_crop_box
+        # returns None when there isn't one, and we fall back to masking in
+        # canonical crop space instead of crashing (see that method).
+        crop_box = None
         if is_non_frontal and orig_frame is not None and M is not None and p_name in dense_maskers:
+            crop_box = self._mask_crop_box(target_face, orig_frame)
+
+        if crop_box is not None:
             # Run mask on the unwarped bounding-box crop so the face appears in its
             # natural (unwarped) orientation, preventing mask distortion from the
             # affine alignment that canonical crop space would introduce.
             h_frame, w_frame = orig_frame.shape[:2]
-            xmin, ymin, xmax, ymax = target_face.bbox
-            
-            w_box = xmax - xmin
-            h_box = ymax - ymin
-            cx = xmin + w_box / 2.0
-            cy = ymin + h_box / 2.0
-            
-            box_size = max(w_box, h_box)
-            # Add 50% padding on all sides to cover face + hair + background/occluders
-            crop_size = box_size * 2.0
-            
-            x0 = int(cx - crop_size / 2.0)
-            y0 = int(cy - crop_size / 2.0)
-            x1 = int(cx + crop_size / 2.0)
-            y1 = int(cy + crop_size / 2.0)
-            
-            crop_x0 = max(0, x0)
-            crop_y0 = max(0, y0)
-            crop_x1 = min(w_frame, x1)
-            crop_y1 = min(h_frame, y1)
-            
+            x0, y0, x1, y1, crop_x0, crop_y0, crop_x1, crop_y1 = crop_box
+
             cropped = orig_frame[crop_y0:crop_y1, crop_x0:crop_x1].copy()
             
             pad_left   = crop_x0 - x0
