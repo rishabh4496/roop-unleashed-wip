@@ -1879,6 +1879,24 @@ class ProcessMgr():
                 cap.release()
 
         tracks = active + retired
+        # Finalize each track's identity vector: replace the ONLINE EMA (alpha
+        # 0.25, i.e. effectively the last ~10 observations) with the TRUE mean
+        # over every accepted observation. The EMA is right for association
+        # DURING the scan — a track should match what the face looks like now —
+        # but as a whole-track identity it is recency-biased: a track that ends
+        # on a turned head / bad pose drifts far from the captured target face
+        # and fails the distance gate below, so that person is never assigned a
+        # source and never gets swapped (measured on a 2-person clip: person 2's
+        # track sat at 0.659 by EMA vs 0.361 by true mean, against a 0.6 gate —
+        # the whole person silently stayed unswapped). emb_sum/emb_n were
+        # already being accumulated for exactly this and were simply unused.
+        # ROOP_TRACK_TRUEMEAN=0 restores the old recency-biased behavior.
+        if os.environ.get('ROOP_TRACK_TRUEMEAN', '1') != '0':
+            for t in tracks:
+                n = int(t.get('emb_n') or 0)
+                if n > 1 and t.get('emb_sum') is not None:
+                    t['emb_mean'] = (np.asarray(t['emb_sum'], np.float64) / float(n)).astype(np.float32)
+
         # Assign each track to a source (person rank), once, by mean embedding.
         groups = self.target_face_groups
         uniq = sorted(set(groups)) if groups else []
@@ -1924,6 +1942,17 @@ class ProcessMgr():
         self._track_assignments = {
             f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
         }
+        if os.environ.get('ROOP_DEBUG_MATCH'):
+            for t in tracks:
+                dd = {}
+                for g, tis in persons.items():
+                    embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
+                    embs = [e for e in embs if e is not None]
+                    if embs and t.get('emb_mean') is not None:
+                        dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
+                print(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
+                      f"obs={t.get('emb_n')} d(person)={dd} thr={threshold} "
+                      f"-> src={track_src.get(t['id'])}")
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
               f'{matched} matched to a source')
@@ -2274,6 +2303,11 @@ class ProcessMgr():
                         if cand is not None and cand < len(self.input_face_datas):
                             src_index = cand
 
+                    if os.environ.get('ROOP_DEBUG_MATCH'):
+                        print(f"[TRACKMATCH] f={frame_idx} faces={len(faces)} "
+                              f"entry_srcs={[e[1] for e in entries]} best_j={best_j} "
+                              f"src={src_index} claimed={sorted(claimed)}")
+
                     if src_index is not None:
                         claimed_sources_in_frame.add(src_index)
                         temp_frame = self.process_face(src_index, face, temp_frame)
@@ -2298,6 +2332,18 @@ class ProcessMgr():
                             d = min(compute_cosine_distance(e, face.embedding) for e in embs)
                             if d <= best_d:
                                 best_d, best_g = d, g
+
+                        if os.environ.get('ROOP_DEBUG_MATCH'):
+                            _dd = {}
+                            for g, tis in persons.items():
+                                try:
+                                    _dd[g] = round(min(compute_cosine_distance(
+                                        self.target_face_datas[ti].embedding, face.embedding)
+                                        for ti in tis), 3)
+                                except Exception:
+                                    _dd[g] = None
+                            print(f"[TRACKFALL] f={frame_idx} best_g={best_g} best_d={best_d:.3f} "
+                                  f"claimed_src={sorted(claimed_sources_in_frame)} thr={threshold} d={_dd}")
 
                         if best_g is not None:
                             src_index = self.options.selected_index if single_person else rank[best_g]
