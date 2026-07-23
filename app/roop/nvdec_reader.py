@@ -12,7 +12,10 @@ decodes H.264/HEVC/VP9/AV1 on NVDEC and hands bgr24 frames back over stdout;
 codecs NVDEC can't do (GIF, old formats) silently decode in software inside the
 same pipe, which still fixes cv2's known HEVC quirks. Frame seeking uses
 ffmpeg's accurate input seeking at (start-0.5)/fps so trims/resume line up with
-cv2's frame numbering. `-noautorotate` matches cv2's raw (unrotated) output.
+cv2's frame numbering. `-noautorotate` matches cv2's raw (unrotated) output, and
+`-fps_mode passthrough` keeps the pipe at one output frame per DECODED frame —
+ffmpeg's default would re-time the raw stream to the container's r_frame_rate
+and duplicate/drop frames, which breaks that same frame numbering (see _spawn).
 
 Rollout: ROOP_NVDEC=0 disables, =1 or unset (auto) enables behind a one-time
 per-file probe — if `-hwaccel cuda` can't decode the first frame, the caller
@@ -41,6 +44,29 @@ def _popen_kwargs():
 
 def nvdec_wanted() -> bool:
     return os.environ.get("ROOP_NVDEC", "").strip() != "0"
+
+
+_fps_mode_flag = None
+_fps_mode_lock = threading.Lock()
+
+
+def _fps_mode_args():
+    """Output args that force 1:1 frame passthrough (no dup/drop re-timing).
+
+    `-fps_mode passthrough` is the modern spelling (ffmpeg >= 5.1); older builds
+    only know the deprecated `-vsync 0`. Probed once and cached.
+    """
+    global _fps_mode_flag
+    with _fps_mode_lock:
+        if _fps_mode_flag is None:
+            try:
+                proc = subprocess.run([FFMPEG_BINARY, "-hide_banner", "-h", "full"],
+                                      capture_output=True, timeout=30, **_popen_kwargs())
+                blob = (proc.stdout or b"") + (proc.stderr or b"")
+                _fps_mode_flag = ["-fps_mode", "passthrough"] if b"-fps_mode" in blob else ["-vsync", "0"]
+            except Exception:
+                _fps_mode_flag = ["-vsync", "0"]
+        return list(_fps_mode_flag)
 
 
 def _probe(video_path: str) -> bool:
@@ -96,6 +122,17 @@ class FFmpegVideoReader:
             t = max(0.0, (self._start_frame - 0.5) / self.fps)
             cmd += ["-ss", f"{t:.6f}"]
         cmd += ["-noautorotate", "-i", self.path,
+                # CRITICAL: pass every decoded frame through 1:1. Without this,
+                # ffmpeg's default (CFR) re-times the raw output to the stream's
+                # r_frame_rate, which for a lot of files is a multiple of the real
+                # rate (e.g. r_frame_rate=48000/1001 on true-24fps content). ffmpeg
+                # then DUPLICATES frames to fill the gap ("dup=N") and the pipeline,
+                # which stops after frame_count frames, only ever sees the first
+                # half of the video with every frame doubled — a full-length output
+                # holding half the content at an apparent half frame rate.
+                # passthrough makes the pipe match cv2's decoded-frame numbering,
+                # which is what frame_start / frame_count / seeking assume.
+                *_fps_mode_args(),
                 "-f", "rawvideo", "-pix_fmt", "bgr24", "-an", "-sn", "pipe:1"]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL,
