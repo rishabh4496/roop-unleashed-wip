@@ -1215,12 +1215,27 @@ def target_add_angle(payload: dict = Body(...)):
     if not faces_data:
         return _target_faces_payload({"count": 0, "message": "no face in frame"})
     existing = [roop_globals.TARGET_FACES[i] for i, g in enumerate(roop_globals.TARGET_FACE_GROUP) if g == raw_group]
+    existing_embs = [getattr(e, 'embedding', None) for e in existing if getattr(e, 'embedding', None) is not None]
+    if not existing_embs:
+        return _target_faces_payload({"count": 0, "message": "no valid embeddings for this person"})
     best_fd, best_d = None, 1e9
     for fd in faces_data:
-        d = min(util.compute_cosine_distance(e.embedding, fd[0].embedding) for e in existing)
+        fd_emb = getattr(fd[0], 'embedding', None)
+        if fd_emb is None:
+            continue
+        d = min(util.compute_cosine_distance(ee, fd_emb) for ee in existing_embs)
         if d < best_d:
             best_d, best_fd = d, fd
     if best_fd is not None:
+        if best_d > 0.65:
+            return _target_faces_payload({"count": 0, "message": "face does not match this person"})
+        other_embeddings = [np.asarray(roop_globals.TARGET_FACES[i].embedding, dtype=np.float32)
+                            for i, g in enumerate(roop_globals.TARGET_FACE_GROUP)
+                            if g != raw_group and getattr(roop_globals.TARGET_FACES[i], 'embedding', None) is not None]
+        if other_embeddings:
+            other_d = min(float(util.compute_cosine_distance(oe, best_fd[0].embedding)) for oe in other_embeddings)
+            if other_d < best_d:
+                return _target_faces_payload({"count": 0, "message": "face belongs to another target person"})
         roop_globals.TARGET_FACES.append(best_fd[0])
         roop_globals.TARGET_FACE_GROUP.append(raw_group)
         ui_globals.ui_target_thumbs.append(util.convert_to_gradio(best_fd[1]))
@@ -1271,6 +1286,10 @@ def target_auto_angles(payload: dict = Body(...)):
     if not bank:
         return _target_faces_payload({"count": 0, "message": "capture the person once first"})
 
+    other_embeddings = [np.asarray(roop_globals.TARGET_FACES[i].embedding, dtype=np.float32)
+                        for i, g in enumerate(roop_globals.TARGET_FACE_GROUP)
+                        if g != raw_group and getattr(roop_globals.TARGET_FACES[i], 'embedding', None) is not None]
+
     # Immutable anchor: the angles that were ALREADY trusted for this person
     # before this run (hand-captured, or previously accepted). The bank below is
     # allowed to grow so gradual turns chain in, but every newly accepted angle
@@ -1279,8 +1298,8 @@ def target_auto_angles(payload: dict = Body(...)):
     # angle then widens the person's match region so OTHER faces get swapped.
     seed = list(bank)
 
-    ACCEPT = float(payload.get("accept", 0.60))       # same-identity cosine gate
-    SEED_MAX = float(payload.get("seed_max", 0.90))   # max drift from an original angle
+    ACCEPT = float(payload.get("accept", 0.55))       # same-identity cosine gate
+    SEED_MAX = float(payload.get("seed_max", 0.60))   # max drift from an original angle
     AMBIG_MARGIN = float(payload.get("ambig_margin", 0.10))  # min gap to the runner-up
     NOVELTY = float(payload.get("novelty", 0.15))      # skip near-duplicate embeddings
     MAX_ADD = int(payload.get("max_add", 24))
@@ -1325,6 +1344,12 @@ def target_auto_angles(payload: dict = Body(...)):
         seed_d = min(float(util.compute_cosine_distance(best_e, s)) for s in seed)
         if seed_d > SEED_MAX:
             continue
+        # Check against other captured target persons: do not capture a face that
+        # belongs or is closer to another target person already in TARGET_FACES.
+        if other_embeddings:
+            other_d = min(float(util.compute_cosine_distance(best_e, oe)) for oe in other_embeddings)
+            if other_d <= best_d + AMBIG_MARGIN:
+                continue
         # Ambiguity guard: in a multi-person frame, only accept when the winner
         # is CLEARLY the closest. A near-tie means look-alikes are present and
         # grabbing the wrong one would poison the bank for the whole swap run.

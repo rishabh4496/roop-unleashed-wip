@@ -1885,17 +1885,40 @@ class ProcessMgr():
         rank = {g: r for r, g in enumerate(uniq)}
         single_person = len(uniq) <= 1
         threshold = self.options.face_distance_threshold
-        track_src = {}
+
+        persons = {}
+        for i, g in enumerate(groups[:len(self.target_face_datas)]):
+            persons.setdefault(g, []).append(i)
+
+        candidates = []
+        track_map = {t['id']: t for t in tracks}
         for t in tracks:
-            best_i, best_d = -1, threshold
-            for i, tf in enumerate(self.target_face_datas):
-                d = compute_cosine_distance(tf.embedding, t['emb_mean'])
-                if d <= best_d:
-                    best_d, best_i = d, i
-            if best_i < 0:
-                track_src[t['id']] = None
-            else:
-                track_src[t['id']] = self.options.selected_index if single_person else rank[groups[best_i]]
+            t_emb = t.get('emb_mean')
+            if t_emb is None:
+                continue
+            for g, tis in persons.items():
+                embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
+                embs = [e for e in embs if e is not None]
+                if not embs:
+                    continue
+                d = min(compute_cosine_distance(e, t_emb) for e in embs)
+                if d <= threshold:
+                    candidates.append((d, g, t['id']))
+
+        candidates.sort(key=lambda c: c[0])
+
+        person_assigned_frames = {g: set() for g in persons}
+        track_src = {t['id']: None for t in tracks}
+
+        for d, g, tid in candidates:
+            if track_src[tid] is not None:
+                continue
+            t = track_map[tid]
+            t_frames = set(t.get('obs', {}).keys())
+            if person_assigned_frames[g].intersection(t_frames):
+                continue
+            track_src[tid] = self.options.selected_index if single_person else rank[g]
+            person_assigned_frames[g].update(t_frames)
 
         track_map = {t['id']: t for t in tracks}
         self._track_assignments = {
@@ -2214,6 +2237,7 @@ class ProcessMgr():
                             break
                 entries = entries or []
                 claimed = set()
+                claimed_sources_in_frame = set()
                 
                 groups = self.target_face_groups
                 uniq = sorted(set(groups)) if groups else []
@@ -2251,27 +2275,34 @@ class ProcessMgr():
                             src_index = cand
 
                     if src_index is not None:
+                        claimed_sources_in_frame.add(src_index)
                         temp_frame = self.process_face(src_index, face, temp_frame)
                         num_faces_found += 1
                     else:
-                        # No usable track source for this face — either it matched
-                        # no track entry this frame, OR it matched a track the
-                        # pre-pass left unassigned (src=None: typically a short
-                        # early/entering tracklet whose MEAN embedding missed the
-                        # distance threshold even though individual frames match).
                         # Fall back to per-frame multi-angle matching — the same
                         # logic live preview uses — so these frames still swap
-                        # instead of being silently skipped. (Previously a matched
-                        # None-source track hit `continue` and was never swapped,
-                        # which dropped the opening frames of full-range runs.)
-                        best_i, best_d = -1, threshold
-                        for i, tf in enumerate(self.target_face_datas):
-                            d = compute_cosine_distance(tf.embedding, face.embedding)
+                        # instead of being silently skipped.
+                        persons = {}
+                        for i, g in enumerate(groups[:len(self.target_face_datas)]):
+                            persons.setdefault(g, []).append(i)
+
+                        best_g, best_d = None, threshold
+                        for g, tis in persons.items():
+                            r_src = self.options.selected_index if single_person else rank.get(g, 0)
+                            if r_src in claimed_sources_in_frame:
+                                continue
+                            embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
+                            embs = [e for e in embs if e is not None]
+                            if not embs or getattr(face, 'embedding', None) is None:
+                                continue
+                            d = min(compute_cosine_distance(e, face.embedding) for e in embs)
                             if d <= best_d:
-                                best_d, best_i = d, i
-                        if best_i >= 0:
-                            src_index = self.options.selected_index if single_person else rank[groups[best_i]]
+                                best_d, best_g = d, g
+
+                        if best_g is not None:
+                            src_index = self.options.selected_index if single_person else rank[best_g]
                             if src_index < len(self.input_face_datas):
+                                claimed_sources_in_frame.add(src_index)
                                 temp_frame = self.process_face(src_index, face, temp_frame)
                                 num_faces_found += 1
 

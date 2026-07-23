@@ -86,7 +86,11 @@ export default function PersonGroups({
     try {
       const res = await postJSON(path, body);
       applyPayload(res);
-      if (okMsg) notify(okMsg);
+      if (res && res.message && !res.count) {
+        notify(res.message, 'warning');
+      } else if (okMsg) {
+        notify(okMsg);
+      }
       return res;
     } catch (e) {
       notify(e.message, 'error');
