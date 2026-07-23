@@ -82,6 +82,8 @@ current_video_fps = 30
 # Face Manager state (separate faceset builder)
 fm_thumbs: list = []                   # RGB numpy thumbnails
 fm_images: list = []                   # BGR numpy full face images
+fm_scores: list = []                   # FIQA quality score 0..1 per face (parallel to fm_images)
+fm_meta: list = []                     # FIQA breakdown dict per face (parallel to fm_images)
 fm_selected_index = -1
 fm_files: list = []                    # uploaded source paths for the facemgr tab
 
@@ -3261,16 +3263,88 @@ def get_file(path: str, request: Request):
 
 
 # ── Face Manager (faceset builder) ───────────────────────────────────────────
+# Valid detector engines the Face Manager may extract with. SCRFD (buffalo_l's
+# built-in det_10g) is the default and matches the swap pipeline; the others let
+# the user harvest faces tricky footage where a different detector locks on.
+_FACEMGR_DETECTORS = ["scrfd", "retinaface", "retinaface_r50", "yoloface", "yunet"]
+
+# Lazily-built face restorer (GFPGAN v1.4, already shipped in models/). Cleaning
+# a soft/compressed reference before it is baked into the faceset gives the swap
+# a sharper identity to blend from. Kept as a module singleton so repeated adds
+# don't reload the ONNX session.
+_fm_restorer = None
+
+
+def _get_fm_restorer():
+    global _fm_restorer
+    if _fm_restorer is None:
+        from roop.processors.Enhance_GFPGAN import Enhance_GFPGAN
+        from roop.utilities import get_device
+        r = Enhance_GFPGAN()
+        r.Initialize({"devicename": get_device()})
+        _fm_restorer = r
+    return _fm_restorer
+
+
+def _restore_crop(crop_bgr):
+    """Return a face-restored copy of the crop, or the original on any failure."""
+    try:
+        out, _scale = _get_fm_restorer().Run(None, None, crop_bgr)
+        return out
+    except Exception:
+        traceback.print_exc()
+        return crop_bgr
+
+
+def _facemgr_ingest(face, crop_bgr, restore):
+    """Score one detected face, optionally restore its crop, and append it to the
+    Face Manager state (image + thumbnail + FIQA score + breakdown)."""
+    from roop import face_quality
+    # Score the ORIGINAL crop — quality is a property of the captured face, not of
+    # what the restorer can invent; a low score should still gate a blurry source.
+    score, breakdown = face_quality.score_face(face, crop_bgr)
+    stored = _restore_crop(crop_bgr) if restore else crop_bgr
+    fm_images.append(stored)
+    fm_thumbs.append(util.convert_to_gradio(stored))
+    fm_scores.append(round(float(score), 3))
+    fm_meta.append(breakdown)
+
+
+@contextlib.contextmanager
+def _facemgr_detector(detector):
+    """Temporarily point the shared detector at `detector` for one extraction,
+    then restore whatever the pipeline had, so a Face Manager choice never leaks
+    into a later swap run."""
+    prev = getattr(roop_globals, "detector_engine", "scrfd")
+    use = detector if detector in _FACEMGR_DETECTORS else prev
+    roop_globals.detector_engine = use
+    try:
+        yield
+    finally:
+        roop_globals.detector_engine = prev
+
+
+def _facemgr_faces_payload():
+    """Uniform response body: thumbnails + parallel scores + breakdowns."""
+    return {
+        "faces": [_rgb_to_dataurl(t) for t in fm_thumbs],
+        "scores": list(fm_scores),
+        "meta": list(fm_meta),
+    }
+
+
 @app.post("/api/facemgr/add")
-async def facemgr_add(files: list[UploadFile] = File(...)):
+async def facemgr_add(files: list[UploadFile] = File(...),
+                      detector: str = Form("scrfd"),
+                      restore: bool = Form(False)):
     global current_video_fps
     video_path = None
     for f in files:
         path = _save_upload(f)
         if util.has_image_extension(path):
-            for fd in extract_face_images(path, (False, 0), 0.5):
-                fm_images.append(fd[1])
-                fm_thumbs.append(util.convert_to_gradio(fd[1]))
+            with _facemgr_detector(detector):
+                for fd in extract_face_images(path, (False, 0), 0.5):
+                    _facemgr_ingest(fd[0], fd[1], restore)
         elif util.is_video(path) or path.lower().endswith("gif"):
             fm_files.append(path)
             video_path = path
@@ -3278,7 +3352,7 @@ async def facemgr_add(files: list[UploadFile] = File(...)):
                 current_video_fps = util.detect_fps(path)
             except Exception:
                 current_video_fps = 30
-    resp = {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+    resp = _facemgr_faces_payload()
     if video_path:
         resp["video"] = os.path.basename(video_path)
         resp["frames"] = get_video_frame_total(video_path) or 1
@@ -3290,6 +3364,8 @@ async def facemgr_faceset(file: UploadFile = File(...)):
     path = _save_upload(file)
     fm_thumbs.clear()
     fm_images.clear()
+    fm_scores.clear()
+    fm_meta.clear()
     if path.lower().endswith("fsz"):
         unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
         if os.path.isdir(unzipfolder):
@@ -3299,9 +3375,8 @@ async def facemgr_faceset(file: UploadFile = File(...)):
         for file_ in os.listdir(unzipfolder):
             if file_.endswith(".png"):
                 for fd in extract_face_images(os.path.join(unzipfolder, file_), (False, 0), 0.5):
-                    fm_images.append(fd[1])
-                    fm_thumbs.append(util.convert_to_gradio(fd[1]))
-    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+                    _facemgr_ingest(fd[0], fd[1], False)
+    return _facemgr_faces_payload()
 
 
 @app.get("/api/facemgr/frame")
@@ -3318,12 +3393,14 @@ def facemgr_frame(frame: int = 1):
 @app.post("/api/facemgr/cut")
 def facemgr_cut(payload: dict = Body(...)):
     frame = int(payload.get("frame", 1))
+    detector = payload.get("detector", "scrfd")
+    restore = bool(payload.get("restore", False))
     if not fm_files:
-        return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
-    for fd in extract_face_images(fm_files[-1], (True, frame), 0.5):
-        fm_images.append(fd[1])
-        fm_thumbs.append(util.convert_to_gradio(fd[1]))
-    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+        return _facemgr_faces_payload()
+    with _facemgr_detector(detector):
+        for fd in extract_face_images(fm_files[-1], (True, frame), 0.5):
+            _facemgr_ingest(fd[0], fd[1], restore)
+    return _facemgr_faces_payload()
 
 
 @app.post("/api/facemgr/remove")
@@ -3332,15 +3409,45 @@ def facemgr_remove(payload: dict = Body(...)):
     if 0 <= idx < len(fm_thumbs):
         fm_thumbs.pop(idx)
         fm_images.pop(idx)
-    return {"faces": [_rgb_to_dataurl(t) for t in fm_thumbs]}
+        if idx < len(fm_scores):
+            fm_scores.pop(idx)
+        if idx < len(fm_meta):
+            fm_meta.pop(idx)
+    return _facemgr_faces_payload()
+
+
+@app.post("/api/facemgr/prune")
+def facemgr_prune(payload: dict = Body(...)):
+    """Drop every face whose FIQA score is below `threshold` (0..1) — the quality
+    gate. Returns how many were removed alongside the surviving set."""
+    try:
+        threshold = float(payload.get("threshold", 0.0))
+    except (TypeError, ValueError):
+        threshold = 0.0
+    before = len(fm_images)
+    keep = [i for i, s in enumerate(fm_scores) if s >= threshold]
+    # Rebuild the three parallel lists in place so any held references stay valid.
+    kept_imgs = [fm_images[i] for i in keep]
+    kept_thumbs = [fm_thumbs[i] for i in keep]
+    kept_scores = [fm_scores[i] for i in keep]
+    kept_meta = [fm_meta[i] for i in keep]
+    fm_images.clear(); fm_images.extend(kept_imgs)
+    fm_thumbs.clear(); fm_thumbs.extend(kept_thumbs)
+    fm_scores.clear(); fm_scores.extend(kept_scores)
+    fm_meta.clear(); fm_meta.extend(kept_meta)
+    resp = _facemgr_faces_payload()
+    resp["removed"] = before - len(keep)
+    return resp
 
 
 @app.post("/api/facemgr/clear")
 def facemgr_clear():
     fm_thumbs.clear()
     fm_images.clear()
+    fm_scores.clear()
+    fm_meta.clear()
     fm_files.clear()
-    return {"faces": []}
+    return _facemgr_faces_payload()
 
 
 @app.post("/api/facemgr/build")
