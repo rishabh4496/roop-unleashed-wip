@@ -2208,8 +2208,13 @@ export default function FaceSwap({
       {/* COLUMN 1: Settings & Controls — sticky sidebar on large viewports so it
           follows the scroll (and never leaves the lower-left area empty) while
           scrolling a taller workspace. Scrolls internally when taller than the
-          viewport. */}
-      <div className="w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none">
+          viewport.
+
+          Hidden while a job runs: none of it can be acted on mid-run (the
+          settings are already baked into the running job), and hiding it gives
+          the whole viewport to the diagnostics, which is the only thing there is
+          to look at until the run ends. Comes back on Stop / completion. */}
+      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${progress.processing ? 'hidden' : ''}`}>
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -2567,8 +2572,9 @@ export default function FaceSwap({
           preview is the visual center instead of buried on the far right. */}
       <div className="flex-1 w-full min-w-0 space-y-6 flex flex-col 2xl:flex-row-reverse gap-6">
 
-        {/* COLUMN 2: Media Asset Manager — right rail */}
-        <div className="w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none">
+        {/* COLUMN 2: Media Asset Manager — right rail (hidden while running, as
+            with column 1 — sources/targets are locked in for the current job). */}
+        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${progress.processing ? 'hidden' : ''}`}>
           <Section title="Target faces">
             <PersonGroups
               targetFaces={targetFaces}
@@ -2882,11 +2888,15 @@ export default function FaceSwap({
                 React-only state and is empty after a remount, so the processing
                 branch is keyed off progress.processing rather than previewSrc. */}
             {progress.processing ? (
-              <div className="relative aspect-video min-h-[560px] rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center select-none px-4 sm:px-6 py-4">
+              /* Fills the viewport rather than a 16:9 slot: with the settings
+                 sidebar, asset rail, timeline and preview controls all hidden
+                 during a run, this panel IS the screen, and the diagnostics
+                 want the height. Floored so it stays usable on a short window. */
+              <div className="relative h-[calc(100vh-230px)] min-h-[620px] rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center select-none px-4 sm:px-6 py-4">
                 <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 38%, var(--accent-glow), transparent 60%)' }} />
                 {/* h-full + min-h-0 so the console below takes ALL the leftover
                     height instead of the whole block floating in a tall box. */}
-                <div className="relative h-full w-full max-w-6xl min-h-0 flex flex-col items-center gap-3">
+                <div className="relative h-full w-full max-w-[1900px] min-h-0 flex flex-col items-center gap-3">
                   <div className="flex flex-col items-center gap-1.5">
                     <div className="flex items-center gap-2">
                       <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
@@ -2963,6 +2973,9 @@ export default function FaceSwap({
                     processing={progress.processing}
                     paused={progress.paused}
                     config={runConfigSummary}
+                    elapsedMs={elapsedMs}
+                    etaMs={etaMs}
+                    prog={prog}
                   />
 
                   {/* Live terminal feed — mirrors what the real console prints
@@ -3231,8 +3244,10 @@ export default function FaceSwap({
               </div>
             )}
             
-            {/* CINEMATIC TIMELINE SLIDER */}
-            {maxFrames > 1 && (
+            {/* CINEMATIC TIMELINE SLIDER — hidden while running: scrubbing a
+                clip that is being written is meaningless, and the space belongs
+                to the diagnostics. */}
+            {maxFrames > 1 && !progress.processing && (
               <div className="space-y-2.5 pt-3 border-t border-[var(--border-color)] select-none">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -3525,7 +3540,10 @@ export default function FaceSwap({
               </div>
             )}
 
-            <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
+            {/* Preview controls — every one of these drives a preview render,
+                which is exactly what must not happen mid-run, so they go away
+                with everything else while a job is running. */}
+            <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''} ${progress.processing ? 'hidden' : ''}`}>
               <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
               {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
@@ -3536,7 +3554,7 @@ export default function FaceSwap({
               )}
             </div>
 
-            <div className="flex items-center flex-wrap gap-3">
+            <div className={`flex items-center flex-wrap gap-3 ${progress.processing ? 'hidden' : ''}`}>
               <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
               <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
@@ -3627,6 +3645,11 @@ export default function FaceSwap({
             </TiltCard>
           )}
 
+          {/* Batch queue — hidden while running UNLESS a queue is what's running,
+              because then this holds the only controls that stop the QUEUE
+              rather than just the current job, and hiding them would let the
+              next job start after a Stop. */}
+          <div className={progress.processing && !isQueueRunning ? 'hidden' : ''}>
           <Section title="Batch Swapping Queue">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
               <div className="text-xs text-white/50">
@@ -3684,8 +3707,9 @@ export default function FaceSwap({
               </div>
             )}
           </Section>
+          </div>
 
-          <Section title="Output settings & renders">
+          <Section title="Output settings & renders" className={progress.processing ? 'hidden' : ''}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
               <div className="space-y-4">
                 <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />

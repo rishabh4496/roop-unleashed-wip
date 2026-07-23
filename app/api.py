@@ -3849,7 +3849,18 @@ def get_telemetry():
     except Exception:
         pass
 
-    import threading
+    # Free space on the output drive. A long render writes tens of GB of frames
+    # and the failure mode when it runs out is losing the whole run at the encode
+    # step, so it belongs next to the other run-limiting resources.
+    try:
+        out = getattr(roop_globals, "output_path", None)
+        probe = out if (out and os.path.isdir(out)) else os.getcwd()
+        usage = shutil.disk_usage(probe)
+        telemetry["disk_free"] = round(usage.free / (1024 ** 3), 1)
+        telemetry["disk_total"] = round(usage.total / (1024 ** 3), 1)
+    except Exception:
+        pass
+
     telemetry["threads"] = threading.active_count()
     return telemetry
 

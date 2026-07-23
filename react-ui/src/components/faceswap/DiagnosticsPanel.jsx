@@ -77,7 +77,26 @@ const stageColor = (s) => STAGE_COLORS[s] || (
   : /decode|read/.test(s) ? STAGE_COLORS.decode
   : '#94a3b8');
 
-export default function DiagnosticsPanel({ desc = '', telemetry, processing, paused, config = [] }) {
+/** One figure in the run-stats strip. */
+function Stat({ label, value, tone = 'text-white/80', sub }) {
+  return (
+    <div className="min-w-0 px-3 py-1.5">
+      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{label}</div>
+      <div className={`font-mono text-[13px] font-bold tabular-nums truncate ${tone}`}>{value}</div>
+      {sub && <div className="font-mono text-[9px] text-white/25 truncate">{sub}</div>}
+    </div>
+  );
+}
+
+const fmtDur = (ms) => {
+  if (!isFinite(ms) || ms <= 0) return '—';
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : m > 0 ? `${m}m ${String(sec).padStart(2, '0')}s` : `${sec}s`;
+};
+
+export default function DiagnosticsPanel({ desc = '', telemetry, processing, paused, config = [],
+                                           elapsedMs = 0, etaMs = 0, prog = 0 }) {
   // ── Throughput history ────────────────────────────────────────────────────
   // The FPS is already in the status line ("Processing frame X / Y (Z FPS)");
   // sampling it here turns a number that jumps every second into a trend.
@@ -141,8 +160,60 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
   const vramPct = telemetry?.vram_total ? (telemetry.vram_used / telemetry.vram_total) * 100 : 0;
   const hasGpuUtil = telemetry?.gpu_util !== undefined && telemetry?.gpu_util !== null;
 
+  // ── Frame counts, straight out of the status line ─────────────────────────
+  const frames = useMemo(() => {
+    const m = desc.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
+    if (!m) return null;
+    const done = parseInt(m[1].replace(/,/g, ''), 10);
+    const total = parseInt(m[2].replace(/,/g, ''), 10);
+    if (!isFinite(done) || !isFinite(total) || total <= 0) return null;
+    return { done, total, left: Math.max(0, total - done) };
+  }, [desc]);
+
+  // ── Stall watchdog ────────────────────────────────────────────────────────
+  // A run that has quietly wedged looks identical to a slow one: the bar sits
+  // still and the ETA keeps counting. Timing how long the status line has been
+  // unchanged tells them apart — and a long silence during the swap phase is
+  // the signature of the encoder-warm-up / display-power stalls this app has
+  // hit before, so it is worth surfacing rather than leaving to be noticed.
+  const [stallMs, setStallMs] = useState(0);
+  const descAtRef = useRef(Date.now());
+  useEffect(() => { descAtRef.current = Date.now(); setStallMs(0); }, [desc]);
+  useEffect(() => {
+    if (!processing || paused) return;
+    const id = setInterval(() => setStallMs(Date.now() - descAtRef.current), 1000);
+    return () => clearInterval(id);
+  }, [processing, paused]);
+
+  // Wall-clock time the run is projected to finish at — far easier to act on
+  // than "32m 30s left" when the answer is "come back after lunch".
+  const finishAt = etaMs > 0
+    ? new Date(Date.now() + etaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—';
+
   return (
     <div className="w-full grid gap-2.5 lg:grid-cols-3">
+      {/* ── Run stats strip ──────────────────────────────────────────────── */}
+      <div className="lg:col-span-3 rounded-xl border border-white/[0.07] bg-black/30 flex flex-wrap items-stretch divide-x divide-white/[0.06]">
+        <Stat label="Progress" value={`${(prog * 100).toFixed(1)}%`} tone="text-[var(--accent)]" />
+        <Stat label="Frames" value={frames ? frames.done.toLocaleString() : '—'}
+              sub={frames ? `of ${frames.total.toLocaleString()}` : null} />
+        <Stat label="Remaining" value={frames ? frames.left.toLocaleString() : '—'} sub="frames" />
+        <Stat label="Elapsed" value={fmtDur(elapsedMs)} />
+        <Stat label="Left" value={fmtDur(etaMs)} tone="text-emerald-400" />
+        <Stat label="Finishes" value={finishAt} sub="wall clock" />
+        <Stat label="Avg" value={fpsStats ? `${fpsStats.avg.toFixed(1)}` : '—'} sub="fps over run" />
+        <Stat label="RAM" value={telemetry?.ram_used != null ? `${telemetry.ram_used} GB` : '—'}
+              sub={telemetry?.ram_total ? `of ${telemetry.ram_total} GB` : null} />
+        <Stat label="Disk free" value={telemetry?.disk_free != null ? `${telemetry.disk_free} GB` : '—'}
+              tone={telemetry?.disk_free != null && telemetry.disk_free < 20 ? 'text-red-400' : 'text-white/80'}
+              sub="output drive" />
+        <Stat label="Status"
+              value={paused ? 'Paused' : stallMs > 90000 ? 'Stalled?' : 'Running'}
+              tone={paused ? 'text-amber-400' : stallMs > 90000 ? 'text-red-400' : 'text-emerald-400'}
+              sub={stallMs > 15000 ? `no output ${fmtDur(stallMs)}` : null} />
+      </div>
+
       {/* ── Throughput ───────────────────────────────────────────────────── */}
       <div className="lg:col-span-2 rounded-xl border border-white/[0.07] bg-black/30 px-3 py-2.5">
         <div className="flex items-baseline justify-between gap-3">
@@ -185,7 +256,10 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
                  pct={telemetry.gpu_util}
                  sub={[telemetry.gpu_temp != null && `${telemetry.gpu_temp}°C`,
                        telemetry.gpu_power != null && `${telemetry.gpu_power}W`,
-                       telemetry.gpu_clock != null && `${telemetry.gpu_clock}MHz`]
+                       telemetry.gpu_clock != null && `${telemetry.gpu_clock}MHz`,
+                       // Memory-bandwidth utilisation, not VRAM occupancy: high
+                       // here with low core util means the run is memory-bound.
+                       telemetry.gpu_mem_util != null && `mem ${telemetry.gpu_mem_util}%`]
                        .filter(Boolean).join('  ·  ')} />
         ) : (
           <Meter label="GPU" value="n/a" color="#64748b" pct={0} sub="nvidia-smi unavailable" />
