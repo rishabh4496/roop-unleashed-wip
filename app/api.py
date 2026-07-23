@@ -3736,6 +3736,83 @@ def settings_advisor(payload: dict = Body(...)):
     return {"ok": True, "is_video": is_vid, "stats": stats, "recommendations": recs}
 
 
+_nvsmi_cache = {"t": 0.0, "data": {}, "fails": 0}
+_nvsmi_lock = threading.Lock()
+
+
+def _nvidia_smi_stats():
+    """GPU utilisation / temp / power / SM clock via nvidia-smi.
+
+    torch reports VRAM but NOT utilisation, and utilisation is the number that
+    distinguishes "the GPU is the bottleneck" from "the GPU is idle waiting on a
+    lock or on decode" — the single most useful figure when a run is slower than
+    expected. Spawning a process is far too expensive per poll, so the result is
+    cached for _NVSMI_TTL and the probe disables itself after repeated failures
+    (no NVIDIA GPU, driver mismatch) rather than paying the cost forever.
+    """
+    _NVSMI_TTL = 2.0
+    with _nvsmi_lock:
+        if _nvsmi_cache["fails"] >= 3:
+            return {}
+        if time.time() - _nvsmi_cache["t"] < _NVSMI_TTL:
+            return dict(_nvsmi_cache["data"])
+    data = {}
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
+        line = (proc.stdout or "").strip().splitlines()[0]
+        vals = [v.strip() for v in line.split(",")]
+        keys = ["gpu_util", "gpu_mem_util", "gpu_temp", "gpu_power", "gpu_clock"]
+        for k, v in zip(keys, vals):
+            try:
+                data[k] = round(float(v), 1)
+            except ValueError:
+                pass
+    except Exception:
+        with _nvsmi_lock:
+            _nvsmi_cache["fails"] += 1
+        return {}
+    with _nvsmi_lock:
+        _nvsmi_cache.update({"t": time.time(), "data": dict(data), "fails": 0})
+    return data
+
+
+@app.get("/api/system/profile")
+def get_stage_profile():
+    """Live per-stage timing breakdown (decode / detect / mask / swap / enhance…).
+
+    Reads the same accumulators ROOP_PROFILE's end-of-run STAGE TIMING report
+    prints, but mid-run, so the UI can show WHERE the time is going while it is
+    still going there. Shares are wall-clock summed across worker threads, so
+    they describe relative cost, not a fraction of elapsed time.
+
+    Returns enabled:false when ROOP_PROFILE is off — the accumulators are simply
+    never written in that case, which is why the numbers cost nothing normally.
+    """
+    try:
+        from roop import ProcessMgr as _pm
+        with _pm._prof_lock:
+            times = dict(_pm._prof_times)
+            counts = dict(_pm._prof_counts)
+        if not _pm._PROFILE:
+            return {"enabled": False, "stages": []}
+        total = sum(times.values()) or 1.0
+        stages = [{
+            "stage": k,
+            "total_s": round(times[k], 3),
+            "share": round(times[k] / total, 4),
+            "calls": counts.get(k, 0),
+            "ms_per_call": round(times[k] * 1000.0 / max(1, counts.get(k, 0)), 2),
+        } for k in sorted(times, key=lambda x: -times[x])]
+        return {"enabled": True, "stages": stages}
+    except Exception as e:
+        return {"enabled": False, "stages": [], "message": str(e)}
+
+
 @app.get("/api/system/telemetry")
 def get_telemetry():
     telemetry = {
@@ -3747,6 +3824,7 @@ def get_telemetry():
         "ram_used": 0.0,
         "threads": 0
     }
+    telemetry.update(_nvidia_smi_stats())
     try:
         import psutil
         cpu_percent = psutil.cpu_percent()

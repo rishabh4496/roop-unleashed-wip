@@ -9,6 +9,7 @@ import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import ProcessingTerminal from './faceswap/ProcessingTerminal';
+import DiagnosticsPanel from './faceswap/DiagnosticsPanel';
 import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
@@ -485,6 +486,26 @@ export default function FaceSwap({
   // p = the swap parameters, seeded from CFG (settings) and patched locally.
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+
+  // The knobs that actually decide a run's speed and look, shown alongside the
+  // live diagnostics so a screenshot of a slow or wrong-looking run says what
+  // produced it — otherwise the numbers have to be paired with the settings tab
+  // from memory. Only the ones with real cost/quality weight; off is shown as
+  // "off" rather than hidden, because an unexpectedly disabled stage is itself
+  // the answer often enough.
+  const runConfigSummary = useMemo(() => ([
+    ['swapper', p.swap_model || '—'],
+    ['detector', p.detector_engine || '—'],
+    ['enhancer', p.selected_enhancer && p.selected_enhancer !== 'None' ? p.selected_enhancer : 'off'],
+    ['mask', p.mask_engine || '—'],
+    ['pixel boost', p.subsample_upscale || '—'],
+    ['upscale', p.upscale_after_swap ? (p.upscale_model_after || 'on') : 'off'],
+    ['tracking', p.track_identities ? 'on' : 'off'],
+    ['temporal', p.temporal_detection ? 'on' : 'off'],
+    ['stabilize', p.stabilize_face || p.stabilize_enhancer ? 'on' : 'off'],
+  ]), [p.swap_model, p.detector_engine, p.selected_enhancer, p.mask_engine,
+       p.subsample_upscale, p.upscale_after_swap, p.upscale_model_after,
+       p.track_identities, p.temporal_detection, p.stabilize_face, p.stabilize_enhancer]);
 
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
@@ -2861,9 +2882,11 @@ export default function FaceSwap({
                 React-only state and is empty after a remount, so the processing
                 branch is keyed off progress.processing rather than previewSrc. */}
             {progress.processing ? (
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center justify-center select-none px-6 sm:px-10">
+              <div className="relative aspect-video min-h-[560px] rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center select-none px-4 sm:px-6 py-4">
                 <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 38%, var(--accent-glow), transparent 60%)' }} />
-                <div className="relative w-full max-w-4xl flex flex-col items-center gap-4">
+                {/* h-full + min-h-0 so the console below takes ALL the leftover
+                    height instead of the whole block floating in a tall box. */}
+                <div className="relative h-full w-full max-w-6xl min-h-0 flex flex-col items-center gap-3">
                   <div className="flex flex-col items-center gap-1.5">
                     <div className="flex items-center gap-2">
                       <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
@@ -2932,20 +2955,19 @@ export default function FaceSwap({
                     );
                   })()}
 
-                  {/* Live hardware telemetry — the HUD that used to live in the run-bar. */}
-                  {telemetry && (
-                    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[10px] font-mono text-white/40">
-                      <span>VRAM <span className="text-blue-300 font-semibold tabular-nums">{telemetry.vram_used} / {telemetry.vram_total} GB</span></span>
-                      <span className="text-white/15">·</span>
-                      <span>CPU <span className="text-white/70 font-semibold tabular-nums">{telemetry.cpu_percent}%</span></span>
-                      <span className="text-white/15">·</span>
-                      <span>Threads <span className="text-white/70 font-semibold tabular-nums">{telemetry.threads}</span></span>
-                    </div>
-                  )}
+                  {/* Diagnostics — throughput trend, GPU/VRAM/CPU, per-stage cost
+                      and the settings in force. Fills what used to be empty box. */}
+                  <DiagnosticsPanel
+                    desc={progress.desc}
+                    telemetry={telemetry}
+                    processing={progress.processing}
+                    paused={progress.paused}
+                    config={runConfigSummary}
+                  />
 
                   {/* Live terminal feed — mirrors what the real console prints
                       (stage changes, per-frame FPS, encode/combine, done/errors). */}
-                  <ProcessingTerminal log={progress.log || []} paused={progress.paused} />
+                  <ProcessingTerminal log={progress.log || []} paused={progress.paused} className="flex-1 min-h-0" bodyClass="h-full" />
 
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
                 </div>

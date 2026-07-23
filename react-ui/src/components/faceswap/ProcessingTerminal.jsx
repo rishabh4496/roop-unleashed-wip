@@ -9,7 +9,7 @@ import React, { useEffect, useRef } from 'react';
  * combine/encode, done/errors). Auto-scrolls to the newest line and pins a
  * blinking cursor to the bottom so it reads as a live stream.
  */
-export default function ProcessingTerminal({ log = [], paused }) {
+export default function ProcessingTerminal({ log = [], paused, className = '', bodyClass = 'h-40' }) {
   const scrollRef = useRef(null);
   const bottomRef = useRef(null);
 
@@ -33,9 +33,9 @@ export default function ProcessingTerminal({ log = [], paused }) {
   };
 
   return (
-    <div className="w-full rounded-xl border border-white/10 bg-black/60 overflow-hidden font-mono">
+    <div className={`w-full rounded-xl border border-white/10 bg-black/60 overflow-hidden font-mono flex flex-col ${className}`}>
       {/* Title bar — traffic lights + live indicator */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/10 bg-white/[0.03]">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-white/10 bg-white/[0.03]">
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-red-500/70" />
           <span className="h-2.5 w-2.5 rounded-full bg-amber-400/70" />
@@ -49,7 +49,7 @@ export default function ProcessingTerminal({ log = [], paused }) {
       </div>
 
       {/* Scrolling log body */}
-      <div ref={scrollRef} className="selectable h-40 overflow-y-auto px-3 py-2 text-[11px] leading-relaxed scroll-smooth">
+      <div ref={scrollRef} className={`selectable ${bodyClass} min-h-0 overflow-y-auto px-3 py-2 text-[11px] leading-relaxed scroll-smooth`}>
         {log.length === 0 ? (
           <div className="text-white/30">waiting for output…</div>
         ) : (
