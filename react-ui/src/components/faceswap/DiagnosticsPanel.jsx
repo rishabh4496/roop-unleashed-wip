@@ -98,24 +98,42 @@ const fmtDur = (ms) => {
 export default function DiagnosticsPanel({ desc = '', telemetry, processing, paused, config = [],
                                            elapsedMs = 0, etaMs = 0, prog = 0 }) {
   // ── Throughput history ────────────────────────────────────────────────────
-  // The FPS is already in the status line ("Processing frame X / Y (Z FPS)");
-  // sampling it here turns a number that jumps every second into a trend.
+  // Derived from the FRAME COUNT over wall time, NOT from the "(Z FPS)" in the
+  // status line. That number is tqdm's smoothed rate, and tqdm measures the
+  // interval between successive update() calls — which every worker thread makes
+  // independently. Two threads finishing 1 ms apart reads as ~1000 fps, a gap
+  // between bursts reads as near zero, so on a multi-threaded run it swings by
+  // hundreds of fps while real throughput is flat. It was measuring update
+  // jitter, not the pipeline. Δframes / Δtime is immune to that.
   const [fpsHist, setFpsHist] = useState([]);
   const [hwHist, setHwHist] = useState({ gpu: [], vram: [], cpu: [] });
   const lastDescRef = useRef('');
+  const lastSampleRef = useRef(null);   // { t, done } of the previous sample
 
   useEffect(() => {
-    if (!processing) { setFpsHist([]); setHwHist({ gpu: [], vram: [], cpu: [] }); return; }
+    if (!processing) {
+      setFpsHist([]); setHwHist({ gpu: [], vram: [], cpu: [] });
+      lastSampleRef.current = null;
+    }
   }, [processing]);
 
   useEffect(() => {
     if (!processing || paused || !desc || desc === lastDescRef.current) return;
     lastDescRef.current = desc;
-    const m = desc.match(/\(([\d.]+)\s*FPS\)/i);
+    const m = desc.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
     if (!m) return;
-    const v = parseFloat(m[1]);
-    if (!isFinite(v)) return;
-    setFpsHist((h) => [...h, v].slice(-160));
+    const done = parseInt(m[1].replace(/,/g, ''), 10);
+    if (!isFinite(done)) return;
+    const now = Date.now();
+    const prev = lastSampleRef.current;
+    lastSampleRef.current = { t: now, done };
+    if (!prev) return;
+    // A stage change restarts the count ("Upscaling frame 1 / N") — the series
+    // would otherwise take a huge negative step and then a fake spike.
+    if (done < prev.done) { setFpsHist([]); return; }
+    const dt = (now - prev.t) / 1000;
+    if (dt < 0.25) return;              // too short to divide by meaningfully
+    setFpsHist((h) => [...h, (done - prev.done) / dt].slice(-160));
   }, [desc, processing, paused]);
 
   useEffect(() => {
@@ -129,15 +147,21 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
 
   const fpsStats = useMemo(() => {
     if (fpsHist.length === 0) return null;
+    const avg = fpsHist.reduce((a, b) => a + b, 0) / fpsHist.length;
+    // Judge stability by how much of the RECENT window sits far below the run
+    // average, not by peak-to-trough spread. Spread is dominated by single
+    // outliers, so it cried wolf on runs that were in fact steady; what actually
+    // matters is whether throughput keeps collapsing. Needs a real window of
+    // samples before it will say anything at all.
     const recent = fpsHist.slice(-30);
+    const slow = recent.filter((v) => v < avg * 0.5).length;
     return {
       cur: fpsHist[fpsHist.length - 1],
-      avg: fpsHist.reduce((a, b) => a + b, 0) / fpsHist.length,
+      avg,
       min: Math.min(...fpsHist),
       max: Math.max(...fpsHist),
-      // Spread over the recent window: a wide spread means the pipeline is
-      // stalling in bursts rather than running at a steady rate.
-      spread: Math.max(...recent) - Math.min(...recent),
+      unstable: recent.length >= 20 && slow >= recent.length * 0.25,
+      slowPct: Math.round((slow / Math.max(1, recent.length)) * 100),
     };
   }, [fpsHist]);
 
@@ -233,10 +257,11 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
           <>
             <div className="mt-1.5"><Spark data={fpsHist} height={52} /></div>
             <div className="mt-1 flex items-center justify-between font-mono text-[9px] text-white/25">
-              <span>{fpsHist.length} samples</span>
-              {fpsStats && fpsStats.spread > fpsStats.avg * 0.6 && (
+              <span>{fpsHist.length} samples · frames ÷ wall time</span>
+              {fpsStats?.unstable && (
                 <span className="text-amber-400/70">
-                  unstable — {fpsStats.spread.toFixed(1)} fps swing, pipeline is stalling in bursts
+                  {fpsStats.slowPct}% of the last samples ran under half the average — check GPU
+                  utilisation and stage cost below
                 </span>
               )}
             </div>
