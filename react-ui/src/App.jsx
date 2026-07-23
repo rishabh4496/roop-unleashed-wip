@@ -24,12 +24,14 @@ const loadSettings = () => import('./components/Settings');
 const loadFaceManager = () => import('./components/FaceManager');
 const loadExtras = () => import('./components/Extras');
 const loadGallery = () => import('./components/Gallery');
+const loadRunHistory = () => import('./components/RunHistory');
 
 const FaceSwap = lazy(loadFaceSwap);
 const Settings = lazy(loadSettings);
 const FaceManager = lazy(loadFaceManager);
 const Extras = lazy(loadExtras);
 const Gallery = lazy(loadGallery);
+const RunHistory = lazy(loadRunHistory);
 
 // Lightweight fallback while a tab chunk loads — mirrors the app's connecting
 // spinner so the swap reads as intentional, not a flash of empty space. It
@@ -49,6 +51,7 @@ const TABS = [
   { id: 'facemgr', label: '👥 Face Manager', preload: loadFaceManager },
   { id: 'extras', label: '✏️ Editor', preload: loadExtras },
   { id: 'gallery', label: '📂 Outputs', preload: loadGallery },
+  { id: 'history', label: '🕐 History', preload: loadRunHistory },
   { id: 'settings', label: '⚙️ Settings', preload: loadSettings },
 ];
 
@@ -642,6 +645,7 @@ export default function App() {
                 {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'gallery' && <Gallery notify={notify} setSettings={setSettings} setTab={setTab} />}
+                {tab === 'history' && <RunHistory notify={notify} setSettings={setSettings} setTab={setTab} />}
                 {tab === 'settings' && <Settings meta={meta} settings={settings} setSettings={setSettings} notify={notify} />}
               </Suspense>
               </ErrorBoundary>

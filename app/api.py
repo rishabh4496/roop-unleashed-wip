@@ -89,6 +89,16 @@ fm_files: list = []                    # uploaded source paths for the facemgr t
 _progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
 _last_output = {"path": "", "kind": ""}
 
+# Per-run accumulator, reset at the start of every swap and read back when the
+# run is recorded into history. Wall time + the highest "done / total" frame
+# count seen in the status line let the Run History view show how long a run
+# took and its average throughput — data that used to evaporate the instant the
+# job finished. Populated centrally in get_progress() so it captures every stage
+# without touching the pipeline. `start == 0` means no run has begun this session.
+import re as _re
+_FRAME_RE = _re.compile(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)")
+_run_stats = {"start": 0.0, "frames_done": 0, "frames_total": 0}
+
 # Rolling terminal-style log tail surfaced to the preview box while a job runs.
 # Capture is centralized in get_progress() (see below) so it mirrors _progress["desc"]
 # regardless of which stage produced it (swap / upscale / interpolate / combine).
@@ -1582,11 +1592,22 @@ def _record_run_history(payload: dict, produced_files: list):
         if not produced_files:
             return
         snap = {k: v for k, v in payload.items() if k not in _HISTORY_STRIP}
+        # Duration + throughput, best-effort from the run accumulator. Older
+        # entries and runs where the status line never showed a frame count
+        # simply omit these; the UI treats them as unknown.
+        now = time.time()
+        started = _run_stats.get("start") or 0.0
+        duration_s = round(now - started, 1) if started and now > started else 0.0
+        frames = _run_stats.get("frames_total") or _run_stats.get("frames_done") or 0
+        fps = round(frames / duration_s, 1) if duration_s > 0 and frames else 0.0
         entry = {
-            "id": int(time.time() * 1000),
-            "time": time.time(),
+            "id": int(now * 1000),
+            "time": now,
             "outputs": [os.path.basename(f) for f in produced_files],
             "settings": snap,
+            "duration_s": duration_s,
+            "frames": frames,
+            "fps": fps,
         }
         entries = _load_history()
         entries.insert(0, entry)
@@ -2039,6 +2060,7 @@ def _run_swap(payload):
     _log_state.update({"last": "", "last_ts": 0.0, "seq": 0, "last_err": ""})
     _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
+    _run_stats.update({"start": time.time(), "frames_done": 0, "frames_total": 0})
     try:
         # Inside the try so any failure (e.g. CFG.save() I/O error) still hits
         # the finally block and clears the processing flag.
@@ -3047,7 +3069,24 @@ def get_progress():
         if err and err != _log_state.get("last_err"):
             _log_state["last_err"] = err
             _push_log("⚠ " + err, force=True)
-        _push_log(_progress.get("desc", ""))
+        desc = _progress.get("desc", "")
+        _push_log(desc)
+        # Track the furthest "done / total" seen so the run can be summarised in
+        # history. Max (not last) because the count restarts per stage; a stage
+        # never has more frames than the source, so the peak total is the real
+        # frame count and the peak done is a floor on frames actually processed.
+        if _run_stats["start"]:
+            m = _FRAME_RE.search(desc)
+            if m:
+                try:
+                    done = int(m.group(1).replace(",", ""))
+                    total = int(m.group(2).replace(",", ""))
+                    if done > _run_stats["frames_done"]:
+                        _run_stats["frames_done"] = done
+                    if total > _run_stats["frames_total"]:
+                        _run_stats["frames_total"] = total
+                except ValueError:
+                    pass
     return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0,
             "log": list(_log_lines)}
 
