@@ -22,6 +22,8 @@ convention:
 
 import os
 import threading
+from contextlib import contextmanager
+from queue import Queue
 import cv2
 import numpy as np
 import onnxruntime
@@ -233,37 +235,70 @@ class RetinaFace3Output:
 _MODEL_10G_URL = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/retinaface_10g.onnx"
 _MODEL_R50_URL = "https://huggingface.co/nakamura196/retinaface-r50-onnx/resolve/main/retinaface_r50.onnx"
 
-_detector_10g = None
-_detector_r50 = None
-_detector_lock = threading.Lock()
-# One shared session; insightface detector objects are not thread-safe (they
-# mutate det_thresh/center cache), so detect calls are serialised. Detection
-# is cheap relative to the swap, so this is acceptable — same as YOLOFace.
-_detect_lock = threading.Lock()
+# model_type -> {'items': [detector, ...], 'q': Queue}
+_POOLS = {}
+_detector_lock = threading.Lock()   # guards pool CONSTRUCTION only
 
 
-def get_detector(model_type='10g'):
-    """Lazily build the shared RetinaFace detector, honouring force_cpu and the
-    current execution providers."""
-    global _detector_10g, _detector_r50
+def _pool_size():
+    """One detector instance per concurrent detect worker.
+
+    These calls come from the FaceAnalysis/detmask worker threads, so matching
+    that pool means a worker never waits for a detector. ROOP_DETECTOR_POOL
+    overrides when VRAM is tight — retinaface_r50.onnx is ~104MB per instance,
+    so this is the knob to turn down before the detmask pool itself.
+    """
+    raw = os.environ.get('ROOP_DETECTOR_POOL')
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    try:
+        from roop import session_pool
+        n = session_pool.detmask_pool_size()
+    except Exception:
+        n = 1
+    return max(1, n)
+
+
+def _build_one(model_type, model_path, providers, file):
+    """Construct ONE independent detector (its own ORT session)."""
     if model_type == 'r50':
-        if _detector_r50 is not None:
-            return _detector_r50
-        url = _MODEL_R50_URL
-        file = "retinaface_r50.onnx"
+        session = onnxruntime.InferenceSession(model_path, providers=providers)
+        det = RetinaFace3Output(model_path, session=session)
     else:
-        if _detector_10g is not None:
-            return _detector_10g
-        url = _MODEL_10G_URL
-        file = "retinaface_10g.onnx"
+        from insightface.model_zoo import get_model
+        det = get_model(model_path, providers=providers)
+        if det is None or not hasattr(det, 'detect'):
+            raise RuntimeError(f'insightface could not route {file} to a detector')
+    return det
 
+
+def _ensure_pool(model_type):
+    """Lazily build the detector pool, honouring force_cpu and the current
+    execution providers.
+
+    Previously this module held ONE shared session and serialised every call
+    behind a mutex, on the reasoning that detection is cheap next to the swap.
+    That stopped being true for the temporal pre-pass, where detection is ~85%
+    of the work: N detmask workers all queued on that one lock, so widening
+    ROOP_DETMASK_POOL only added queue time (measured: 68.7ms/call at pool 4 and
+    104.1ms/call at pool 6 — both exactly 57-58 f/s, with the GPU at ~51%).
+    Each thread now leases its own instance, so nothing serialises.
+    """
+    pool = _POOLS.get(model_type)
+    if pool is not None:
+        return pool
     with _detector_lock:
+        pool = _POOLS.get(model_type)
+        if pool is not None:
+            return pool
+
         if model_type == 'r50':
-            if _detector_r50 is not None:
-                return _detector_r50
+            url, file = _MODEL_R50_URL, "retinaface_r50.onnx"
         else:
-            if _detector_10g is not None:
-                return _detector_10g
+            url, file = _MODEL_10G_URL, "retinaface_10g.onnx"
 
         model_dir = resolve_relative_path('../models')
         conditional_download(model_dir, [url])
@@ -274,26 +309,45 @@ def get_detector(model_type='10g'):
         else:
             providers = roop.globals.execution_providers
 
-        if model_type == 'r50':
-            session = onnxruntime.InferenceSession(model_path, providers=providers)
-            det = RetinaFace3Output(model_path, session=session)
-            _detector_r50 = det
-        else:
-            from insightface.model_zoo import get_model
-            det = get_model(model_path, providers=providers)
-            if det is None or not hasattr(det, 'detect'):
-                raise RuntimeError(f'insightface could not route {file} to a detector')
-            _detector_10g = det
-            
-    return det
+        n = _pool_size()
+        items = [_build_one(model_type, model_path, providers, file) for _ in range(n)]
+        q = Queue()
+        for det in items:
+            q.put(det)
+        pool = {'items': items, 'q': q}
+        _POOLS[model_type] = pool
+        if n > 1:
+            print(f'[RetinaFace] pool of {n} {model_type} instances — '
+                  f'detection runs {n}-way concurrent (lock-free).')
+    return pool
+
+
+@contextmanager
+def lease_detector(model_type='10g'):
+    """Lease one detector instance for a single detect call. The queue blocks
+    once all N are out, capping concurrency at the pool size — so per-instance
+    mutable state (det_thresh / nms_thresh / input_size) is owned by exactly
+    one thread for the duration of the call, which is what the old global lock
+    was really protecting."""
+    pool = _ensure_pool(model_type)
+    det = pool['q'].get()
+    try:
+        yield det
+    finally:
+        pool['q'].put(det)
+
+
+def get_detector(model_type='10g'):
+    """A detector instance, NOT leased — for callers that only read static
+    attributes. Concurrent detect calls must go through detect()/lease_detector()."""
+    return _ensure_pool(model_type)['items'][0]
 
 
 def detect(frame, det_size=640, det_thresh=0.5, model_type='10g'):
     """Run detection; returns (bboxes (N,5) incl. score, kpss (N,5,2)) in
     original frame coordinates — the same contract as yoloface.detect."""
-    det = get_detector(model_type)
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
-    with _detect_lock:
+    with lease_detector(model_type) as det:
         det.det_thresh = det_thresh
         if hasattr(det, 'nms_thresh'):
             det.nms_thresh = nms_thresh
@@ -301,7 +355,5 @@ def detect(frame, det_size=640, det_thresh=0.5, model_type='10g'):
 
 
 def release_detector():
-    global _detector_10g, _detector_r50
     with _detector_lock:
-        _detector_10g = None
-        _detector_r50 = None
+        _POOLS.clear()

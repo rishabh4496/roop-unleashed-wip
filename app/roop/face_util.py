@@ -29,6 +29,7 @@ FACE_ANALYSER_POOL = []           # all instances (length 1 when not pooling)
 _ANALYSER_Q = None                # lease queue (only used when pooling)
 _ANALYSER_DET_SIZE = None         # det_size the pool was built with (rebuild on change)
 _ANALYSER_DET_THRESH = None       # det_thresh the pool was built with (rebuild on change)
+_ANALYSER_ENGINE = None           # detector engine the pool was built with (rebuild on change)
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
@@ -43,6 +44,19 @@ def _desired_det_size():
         return (sz, sz)
     except Exception:
         return (640, 640)
+
+
+# Engines that bring their OWN detector and only borrow buffalo_l's aux models
+# via _hybrid_detector_faces (which skips taskname == 'detection').
+_HYBRID_ENGINES = ('yoloface', 'retinaface', 'retinaface_r50', 'yunet')
+
+
+def _current_engine():
+    return getattr(roop.globals, 'detector_engine', 'scrfd')
+
+
+def _hybrid_engine_active() -> bool:
+    return _current_engine() in _HYBRID_ENGINES
 
 
 def analysis_pooled() -> bool:
@@ -65,6 +79,18 @@ def _build_face_analyser():
         det_size=_desired_det_size(),
         det_thresh=getattr(roop.globals, 'face_detector_threshold', 0.60),
     )
+    # With a hybrid engine selected, buffalo_l's own SCRFD detector is never
+    # called — _hybrid_detector_faces skips taskname == 'detection' and uses the
+    # engine's detector instead. insightface asserts 'detection' is present at
+    # construction and prepare() needs it, so it can only be dropped afterwards;
+    # doing so frees one unused det_10g session PER pool instance. fa.det_model
+    # is left None deliberately: _detect_faces_raw's det_size/det_thresh
+    # overrides are all guarded on getattr(fa.det_model, ...) being non-None.
+    # _ensure_face_analyser tracks the engine so switching back to SCRFD (which
+    # does need fa.get()) rebuilds the pool rather than hitting the hole.
+    if _hybrid_engine_active():
+        fa.models.pop('detection', None)
+        fa.det_model = None
     return fa
 
 
@@ -73,22 +99,27 @@ def _ensure_face_analyser():
     changed, or when the detection resolution (face_detector_size) or threshold changed. Returns
     the primary instance."""
     global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q, _ANALYSER_DET_SIZE, _ANALYSER_DET_THRESH
+    global _ANALYSER_ENGINE
     # Fast path (no lock): pool is built once before the run and the module set,
-    # det_size, and det_thresh are stable during it, so the hot per-frame detect path skips the lock.
+    # det_size, det_thresh, and engine are stable during it, so the hot per-frame detect path skips the lock.
     cur_det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
+    cur_engine = _current_engine()
     if (FACE_ANALYSER_POOL
             and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis
             and _ANALYSER_DET_SIZE == _desired_det_size()
-            and _ANALYSER_DET_THRESH == cur_det_thresh):
+            and _ANALYSER_DET_THRESH == cur_det_thresh
+            and _ANALYSER_ENGINE == cur_engine):
         return FACE_ANALYSER
     with THREAD_LOCK_ANALYSER:
         if (not FACE_ANALYSER_POOL
                 or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis
                 or _ANALYSER_DET_SIZE != _desired_det_size()
-                or _ANALYSER_DET_THRESH != cur_det_thresh):
+                or _ANALYSER_DET_THRESH != cur_det_thresh
+                or _ANALYSER_ENGINE != cur_engine):
             roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
             _ANALYSER_DET_SIZE = _desired_det_size()
             _ANALYSER_DET_THRESH = cur_det_thresh
+            _ANALYSER_ENGINE = cur_engine
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
             n = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1
