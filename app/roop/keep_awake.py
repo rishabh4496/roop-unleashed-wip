@@ -70,7 +70,26 @@ def boost_process_priority() -> None:
         return
     try:
         import ctypes
-        kernel32 = ctypes.windll.kernel32
+
+        # Own WinDLL instance rather than the shared ctypes.windll.kernel32, so
+        # the prototypes declared below cannot leak into other modules' calls.
+        #
+        # Declaring them is not optional: GetCurrentProcess() returns the
+        # pseudo-handle (HANDLE)-1, and with the default int prototypes ctypes
+        # hands it back as Python -1 and passes it on as a *32-bit* int. On x64
+        # that is not (HANDLE)-1, so every call below used to fail with
+        # ERROR_INVALID_HANDLE (6) — silently, since the result was only ever
+        # reported in the message at the end. Both the priority raise and the
+        # EcoQoS opt-out were dead from the day they were added.
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.SetPriorityClass.restype = ctypes.c_int
+        kernel32.SetProcessInformation.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.SetProcessInformation.restype = ctypes.c_int
+
         handle = kernel32.GetCurrentProcess()
 
         # 1) Opt out of EcoQoS background power throttling. StateMask=0 with
@@ -88,21 +107,35 @@ def boost_process_priority() -> None:
             _PROCESS_POWER_THROTTLING_EXECUTION_SPEED
             | _PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
             0)
+        err = 0
         ok = kernel32.SetProcessInformation(
             handle, _ProcessPowerThrottling,
-            ctypes.byref(state), ctypes.sizeof(state))
+            ctypes.cast(ctypes.byref(state), ctypes.c_void_p),
+            ctypes.sizeof(state))
+        if not ok:
+            err = ctypes.get_last_error()
 
         # 2) Raise the scheduling priority class.
         pri_name = os.environ.get('ROOP_PRIORITY', 'high').strip().lower()
         pri = _PRIORITY_CLASSES.get(pri_name)
         if pri is None:
             pri_name, pri = 'high', _PRIORITY_CLASSES['high']
+        err2 = 0
         ok2 = kernel32.SetPriorityClass(handle, pri)
+        if not ok2:
+            err2 = ctypes.get_last_error()
 
+        # Report the Win32 error on failure. Without it, "unchanged (failed)"
+        # reads as a benign notice and an outright broken boost stays invisible.
+        detail = ''
+        if not ok or not ok2:
+            detail = f' [err {err or 0}/{err2}]'
         print(f'[KeepAwake] background throttling (EcoQoS) '
               f'{"disabled" if ok else "opt-out unavailable"}, '
-              f'process priority set to {pri_name if ok2 else "unchanged (failed)"} '
-              f'- speed no longer depends on window focus')
+              f'process priority set to {pri_name if ok2 else "unchanged (failed)"}'
+              f'{detail}'
+              + (' - speed no longer depends on window focus'
+                 if (ok and ok2) else ' - speed may still drop when backgrounded'))
     except Exception as e:
         print(f'[KeepAwake] could not boost process priority: {e}')
 
