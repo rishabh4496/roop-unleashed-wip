@@ -823,10 +823,16 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         skip_audio = roop.globals.skip_audio
                     process_mgr.run_batch_inmem(output_method, v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
                 
-                if not roop.globals.processing:
-                    end_processing('Processing stopped!')
-                    return
-            
+                # A Stop (React run-bar, Pinokio sidebar, Ctrl-C) must NOT skip the
+                # finalization below. By the time run_batch_inmem returns, the writer
+                # has already closed and merged its segments into the temp video, so
+                # returning here left the user with a nameless, audio-less
+                # `<name>__temp.mp4` sitting next to the `.seg####.mp4` parts — the
+                # merge "not happening" from the UI's point of view. Instead, mark the
+                # run stopped, fall through to mux audio + apply the output template,
+                # and only then return.
+                stopped = not roop.globals.processing
+
                 video_file_name = v.finalname
                 # Defined before the isfile() branch: the failure path below falls
                 # through to the status line that references it.
@@ -855,9 +861,18 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         else:
                             shutil.move(video_file_name, destination)
 
-                elif is_streaming_only == False:
+                elif is_streaming_only == False and not stopped:
                     update_status(f'Failed processing {os.path.basename(v.finalname)}!')
                 elapsed_time = time() - start_processing
+                if stopped:
+                    # Partial render: report what was actually saved, skip the runtime
+                    # calibration (a truncated run would poison the estimate) and stop
+                    # before the remaining queued videos.
+                    if destination and os.path.isfile(destination):
+                        update_status(f'\nStopped after {elapsed_time:.2f} secs — partial output saved as '
+                                      f'{os.path.basename(destination)}')
+                    end_processing('Processing stopped!')
+                    return
                 average_fps = (v.endframe - v.startframe) / elapsed_time
                 update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
                 # Fold this run into the learned runtime estimator. Signature =

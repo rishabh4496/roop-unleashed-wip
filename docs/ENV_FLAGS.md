@@ -44,6 +44,7 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_ENCODER_PRESET` | model default | CPU x264/x265 preset (e.g. `faster`) — lossless encode speedup at fixed CRF. |
 | `ROOP_RESUME` | 1 (on) | Crash-resume: write segments every chunk + manifest so an interrupted run continues. `0` disables. |
 | `ROOP_RESUME_CHUNK` | 1000 | Frames per resume segment (min 50). |
+| `ROOP_RESUME_KEEP` | 0 (off) | Keep the segment parts + manifest after a deliberate **Stop** so that run can be resumed later. Off = Stop merges the parts into one finished output and deletes them. Crash-resume is unaffected either way. |
 
 ## Quality / precision
 

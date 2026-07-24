@@ -16,9 +16,12 @@ losslessly concatenated (ffmpeg concat demuxer, stream copy) into the expected
 single temp video and cleaned up, so everything downstream (audio restore, the
 upscale second pass, template naming) is unchanged.
 
-A deliberate Stop keeps its existing behavior — the partial output is still
-concatenated into a playable temp file — but the segments and manifest are kept
-so the run can also be *resumed* later instead of only kept.
+A deliberate Stop is finalized exactly like a completed run: the segments are
+concatenated into the temp video, the parts and manifest are deleted, and
+batch_process still mixes the audio back and applies the output template — so
+stopping yields one properly named partial video, not a pile of parts. Set
+ROOP_RESUME_KEEP=1 to keep the parts after a Stop so it can be resumed later
+(a crash never reaches the cleanup, so crash-resume works either way).
 
 Disable with ROOP_RESUME=0. Segment files start with '.' so the output-folder
 scans (e.g. the upscale pass's _outputs_since) ignore them.
@@ -167,12 +170,26 @@ class SegmentedVideoWriter:
         if not self.segments:
             return
         # Completed run (nothing signalled a stop) → concat, then clean up.
-        # Aborted run → still concat so the partial temp video is playable
-        # (mirrors the old Stop behavior), but KEEP segments + manifest so the
-        # run can be resumed later.
+        # Aborted run → concat too, so the partial video is playable, and clean up
+        # as well: a deliberate Stop is a request for "give me what you rendered as
+        # one file", and leaving the numbered parts behind made the output folder
+        # look like the merge never happened. Set ROOP_RESUME_KEEP=1 to keep the
+        # parts + manifest after a Stop so the run can be resumed later instead.
+        # A hard crash never reaches this code at all, so crash-resume is unaffected.
         completed = bool(roop.globals.processing)
+        keep_after_stop = os.environ.get("ROOP_RESUME_KEEP", "0") == "1"
         ok = self._concat()
-        if ok and completed:
+        if not completed and ok:
+            n = len(self.segments)
+            if keep_after_stop:
+                print(f"[Resume] stopped — merged {n} segment(s) into "
+                      f"{os.path.basename(self.target_video)}; parts kept for resuming "
+                      f"(ROOP_RESUME_KEEP=1).")
+            else:
+                print(f"[Resume] stopped — merged {n} segment(s) into "
+                      f"{os.path.basename(self.target_video)} and removed the parts "
+                      f"(set ROOP_RESUME_KEEP=1 to keep them for resuming).")
+        if ok and (completed or not keep_after_stop):
             self.cleanup()
 
     def _concat(self) -> bool:
