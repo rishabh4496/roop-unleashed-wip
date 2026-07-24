@@ -501,8 +501,12 @@ class ProcessMgr():
         # Temporal detection (anti-flicker): when active, swap_faces consumes
         # the pre-pass faces per frame instead of re-detecting.
         # _temporal_faces: {frame_idx (0-based within trim): [Face, ...]}
+        # _temporal_covered: how many frames the pre-pass actually scanned — the
+        # cache is only authoritative below this index.
         self._temporal_mode = False
         self._temporal_faces = None
+        self._temporal_covered = 0
+        self._track_scanned = 0
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -958,6 +962,7 @@ class ProcessMgr():
         # output-based and unaffected.)
         self._temporal_mode = bool(getattr(roop.globals, 'temporal_detection', False))
         self._temporal_faces = None
+        self._temporal_covered = 0
         if self._temporal_mode:
             self.kps_stabilizer = None
             self._kps_stab_factory = None
@@ -1104,13 +1109,19 @@ class ProcessMgr():
         if self._temporal_mode:
             try:
                 self._precompute_temporal(source_video, awebp_frames, frame_start, frame_end, frame_count)
-                self._track_mode = (roop.globals.track_identities
+                # `and self._temporal_mode`: the pre-pass turns itself off when it
+                # found nothing usable, and then its identity assignments are empty
+                # too — so fall through to the standalone track pass below rather
+                # than locking identities off an empty scan.
+                self._track_mode = (self._temporal_mode
+                                    and roop.globals.track_identities
                                     and self.options.swap_mode == "selected"
                                     and len(self.target_face_datas) > 0)
             except Exception as e:
                 print(f'[Temporal] detection pre-pass failed ({e}); using per-frame detection')
                 self._temporal_mode = False
                 self._temporal_faces = None
+                self._temporal_covered = 0
 
         if (not self._temporal_mode and roop.globals.track_identities and not is_awebp
                 and self.options.swap_mode == "selected"
@@ -1184,6 +1195,7 @@ class ProcessMgr():
             self._precomputed_kps = None
             self._temporal_mode = False
             self._temporal_faces = None
+            self._temporal_covered = 0
         _prof_report()
 
 
@@ -1895,6 +1907,15 @@ class ProcessMgr():
             if cap is not None:
                 cap.release()
 
+        # How many frames the reader actually got through. The loop above exits on
+        # the FIRST unreadable frame (`not ret`), which on a truncated/odd stream or
+        # a decoder that behaves differently on another machine can happen long
+        # before frame_count — leaving the caller with tracks that only cover a
+        # prefix of the clip. The temporal pre-pass needs to know that, because
+        # "no entry for this frame" is otherwise indistinguishable from "scanned it,
+        # nobody was there".
+        self._track_scanned = idx
+
         tracks = active + retired
         # Finalize each track's identity vector: replace the ONLINE EMA (alpha
         # 0.25, i.e. effectively the last ~10 observations) with the TRUE mean
@@ -2005,6 +2026,7 @@ class ProcessMgr():
             gap_max = int(os.environ.get('ROOP_TEMPORAL_GAP', '10') or '10')
         except ValueError:
             gap_max = 10
+        self._track_scanned = 0
         tracks = self._precompute_tracks(source_video, frame_start, frame_end, frame_count,
                                          awebp_frames=awebp_frames, step=1, collect_obs=True,
                                          desc='Analyzing faces')
@@ -2015,6 +2037,30 @@ class ProcessMgr():
                        for f in v if f.get('_interpolated'))
         print(f'[Temporal] {len(tracks or [])} track(s); faces on {n_frames} frames '
               f'({n_faces} total, {n_interp} gap-filled, gap limit {gap_max}).')
+
+        # ── Coverage guard ───────────────────────────────────────────────────
+        # The swap pass trusts this cache INSTEAD of detecting, so a scan that
+        # covered less than the clip would silently render every uncovered frame
+        # un-swapped (empty face list -> early return), with nothing in the log.
+        # The try/except around this method only catches exceptions; a short scan
+        # raises nothing. So: remember how far the scan actually reached and let
+        # swap_faces detect normally past that point. A deliberate Stop also ends
+        # the scan early, but then the swap pass never runs those frames either —
+        # so don't cry wolf about it.
+        self._temporal_covered = int(getattr(self, '_track_scanned', 0) or 0)
+        if frame_count and self._temporal_covered < frame_count and roop.globals.processing:
+            print(f'[Temporal] WARNING: the scan reached frame {self._temporal_covered} '
+                  f'of {frame_count} (the decoder stopped early). Frames past that point '
+                  f'fall back to per-frame detection so they still get swapped — but they '
+                  f'lose the anti-flicker smoothing.')
+        if n_faces == 0:
+            # Nothing to consume: a cache of "no faces anywhere" would suppress the
+            # whole swap. Per-frame detection also has the ROI/rescue paths this
+            # scan doesn't, so it's strictly the better fallback.
+            print('[Temporal] pre-pass found no faces at all — falling back to '
+                  'per-frame detection for this clip.')
+            self._temporal_mode = False
+            self._temporal_faces = None
 
 
     @staticmethod
@@ -2216,7 +2262,13 @@ class ProcessMgr():
         # and detection out of the hot loop). None → normal per-frame detection.
         _tfaces = None
         if self._temporal_mode and frame_idx is not None and self._temporal_faces is not None:
-            _tfaces = self._temporal_faces.get(frame_idx) or []
+            # Only trust the cache for frames the pre-pass actually scanned. Inside
+            # that range a missing entry legitimately means "nobody was there";
+            # past it the frame was never looked at, so detect it normally instead
+            # of silently leaving it un-swapped (see the coverage guard in
+            # _precompute_temporal).
+            if frame_idx < self._temporal_covered:
+                _tfaces = self._temporal_faces.get(frame_idx) or []
 
         if self.options.swap_mode == "first":
             if _tfaces is not None:
