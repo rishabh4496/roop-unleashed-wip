@@ -85,3 +85,6 @@ PINOKIO_SHARE_LOCAL=false
 ##########################################################################
 PINOKIO_SHARE_LOCAL_PORT=
 PINOKIO_PORT=80
+
+PINOKIO_SCRIPT_AUTOLAUNCH=start_react.js
+PINOKIO_SCRIPT_AUTOLAUNCH_ENABLED=true
