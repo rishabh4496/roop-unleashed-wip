@@ -45,6 +45,10 @@ function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
   return <>{renderLayer('a')}{renderLayer('b')}</>;
 }
 
+// Pixel-peeping a 4K frame in a ~1000px stage needs ~4×; 5 was not quite enough
+// to reach 1:1 on large sources, so the ceiling is 8.
+const ZOOM_MAX = 8;
+
 export default function InteractivePreview({
   beforeSrc,
   afterSrc,
@@ -112,7 +116,7 @@ export default function InteractivePreview({
 
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
-        setZoom((z) => Math.min(z + 0.5, 5));
+        setZoom((z) => Math.min(z + 0.5, ZOOM_MAX));
       } else if (e.key === '-') {
         e.preventDefault();
         setZoom((z) => {
@@ -140,7 +144,7 @@ export default function InteractivePreview({
       e.preventDefault();
       const dir = e.deltaY < 0 ? 0.15 : -0.15;
       setZoom((z) => {
-        const nz = Math.min(Math.max(1, z + dir), 5);
+        const nz = Math.min(Math.max(1, z + dir), ZOOM_MAX);
         if (nz === 1) setPan({ x: 0, y: 0 });
         return nz;
       });
@@ -261,39 +265,101 @@ export default function InteractivePreview({
   const stepFrame = (delta) => setFrame && setFrame((f) => Math.max(1, Math.min(maxFrames, f + delta)));
   const isVideo = maxFrames > 1;
 
-  // Shared floating HUD control bar (zoom / boxes / compare / transport / fullscreen).
+  // Zoom to actual pixels: the frame is letterboxed to fit, so 1:1 is however
+  // much magnification puts one source pixel on one screen pixel. Face-swap
+  // artefacts (seams, mask edges, enhancer texture) live at that scale, and
+  // guessing at it with +/- steps is exactly what made close inspection tedious.
+  const zoomToActual = () => {
+    const box = imageRef.current?.getBoundingClientRect();
+    if (!box || !imgDim || !box.width) return;
+    setZoom(Math.min(Math.max(imgDim.w / box.width, 1), ZOOM_MAX));
+    setPan({ x: 0, y: 0 });
+  };
+
+  const zoomBy = (d) => setZoom((z) => {
+    const nz = Math.min(Math.max(1, z + d), ZOOM_MAX);
+    if (nz === 1) setPan({ x: 0, y: 0 });
+    return nz;
+  });
+
+  // Shared floating HUD. One glass surface split into labelled zones (view /
+  // overlays / transport / window) instead of a single undifferentiated row of
+  // look-alike buttons, and it now reports the state it controls — the zoom
+  // factor and the frame — rather than only offering the controls.
   const hudBar = () => (
-    <div className="spring-cluster absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-xl hud-glass opacity-60 group-hover:opacity-100 hover:opacity-100 transition-all duration-300 z-50">
-      <button onClick={() => setZoom(z => Math.min(z + 0.5, 5))} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom In">+</button>
-      <button onClick={() => setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz === 1) setPan({ x: 0, y: 0 }); return nz; })} className="p-2 text-xs font-bold font-mono rounded-lg hud-glass-button" title="Zoom Out">-</button>
-      <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="px-2 py-1 text-[10px] font-bold rounded-lg hud-glass-button" title="Reset view">FIT</button>
-      <div className="w-px h-4 bg-white/10 mx-1" />
-      <button onClick={() => setShowBoxes(b => !b)} className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>BOXES</button>
-      {onToggleCompare && (
-        <button onClick={() => onToggleCompare()} title="Toggle before/after compare (C)"
-                className={`px-2 py-1 text-[10px] font-bold rounded-lg apple-transition ${compare ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>COMPARE</button>
+    <div className="absolute inset-x-0 bottom-0 z-50 flex justify-center p-3 pointer-events-none">
+      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300">
+        {/* View */}
+        <button onClick={() => zoomBy(-0.5)} disabled={zoom <= 1}
+                className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30" title="Zoom out (−)">−</button>
+        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+                className={`px-2 h-7 rounded-lg text-[10px] font-bold font-mono tabular-nums ${zoom > 1 ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}
+                title="Reset to fit">
+          {zoom > 1 ? `${zoom.toFixed(1)}×` : 'FIT'}
+        </button>
+        <button onClick={() => zoomBy(0.5)} disabled={zoom >= ZOOM_MAX}
+                className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30" title="Zoom in (+)">+</button>
+        <button onClick={zoomToActual} className="px-2 h-7 rounded-lg text-[10px] font-bold hud-glass-button" title="Zoom to actual pixels (1 source pixel = 1 screen pixel)">1:1</button>
+
+        <span className="w-px h-5 bg-white/10 mx-1.5" />
+
+        {/* Overlays */}
+        <button onClick={() => setShowBoxes(b => !b)} title="Show detected face boxes"
+                className={`px-2 h-7 rounded-lg text-[10px] font-bold ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>
+          Faces{faces.length > 0 && <span className="ml-1 opacity-60 tabular-nums">{faces.length}</span>}
+        </button>
+        {onToggleCompare && (
+          <button onClick={() => onToggleCompare()} title="Toggle before/after compare (C)"
+                  className={`px-2 h-7 rounded-lg text-[10px] font-bold ${compare ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>Compare</button>
+        )}
+
+        {isVideo && (
+          <>
+            <span className="w-px h-5 bg-white/10 mx-1.5" />
+            <button onClick={() => stepFrame(-1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Previous frame (←)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
+            </button>
+            <button onClick={() => setIsPlaying && setIsPlaying(p => !p)}
+                    className={`grid place-items-center h-7 w-7 rounded-lg ${isPlaying ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}
+                    title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
+              {isPlaying
+                ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+                : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
+            </button>
+            <button onClick={() => stepFrame(1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Next frame (→)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
+            </button>
+            <span className="px-1.5 text-[10px] font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
+              {frame.toLocaleString()}<span className="opacity-40">/{maxFrames.toLocaleString()}</span>
+            </span>
+          </>
+        )}
+
+        <span className="w-px h-5 bg-white/10 mx-1.5" />
+        <button onClick={triggerFullscreen} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Toggle fullscreen">
+          {isFullscreen
+            ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+            : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>}
+        </button>
+      </div>
+    </div>
+  );
+
+  // Small always-on status cluster, top-left: what you are looking at and at
+  // what magnification. Pure read-out, so it stays out of the way at low
+  // opacity until the pointer enters the stage.
+  const stageInfo = () => (
+    <div className="absolute top-3 left-3 z-40 flex items-center gap-1.5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+      {imgDim && (
+        <span className="rounded-md bg-black/65 backdrop-blur px-2 py-1 font-mono text-[10px] tabular-nums text-white/65 border border-white/10">
+          {imgDim.w}×{imgDim.h}
+        </span>
       )}
-      {isVideo && (
-        <>
-          <div className="w-px h-4 bg-white/10 mx-1" />
-          <button onClick={() => stepFrame(-1)} className="p-2 rounded-lg hud-glass-button" title="Previous frame (←)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
-          </button>
-          <button onClick={() => setIsPlaying && setIsPlaying(p => !p)} className="p-2 rounded-lg hud-glass-button" title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
-            {isPlaying
-              ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-              : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
-          </button>
-          <button onClick={() => stepFrame(1)} className="p-2 rounded-lg hud-glass-button" title="Next frame (→)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
-          </button>
-          <span className="px-1 text-[10px] font-bold font-mono text-white/60 tabular-nums whitespace-nowrap">{frame}/{maxFrames}</span>
-        </>
+      {zoom > 1 && (
+        <span className="rounded-md bg-[var(--accent)]/80 backdrop-blur px-2 py-1 font-mono text-[10px] font-bold tabular-nums text-white">
+          {zoom.toFixed(1)}×
+        </span>
       )}
-      <div className="w-px h-4 bg-white/10 mx-1" />
-      <button onClick={triggerFullscreen} className="p-2 rounded-lg hud-glass-button" title="Toggle Fullscreen">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-      </button>
     </div>
   );
 
@@ -302,9 +368,10 @@ export default function InteractivePreview({
     return (
       <div
         ref={containerRef}
-        className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''}`}
+        className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage group ${isFullscreen ? 'h-screen w-screen max-h-none' : ''}`}
         onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
       >
+        {stageInfo()}
         <div className={`flex w-full h-full ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
           <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/50">
             <div className="relative" style={aspectStyle}>
@@ -312,13 +379,13 @@ export default function InteractivePreview({
                    onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} />
               <div className="absolute inset-0 pointer-events-none">{faceBoxes}</div>
             </div>
-            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold text-white/80 uppercase">Before</span>
+            <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-black/65 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white/70">Before</span>
           </div>
           <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black/50">
             <div className="relative" style={aspectStyle}>
               <img src={afterSrc} alt="After" className="w-full h-full object-contain pointer-events-none" />
             </div>
-            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold text-white uppercase">After</span>
+            <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-[var(--accent)]/85 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white">After</span>
           </div>
         </div>
 
@@ -331,31 +398,44 @@ export default function InteractivePreview({
   // Standard or Slide-Comparison View
   return (
     <div
-      className={`relative w-full aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/40 border border-white/5 select-none group shadow-xl ${isFullscreen ? 'h-screen w-screen' : ''} ${previewing ? 'preview-glow' : ''}`}
+      className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage select-none group ${isFullscreen ? 'h-screen w-screen max-h-none' : ''}`}
       ref={containerRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
     >
+      {/* Render indicator: an indeterminate bar along the top edge plus a single
+          scanner sweep. Replaces the pulsing glow that used to breathe around
+          the whole panel — the border is chrome, not a status light. */}
+      {previewing && (
+        <div className="absolute inset-x-0 top-0 h-[3px] z-50 overflow-hidden bg-white/[0.06]">
+          <div className="h-full w-1/3 rounded-full bg-[var(--accent)] preview-indeterminate" />
+        </div>
+      )}
       {previewing && <AIScannerOverlay />}
       {previewing && (
-        <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-50">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md text-xs font-bold text-white/95 tabular-nums border border-white/10 shadow-2xl">
-            <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-[var(--accent)] animate-spin" />
-            Rendering… {previewSecs}s
+        <div className="absolute top-4 right-3 z-50">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/70 backdrop-blur-md text-[11px] font-semibold text-white/90 tabular-nums border border-white/10">
+            <span className="h-3 w-3 rounded-full border-2 border-white/25 border-t-[var(--accent)] animate-spin" />
+            Rendering {previewSecs}s
           </div>
         </div>
       )}
 
-      {/* Frame navigation shortcuts popup guide (visible when video) */}
+      {stageInfo()}
+
+      {/* Frame navigation shortcuts guide (video only) */}
       {maxFrames > 1 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/50 backdrop-blur text-[10px] font-bold text-white/50 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5">
-          <span>Shortcuts:</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">←/→</span>
-          <span>Frame</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">⇧</span>
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/55 backdrop-blur text-[10px] font-semibold text-white/45 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5 whitespace-nowrap">
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">←/→</span>
+          <span>frame</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">⇧</span>
           <span>×10</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white font-mono">[ ]</span>
-          <span>In/Out</span>
-          <span className="bg-white/10 px-1.5 py-0.5 rounded text-white font-mono">Space</span>
-          <span>Play</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">[ ]</span>
+          <span>in/out</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">M</span>
+          <span>marker</span>
+          <span className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 font-mono">Space</span>
+          <span>play</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">2×click</span>
+          <span>zoom</span>
         </div>
       )}
 
@@ -409,8 +489,15 @@ export default function InteractivePreview({
 
       </div>
 
-      {compare && <span className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur text-[11px] font-bold tracking-wider text-white/80 uppercase shadow z-30 pointer-events-none">Before</span>}
-      <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-[var(--accent)]/80 backdrop-blur text-[11px] font-bold tracking-wider text-white uppercase shadow z-30 transition-opacity duration-300 pointer-events-none"
+      {/* Provenance chips sit along the BOTTOM edge: the top corners now belong
+          to the render indicator and the stage read-out, and a label that
+          overlaps the status you are reading is worse than no label. */}
+      {compare && (
+        <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-black/65 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white/70 z-30 pointer-events-none">
+          Before
+        </span>
+      )}
+      <span className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-[var(--accent)]/85 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white z-30 transition-opacity duration-300 pointer-events-none"
             style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
 
       {/* HUD control bar overlays */}

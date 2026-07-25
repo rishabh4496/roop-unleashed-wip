@@ -7,6 +7,7 @@ import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
+import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import ProcessingTerminal from './faceswap/ProcessingTerminal';
 import DiagnosticsPanel from './faceswap/DiagnosticsPanel';
@@ -462,7 +463,6 @@ export default function FaceSwap({
   const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
   const [storyboardThumbs, setStoryboardThumbs] = useState([]);
   const [hoverFrame, setHoverFrame] = useState(null);
-  const [frameInput, setFrameInput] = useState(null); // non-null while typing a frame to jump to
   const timelineRef = useRef(null);
   // Coalesces timeline hover/scrub pointer-move work to one update per frame.
   // Pointer-move fires faster than this large component can re-render, so
@@ -1708,7 +1708,9 @@ export default function FaceSwap({
       setStoryboardThumbs([]);
       return;
     }
-    const numThumbs = 8;
+    // 12 across the strip: enough that the filmstrip reads as the shape of the
+    // clip rather than eight stretched stills, still only 12 backend seeks.
+    const numThumbs = 12;
     const step = maxFrames > numThumbs ? (maxFrames - 1) / (numThumbs - 1) : 1;
     const urls = [];
     for (let i = 0; i < numThumbs; i++) {
@@ -1855,14 +1857,6 @@ export default function FaceSwap({
     setDragType(dragTarget);
     setIsScrubbing(true);
     updateTimelinePos(targetFrame, dragTarget);
-  };
-
-  // Format a frame index as an m:ss timecode for the timeline ruler/readouts.
-  const fmtTC = (f, fps) => {
-    const s = Math.max(0, f) / (fps || 25);
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${String(sec).padStart(2, '0')}`;
   };
 
   const renderPreviewClip = async () => {
@@ -2100,9 +2094,6 @@ export default function FaceSwap({
 
   const startFrame = targets[selTarget]?.start_frame || 1;
   const endFrame = targets[selTarget]?.end_frame || maxFrames;
-  const startPct = maxFrames > 1 ? ((startFrame - 1) / (maxFrames - 1)) * 100 : 0;
-  const endPct = maxFrames > 1 ? ((endFrame - 1) / (maxFrames - 1)) * 100 : 100;
-  const currentPct = maxFrames > 1 ? ((frame - 1) / (maxFrames - 1)) * 100 : 0;
 
   // ── Pre-run estimate (idle only) ──
   // Heuristic baseline, refined by the measured ms/frame the backend has learned
@@ -2939,49 +2930,64 @@ export default function FaceSwap({
                  sidebar, asset rail, timeline and preview controls all hidden
                  during a run, this panel IS the screen, and the diagnostics
                  want the height. Floored so it stays usable on a short window. */
-              <div className="relative h-[calc(100vh-230px)] min-h-[620px] rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex flex-col items-center select-none px-4 sm:px-6 py-4">
-                <div className="absolute inset-0 pointer-events-none opacity-60" style={{ background: 'radial-gradient(circle at 50% 38%, var(--accent-glow), transparent 60%)' }} />
+              <div className="relative h-[calc(100vh-230px)] min-h-[620px] rounded-2xl overflow-hidden processing-stage flex flex-col items-center select-none px-4 sm:px-6 py-4">
                 {/* h-full + min-h-0 so the console below takes ALL the leftover
                     height instead of the whole block floating in a tall box. */}
-                <div className="relative h-full w-full max-w-[1900px] min-h-0 flex flex-col items-center gap-3">
-                  <div className="flex flex-col items-center gap-1.5">
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-                      <span className={`text-xs font-bold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
-                        {progress.paused ? 'Paused' : 'Processing'}
-                      </span>
+                <div className="relative h-full w-full max-w-[1900px] min-h-0 flex flex-col gap-3">
+
+                  {/* ── Headline ──────────────────────────────────────────────
+                      One line that answers "where is it, and when is it done".
+                      The old panel spread that over a centred status line, a
+                      percentage above the bar and an ETA below it, so reading
+                      the run meant collecting three separate scraps. */}
+                  <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                          {progress.paused ? 'Paused' : 'Processing'}
+                        </span>
+                        {!progress.paused && <span className="h-px w-8 bg-[var(--accent)]/40" />}
+                      </div>
+                      <div className="mt-1 flex items-baseline gap-2.5">
+                        <AnimatedNumber value={prog * 100} decimals={1} suffix="%"
+                                        className="font-mono text-[34px] leading-none font-bold tabular-nums text-white" />
+                        <span className="text-sm font-medium text-white/55 truncate max-w-[46ch]">
+                          {progress.desc || 'Swapping faces…'}
+                        </span>
+                      </div>
                     </div>
-                    {/* desc mirrors the terminal line: "Processing frame X / Y (Z FPS)" */}
-                    <div className="text-sm font-semibold text-white/85 text-center tabular-nums break-words">
-                      {progress.desc || 'Swapping faces…'}
+                    <div className="flex items-stretch gap-5 font-mono">
+                      <div className="text-right">
+                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Elapsed</div>
+                        <div className="text-[17px] font-bold tabular-nums text-white/85">{fmtTime(elapsedMs)}</div>
+                      </div>
+                      <div className="w-px bg-white/10" />
+                      <div className="text-right">
+                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Time left</div>
+                        <div className="text-[17px] font-bold tabular-nums text-emerald-400">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</div>
+                      </div>
+                      <div className="w-px bg-white/10" />
+                      <div className="text-right">
+                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Finishes</div>
+                        <div className="text-[17px] font-bold tabular-nums text-white/85">
+                          {etaMs > 0 ? new Date(Date.now() + etaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="w-full space-y-2">
-                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
-                      <span className="text-white/85 font-bold tabular-nums">{Math.round(prog * 100)}%</span>
-                      <span className="tabular-nums">{fmtTime(elapsedMs)} elapsed</span>
-                    </div>
-                    <div className="h-2.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
-                      <div
-                        className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
-                        style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] font-mono text-white/45">
-                      <span className="tabular-nums text-emerald-400/90 font-semibold">{etaMs > 0 ? `${fmtTime(etaMs)} left` : '—'}</span>
-                      <span className="tabular-nums">ETA {etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
-                    </div>
-                  </div>
-
-                  {/* Pipeline stage stepper — mirrors the terminal phases. */}
+                  {/* ── Pipeline rail ─────────────────────────────────────────
+                      The stages ARE the progress bar: one continuous track split
+                      into named segments that fill as the run moves through them,
+                      instead of a plain bar with a separate row of chips
+                      restating the same thing. */}
                   {(() => {
                     const d = (progress.desc || '').toLowerCase();
                     const stages = [
-                      { key: 'analyze', label: 'Analyze', icon: '🔍' },
-                      { key: 'swap', label: 'Swap', icon: '🎭' },
-                      ...(p.upscale_after_swap ? [{ key: 'upscale', label: 'Upscale', icon: '🔎' }] : []),
-                      { key: 'combine', label: 'Combine', icon: '🎬' },
+                      { key: 'analyze', label: 'Analyze' },
+                      { key: 'swap', label: 'Swap' },
+                      ...(p.upscale_after_swap ? [{ key: 'upscale', label: 'Upscale' }] : []),
+                      { key: 'combine', label: 'Combine' },
                     ];
                     let activeKey = 'swap';
                     if (/combin|finaliz|encod|audio|mux/.test(d)) activeKey = 'combine';
@@ -2991,23 +2997,30 @@ export default function FaceSwap({
                     let activeIdx = stages.findIndex((s) => s.key === activeKey);
                     if (activeIdx < 0) activeIdx = 1;
                     return (
-                      <div className="w-full flex items-center gap-1.5">
-                        {stages.map((s, i) => {
-                          const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending';
-                          return (
-                            <React.Fragment key={s.key}>
-                              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-wide transition-colors duration-300 ${
-                                state === 'done' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                                : state === 'active' ? 'border-[var(--accent)]/50 bg-[var(--accent)]/15 text-white'
-                                : 'border-white/10 bg-white/[0.02] text-white/35'}`}>
-                                <span>{state === 'done' ? '✓' : s.icon}</span>
-                                <span>{s.label}</span>
-                                {state === 'active' && !progress.paused && <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-ping" />}
+                      <div className="w-full">
+                        <div className="flex items-stretch gap-1">
+                          {stages.map((s, i) => {
+                            const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending';
+                            return (
+                              <div key={s.key} className="flex-1 min-w-0">
+                                <div className={`h-1.5 rounded-full overflow-hidden ${state === 'pending' ? 'bg-white/[0.06]' : 'bg-white/[0.08]'}`}>
+                                  {state === 'done' && <div className="h-full w-full rounded-full bg-emerald-500/70" />}
+                                  {state === 'active' && (
+                                    <div className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
+                                         style={{ width: `${Math.max(4, prog * 100)}%` }} />
+                                  )}
+                                </div>
+                                <div className={`mt-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] truncate ${
+                                  state === 'done' ? 'text-emerald-400/70'
+                                  : state === 'active' ? 'text-white'
+                                  : 'text-white/25'}`}>
+                                  {state === 'done' && <span aria-hidden>✓</span>}
+                                  <span className="truncate">{s.label}</span>
+                                </div>
                               </div>
-                              {i < stages.length - 1 && <div className={`h-px flex-1 min-w-[6px] transition-colors duration-300 ${i < activeIdx ? 'bg-emerald-500/40' : 'bg-white/10'}`} />}
-                            </React.Fragment>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
                       </div>
                     );
                   })()}
@@ -3291,299 +3304,35 @@ export default function FaceSwap({
               </div>
             )}
             
-            {/* CINEMATIC TIMELINE SLIDER — hidden while running: scrubbing a
-                clip that is being written is meaningless, and the space belongs
-                to the diagnostics. */}
+            {/* Clip timeline — hidden while running: scrubbing a clip that is
+                being written is meaningless, and the space belongs to the
+                diagnostics. */}
             {maxFrames > 1 && !progress.processing && (
-              <div className="space-y-2.5 pt-3 border-t border-[var(--border-color)] select-none">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="h-3 w-[3px] rounded-full bg-[var(--accent)]" />
-                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Cinematic Timeline</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[11px] font-mono text-[var(--text-muted)]">
-                    <span className="px-2 py-0.5 rounded-md border border-[var(--border-color)] bg-[var(--surface-2)]">
-                      In <span className="text-[var(--text-main)] font-semibold tabular-nums">{targets[selTarget]?.start_frame ?? 1}</span>
-                    </span>
-                    <span className="px-2 py-0.5 rounded-md border border-[var(--border-color)] bg-[var(--surface-2)]">
-                      Out <span className="text-[var(--text-main)] font-semibold tabular-nums">{targets[selTarget]?.end_frame ?? maxFrames}</span>
-                    </span>
-                    {(() => {
-                      const s = targets[selTarget]?.start_frame ?? 1;
-                      const e = targets[selTarget]?.end_frame ?? maxFrames;
-                      const len = Math.max(0, e - s + 1);
-                      return (
-                        <span className="px-2 py-0.5 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 text-[var(--accent)]" title="Selected range length">
-                          {len} f · {fmtTC(len, targets[selTarget]?.fps || 25)}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Time ruler */}
-                <div className="flex items-center justify-between px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] opacity-70">
-                  {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
-                    <span key={i}>{fmtTC(Math.round(t * (maxFrames - 1)) + 1, targets[selTarget]?.fps || 25)}</span>
-                  ))}
-                </div>
-
-                {/* Timeline Track with Storyboard Background */}
-                <div className="relative">
-                  {hoverFrame !== null && (
-                    <div
-                      className="absolute bottom-[76px] z-50 flex flex-col items-center gap-1.5 pointer-events-none select-none -translate-x-1/2"
-                      style={{ left: `${maxFrames > 1 ? Math.min(92, Math.max(8, ((hoverFrame - 1) / (maxFrames - 1)) * 100)) : 0}%` }}
-                    >
-                      <div className="flex flex-col items-center gap-1.5 p-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] backdrop-blur-xl shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
-                        <img
-                          src={`${API}/api/target/preview?index=${selTarget}&frame=${hoverFrame}&width=384`}
-                          alt="Hover Preview"
-                          className="w-40 h-[90px] object-cover rounded-md border border-[var(--border-color)] bg-black/50"
-                          onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
-                          onLoad={(e) => { e.currentTarget.style.visibility = 'visible'; }}
-                        />
-                        <span className="text-[10px] font-mono text-[var(--text-muted)] whitespace-nowrap">
-                          Frame <span className="text-[var(--text-main)] font-semibold tabular-nums">{hoverFrame}</span> · {fmtTC(hoverFrame, targets[selTarget]?.fps || 25)}
-                        </span>
-                      </div>
-                      {/* Caret pointer */}
-                      <div className="w-2 h-2 rotate-45 -mt-[5px] border-b border-r border-[var(--border-color)] bg-[var(--card-bg)]" />
-                    </div>
-                  )}
-
-                  <div
-                    ref={timelineRef}
-                    onPointerDown={handleTimelinePointerDown}
-                    onPointerMove={handleTimelinePointerMove}
-                    onPointerLeave={handleTimelinePointerLeave}
-                    className="relative h-16 w-full rounded-lg bg-[var(--input-bg)] border border-[var(--border-color)] overflow-hidden cursor-ew-resize select-none timeline-ticks timeline-glow-track"
-                  >
-                  {/* Storyboard filmstrip */}
-                  {storyboardThumbs.length > 0 && (
-                    <div className="absolute inset-0 flex opacity-45 pointer-events-none">
-                      {storyboardThumbs.map((url, i) => (
-                        <img
-                          key={i}
-                          src={url}
-                          alt="thumb"
-                          className="flex-1 h-full object-cover border-r border-black/30 last:border-r-0"
-                          loading="lazy"
-                          onError={(e) => { e.currentTarget.style.opacity = '0'; }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                  {/* Legibility scrim over the filmstrip */}
-                  <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/45 via-transparent to-black/15" />
-
-                  {/* Out-of-range dimming (pro-editor trim convention) */}
-                  <div className="absolute top-0 bottom-0 left-0 z-10 bg-black/55 pointer-events-none" style={{ width: `${startPct}%` }} />
-                  <div className="absolute top-0 bottom-0 right-0 z-10 bg-black/55 pointer-events-none" style={{ left: `${endPct}%` }} />
-
-                  {/* Active-range baseline */}
-                  <div
-                    className="absolute bottom-0 h-[2px] z-10 bg-[var(--accent)] opacity-80 pointer-events-none"
-                    style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
-                  />
-
-                  {/* In handle */}
-                  <div
-                    className="absolute top-0 bottom-0 w-[2px] -translate-x-1/2 z-20 bg-[var(--text-main)]/85"
-                    style={{ left: `${startPct}%` }}
-                  >
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-7 w-1.5 rounded-full bg-[var(--text-main)] shadow-[0_1px_3px_rgba(0,0,0,0.6)] pointer-events-none" />
-                  </div>
-
-                  {/* Out handle */}
-                  <div
-                    className="absolute top-0 bottom-0 w-[2px] -translate-x-1/2 z-20 bg-[var(--text-main)]/85"
-                    style={{ left: `${endPct}%` }}
-                  >
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-7 w-1.5 rounded-full bg-[var(--text-main)] shadow-[0_1px_3px_rgba(0,0,0,0.6)] pointer-events-none" />
-                  </div>
-
-                  {/* Hover scrub indicator — a faint line showing exactly where a
-                      click will drop the playhead, tracking the cursor. */}
-                  {hoverFrame !== null && (
-                    <div
-                      className="absolute top-0 bottom-0 w-px -translate-x-1/2 bg-white/35 z-20 pointer-events-none"
-                      style={{ left: `${maxFrames > 1 ? ((hoverFrame - 1) / (maxFrames - 1)) * 100 : 0}%` }}
-                    />
-                  )}
-
-                  {/* Playhead — white core stays legible over any thumbnail, an
-                      accent pin-head reads as the grabbable cursor. Glides while
-                      playing/stepping; tracks the pointer exactly while scrubbing. */}
-                  <div
-                    className={`absolute top-0 bottom-0 z-30 pointer-events-none ${isScrubbing ? '' : 'transition-[left] duration-100 ease-out'}`}
-                    style={{ left: `${currentPct}%` }}
-                  >
-                    {/* vertical line */}
-                    <div className="absolute inset-y-0 left-0 -translate-x-1/2 w-[2px] bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.4),0_0_8px_var(--accent-glow)]" />
-                    {/* top pin-head knob (accent, brand identity) */}
-                    <div className="absolute top-[3px] left-0 -translate-x-1/2 h-3.5 w-3.5 rounded-full bg-[var(--accent)] border-2 border-white shadow-[0_1px_5px_rgba(0,0,0,0.6)]" />
-                    {/* bottom cap knob */}
-                    <div className="absolute bottom-[3px] left-0 -translate-x-1/2 h-2.5 w-2.5 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
-                  </div>
-                </div>
-              </div>
-
-                {/* Timeline controls toolbar — flex-wrap so the control groups
-                   reflow to any container width and re-adapt automatically when
-                   the window is dragged between monitors of different sizes,
-                   instead of overflowing/overlapping off the right edge. */}
-                <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-2.5">
-                  {/* Left: timecode / editable frame readout (click to jump) */}
-                  <div className="font-mono text-xs text-[var(--text-muted)] flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-start">
-                    <span className="tabular-nums text-sm font-semibold text-[var(--text-main)]">{fmtTC(frame, targets[selTarget]?.fps || 25)}</span>
-                    <span className="opacity-30 hidden sm:inline">·</span>
-                    <span className="tabular-nums flex items-center gap-1">
-                      Frame
-                      <input
-                        type="number"
-                        min={1}
-                        max={maxFrames}
-                        value={frameInput ?? frame}
-                        onFocus={(e) => { setFrameInput(String(frame)); e.target.select(); }}
-                        onChange={(e) => setFrameInput(e.target.value)}
-                        onBlur={() => {
-                          if (frameInput !== null) {
-                            const v = Math.max(1, Math.min(maxFrames, parseInt(frameInput, 10) || frame));
-                            setFrame(v);
-                          }
-                          setFrameInput(null);
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setFrameInput(null); e.currentTarget.blur(); } }}
-                        className="w-14 text-center text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors tabular-nums"
-                        title="Type a frame number and press Enter to jump"
-                      />
-                      <span className="opacity-40">/ {maxFrames}</span>
-                    </span>
-                  </div>
-
-                  {/* Center: transport */}
-                  <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
-                    <button
-                      onClick={() => setFrame(targets[selTarget]?.start_frame || 1)}
-                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
-                      title="Jump to In point"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-                    </button>
-                    <button
-                      onClick={() => setFrame(f => Math.max(1, f - 1))}
-                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
-                      title="Previous Frame (Left Arrow)"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 12 5 12"/><polyline points="12 19 5 12 12 5"/></svg>
-                    </button>
-
-                    <button
-                      onClick={() => setIsPlaying(!isPlaying)}
-                      className={`px-3.5 py-1.5 rounded-md font-semibold text-xs inline-flex items-center gap-1.5 active:scale-95 transition-colors ${isPlaying ? 'bg-[var(--surface-2)] text-[var(--text-main)] border border-[var(--border-strong)] hover:bg-white/[0.06]' : 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'}`}
-                      title="Play/Pause (Spacebar)"
-                    >
-                      {isPlaying ? (
-                        <>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                          Pause
-                        </>
-                      ) : (
-                        <>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                          Play
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => setFrame(f => Math.min(maxFrames, f + 1))}
-                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
-                      title="Next Frame (Right Arrow)"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 12 19 12"/><polyline points="12 5 19 12 12 19"/></svg>
-                    </button>
-                    <button
-                      onClick={() => setFrame(targets[selTarget]?.end_frame || maxFrames)}
-                      className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] active:scale-95 transition-colors"
-                      title="Jump to Out point"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-                    </button>
-                  </div>
-
-                  {/* Set In / Out / Reset */}
-                  <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-1">
-                    <button
-                      onClick={() => setFrameMarkerVal('start', frame)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
-                      title="Set In point to current frame"
-                    >
-                      Set In
-                    </button>
-                    <button
-                      onClick={() => setFrameMarkerVal('end', frame)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
-                      title="Set Out point to current frame"
-                    >
-                      Set Out
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await setFrameMarkerVal('start', 1);
-                        await setFrameMarkerVal('end', maxFrames);
-                      }}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)]/70 hover:text-[var(--text-main)] hover:bg-white/[0.05] transition-colors"
-                      title="Reset range to full video"
-                    >
-                      Reset
-                    </button>
-                  </div>
-
-                  {/* Right: numeric range inputs & loop */}
-                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                    <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] px-2 py-1">
-                      <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Range</span>
-                      <input
-                        type="number"
-                        value={targets[selTarget]?.start_frame || 1}
-                        onChange={(e) => setFrameMarkerVal('start', parseInt(e.target.value, 10))}
-                        className="w-11 text-center text-xs font-mono font-semibold text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors"
-                        title="In frame"
-                      />
-                      <span className="text-[var(--text-muted)] text-xs">–</span>
-                      <input
-                        type="number"
-                        value={targets[selTarget]?.end_frame || maxFrames}
-                        onChange={(e) => setFrameMarkerVal('end', parseInt(e.target.value, 10))}
-                        className="w-11 text-center text-xs font-mono font-semibold text-[var(--text-main)] bg-[var(--input-bg)] outline-none rounded border border-[var(--border-color)] py-0.5 focus:border-[var(--accent)] transition-colors"
-                        title="Out frame"
-                      />
-                    </div>
-
-                    {/* Playback speed */}
-                    <div className="spring-cluster flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5" title="Playback speed">
-                      {[0.5, 1, 2, 4].map((r) => (
-                        <button
-                          key={r}
-                          onClick={() => setPlaybackRate(r)}
-                          className={`px-1.5 py-1 rounded-md text-[10px] font-bold tabular-nums transition-colors ${playbackRate === r ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05]'}`}
-                        >
-                          {r}×
-                        </button>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={() => setIsLooping(!isLooping)}
-                      className={`p-1.5 rounded-md border transition-colors active:scale-95 ${isLooping ? 'bg-[var(--accent)]/12 text-[var(--accent)] border-[var(--accent)]/30' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.05] border-[var(--border-color)]'}`}
-                      title="Toggle loop playback"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-                    </button>
-                  </div>
-                </div>
+              <div className="pt-4 border-t border-[var(--border-color)]">
+                <Timeline
+                  fps={targets[selTarget]?.fps || 25}
+                  maxFrames={maxFrames}
+                  frame={frame}
+                  setFrame={setFrame}
+                  startFrame={startFrame}
+                  endFrame={endFrame}
+                  setFrameMarkerVal={setFrameMarkerVal}
+                  timelineRef={timelineRef}
+                  onPointerDown={handleTimelinePointerDown}
+                  onPointerMove={handleTimelinePointerMove}
+                  onPointerLeave={handleTimelinePointerLeave}
+                  hoverFrame={hoverFrame}
+                  isScrubbing={isScrubbing}
+                  storyboardThumbs={storyboardThumbs}
+                  isPlaying={isPlaying}
+                  setIsPlaying={setIsPlaying}
+                  isLooping={isLooping}
+                  setIsLooping={setIsLooping}
+                  playbackRate={playbackRate}
+                  setPlaybackRate={setPlaybackRate}
+                  thumbUrl={(f) => `${API}/api/target/preview?index=${selTarget}&frame=${f}&width=384`}
+                  targetKey={targets[selTarget]?.name || String(selTarget)}
+                />
               </div>
             )}
 
@@ -3819,6 +3568,7 @@ export default function FaceSwap({
                 <div className="flex items-center justify-between"><span className="text-white/60">Set Start Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">[</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Set End Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">]</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Reset Range</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">R</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Marker at playhead</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">M</kbd></div>
               </div>
               <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Compare & Zoom</h4>

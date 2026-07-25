@@ -19,25 +19,40 @@ import { getJSON } from '../../api';
  *   - the settings actually in force, so a screenshot of a run explains itself.
  */
 
-/** Fixed-width sparkline. `data` is plain numbers, oldest first. */
-function Spark({ data, max, color = 'var(--accent)', height = 34 }) {
+/**
+ * Fixed-width sparkline. `data` is plain numbers, oldest first.
+ *
+ * `mean` draws a dashed reference line: a throughput trace only means something
+ * against what the run has been averaging, and eyeballing that from the shape
+ * alone is guesswork. The head dot marks the newest sample so a flat tail reads
+ * as "steady" rather than "the chart stopped updating".
+ */
+function Spark({ data, max, color = 'var(--accent)', height = 34, mean = null }) {
   const w = 100;
   const hi = Math.max(max || 0, ...data, 1e-6);
+  const yOf = (v) => height - Math.max(0, Math.min(v / hi, 1)) * height;
   const pts = data.map((v, i) => {
     const x = data.length === 1 ? w : (i / (data.length - 1)) * w;
-    const y = height - Math.max(0, Math.min(v / hi, 1)) * height;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
+    return `${x.toFixed(2)},${yOf(v).toFixed(2)}`;
   });
+  const meanY = mean != null ? yOf(mean) : null;
   return (
     <svg viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none"
-         className="w-full block" style={{ height }} aria-hidden="true">
+         className="w-full block overflow-visible" style={{ height }} aria-hidden="true">
       {data.length > 1 && (
         <>
           <polyline points={`0,${height} ${pts.join(' ')} ${w},${height}`}
                     fill={color} opacity="0.13" stroke="none" />
+          {meanY != null && (
+            <line x1="0" x2={w} y1={meanY} y2={meanY} stroke="currentColor"
+                  className="text-white/25" strokeWidth="1" strokeDasharray="3 3"
+                  vectorEffect="non-scaling-stroke" />
+          )}
           <polyline points={pts.join(' ')} fill="none" stroke={color}
                     strokeWidth="1.5" vectorEffect="non-scaling-stroke"
                     strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx={w} cy={yOf(data[data.length - 1])} r="2" fill={color}
+                  vectorEffect="non-scaling-stroke" />
         </>
       )}
     </svg>
@@ -80,9 +95,9 @@ const stageColor = (s) => STAGE_COLORS[s] || (
 /** One figure in the run-stats strip. */
 function Stat({ label, value, tone = 'text-white/80', sub }) {
   return (
-    <div className="min-w-0 px-3 py-1.5">
-      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{label}</div>
-      <div className={`font-mono text-[13px] font-bold tabular-nums truncate ${tone}`}>{value}</div>
+    <div className="min-w-0 rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5">
+      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30 truncate">{label}</div>
+      <div className={`font-mono text-[14px] font-bold tabular-nums truncate ${tone}`}>{value}</div>
       {sub && <div className="font-mono text-[9px] text-white/25 truncate">{sub}</div>}
     </div>
   );
@@ -218,7 +233,10 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
   return (
     <div className="w-full grid gap-2.5 lg:grid-cols-3">
       {/* ── Run stats strip ──────────────────────────────────────────────── */}
-      <div className="lg:col-span-3 rounded-xl border border-white/[0.07] bg-black/30 flex flex-wrap items-stretch divide-x divide-white/[0.06]">
+      {/* A tile grid rather than one divided row: the row wrapped into ragged
+          fragments at narrow widths, and every figure carried the same weight,
+          so nothing led the eye. */}
+      <div className="lg:col-span-3 grid gap-1.5 grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10">
         <Stat label="Progress" value={`${(prog * 100).toFixed(1)}%`} tone="text-[var(--accent)]" />
         <Stat label="Frames" value={frames ? frames.done.toLocaleString() : '—'}
               sub={frames ? `of ${frames.total.toLocaleString()}` : null} />
@@ -255,9 +273,9 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
         </div>
         {fpsHist.length > 1 ? (
           <>
-            <div className="mt-1.5"><Spark data={fpsHist} height={52} /></div>
+            <div className="mt-1.5"><Spark data={fpsHist} height={52} mean={fpsStats?.avg} /></div>
             <div className="mt-1 flex items-center justify-between font-mono text-[9px] text-white/25">
-              <span>{fpsHist.length} samples · frames ÷ wall time</span>
+              <span>{fpsHist.length} samples · frames ÷ wall time · dashed = run average</span>
               {fpsStats?.unstable && (
                 <span className="text-amber-400/70">
                   {fpsStats.slowPct}% of the last samples ran under half the average — check GPU
