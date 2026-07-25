@@ -1792,6 +1792,7 @@ class ProcessMgr():
                         'emb_sum': emb.astype(np.float64).copy(),
                         'emb_n': 1,
                         'emb_mean': emb.copy(),
+                        'first_seen': f_idx,
                         'last_seen': f_idx
                     }
                     next_id += 1
@@ -2037,14 +2038,26 @@ class ProcessMgr():
 
         candidates.sort(key=lambda c: c[0])
 
+        # Frames already claimed by this person. Two representations because the
+        # per-frame observations only exist when the caller asked for them:
+        # `collect_obs=True` is the temporal pre-pass, but the STANDALONE identity
+        # -tracking pass (the `_precompute_tracks(...)` call with defaults) leaves
+        # `obs` empty. Keying the guard on obs alone therefore made it a no-op in
+        # exactly that mode — every track's frame set was empty, overlap was
+        # always 0, and two concurrent tracks both received the same person's
+        # source: the inter-swapping this guard exists to prevent. Fall back to
+        # the track's [first_seen, last_seen] span there, which needs no
+        # per-frame storage and answers the same question ("were these two on
+        # screen at the same time?").
         person_assigned_frames = {g: set() for g in persons}
+        person_assigned_spans = {g: [] for g in persons}
         track_src = {t['id']: None for t in tracks}
 
         for d, g, tid in candidates:
             if track_src[tid] is not None:
                 continue
             t = track_map[tid]
-            t_frames = set(t.get('obs', {}).keys())
+            obs = t.get('obs') or {}
             # One person can't be in two places at once, so a track that runs
             # CONCURRENTLY with one already given to this person is someone else.
             # But a handoff — the same person's track breaking and restarting over
@@ -2052,13 +2065,24 @@ class ProcessMgr():
             # rejecting those fragments leaves them with no source at all: every
             # one of their frames falls to per-frame matching and the person
             # flickers in and out. Require a real overlap, not an incidental one.
-            overlap = len(person_assigned_frames[g].intersection(t_frames))
-            if overlap and overlap > _TRACK_OVERLAP_FRAC * max(1, len(t_frames)):
+            if obs:
+                t_frames = set(obs.keys())
+                t_len = max(1, len(t_frames))
+                overlap = len(person_assigned_frames[g].intersection(t_frames))
+            else:
+                lo = int(t.get('first_seen', t.get('last_seen', 0)))
+                hi = int(t.get('last_seen', lo))
+                t_len = max(1, hi - lo + 1)
+                overlap = sum(max(0, min(hi, b) - max(lo, a) + 1)
+                              for a, b in person_assigned_spans[g])
+            if overlap and overlap > _TRACK_OVERLAP_FRAC * t_len:
                 continue
             track_src[tid] = self.options.selected_index if single_person else rank[g]
-            person_assigned_frames[g].update(t_frames)
+            if obs:
+                person_assigned_frames[g].update(t_frames)
+            else:
+                person_assigned_spans[g].append((lo, hi))
 
-        track_map = {t['id']: t for t in tracks}
         self._track_assignments = {
             f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
         }
