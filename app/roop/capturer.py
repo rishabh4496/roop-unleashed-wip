@@ -1,9 +1,31 @@
 from typing import Optional
+import json
+import os
+import subprocess
 import threading
 import cv2
 import numpy as np
 
 from roop.typing import Frame
+
+# ── HEVC / long-GOP fallback ─────────────────────────────────────────────────
+# cv2.VideoCapture is the fast path and stays the default, but on some long
+# H.265 files its seek is unreliable: CAP_PROP_POS_FRAMES lands nowhere and
+# read() returns nothing, or CAP_PROP_FRAME_COUNT comes back as 0. Both fail
+# SILENTLY — a zero frame count clamps every request to frame 0, so the preview
+# and the whole timeline show the first frame of the clip forever, and a failed
+# read just yields a blank preview. The batch pipeline already routes around
+# this through the ffmpeg pipe reader (nvdec_reader); preview/timeline did not.
+#
+# So: ask ffprobe for the real geometry when cv2's is unusable, and read through
+# the same ffmpeg pipe when cv2 cannot produce a frame. The switch is per file
+# and only latches once ffmpeg has PROVEN it can read a frame cv2 could not —
+# a read failing at the end of a clip is normal and must not condemn the file.
+_pipe_reader = None      # FFmpegVideoReader currently open, or None
+_pipe_path = None        # the file it is reading
+_pipe_next = None        # frame index its next read() will return
+_pipe_needed = set()     # files where cv2 proved unreliable (sticky)
+_probe_cache = {}        # path -> {"w","h","fps","frames"} | None
 
 current_video_path = None
 current_frame_total = 0
@@ -44,6 +66,163 @@ def _load_animated_webp(video_path: str):
     _awebp_frames = frames
 
 
+def _popen_kwargs():
+    return {"creationflags": 0x08000000} if os.name == "nt" else {}
+
+
+def _ffprobe_binary() -> str:
+    """ffprobe sits next to ffmpeg in every build we ship with, so derive it from
+    whatever FFMPEG_BINARY resolved to (bare name or absolute path)."""
+    try:
+        from roop.ffmpeg_writer import FFMPEG_BINARY
+    except Exception:
+        return "ffprobe"
+    d = os.path.dirname(FFMPEG_BINARY)
+    return os.path.join(d, "ffprobe") if d else "ffprobe"
+
+
+def _parse_rate(text) -> float:
+    """ffprobe rates are rationals like '30000/1001'."""
+    try:
+        s = str(text or "").strip()
+        if "/" in s:
+            num, den = s.split("/", 1)
+            den = float(den)
+            return float(num) / den if den else 0.0
+        return float(s)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _probe_video(video_path: str):
+    """Real width/height/fps/frame-count from ffprobe, cached per path.
+
+    Used only when cv2's own numbers are missing or nonsensical. nb_frames is
+    absent in plenty of containers, so fall back to duration x fps — an estimate,
+    but a usable timeline beats a frame count of 0, which pins every request to
+    frame 0."""
+    if video_path in _probe_cache:
+        return _probe_cache[video_path]
+    info = None
+    try:
+        cmd = [_ffprobe_binary(), "-v", "error", "-select_streams", "v:0",
+               "-show_entries",
+               "stream=width,height,avg_frame_rate,nb_frames,duration,codec_name,pix_fmt"
+               ":format=duration",
+               "-of", "json", video_path]
+        proc = subprocess.run(cmd, capture_output=True, timeout=30, **_popen_kwargs())
+        blob = json.loads((proc.stdout or b"{}").decode("utf-8", "replace"))
+        st = (blob.get("streams") or [{}])[0]
+        w = int(st.get("width") or 0)
+        h = int(st.get("height") or 0)
+        codec = str(st.get("codec_name") or "").lower()
+        pix_fmt = str(st.get("pix_fmt") or "").lower()
+        fps = _parse_rate(st.get("avg_frame_rate"))
+        frames = int(st.get("nb_frames") or 0)
+        if frames <= 0:
+            dur = 0.0
+            for src in (st.get("duration"), (blob.get("format") or {}).get("duration")):
+                try:
+                    dur = float(src)
+                except (TypeError, ValueError):
+                    dur = 0.0
+                if dur > 0:
+                    break
+            if dur > 0 and fps > 0:
+                frames = int(round(dur * fps))
+        if w > 0 and h > 0:
+            info = {"w": w, "h": h, "fps": fps or 25.0, "frames": max(0, frames),
+                    "codec": codec, "pix_fmt": pix_fmt}
+    except Exception:
+        info = None
+    _probe_cache[video_path] = info
+    return info
+
+
+# cv2's HEVC seek was measured against self-labelling clips (each frame a known
+# flat value, so the frame identifies itself). Requesting frame N and checking
+# which frame actually came back:
+#
+#   codec  pix_fmt        cv2 error   ffmpeg-pipe error
+#   h264   yuv420p / 444p     exact       exact
+#   hevc   yuv420p  (8-bit)   exact       exact
+#   hevc   yuv420p10le       16 frames    exact     <- ordinary 10-bit footage
+#   hevc   yuv422p           16 frames    exact
+#   hevc   yuv444p           16 frames    exact
+#
+# and it does not fail loudly: asked for frame 200 it returns frame 214 while
+# CAP_PROP_POS_FRAMES still reports 201. So there is nothing to detect at read
+# time — a wrong frame looks exactly like a right one — and the only safe
+# trigger is the format itself. 8-bit 4:2:0 HEVC (the common case) keeps cv2's
+# ~3 ms seek; the formats where it demonstrably lies take the pipe's ~110 ms,
+# which is invisible next to a preview render. Sequential reads are unaffected
+# either way (~0.05 ms) so playback does not slow down.
+_CV2_SAFE_HEVC_PIX = {"yuv420p", "yuvj420p", "nv12", ""}
+_BAD_SEEK_CODECS = {"hevc", "h265"}
+
+
+def _needs_pipe(video_path: str) -> bool:
+    """Should this file bypass cv2 entirely? ROOP_CAPTURE_PIPE=1 forces yes,
+    0 forces no, anything else (default) decides on the measured table above."""
+    mode = os.environ.get("ROOP_CAPTURE_PIPE", "auto").strip().lower()
+    if mode == "1":
+        return True
+    if mode == "0":
+        return False
+    info = _probe_video(video_path)
+    if not info:
+        return False
+    return (info.get("codec") in _BAD_SEEK_CODECS
+            and info.get("pix_fmt") not in _CV2_SAFE_HEVC_PIX)
+
+
+def _release_pipe():
+    """Close the ffmpeg fallback reader. Caller holds _capture_lock."""
+    global _pipe_reader, _pipe_path, _pipe_next
+    if _pipe_reader is not None:
+        try:
+            _pipe_reader.release()
+        except Exception:
+            pass
+    _pipe_reader = None
+    _pipe_path = None
+    _pipe_next = None
+
+
+def _read_via_pipe(video_path: str, target: int):
+    """Decode frame `target` (0-based) through the ffmpeg pipe reader.
+
+    Keeps the pipe alive across calls: a request for the NEXT frame just reads
+    on, which is what makes playback and forward scrubbing usable; any other
+    frame re-spawns ffmpeg with an accurate input seek. Caller holds
+    _capture_lock, so the single shared reader needs no lock of its own."""
+    global _pipe_reader, _pipe_path, _pipe_next
+    info = _probe_video(video_path)
+    if not info:
+        return None
+    if _pipe_reader is not None and (_pipe_path != video_path or target != _pipe_next):
+        _release_pipe()
+    if _pipe_reader is None:
+        try:
+            from roop.nvdec_reader import FFmpegVideoReader, _probe, nvdec_wanted
+            hw = "cuda" if (nvdec_wanted() and _probe(video_path)) else None
+            reader = FFmpegVideoReader(video_path, info["w"], info["h"], info["fps"],
+                                       hwaccel=hw)
+            # set() is only honoured before the first read, which is exactly the
+            # state a freshly constructed reader is in.
+            reader.set(cv2.CAP_PROP_POS_FRAMES, target)
+            _pipe_reader, _pipe_path, _pipe_next = reader, video_path, target
+        except Exception:
+            _release_pipe()
+            return None
+    ok, frame = _pipe_reader.read()
+    if not ok or frame is None:
+        _release_pipe()
+        return None
+    _pipe_next = target + 1
+    return frame
+
+
 def get_image_frame(filename: str):
     try:
         return cv2.imdecode(np.fromfile(filename, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -73,9 +252,36 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
             current_capture = cv2.VideoCapture(video_path)
             current_video_path = video_path
             current_frame_total = current_capture.get(cv2.CAP_PROP_FRAME_COUNT)
+            # A frame count of 0 (cv2 could not index the file) would clamp every
+            # request to frame 0 and show the same still for the whole clip. Ask
+            # ffprobe instead so the timeline gets a real length.
+            if int(current_frame_total or 0) <= 0:
+                info = _probe_video(video_path)
+                if info and info["frames"] > 0:
+                    current_frame_total = info["frames"]
+                    print(f"[Capturer] OpenCV reported no frame count for "
+                          f"{os.path.basename(video_path)}; using ffprobe's "
+                          f"{info['frames']} frames.", flush=True)
             current_next_pos = 0  # a fresh capture reads frame 0 on the next read()
 
-        target = max(0, min(int(current_frame_total) - 1, frame_number - 1))
+        total = int(current_frame_total or 0)
+        if total <= 0:
+            return None
+        target = max(0, min(total - 1, frame_number - 1))
+
+        # Known-bad file: go straight to the pipe, either because cv2 already
+        # failed to read here or because this codec/pixel-format combination is
+        # one where cv2 silently returns the WRONG frame (see _needs_pipe).
+        if video_path not in _pipe_needed and _needs_pipe(video_path):
+            _pipe_needed.add(video_path)
+            info = _probe_video(video_path) or {}
+            print(f"[Capturer] {os.path.basename(video_path)} is "
+                  f"{info.get('codec', '?')}/{info.get('pix_fmt', '?')} — OpenCV mis-seeks "
+                  f"this format silently, so preview/timeline will decode it through "
+                  f"ffmpeg instead.", flush=True)
+        if video_path in _pipe_needed:
+            return _read_via_pipe(video_path, target)
+
         # Fast path: the requested frame is exactly the next one in sequence, so
         # decode it in order without a seek (see current_next_pos note above).
         if target != current_next_pos:
@@ -85,7 +291,17 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
             current_next_pos = target + 1
             return frame
         current_next_pos = None  # position unknown after a failed read
-    return None
+
+        # cv2 came up empty. Only blame cv2 if ffmpeg can actually produce this
+        # frame — a read failing past the end of a clip is normal and must not
+        # condemn the file to the slower path for the rest of the session.
+        frame = _read_via_pipe(video_path, target)
+        if frame is not None and video_path not in _pipe_needed:
+            _pipe_needed.add(video_path)
+            print(f"[Capturer] OpenCV could not decode frame {target} of "
+                  f"{os.path.basename(video_path)} but ffmpeg could — using the "
+                  f"ffmpeg pipe for this file (common with long H.265).", flush=True)
+        return frame
 
 
 def release_video():
@@ -96,6 +312,7 @@ def release_video():
     if current_capture is not None:
         current_capture.release()
         current_capture = None
+    _release_pipe()
     current_next_pos = None
     # Clear the identity too, so the next request re-opens instead of matching a
     # path whose capture is gone (and re-reads the frame count, which was stale).
@@ -115,4 +332,13 @@ def get_video_frame_total(video_path: str) -> int:
     capture = cv2.VideoCapture(video_path)
     video_frame_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     capture.release()
+    if video_frame_total > 0:
+        return video_frame_total
+    # cv2 could not index the file (seen on long H.265). Everything downstream —
+    # the timeline length, the trim range, the run's frame budget — is derived
+    # from this number, and 0 makes all of them collapse, so fall back to
+    # ffprobe rather than returning a length the clip does not have.
+    info = _probe_video(video_path)
+    if info and info["frames"] > 0:
+        return info["frames"]
     return video_frame_total

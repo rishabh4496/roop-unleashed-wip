@@ -79,6 +79,7 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_TEMPORAL_STEP` | 1 | Scan stride for the "Analyzing faces" pre-pass. The pre-pass is detection-bound, so `2` roughly halves it — but skipped frames are filled by *linear* interpolation, which lags a fast head turn. Capped at `ROOP_TEMPORAL_GAP`. |
 | `ROOP_TRACK_READAHEAD` | 1 | Decode frames for the pre-pass on their own thread so decoding overlaps detection (~15% off the pre-pass; bit-identical). `0` decodes inline as before. With it on, the `track_decode` stage times the wait *for* a frame, so it only grows if the decoder is genuinely the slower half. |
 | `ROOP_TRACK_ROI_CROP` | 0 | `1` enables ROI-crop pre-pass during identity tracking. |
+| `ROOP_CAPTURE_PIPE` | auto | How preview/timeline decode video. `auto` uses OpenCV except on HEVC pixel formats where it silently returns the wrong frame (10-bit, 4:2:2, 4:4:4 — measured up to 16 frames off), which go through an ffmpeg pipe instead. `1` forces the pipe for everything (slower seeks, always exact), `0` forces OpenCV (fast, wrong on those formats). |
 
 ## Process priority
 
