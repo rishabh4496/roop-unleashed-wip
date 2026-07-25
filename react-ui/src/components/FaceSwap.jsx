@@ -616,6 +616,7 @@ export default function FaceSwap({
   // running, so we restore both the faces/targets AND the live job state.
   useEffect(() => {
     getJSON('/api/state').then((st) => {
+      checkDesync(st);
       setSourceFaces(st.source_faces || []);
       if (st.source_faces_info) setSourceFacesInfo(st.source_faces_info);
       setTargetFaces(st.target_faces || []);
@@ -1267,7 +1268,7 @@ export default function FaceSwap({
     const before = sourceFaces.length;
     setUploadingSrc(true);
     try {
-      const res = await postFiles('/api/source/add', files);
+      const res = checkDesync(await postFiles('/api/source/add', files));
       setSourceFaces(res.source_faces);
       if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
       const added = res.source_faces.length - before;
@@ -1333,9 +1334,18 @@ export default function FaceSwap({
     refreshPreview({ index: i, frame: 1 });
   };
 
+  // The backend reports it if the faceset list and the gallery thumbnails have
+  // fallen out of step. That state used to be invisible — the gallery showed a
+  // face the swap didn't have, and the only symptom was that person silently
+  // not being swapped — so say so loudly wherever a gallery payload arrives.
+  const checkDesync = (res) => {
+    if (res?.desync) notify(`Source faces: ${res.desync}`, 'error');
+    return res;
+  };
+
   const sourceAction = async (path, body) => {
     try {
-      const res = await postJSON(path, body);
+      const res = checkDesync(await postJSON(path, body));
       if (res.source_faces) setSourceFaces(res.source_faces);
       if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
     } catch (e) {

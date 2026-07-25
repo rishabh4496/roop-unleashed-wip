@@ -38,12 +38,22 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-def mapped_facesets(mapping):
+def mapped_facesets(mapping, swap_mode=""):
     """Reorder the loaded source facesets into person order for a swap.
 
     `mapping[rank]` is the source faceset index chosen for target person `rank`,
     so the swap can address a source by person rank. Returns None when there is
     no mapping (the caller then uses INPUT_FACESETS as-is).
+
+    Not every swap mode addresses sources by person. "All input faces" walks the
+    detected faces and the source list in lockstep by POSITION — its whole
+    contract is "one input face per detected face, in gallery order" — so a
+    person-ordered list is meaningless to it and, worse, is only as long as the
+    number of captured people: with three sources loaded and one person
+    captured it silently swapped one face instead of three. That mode therefore
+    opts out and keeps the gallery order. The modes that DO use the mapping are
+    "Selected face" (indexes by person rank) and the single-source modes (whose
+    gallery index is translated by mapped_selected_index below).
 
     This returns a NEW list and never touches roop_globals.INPUT_FACESETS. An
     earlier version swapped the global out for the duration of the swap and
@@ -55,7 +65,7 @@ def mapped_facesets(mapping):
     had it, so that person swapped with an empty faceset — i.e. stayed
     un-swapped — until the face was removed and re-added outside the window.
     """
-    if not isinstance(mapping, list) or len(mapping) == 0:
+    if not isinstance(mapping, list) or len(mapping) == 0 or swap_mode == "all_input":
         return None
     facesets = list(roop_globals.INPUT_FACESETS)
     mapped = []
@@ -543,19 +553,81 @@ def _get_source_faces_info():
         })
     return source_faces_info
 
+# ── The source gallery is TWO parallel lists ─────────────────────────────────
+# `roop_globals.INPUT_FACESETS` holds what the swap actually uses;
+# `ui_globals.ui_input_thumbs` holds the picture of it the gallery draws. They
+# are positional — index i in one must be index i in the other — and until now
+# every endpoint kept them in step by hand, which is how a face could show in
+# the gallery that the backend no longer had: the swap then ran with an empty
+# faceset for that person and simply left them un-swapped, with nothing on
+# screen to say so. These four helpers are the only supported way to change the
+# gallery, so the two lists cannot drift apart one edit at a time.
+
+def _sources_append(faceset, thumb_rgb):
+    roop_globals.INPUT_FACESETS.append(faceset)
+    ui_globals.ui_input_thumbs.append(thumb_rgb)
+
+
+def _sources_pop(idx):
+    """Remove one entry. Returns True when something was actually removed."""
+    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
+        return False
+    roop_globals.INPUT_FACESETS.pop(idx)
+    if 0 <= idx < len(ui_globals.ui_input_thumbs):
+        ui_globals.ui_input_thumbs.pop(idx)
+    return True
+
+
+def _sources_move(idx, new_idx):
+    n = len(roop_globals.INPUT_FACESETS)
+    if not (0 <= idx < n and 0 <= new_idx < n):
+        return False
+    for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
+        if idx < len(arr) and new_idx < len(arr):
+            arr.insert(new_idx, arr.pop(idx))
+    return True
+
+
+def _sources_clear():
+    roop_globals.INPUT_FACESETS.clear()
+    ui_globals.ui_input_thumbs.clear()
+
+
+def _sources_desync():
+    """Non-empty message when the two lists have fallen out of step.
+
+    Checked on every gallery payload, so a divergence surfaces on the very next
+    UI refresh instead of being discovered later as "that face didn't swap".
+    """
+    nf = len(roop_globals.INPUT_FACESETS)
+    nt = len(ui_globals.ui_input_thumbs)
+    if nf == nt:
+        return ""
+    msg = (f"source gallery out of step: {nf} faceset(s) but {nt} thumbnail(s) — "
+           f"clear the input faces and re-add them")
+    print(f"[SOURCES] BUG: {msg}", flush=True)
+    return msg
+
+
 def _source_faces_payload():
-    return {
+    payload = {
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
         "source_faces_info": _get_source_faces_info(),
         "faceset_count": len(roop_globals.INPUT_FACESETS),
     }
+    desync = _sources_desync()
+    if desync:
+        payload["desync"] = desync
+    return payload
 
 
 @app.get("/api/state")
 def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
     targets = [_target_entry_dict(entry) for entry in list_files_process]
+    desync = _sources_desync()
     return {
+        **({"desync": desync} if desync else {}),
         "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
         "source_faces_info": _get_source_faces_info(),
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
@@ -569,8 +641,17 @@ def get_state():
 
 
 # ── Source faces ─────────────────────────────────────────────────────────────
+# ── Why the upload handlers are sync `def`, not `async def` ─────────────────
+# FastAPI runs a sync endpoint in its worker threadpool but an async one ON the
+# event loop. Every upload handler here does blocking work — writing the file,
+# running face detection, and in the Extras case downloading models and doing
+# whole-video inference — and awaits nothing at all. Declared `async`, each of
+# them therefore held the single event loop for its entire duration, so while a
+# file was being ingested NOTHING else async got served: the progress poll, the
+# telemetry poll and the log feed all queued up behind it and the UI looked
+# frozen. Sync `def` costs a threadpool hop and gives the loop back.
 @app.post("/api/source/add")
-async def source_add(files: list[UploadFile] = File(...)):
+def source_add(files: list[UploadFile] = File(...)):
     for f in files:
         path = _save_upload(f)
         try:
@@ -584,8 +665,7 @@ async def source_add(files: list[UploadFile] = File(...)):
                     face = fd[0]
                     face.mask_offsets = _mask_offsets_from_cfg()
                     fs.faces.append(face)
-                    ui_globals.ui_input_thumbs.append(util.convert_to_gradio(fd[1]))
-                    roop_globals.INPUT_FACESETS.append(fs)
+                    _sources_append(fs, util.convert_to_gradio(fd[1]))
         except Exception:
             traceback.print_exc()
     return _source_faces_payload()
@@ -618,41 +698,33 @@ def _ingest_faceset(path):
                 if best_score is None or score < best_score:
                     best_score, best_crop = score, fd[1]
     if len(face_set.faces) > 0:
-        if best_crop is not None:
-            ui_globals.ui_input_thumbs.append(util.convert_to_gradio(best_crop))
         if len(face_set.faces) > 1:
             face_set.AverageEmbeddings()
-        roop_globals.INPUT_FACESETS.append(face_set)
+        # A faceset with no usable crop still gets a (blank) gallery slot: the
+        # two lists are positional, so skipping the thumbnail would shift every
+        # later face's picture onto the wrong faceset.
+        _sources_append(face_set,
+                        util.convert_to_gradio(best_crop) if best_crop is not None else None)
 
 
 @app.post("/api/source/remove")
 def source_remove(payload: dict = Body(...)):
-    idx = int(payload.get("index", -1))
-    if 0 <= idx < len(roop_globals.INPUT_FACESETS):
-        roop_globals.INPUT_FACESETS.pop(idx)
-    if 0 <= idx < len(ui_globals.ui_input_thumbs):
-        ui_globals.ui_input_thumbs.pop(idx)
+    _sources_pop(int(payload.get("index", -1)))
     return _source_faces_payload()
 
 
 @app.post("/api/source/move")
 def source_move(payload: dict = Body(...)):
     idx = int(payload.get("index", -1))
-    direction = payload.get("direction", "right")
-    offset = -1 if direction == "left" else 1
-    new_idx = idx + offset
-    if 0 <= idx < len(ui_globals.ui_input_thumbs) and 0 <= new_idx < len(ui_globals.ui_input_thumbs):
-        for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
-            item = arr.pop(idx)
-            arr.insert(new_idx, item)
+    offset = -1 if payload.get("direction", "right") == "left" else 1
+    _sources_move(idx, idx + offset)
     return _source_faces_payload()
 
 
 @app.post("/api/source/clear")
 def source_clear():
-    ui_globals.ui_input_thumbs.clear()
-    roop_globals.INPUT_FACESETS.clear()
-    return {"source_faces": [], "source_faces_info": [], "faceset_count": 0}
+    _sources_clear()
+    return _source_faces_payload()
 
 
 @app.post("/api/source/select")
@@ -991,7 +1063,7 @@ def faceset_library_delete(payload: dict = Body(...)):
 
 
 @app.post("/api/faceset/library/import")
-async def faceset_library_import(file: UploadFile = File(...)):
+def faceset_library_import(file: UploadFile = File(...)):
     base = os.path.basename(file.filename or "")
     if not base.lower().endswith(".fsz"):
         return JSONResponse(status_code=400, content={"message": "expected a .fsz file"})
@@ -1039,7 +1111,7 @@ def faceset_library_open():
 
 # ── Target media ─────────────────────────────────────────────────────────────
 @app.post("/api/target/add")
-async def target_add(files: list[UploadFile] = File(...)):
+def target_add(files: list[UploadFile] = File(...)):
     global current_video_fps, selected_target_index
     first_new = len(list_files_process)
     for f in files:
@@ -2115,7 +2187,7 @@ def preview(payload: dict = Body(...)):
         if len(roop_globals.INPUT_FACESETS) <= face_index:
             face_index = 0
         face_mapping = payload.get("face_mapping")
-        mapped = mapped_facesets(face_mapping)
+        mapped = mapped_facesets(face_mapping, roop_globals.face_swap_mode)
         face_index = mapped_selected_index(face_mapping, mapped, face_index)
 
         options = ProcessOptions(
@@ -2323,7 +2395,7 @@ def _run_swap(payload):
         print("[Stage 1/2] ANALYZE + SWAP (per-frame detection & swapping)…", flush=True)
 
         run_mapping = payload.get("face_mapping")
-        run_facesets = mapped_facesets(run_mapping)
+        run_facesets = mapped_facesets(run_mapping, roop_globals.face_swap_mode)
         batch_process_regular(
             output_method, files_to_process, mask_engine, clip_text,
             processing_method == "In-Memory processing", None,
@@ -3493,7 +3565,7 @@ def _facemgr_faces_payload():
 
 
 @app.post("/api/facemgr/add")
-async def facemgr_add(files: list[UploadFile] = File(...),
+def facemgr_add(files: list[UploadFile] = File(...),
                       detector: str = Form("scrfd"),
                       restore: bool = Form(False)):
     global current_video_fps
@@ -3519,7 +3591,7 @@ async def facemgr_add(files: list[UploadFile] = File(...),
 
 
 @app.post("/api/facemgr/faceset")
-async def facemgr_faceset(file: UploadFile = File(...)):
+def facemgr_faceset(file: UploadFile = File(...)):
     path = _save_upload(file)
     fm_thumbs.clear()
     fm_images.clear()
@@ -3627,7 +3699,7 @@ def facemgr_build():
 
 # ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
 @app.post("/api/extras/apply")
-async def extras_apply(file: UploadFile = File(...),
+def extras_apply(file: UploadFile = File(...),
                        resolution: str = Form("Original"),
                        rotation: str = Form("None"),
                        fps: float = Form(30.0),
@@ -3720,7 +3792,7 @@ def get_frame_ops():
 
 
 @app.post("/api/extras/enhance")
-async def extras_enhance(file: UploadFile = File(...),
+def extras_enhance(file: UploadFile = File(...),
                          operation: str = Form("upscale"),
                          subtype: str = Form("esrganx2")):
     """Run a frame post-processor (AI upscale / colorize / stylize) over an
