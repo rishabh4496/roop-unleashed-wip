@@ -497,6 +497,9 @@ export default function FaceSwap({
   const playWroteRef = useRef(null);
   const playSeekRef = useRef(null);
   const [bufferedSrc, setBufferedSrc] = useState(null);
+  // True while the playhead is held on a frame that hasn't arrived yet.
+  const [playStalled, setPlayStalled] = useState(false);
+  const stalledRef = useRef(false);
   const [isGeneratingPreviewClip, setIsGeneratingPreviewClip] = useState(false);
   const [origStartEnd, setOrigStartEnd] = useState(null);
 
@@ -1540,6 +1543,8 @@ export default function FaceSwap({
       clearPlayBuffer();
       playBufIdxRef.current = '';
       setBufferedSrc(null);
+      stalledRef.current = false;
+      setPlayStalled(false);
       return;
     }
     const idx = selTarget;
@@ -1548,16 +1553,29 @@ export default function FaceSwap({
     // the loop/start point to 1 — otherwise looping jumps to "Frame 0" and
     // double-shows the first frame. Read live from the ref each tick so
     // dragging In/Out during playback takes effect without restarting the loop.
+    // `|| maxFrames`, NOT `?? maxFrames`: the backend reports end_frame 0 for a
+    // target whose trim has not been initialised yet (ProcessEntry starts at 0),
+    // and ?? only substitutes null/undefined — so 0 survived as a real Out point,
+    // making `end` 1 and every play press stop on the first tick. The timeline's
+    // own In/Out display already used ||, so the bar showed the full range while
+    // the player thought the clip was one frame long.
     const bounds = () => {
       const t = targetsRef.current[idx];
-      const s = Math.max(1, t?.start_frame ?? 1);
-      return { start: s, end: Math.max(s, t?.end_frame ?? maxFrames) };
+      const s = Math.max(1, t?.start_frame || 1);
+      return { start: s, end: Math.max(s, t?.end_frame || maxFrames) };
     };
     let { start, end } = bounds();
     const frameDur = 1000 / (fps * (playbackRate || 1));
-    const AHEAD = 120;   // frames kept buffered ahead of the playhead
+    // Lead is measured in TIME, not frames: a 60fps clip drains the buffer twice
+    // as fast as a 30fps one, so a fixed 120-frame look-ahead is two seconds of
+    // cover on one and one second on the other. Chunk size scales with it for
+    // the same reason — the per-request overhead has to be amortised over enough
+    // frames to keep up with the drain rate (raising CHUNK is the documented
+    // lever for slow playback; parallelising requests is not, because
+    // out-of-order arrivals break the decoder's sequential fast path).
+    const AHEAD = Math.max(120, Math.round(fps * 2.5));
     const BEHIND = 8;    // frames retained behind before eviction
-    const CHUNK = 16;    // frames pulled per request (see fetchChunk)
+    const CHUNK = Math.max(16, Math.min(48, Math.round(fps / 2)));
 
     // Keep the buffered frames across speed/loop changes (they're still valid);
     // only discard and rebuild when the effect is (re)bound to a different video.
@@ -1567,7 +1585,17 @@ export default function FaceSwap({
       setBufferedSrc(null);
       playBufIdxRef.current = sig;
     }
-    let cur = Math.max(start, Math.min(frame, end));
+    // Press play with the playhead parked on (or past) the out point and a real
+    // player rewinds and plays again — it does not sit there. Without this the
+    // loop stopped on its very first tick, so after a clip had played through
+    // once the button appeared dead: it flipped to Pause and straight back.
+    let cur = frame >= end ? start : Math.max(start, Math.min(frame, end));
+    // The seek-detector runs first on this same commit (it is declared above and
+    // shares the isPlaying dep) and will have queued the CURRENT playhead as an
+    // external seek. That is the position we just decided to move away from, so
+    // clear it — otherwise the first tick seeks straight back to the out point
+    // and stops, undoing the rewind above.
+    playSeekRef.current = null;
     let rendered = -1;
     let cancelled = false;
     let rafId = null;
@@ -1691,6 +1719,7 @@ export default function FaceSwap({
       // isn't buffered yet — hold there (buffering) so playback never skips.
       let guard = 0;
       let stop = false;
+      let waiting = false;
       while (acc >= frameDur && guard++ < 240) {
         let next;
         if (cur >= end) {
@@ -1699,9 +1728,19 @@ export default function FaceSwap({
         } else {
           next = cur + 1;
         }
-        if (!playBufRef.current.has(next)) { acc = Math.min(acc, frameDur); break; }
+        if (!playBufRef.current.has(next)) {
+          acc = Math.min(acc, frameDur);
+          waiting = true;   // held on an unbuffered frame — that's buffering
+          break;
+        }
         acc -= frameDur;
         cur = next;
+      }
+      // Surface the hold. Without it a slow buffer is indistinguishable from a
+      // dead button: the playhead just sits there with the Pause icon showing.
+      if (waiting !== stalledRef.current) {
+        stalledRef.current = waiting;
+        setPlayStalled(waiting);
       }
       // Paint the current frame before honouring a non-loop stop, so playback
       // ends showing the out point rather than one frame short of it.
@@ -3375,6 +3414,7 @@ export default function FaceSwap({
                   setView={setView}
                   isPlaying={isPlaying}
                   setIsPlaying={setIsPlaying}
+                  buffering={playStalled}
                   isLooping={isLooping}
                   setIsLooping={setIsLooping}
                   playbackRate={playbackRate}

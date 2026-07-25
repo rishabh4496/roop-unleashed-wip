@@ -217,6 +217,7 @@ export default function Timeline({
   storyboardThumbs = [],
   isPlaying = false,
   setIsPlaying,
+  buffering = false,
   isLooping = false,
   setIsLooping,
   playbackRate = 1,
@@ -649,9 +650,13 @@ export default function Timeline({
                 : 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] shadow-[0_2px_10px_var(--accent-glow)]'
             }`}
           >
-            {isPlaying
-              ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.2" /><rect x="14" y="4" width="4" height="16" rx="1.2" /></svg>
-              : <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" className="ml-0.5"><polygon points="6 3 21 12 6 21" /></svg>}
+            {isPlaying && buffering
+              // Held waiting for frames. Saying so is the difference between
+              // "this is loading" and "this button is broken".
+              ? <span className="h-4 w-4 rounded-full border-2 border-white/25 border-t-white animate-spin" />
+              : isPlaying
+                ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.2" /><rect x="14" y="4" width="4" height="16" rx="1.2" /></svg>
+                : <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" className="ml-0.5"><polygon points="6 3 21 12 6 21" /></svg>}
           </button>
 
           <IconBtn title="Next frame (→)" onClick={() => step(1)}>
