@@ -186,13 +186,26 @@ export default function FaceSwap({
 
   // Preview Cache Ref
   const previewCacheRef = useRef({});
+  // Set when a preview refresh is skipped because a swap run owns the GPU.
+  const previewDeferredRef = useRef(false);
 
   const clearPreviewCache = () => {
     previewCacheRef.current = {};
   };
 
+  // Content signature of a face gallery. The count alone is NOT enough to
+  // identify which faces are loaded: uploading a new faceset and then deleting
+  // the old one leaves the count unchanged, so a length-keyed preview cache kept
+  // serving — and a length-keyed refresh effect kept skipping — the *previous*
+  // face. Hashing the thumbnail data URLs (size + tail, cheap) also catches
+  // reorders and in-place replacements.
+  const gallerySig = (faces) =>
+    `${faces.length}:` + faces.map((f) => (f ? `${f.length}.${f.slice(-24)}` : '-')).join('|');
+  const sourceSig = useMemo(() => gallerySig(sourceFaces), [sourceFaces]);
+  const targetSig = useMemo(() => gallerySig(targetFaces), [targetFaces]);
+
   const getCacheKey = (idx = selTarget, fr = frame) => {
-    return `${idx}_${fr}_${previewKey}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+    return `${idx}_${fr}_${previewKey}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
   };
 
   const getCachedPreview = (idx = selTarget, fr = frame) => {
@@ -210,10 +223,10 @@ export default function FaceSwap({
     cache[key] = data;
   };
 
-  // Invalidate cache when source/target files or selections change
+  // Invalidate cache when source/target faces or selections change
   useEffect(() => {
     clearPreviewCache();
-  }, [sourceFaces.length, targetFaces.length, selSource, selTargetFace]);
+  }, [sourceSig, targetSig, selSource, selTargetFace]);
 
   // ── Shareable "recipe": full current settings + person→source mapping ──
   const exportRecipe = () => {
@@ -769,7 +782,7 @@ export default function FaceSwap({
         mouth_bottom_scale: localParams.mouth_bottom_scale,
         mouth_left_scale: localParams.mouth_left_scale,
         mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
       
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -854,7 +867,7 @@ export default function FaceSwap({
         activeIntervalsRef.current = {};
       }
     };
-  }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // Render one preview per selected mask engine, holding every other setting
@@ -901,7 +914,7 @@ export default function FaceSwap({
         mouth_bottom_scale: localParams.mouth_bottom_scale,
         mouth_left_scale: localParams.mouth_left_scale,
         mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
 
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -977,7 +990,7 @@ export default function FaceSwap({
         maskIntervalsRef.current = {};
       }
     };
-  }, [comparingMasks, selectedGridMasks, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  }, [comparingMasks, selectedGridMasks, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // ── Swapper-model grid preview loader ──────────────────────────────────
@@ -1025,7 +1038,7 @@ export default function FaceSwap({
         mouth_bottom_scale: localParams.mouth_bottom_scale,
         mouth_left_scale: localParams.mouth_left_scale,
         mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceFaces.length}_${targetFaces.length}_${selSource}_${selTargetFace}`;
+      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
 
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -1101,7 +1114,7 @@ export default function FaceSwap({
         swapperIntervalsRef.current = {};
       }
     };
-  }, [comparingSwappers, selectedGridSwappers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  }, [comparingSwappers, selectedGridSwappers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // ── AI-upscale grid preview loader ─────────────────────────────────────
@@ -1206,7 +1219,7 @@ export default function FaceSwap({
         upscaleIntervalsRef.current = {};
       }
     };
-  }, [comparingUpscalers, selectedGridUpscalers, frame, selTarget, targets.length, sourceFaces.length, targetFaces.length, selSource, selTargetFace, previewKey]);
+  }, [comparingUpscalers, selectedGridUpscalers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
@@ -1229,11 +1242,24 @@ export default function FaceSwap({
   }, [selTarget, frame, targets.length, isScrubbing, isPlaying]);
 
   useEffect(() => {
-    if (targets.length === 0 || progress.processing || isScrubbing || isPlaying) return;
+    if (targets.length === 0 || isScrubbing || isPlaying) return;
+    // A run is in flight — the GPU is busy, so remember that the preview is now
+    // out of date and re-render it once the run finishes. Without this, faces
+    // changed during a run leave the previous result frozen on screen.
+    if (progress.processing) { previewDeferredRef.current = true; return; }
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewKey, sourceFaces.length, targetFaces.length, isScrubbing, isPlaying]);
+  }, [previewKey, sourceSig, targetSig, isScrubbing, isPlaying]);
+
+  useEffect(() => {
+    if (progress.processing || !previewDeferredRef.current) return;
+    previewDeferredRef.current = false;
+    if (targets.length === 0 || isScrubbing || isPlaying) return;
+    const t = setTimeout(() => refreshPreview(), 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress.processing]);
 
   // ── source / target file handling ──
   const onAddSource = async (files) => {
@@ -1316,6 +1342,27 @@ export default function FaceSwap({
       // Surface failures (e.g. a 404 when the backend hasn't been restarted to
       // pick up a new endpoint) instead of silently doing nothing.
       notify(`${path.split('/').pop()} failed: ${e.message}. If this is a new feature, restart the app server.`, 'error');
+    }
+  };
+
+  // Removing a source faceset shifts every later index down by one. The
+  // person→source mapping stores raw indices, so without this it keeps pointing
+  // at whatever slid into the removed slot (wrong face) or off the end of the
+  // list (the backend then swaps in an empty faceset).
+  const removeSource = async (i) => {
+    await sourceAction('/api/source/remove', { index: i });
+    setFaceMapping((prev) => {
+      const next = {};
+      for (const [pid, src] of Object.entries(prev || {})) {
+        if (typeof src !== 'number' || src === i) continue;  // dropped → falls back to default
+        next[pid] = src > i ? src - 1 : src;
+      }
+      return next;
+    });
+    const nextSel = selSource === i ? 0 : selSource > i ? selSource - 1 : selSource;
+    if (nextSel !== selSource) {
+      setSelSource(nextSel);
+      try { await postJSON('/api/source/select', { index: nextSel }); } catch { /* selection is best-effort */ }
     }
   };
 
@@ -2701,7 +2748,7 @@ export default function FaceSwap({
             onLoaded={(r) => { setSourceFaces(r.source_faces || []); if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info); }}
             notify={notify} />
           <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true} large={true}
-            onRemove={(i) => sourceAction('/api/source/remove', { index: i })} empty="Upload a face image" info={sourceFacesInfo} />
+            onRemove={(i) => removeSource(i)} empty="Upload a face image" info={sourceFacesInfo} />
           {sourceFaces.length > 0 && (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
