@@ -449,18 +449,22 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     return "data:image/png;base64," + _b64.b64encode(buf.tobytes()).decode('utf-8')
 
 
-def live_swap(frame, options):
+def live_swap(frame, options, input_facesets=None):
+    """Swap a single frame. `input_facesets` overrides the loaded source
+    facesets (the API passes a person-ordered remap); None = use them as-is."""
     global _preview_process_mgr
 
     if frame is None:
         return frame
+
+    facesets = roop.globals.INPUT_FACESETS if input_facesets is None else input_facesets
 
     with _preview_lock:
         if _preview_process_mgr is None:
             _preview_process_mgr = ProcessMgr(None)
             _preview_process_mgr.is_preview = True
 
-        _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+        _preview_process_mgr.initialize(facesets, roop.globals.TARGET_FACES, options)
         newframe = _preview_process_mgr.process_frame(frame)
     if newframe is None:
         return frame
@@ -576,7 +580,8 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                           use_source_bank=False, use_frontalization=False,
                           frontalization_threshold=25.0, swap_model='inswapper',
                           stabilize_face=False, stabilize_method='one_euro', stabilize_min_cutoff=0.05, stabilize_beta=0.02,
-                          stabilize_enhancer=False, stabilize_enhancer_strength=0.5) -> None:
+                          stabilize_enhancer=False, stabilize_enhancer_strength=0.5,
+                          input_facesets=None) -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -586,7 +591,10 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
     # imagemask is a JSON string produced by the canvas masking modal
     # (keys: "include" and/or "exclude", values: grayscale PNG data-URLs).
     # ProcessMgr.initialize decodes it into include_mask / exclude_mask arrays.
-    if len(roop.globals.INPUT_FACESETS) <= selected_index:
+    # `input_facesets` lets the caller hand in a person-ordered remap of the
+    # sources without mutating the global (see api.mapped_facesets).
+    facesets = roop.globals.INPUT_FACESETS if input_facesets is None else input_facesets
+    if len(facesets) <= selected_index:
         selected_index = 0
     options = ProcessOptions(get_processing_plugins(masking_engine, swap_model=swap_model),
                               roop.globals.distance_threshold, roop.globals.blend_ratio,
@@ -603,7 +611,7 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               stabilize_beta=stabilize_beta,
                               stabilize_enhancer=stabilize_enhancer,
                               stabilize_enhancer_strength=stabilize_enhancer_strength)
-    process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+    process_mgr.initialize(facesets, roop.globals.TARGET_FACES, options)
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them
     roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)

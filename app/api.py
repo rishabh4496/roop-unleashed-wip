@@ -38,27 +38,57 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-@contextlib.contextmanager
-def temp_mapped_facesets(mapping):
+def mapped_facesets(mapping):
+    """Reorder the loaded source facesets into person order for a swap.
+
+    `mapping[rank]` is the source faceset index chosen for target person `rank`,
+    so the swap can address a source by person rank. Returns None when there is
+    no mapping (the caller then uses INPUT_FACESETS as-is).
+
+    This returns a NEW list and never touches roop_globals.INPUT_FACESETS. An
+    earlier version swapped the global out for the duration of the swap and
+    restored it afterwards — but a swap holds that window for seconds (preview)
+    to minutes (a run), and /api/source/* mutates the same global from another
+    thread. An upload landing inside the window appended to the temporary list
+    and was then thrown away by the restore, while its thumbnail (a separate
+    list) survived: the gallery showed the new face but the backend no longer
+    had it, so that person swapped with an empty faceset — i.e. stayed
+    un-swapped — until the face was removed and re-added outside the window.
+    """
     if not isinstance(mapping, list) or len(mapping) == 0:
-        yield
-        return
-    orig_facesets = list(roop_globals.INPUT_FACESETS)
+        return None
+    facesets = list(roop_globals.INPUT_FACESETS)
     mapped = []
     for x in mapping:
         try:
             src_idx = int(x)
         except (ValueError, TypeError):
             src_idx = -1
-        if 0 <= src_idx < len(orig_facesets):
-            mapped.append(orig_facesets[src_idx])
+        if 0 <= src_idx < len(facesets):
+            mapped.append(facesets[src_idx])
         else:
             mapped.append(FaceSet())
-    roop_globals.INPUT_FACESETS = mapped
+    return mapped
+
+
+def mapped_selected_index(mapping, mapped, selected):
+    """Translate the gallery-selected source index into the mapped list's space.
+
+    `selected_input_face_index` counts positions in the input-faces gallery, but
+    once a mapping is active the swap sees the person-ordered list instead — the
+    two only agree when the mapping is the identity. The modes that use a single
+    source for every face ("All faces", "First found", gender) index it with
+    `selected_index`, so an untranslated gallery index either picks the wrong
+    source or (with fewer persons than source faces) runs off the end, in which
+    case the face is skipped and nothing is swapped at all. Falls back to the
+    first person's source when the selected face is mapped to nobody.
+    """
+    if mapped is None:
+        return selected
     try:
-        yield
-    finally:
-        roop_globals.INPUT_FACESETS = orig_facesets
+        return [int(x) for x in mapping].index(int(selected))
+    except (ValueError, TypeError):
+        return 0
 
 API_TEMP = os.path.join(os.getcwd(), "temp", "api_uploads")
 os.makedirs(API_TEMP, exist_ok=True)
@@ -2084,6 +2114,9 @@ def preview(payload: dict = Body(...)):
         face_index = selected_input_face_index
         if len(roop_globals.INPUT_FACESETS) <= face_index:
             face_index = 0
+        face_mapping = payload.get("face_mapping")
+        mapped = mapped_facesets(face_mapping)
+        face_index = mapped_selected_index(face_mapping, mapped, face_index)
 
         options = ProcessOptions(
             get_processing_plugins(mask_engine, swap_model=swap_model),
@@ -2100,8 +2133,7 @@ def preview(payload: dict = Body(...)):
             stabilize_method=payload.get("stabilize_method", "one_euro"),
             stabilize_face=bool(payload.get("stabilize_face", False)))
 
-        with temp_mapped_facesets(payload.get("face_mapping")):
-            swapped = live_swap(current_frame, options)
+        swapped = live_swap(current_frame, options, input_facesets=mapped)
         if swapped is None:
             return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids}
         return {"image": _bgr_to_dataurl(swapped), "faces": faces_list, "person_ids": person_ids}
@@ -2290,25 +2322,28 @@ def _run_swap(payload):
         print(f"\n===== SWAP PIPELINE: {_stages} =====", flush=True)
         print("[Stage 1/2] ANALYZE + SWAP (per-frame detection & swapping)…", flush=True)
 
-        with temp_mapped_facesets(payload.get("face_mapping")):
-            batch_process_regular(
-                output_method, files_to_process, mask_engine, clip_text,
-                processing_method == "In-Memory processing", None,
-                bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
-                int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
-                ApiProgress(), selected_input_face_index,
-                use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
-                mask_per_frame_json="",
-                use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
-                use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
-                frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
-                swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
-                stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
-                stabilize_method=payload.get("stabilize_method", roop_globals.CFG.stabilize_method),
-                stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
-                stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
-                stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
-                stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)))
+        run_mapping = payload.get("face_mapping")
+        run_facesets = mapped_facesets(run_mapping)
+        batch_process_regular(
+            output_method, files_to_process, mask_engine, clip_text,
+            processing_method == "In-Memory processing", None,
+            bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
+            int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
+            ApiProgress(),
+            mapped_selected_index(run_mapping, run_facesets, selected_input_face_index),
+            use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
+            mask_per_frame_json="",
+            use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
+            use_frontalization=bool(payload.get("use_frontalization", roop_globals.CFG.use_frontalization)),
+            frontalization_threshold=float(payload.get("frontalization_threshold", roop_globals.CFG.frontalization_threshold)),
+            swap_model=payload.get("swap_model", roop_globals.CFG.swap_model),
+            stabilize_face=bool(payload.get("stabilize_face", roop_globals.CFG.stabilize_face)),
+            stabilize_method=payload.get("stabilize_method", roop_globals.CFG.stabilize_method),
+            stabilize_min_cutoff=float(payload.get("stabilize_min_cutoff", roop_globals.CFG.stabilize_min_cutoff)),
+            stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
+            stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
+            stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)),
+            input_facesets=run_facesets)
 
         # ── AI upscale second pass (opt-in) ─────────────────────────────────
         # Upscale each finished output in place so the final result is a single
