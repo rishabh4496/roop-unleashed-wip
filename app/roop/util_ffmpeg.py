@@ -38,8 +38,15 @@ def run_ffmpeg(args: List[str]) -> bool:
 
 # Highest quality value each encoder family accepts. x264/x265 and NVENC's -cq
 # top out at 51; the VP9/AV1 family goes to 63. The settings slider used to offer
-# 0-100 and nothing clamped it, so any value above the limit made ffmpeg exit
-# with "Error setting option crf" and the whole render failed.
+# 0-100 with nothing clamping it.
+#
+# Measured, because the encoders do NOT agree on what happens past the limit:
+#   libx264   -crf 80 -> exits 0, output byte-identical to -crf 51 (clamps itself)
+#   libx265   -crf 80 -> FAILS, no output          <- the default encoder
+#   h264_nvenc/hevc_nvenc -cq 80 -> FAILS, no output
+# So on the default (libx265) and on both GPU encoders an out-of-range slider
+# value killed the render outright; on libx264 it silently did nothing. Clamping
+# makes all of them behave like libx264.
 _QUALITY_MAX = 51
 _QUALITY_MAX_WIDE = 63
 _WIDE_RANGE_CODECS = ('libvpx', 'vp9', 'aom', 'av1', 'svtav1')

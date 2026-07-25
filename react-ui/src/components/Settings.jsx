@@ -116,8 +116,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             const codec = p.output_video_codec || '';
             const isNvenc = /_nvenc$/.test(codec);
             // Encoder-accepted range: x264/x265 and NVENC -cq stop at 51, the
-            // VP9/AV1 family at 63. The slider used to go to 100, and anything
-            // past the limit made ffmpeg refuse to start — the render failed.
+            // VP9/AV1 family at 63. The slider used to go to 100; past the limit
+            // libx265 (the default) and both NVENC encoders fail the render
+            // outright, while libx264 quietly clamps. Measured, not assumed.
             const qMax = /libvpx|vp9|aom|av1/i.test(codec) ? 63 : 51;
             const qLabel = isNvenc ? 'Video quality (cq)' : 'Video quality (crf)';
             const qInfo = isNvenc

@@ -446,8 +446,43 @@ def get_meta():
         "output_methods": ["File", "Virtual Camera", "Both"],
         "image_formats": ["jpg", "png", "webp"],
         "video_formats": ["avi", "mkv", "mp4", "webm"],
-        "video_codecs": ["libx264", "libx265", "libvpx-vp9", "h264_nvenc", "hevc_nvenc"],
+        "video_codecs": _available_video_codecs(),
     }
+
+
+_VIDEO_CODECS = ["libx264", "libx265", "libvpx-vp9", "h264_nvenc", "hevc_nvenc"]
+_codec_cache = {"list": None}
+
+
+def _available_video_codecs():
+    """The offered codecs, minus any this ffmpeg build cannot actually encode.
+
+    The bundled ffmpeg here has no libvpx-vp9, so picking VP9 could only ever end
+    in "Unknown encoder" — the run does fail fast (core.py probes the selected
+    encoder before rendering), but offering a choice that cannot work is a
+    trap. `ffmpeg -encoders` is asked once per process and cached; if the query
+    itself fails we fall back to the full list rather than hiding everything.
+    """
+    if _codec_cache["list"] is not None:
+        return _codec_cache["list"]
+    out = _VIDEO_CODECS
+    try:
+        from roop.ffmpeg_writer import FFMPEG_BINARY
+        kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        proc = subprocess.run([FFMPEG_BINARY, "-hide_banner", "-encoders"],
+                              capture_output=True, timeout=20, **kwargs)
+        blob = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", "replace")
+        found = [c for c in _VIDEO_CODECS if f" {c} " in blob]
+        if found:
+            missing = [c for c in _VIDEO_CODECS if c not in found]
+            if missing:
+                print(f"[Encoders] not available in this ffmpeg build, hidden from "
+                      f"the codec list: {', '.join(missing)}", flush=True)
+            out = found
+    except Exception:
+        pass
+    _codec_cache["list"] = out
+    return out
 
 
 def estimate_face_pose_from_kps(kps):
