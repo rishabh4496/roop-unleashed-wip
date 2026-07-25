@@ -95,10 +95,16 @@ def mapped_selected_index(mapping, mapped, selected):
     """
     if mapped is None:
         return selected
-    try:
-        return [int(x) for x in mapping].index(int(selected))
-    except (ValueError, TypeError):
-        return 0
+    # Per-entry coercion, matching mapped_facesets: one unparseable entry must
+    # not throw away the translation for every other face (a bare
+    # `[int(x) for x in mapping]` would, and silently pin every mode to source 0).
+    for rank, x in enumerate(mapping):
+        try:
+            if int(x) == int(selected):
+                return rank
+        except (ValueError, TypeError):
+            continue
+    return 0
 
 API_TEMP = os.path.join(os.getcwd(), "temp", "api_uploads")
 os.makedirs(API_TEMP, exist_ok=True)

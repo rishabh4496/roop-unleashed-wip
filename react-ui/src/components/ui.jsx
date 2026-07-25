@@ -241,7 +241,15 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
               >
                 {vertical ? (
                   <>
-                    <img src={src} alt={`face ${i}`} className="w-10 h-10 rounded-lg object-cover shrink-0" />
+                    {/* An empty src resolves to the page URL and paints a broken-image
+                        icon, so a face whose crop could not be built gets a plain
+                        placeholder tile — it still occupies its slot, because the
+                        gallery is positionally tied to the backend's faceset list. */}
+                    {src ? (
+                      <img src={src} alt={`face ${i}`} className="w-10 h-10 rounded-lg object-cover shrink-0" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg shrink-0 grid place-items-center bg-white/[0.04] text-white/25 text-xs">?</div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-white/90">
                         {person != null ? `Person ${person + 1}` : `Face ${i + 1}`}
@@ -257,7 +265,11 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                   </>
                 ) : (
                   <>
-                    <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
+                    {src ? (
+                      <img src={src} alt={`face ${i}`} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full grid place-items-center bg-white/[0.04] text-white/25 text-lg">?</div>
+                    )}
                     {hasMultiFaces && (
                       <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-[8px] font-bold text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
                         {itemInfo.count}F

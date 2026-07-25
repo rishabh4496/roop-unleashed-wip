@@ -135,23 +135,26 @@ function OverviewStrip({ maxFrames, vStart, vEnd, frame, startFrame, endFrame, m
     return clamp(Math.round(1 + ((clientX - rect.left) / rect.width) * span), 1, maxFrames);
   };
   const place = (start, width) => {
+    if (!setView) return;
     const s = clamp(Math.round(start), 1, Math.max(1, maxFrames - width));
     setView({ start: s, end: Math.min(maxFrames, s + width) });
   };
 
+  // The drag handler needs the CURRENT window, but binding the listeners to it
+  // would re-subscribe on every playback tick (the auto-follow moves the window
+  // while playing). Latest values go through a ref so the listeners bind once.
+  const liveRef = useRef(null);
+  liveRef.current = { vStart, vEnd, vSpan, frameAt, place, setView, maxFrames };
   useEffect(() => {
     const onMove = (e) => {
       const d = dragRef.current;
-      if (!d) return;
-      const f = frameAt(e.clientX);
-      if (d.mode === 'move') place(f - d.grab, vSpan);
-      else if (d.mode === 'left') {
-        const s = clamp(f, 1, vEnd - 24);
-        setView({ start: s, end: vEnd });
-      } else {
-        const en = clamp(f, vStart + 24, maxFrames);
-        setView({ start: vStart, end: en });
-      }
+      const L = liveRef.current;
+      if (!d || !L || !L.setView) return;
+      const f = L.frameAt(e.clientX);
+      if (d.mode === 'move') L.place(f - d.grab, L.vSpan);
+      // Never let a resize collapse the window below the zoom floor.
+      else if (d.mode === 'left') L.setView({ start: clamp(f, 1, L.vEnd - 24), end: L.vEnd });
+      else L.setView({ start: L.vStart, end: clamp(f, L.vStart + 24, L.maxFrames) });
     };
     const onUp = () => { dragRef.current = null; };
     window.addEventListener('pointermove', onMove);
@@ -160,7 +163,7 @@ function OverviewStrip({ maxFrames, vStart, vEnd, frame, startFrame, endFrame, m
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  });
+  }, []);
 
   const onDown = (e) => {
     const f = frameAt(e.clientX);
@@ -268,22 +271,32 @@ export default function Timeline({
   // Wheel over the track zooms about the cursor. Must be a NATIVE non-passive
   // listener: React's onWheel is registered passive, so preventDefault there is
   // ignored and the page scrolls behind the zoom.
+  //
+  // The handler reads the current window from a ref and the listener is bound
+  // ONCE. Keying it to [vStart, vSpan] instead meant re-subscribing on every
+  // zoom step, and with React free to defer the effect flush a fast wheel spin
+  // could hand several events to a listener still holding the previous window —
+  // each computing its step from a stale base, which reads as the zoom
+  // stuttering or fighting the cursor.
+  const wheelRef = useRef(null);
+  wheelRef.current = { vStart, vSpan, zoomAround, panBy, maxFrames };
   useEffect(() => {
     const el = timelineRef?.current;
     if (!el) return;
     const onWheel = (e) => {
-      if (maxFrames < 2) return;
+      const W = wheelRef.current;
+      if (!W || W.maxFrames < 2) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      const pivot = vStart + clamp((e.clientX - rect.left) / rect.width, 0, 1) * vSpan;
+      if (!rect.width) return;
+      const pivot = W.vStart + clamp((e.clientX - rect.left) / rect.width, 0, 1) * W.vSpan;
       // Shift-wheel pans instead of zooming, matching every NLE.
-      if (e.shiftKey) panBy(Math.round((e.deltaY > 0 ? 0.15 : -0.15) * vSpan));
-      else zoomAround(pivot, e.deltaY > 0 ? 1.25 : 0.8);
+      if (e.shiftKey) W.panBy(Math.round((e.deltaY > 0 ? 0.15 : -0.15) * W.vSpan));
+      else W.zoomAround(pivot, e.deltaY > 0 ? 1.25 : 0.8);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timelineRef, maxFrames, vStart, vSpan]);
+  }, [timelineRef]);
 
   // Keep the playhead on screen while playing — a zoomed-in track that the
   // playhead has already run off is just a still picture.
@@ -503,18 +516,24 @@ export default function Timeline({
           <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/70 via-black/10 to-black/25" />
 
           {/* Out-of-range: dimmed AND desaturated, the way an NLE greys the
-              material you have trimmed away — reads instantly as "not rendered". */}
+              material you have trimmed away — reads instantly as "not rendered".
+              Percentages are clamped because once the view is zoomed the In/Out
+              points can sit outside it: a negative width is invalid CSS, which
+              the browser drops, and the dim would silently vanish. */}
           <div className="absolute inset-y-0 left-0 z-10 pointer-events-none bg-black/55 backdrop-saturate-0"
-               style={{ width: `${startPct}%` }} />
+               style={{ width: `${clamp(startPct, 0, 100)}%` }} />
           <div className="absolute inset-y-0 right-0 z-10 pointer-events-none bg-black/55 backdrop-saturate-0"
-               style={{ left: `${endPct}%` }} />
+               style={{ left: `${clamp(endPct, 0, 100)}%` }} />
 
           {/* Active range rails */}
           <div className="absolute z-10 pointer-events-none border-y-2 border-[var(--accent)]/70 inset-y-0"
-               style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }} />
+               style={{ left: `${clamp(startPct, 0, 100)}%`,
+                        width: `${Math.max(0, clamp(endPct, 0, 100) - clamp(startPct, 0, 100))}%` }} />
 
-          {/* In / Out handles */}
-          {[['start', startPct], ['end', endPct]].map(([which, pct]) => (
+          {/* In / Out handles — only when the point is actually on screen */}
+          {[['start', startFrame, startPct], ['end', endFrame, endPct]]
+            .filter(([, f]) => inView(f))
+            .map(([which, , pct]) => (
             <div key={which} className="absolute inset-y-0 z-20 w-[3px] -translate-x-1/2 bg-white/90 pointer-events-none"
                  style={{ left: `${pct}%` }}>
               <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-9 w-2.5 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,0.7)] grid place-items-center gap-[2px]">

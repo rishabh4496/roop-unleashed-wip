@@ -1889,8 +1889,12 @@ class ProcessMgr():
                 # deep queue would cost hundreds of MB on 4K material for no
                 # extra throughput.
                 frame_q = Queue(maxsize=6)
-                reader = Thread(target=_read_loop, daemon=True)
-                reader.start()
+                _t = Thread(target=_read_loop, daemon=True)
+                _t.start()
+                # Only publish the handle once the thread is actually running:
+                # join() on a thread that failed to start raises, which would
+                # come out of the finally block and mask the real failure.
+                reader = _t
             idx = 0
             while roop.globals.processing:
                 wait_while_paused()

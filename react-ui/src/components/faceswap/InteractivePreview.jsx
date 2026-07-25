@@ -270,7 +270,9 @@ export default function InteractivePreview({
   // artefacts (seams, mask edges, enhancer texture) live at that scale, and
   // guessing at it with +/- steps is exactly what made close inspection tedious.
   const zoomToActual = () => {
-    const box = imageRef.current?.getBoundingClientRect();
+    // imageRef is only attached in the single-stage layout; fall back to the
+    // container so the button still does something in split view.
+    const box = (imageRef.current || containerRef.current)?.getBoundingClientRect();
     if (!box || !imgDim || !box.width) return;
     setZoom(Math.min(Math.max(imgDim.w / box.width, 1), ZOOM_MAX));
     setPan({ x: 0, y: 0 });
@@ -288,7 +290,11 @@ export default function InteractivePreview({
   // factor and the frame — rather than only offering the controls.
   const hudBar = () => (
     <div className="absolute inset-x-0 bottom-0 z-50 flex justify-center p-3 pointer-events-none">
-      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300">
+      {/* Rests at reduced opacity rather than fully hidden: the bar is not just
+          controls, it REPORTS state (zoom factor, face count, whether Compare
+          is on), and state you have to hover to discover is state you will
+          miss. Comes to full strength on hover or keyboard focus. */}
+      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-45 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300">
         {/* View */}
         <button onClick={() => zoomBy(-0.5)} disabled={zoom <= 1}
                 className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30" title="Zoom out (−)">−</button>

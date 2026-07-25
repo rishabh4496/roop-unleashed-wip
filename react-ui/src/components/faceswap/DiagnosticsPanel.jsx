@@ -36,26 +36,36 @@ function Spark({ data, max, color = 'var(--accent)', height = 34, mean = null })
     return `${x.toFixed(2)},${yOf(v).toFixed(2)}`;
   });
   const meanY = mean != null ? yOf(mean) : null;
+  // preserveAspectRatio="none" stretches the 100-unit viewBox across the full
+  // card width, so any SHAPE drawn in it is stretched with it — a circle marker
+  // came out as a flat ellipse several times too wide. Strokes are exempt via
+  // vectorEffect, so the lines are fine; the head marker is an HTML dot
+  // positioned over the chart instead, which stays round at any width.
   return (
-    <svg viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none"
-         className="w-full block overflow-visible" style={{ height }} aria-hidden="true">
+    <div className="relative w-full" style={{ height }}>
+      <svg viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none"
+           className="w-full block" style={{ height }} aria-hidden="true">
+        {data.length > 1 && (
+          <>
+            <polyline points={`0,${height} ${pts.join(' ')} ${w},${height}`}
+                      fill={color} opacity="0.13" stroke="none" />
+            {meanY != null && (
+              <line x1="0" x2={w} y1={meanY} y2={meanY} stroke="currentColor"
+                    className="text-white/25" strokeWidth="1" strokeDasharray="3 3"
+                    vectorEffect="non-scaling-stroke" />
+            )}
+            <polyline points={pts.join(' ')} fill="none" stroke={color}
+                      strokeWidth="1.5" vectorEffect="non-scaling-stroke"
+                      strokeLinejoin="round" strokeLinecap="round" />
+          </>
+        )}
+      </svg>
       {data.length > 1 && (
-        <>
-          <polyline points={`0,${height} ${pts.join(' ')} ${w},${height}`}
-                    fill={color} opacity="0.13" stroke="none" />
-          {meanY != null && (
-            <line x1="0" x2={w} y1={meanY} y2={meanY} stroke="currentColor"
-                  className="text-white/25" strokeWidth="1" strokeDasharray="3 3"
-                  vectorEffect="non-scaling-stroke" />
-          )}
-          <polyline points={pts.join(' ')} fill="none" stroke={color}
-                    strokeWidth="1.5" vectorEffect="non-scaling-stroke"
-                    strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx={w} cy={yOf(data[data.length - 1])} r="2" fill={color}
-                  vectorEffect="non-scaling-stroke" />
-        </>
+        <span className="absolute h-1.5 w-1.5 rounded-full pointer-events-none"
+              style={{ right: 0, top: yOf(data[data.length - 1]),
+                       transform: 'translate(50%, -50%)', background: color }} />
       )}
-    </svg>
+    </div>
   );
 }
 
