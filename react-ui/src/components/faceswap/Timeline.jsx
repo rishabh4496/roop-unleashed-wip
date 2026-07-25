@@ -25,6 +25,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 // labels at least ~92px apart at the current track width, so the same clip is
 // legible in a narrow rail and a wide window without re-tuning.
 const NICE_SECONDS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+// Used instead of NICE_SECONDS once the view is zoomed past ~1s per label.
+const NICE_FRAMES = [1, 2, 5, 10, 15, 25, 50, 100];
 const SPEEDS = [0.25, 0.5, 1, 2, 4];
 const MINOR_PER_MAJOR = 4;
 
@@ -113,6 +115,88 @@ const Ico = ({ d, fill = false, size = 15 }) => (
   </svg>
 );
 
+/**
+ * Whole-clip overview with the visible window drawn on it.
+ *
+ * Its own pointer handling (the main track's belongs to FaceSwap and means
+ * "scrub"): press inside the window to drag it, on an edge to resize it,
+ * anywhere else to centre it there.
+ */
+function OverviewStrip({ maxFrames, vStart, vEnd, frame, startFrame, endFrame, markers, setView }) {
+  const ref = useRef(null);
+  const dragRef = useRef(null);
+  const span = Math.max(1, maxFrames - 1);
+  const pct = (f) => ((clamp(f, 1, maxFrames) - 1) / span) * 100;
+  const vSpan = Math.max(1, vEnd - vStart);
+
+  const frameAt = (clientX) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect || !rect.width) return 1;
+    return clamp(Math.round(1 + ((clientX - rect.left) / rect.width) * span), 1, maxFrames);
+  };
+  const place = (start, width) => {
+    const s = clamp(Math.round(start), 1, Math.max(1, maxFrames - width));
+    setView({ start: s, end: Math.min(maxFrames, s + width) });
+  };
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const f = frameAt(e.clientX);
+      if (d.mode === 'move') place(f - d.grab, vSpan);
+      else if (d.mode === 'left') {
+        const s = clamp(f, 1, vEnd - 24);
+        setView({ start: s, end: vEnd });
+      } else {
+        const en = clamp(f, vStart + 24, maxFrames);
+        setView({ start: vStart, end: en });
+      }
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  });
+
+  const onDown = (e) => {
+    const f = frameAt(e.clientX);
+    const rect = ref.current?.getBoundingClientRect();
+    const edgePx = 6;
+    const edgeFrames = rect ? Math.max(1, Math.round((edgePx / rect.width) * span)) : 1;
+    if (Math.abs(f - vStart) <= edgeFrames) dragRef.current = { mode: 'left' };
+    else if (Math.abs(f - vEnd) <= edgeFrames) dragRef.current = { mode: 'right' };
+    else if (f > vStart && f < vEnd) dragRef.current = { mode: 'move', grab: f - vStart };
+    else { place(f - Math.round(vSpan / 2), vSpan); dragRef.current = { mode: 'move', grab: Math.round(vSpan / 2) }; }
+  };
+
+  return (
+    <div
+      ref={ref}
+      onPointerDown={onDown}
+      className="relative mt-3 h-6 w-full rounded-md border border-[var(--border-color)] bg-[var(--input-bg)] overflow-hidden cursor-pointer"
+      title="Whole clip — drag the lit window to pan, its edges to zoom"
+    >
+      {/* selected render range, for orientation */}
+      <div className="absolute inset-y-0 bg-[var(--accent)]/15 pointer-events-none"
+           style={{ left: `${pct(startFrame)}%`, width: `${Math.max(0, pct(endFrame) - pct(startFrame))}%` }} />
+      {markers.map((m) => (
+        <span key={m} className="absolute inset-y-0 w-px bg-amber-300/50 pointer-events-none" style={{ left: `${pct(m)}%` }} />
+      ))}
+      <span className="absolute inset-y-0 w-px bg-white/80 pointer-events-none" style={{ left: `${pct(frame)}%` }} />
+      {/* the visible window */}
+      <div className="absolute inset-y-0 rounded-[3px] border border-white/45 bg-white/[0.10] pointer-events-none"
+           style={{ left: `${pct(vStart)}%`, width: `${Math.max(1.2, pct(vEnd) - pct(vStart))}%` }}>
+        <span className="absolute inset-y-0 -left-px w-[3px] rounded-full bg-white/70" />
+        <span className="absolute inset-y-0 -right-px w-[3px] rounded-full bg-white/70" />
+      </div>
+    </div>
+  );
+}
+
 export default function Timeline({
   fps = 25,
   maxFrames = 1,
@@ -136,14 +220,80 @@ export default function Timeline({
   setPlaybackRate,
   thumbUrl,
   targetKey = '',
+  view,
+  setView,
 }) {
-  const span = Math.max(1, maxFrames - 1);
-  const pctOf = (f) => ((clamp(f, 1, maxFrames) - 1) / span) * 100;
+  // ── View window ───────────────────────────────────────────────────────────
+  // The track shows [view.start, view.end] rather than the whole clip. `pctOf`
+  // is therefore a position on the VISIBLE track and can fall outside 0..100
+  // for frames scrolled off either edge — callers either clamp it (labels) or
+  // hide the element (handles, markers, playhead).
+  // Fall back to the whole clip for a missing or degenerate window — the parent
+  // seeds it in an effect, so the first paint after a target change would
+  // otherwise map every position against a one-frame span.
+  const valid = view && view.end > view.start;
+  const vStart = valid ? view.start : 1;
+  const vEnd = valid ? Math.min(view.end, maxFrames) : maxFrames;
+  const vSpan = Math.max(1, vEnd - vStart);
+  const zoomed = vSpan < maxFrames - 1;
+  const pctOf = (f) => ((f - vStart) / vSpan) * 100;
+  const inView = (f) => f >= vStart && f <= vEnd;
+
   const startPct = pctOf(startFrame);
   const endPct = pctOf(endFrame);
   const currentPct = pctOf(frame);
   const rangeLen = Math.max(0, endFrame - startFrame + 1);
   const rangeShare = Math.round((rangeLen / maxFrames) * 100);
+
+  /** Re-window around a pivot frame. factor > 1 zooms out, < 1 zooms in. */
+  const zoomAround = (pivot, factor) => {
+    if (!setView || maxFrames < 2) return;
+    // Floor at 24 visible frames — below that the filmstrip is a handful of
+    // near-identical stills and the frame box is the better tool anyway.
+    const nextSpan = clamp(Math.round(vSpan * factor), Math.min(24, maxFrames - 1), maxFrames - 1);
+    const ratio = clamp((pivot - vStart) / vSpan, 0, 1);
+    let s = Math.round(pivot - ratio * nextSpan);
+    s = clamp(s, 1, Math.max(1, maxFrames - nextSpan));
+    setView({ start: s, end: Math.min(maxFrames, s + nextSpan) });
+  };
+
+  const panBy = (deltaFrames) => {
+    if (!setView) return;
+    const s = clamp(vStart + deltaFrames, 1, Math.max(1, maxFrames - vSpan));
+    setView({ start: s, end: Math.min(maxFrames, s + vSpan) });
+  };
+
+  const resetView = () => setView && setView({ start: 1, end: maxFrames });
+
+  // Wheel over the track zooms about the cursor. Must be a NATIVE non-passive
+  // listener: React's onWheel is registered passive, so preventDefault there is
+  // ignored and the page scrolls behind the zoom.
+  useEffect(() => {
+    const el = timelineRef?.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (maxFrames < 2) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const pivot = vStart + clamp((e.clientX - rect.left) / rect.width, 0, 1) * vSpan;
+      // Shift-wheel pans instead of zooming, matching every NLE.
+      if (e.shiftKey) panBy(Math.round((e.deltaY > 0 ? 0.15 : -0.15) * vSpan));
+      else zoomAround(pivot, e.deltaY > 0 ? 1.25 : 0.8);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineRef, maxFrames, vStart, vSpan]);
+
+  // Keep the playhead on screen while playing — a zoomed-in track that the
+  // playhead has already run off is just a still picture.
+  useEffect(() => {
+    if (!isPlaying || !zoomed || !setView) return;
+    if (frame >= vStart && frame <= vEnd) return;
+    const s = clamp(Math.round(frame - vSpan * 0.25), 1, Math.max(1, maxFrames - vSpan));
+    setView({ start: s, end: Math.min(maxFrames, s + vSpan) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frame, isPlaying, zoomed]);
 
   // ── Ruler ticks, measured from the real track width ───────────────────────
   const [trackW, setTrackW] = useState(0);
@@ -158,22 +308,34 @@ export default function Timeline({
   }, [timelineRef, maxFrames]);
 
   const ticks = useMemo(() => {
-    if (!trackW || maxFrames < 2) return { major: [], minor: [] };
+    if (!trackW || maxFrames < 2) return { major: [], minor: [], frameMode: false };
     const want = Math.max(2, Math.floor(trackW / 92));
-    const raw = maxFrames / fps / want;
-    const sec = NICE_SECONDS.find((s) => s >= raw) ?? NICE_SECONDS[NICE_SECONDS.length - 1];
-    const step = Math.max(1, Math.round(sec * fps));
+    let step;
+    let frameMode = false;
+    if (vSpan / fps / want < 1) {
+      // Zoomed past one second per label — step in frames and show the frame
+      // remainder, otherwise every tick would read the same second.
+      const raw = vSpan / want;
+      step = NICE_FRAMES.find((n) => n >= raw) ?? Math.max(1, Math.round(fps));
+      frameMode = true;
+    } else {
+      const sec = NICE_SECONDS.find((s) => s >= vSpan / fps / want) ?? NICE_SECONDS[NICE_SECONDS.length - 1];
+      step = Math.max(1, Math.round(sec * fps));
+    }
+    // Ticks stay pinned to absolute clip time (multiples of `step` from frame 1)
+    // so they don't slide about under the material while panning.
+    const first = 1 + Math.ceil((vStart - 1) / step) * step;
     const major = [];
     const minor = [];
-    for (let f = 1; f <= maxFrames; f += step) {
-      major.push(f);
+    for (let f = first - step; f <= vEnd + step; f += step) {
+      if (f >= vStart && f <= vEnd && f >= 1) major.push(f);
       for (let k = 1; k < MINOR_PER_MAJOR; k++) {
-        const mf = f + (step * k) / MINOR_PER_MAJOR;
-        if (mf < maxFrames) minor.push(Math.round(mf));
+        const mf = Math.round(f + (step * k) / MINOR_PER_MAJOR);
+        if (mf >= vStart && mf <= vEnd && mf >= 1 && mf <= maxFrames) minor.push(mf);
       }
     }
-    return { major, minor };
-  }, [trackW, maxFrames, fps]);
+    return { major, minor, frameMode };
+  }, [trackW, maxFrames, fps, vStart, vEnd, vSpan]);
 
   // ── Chapter markers, per clip ─────────────────────────────────────────────
   const [markers, setMarkers] = useState([]);
@@ -239,6 +401,12 @@ export default function Timeline({
           <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]/55 truncate">
             {maxFrames.toLocaleString()} frames · {fps} fps · {fmtTC(maxFrames, fps)}
           </span>
+          {zoomed && (
+            <span className="rounded-md border border-[var(--border-color)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-[var(--text-muted)]"
+                  title="Visible range — the track is zoomed in">
+              showing {fmtTC(vStart, fps)}–{fmtTC(vEnd, fps)} · {Math.round((maxFrames - 1) / vSpan)}×
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <RangeField label="In" value={startFrame} min={1} max={endFrame}
@@ -267,14 +435,14 @@ export default function Timeline({
               <span className="absolute bottom-0 w-px h-2.5 bg-[var(--text-muted)]/40" style={{ left: `${pct}%` }} />
               <span className="absolute bottom-3 font-mono text-[9px] tabular-nums text-[var(--text-muted)]/60 whitespace-nowrap"
                     style={{ left: `${pct}%`, transform: anchor(pct) }}>
-                {fmtTC(f, fps)}
+                {ticks.frameMode ? fmtTCF(f, fps) : fmtTC(f, fps)}
               </span>
             </React.Fragment>
           );
         })}
 
         {/* Chapter markers — click to jump, alt-click to delete. */}
-        {markers.map((m) => (
+        {markers.filter(inView).map((m) => (
           <button
             key={m}
             type="button"
@@ -360,7 +528,7 @@ export default function Timeline({
           ))}
 
           {/* Marker ticks carried down onto the track */}
-          {markers.map((m) => (
+          {markers.filter(inView).map((m) => (
             <span key={m} className="absolute inset-y-0 w-px bg-amber-300/45 z-10 pointer-events-none"
                   style={{ left: `${pctOf(m)}%` }} />
           ))}
@@ -380,14 +548,37 @@ export default function Timeline({
           </div>
         </div>
 
-        {/* Playhead timecode, riding under the track */}
-        <div className={`absolute -bottom-2 z-30 pointer-events-none ${isScrubbing ? '' : 'transition-[left] duration-100 ease-out'}`}
-             style={{ left: `${currentPct}%`, transform: anchor(currentPct) }}>
-          <span className="rounded-md bg-[var(--accent)] px-1.5 py-0.5 font-mono text-[9px] font-bold tabular-nums text-white shadow-[0_2px_6px_rgba(0,0,0,0.5)]">
-            {fmtTCF(frame, fps)}
-          </span>
-        </div>
+        {/* Playhead timecode, riding under the track. Hidden when the playhead
+            has been scrolled out of the window — it sits outside the track's
+            overflow clip, so it would otherwise float free of its own line. */}
+        {inView(frame) && (
+          <div className={`absolute -bottom-2 z-30 pointer-events-none ${isScrubbing ? '' : 'transition-[left] duration-100 ease-out'}`}
+               style={{ left: `${currentPct}%`, transform: anchor(currentPct) }}>
+            <span className="rounded-md bg-[var(--accent)] px-1.5 py-0.5 font-mono text-[9px] font-bold tabular-nums text-white shadow-[0_2px_6px_rgba(0,0,0,0.5)]">
+              {fmtTCF(frame, fps)}
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* ── Overview strip ───────────────────────────────────────────────────
+          The whole clip at a glance with the visible window drawn on it: the
+          one thing a zoomed track cannot tell you is where in the clip you are.
+          Drag the window to pan, drag its edges to resize, click anywhere to
+          jump the window there. Only shown once zoomed — at full extent it
+          would just restate the track. */}
+      {zoomed && (
+        <OverviewStrip
+          maxFrames={maxFrames}
+          vStart={vStart}
+          vEnd={vEnd}
+          frame={frame}
+          startFrame={startFrame}
+          endFrame={endFrame}
+          markers={markers}
+          setView={setView}
+        />
+      )}
 
       {/* ── Toolbar: one surface, three zones ────────────────────────────── */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] px-3 py-2">
@@ -506,6 +697,24 @@ export default function Timeline({
                    className={`border ${isLooping ? 'border-[var(--accent)]/30' : 'border-[var(--border-color)]'}`}>
             <Ico d={<><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></>} />
           </IconBtn>
+
+          {/* Zoom */}
+          <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5"
+               title="Zoom the timeline — wheel over the track zooms about the cursor, shift-wheel pans">
+            <IconBtn title="Zoom out" onClick={() => zoomAround(frame, 1.6)}>
+              <Ico d={<><circle cx="11" cy="11" r="7" /><line x1="20" y1="20" x2="16.2" y2="16.2" /><line x1="8" y1="11" x2="14" y2="11" /></>} />
+            </IconBtn>
+            <IconBtn title="Zoom in on the playhead" onClick={() => zoomAround(frame, 0.6)}>
+              <Ico d={<><circle cx="11" cy="11" r="7" /><line x1="20" y1="20" x2="16.2" y2="16.2" /><line x1="8" y1="11" x2="14" y2="11" /><line x1="11" y1="8" x2="11" y2="14" /></>} />
+            </IconBtn>
+            <button type="button"
+                    onClick={() => (zoomed ? resetView() : setView && setView({
+                      start: Math.max(1, startFrame), end: Math.max(startFrame + 1, endFrame) }))}
+                    title={zoomed ? 'Zoom out to the whole clip' : 'Zoom to the selected In/Out range'}
+                    className="px-2 py-1 rounded-md text-[10px] font-bold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
+              {zoomed ? 'All' : 'Range'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

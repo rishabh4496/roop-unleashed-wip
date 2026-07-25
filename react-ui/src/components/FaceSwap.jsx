@@ -463,6 +463,14 @@ export default function FaceSwap({
   const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
   const [storyboardThumbs, setStoryboardThumbs] = useState([]);
   const [hoverFrame, setHoverFrame] = useState(null);
+  // Timeline view window (inclusive frame range the track currently shows).
+  // On a 95k-frame clip the full-width track puts ~100 frames in every pixel,
+  // so it can only ever be a rough locator; zooming makes it a working surface.
+  // Every frame<->pixel conversion below goes through this, and it is read via
+  // a ref so a zoom during a drag can't tear down the scrub listeners.
+  const [view, setView] = useState({ start: 1, end: 1 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const timelineRef = useRef(null);
   // Coalesces timeline hover/scrub pointer-move work to one update per frame.
   // Pointer-move fires faster than this large component can re-render, so
@@ -1712,23 +1720,51 @@ export default function FaceSwap({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `frame`/`targets` are read through refs on purpose: the loop writes `frame` itself every tick, and re-binding on `targets` restarted playback on every In/Out drag.
   }, [isPlaying, isLooping, playbackRate, selTarget, maxFrames]);
 
-  // Storyboard loading effect
+  // Storyboard loading effect. The strip spans the VISIBLE range, so zooming in
+  // re-samples it over the shorter span instead of leaving the same twelve
+  // whole-clip stills stretched behind a narrow window. Debounced because a
+  // wheel-zoom emits a burst of view updates and each strip is 12 backend
+  // seeks; only the range you settle on gets fetched.
   useEffect(() => {
     if (targets.length === 0 || maxFrames <= 1) {
       setStoryboardThumbs([]);
       return;
     }
-    // 12 across the strip: enough that the filmstrip reads as the shape of the
-    // clip rather than eight stretched stills, still only 12 backend seeks.
-    const numThumbs = 12;
-    const step = maxFrames > numThumbs ? (maxFrames - 1) / (numThumbs - 1) : 1;
-    const urls = [];
-    for (let i = 0; i < numThumbs; i++) {
-      const f = Math.min(maxFrames, Math.round(1 + i * step));
-      urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}&width=200`);
-    }
-    setStoryboardThumbs(urls);
-  }, [selTarget, maxFrames, targets.length]);
+    const id = setTimeout(() => {
+      // 12 across the strip: enough that the filmstrip reads as the shape of
+      // the clip rather than eight stretched stills, still only 12 seeks.
+      const numThumbs = 12;
+      const lo = Math.max(1, view.start);
+      const hi = Math.max(lo, Math.min(view.end, maxFrames));
+      const step = (hi - lo) / Math.max(1, numThumbs - 1);
+      const urls = [];
+      for (let i = 0; i < numThumbs; i++) {
+        const f = Math.max(1, Math.min(maxFrames, Math.round(lo + i * step)));
+        urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}&width=200`);
+      }
+      setStoryboardThumbs(urls);
+    }, 220);
+    return () => clearTimeout(id);
+  }, [selTarget, maxFrames, targets.length, view.start, view.end]);
+
+  // ── Frame <-> track-position mapping, through the view window ─────────────
+  // `pct` is 0..1 across the visible track, NOT across the clip. With the view
+  // at its default (whole clip) these are exactly the old full-range formulas.
+  const frameAtPct = (pct) => {
+    const { start, end } = viewRef.current;
+    const span = Math.max(0, end - start);
+    return Math.max(1, Math.min(Math.round(start + pct * span), maxFrames));
+  };
+  const pctOfFrame = (f) => {
+    const { start, end } = viewRef.current;
+    return (f - start) / Math.max(1, end - start);
+  };
+  const viewSpan = () => Math.max(1, viewRef.current.end - viewRef.current.start);
+
+  // A new clip (or a target swap) starts fully zoomed out.
+  useEffect(() => {
+    setView({ start: 1, end: Math.max(1, maxFrames) });
+  }, [selTarget, maxFrames]);
 
   // Scrubbing event handler setup
   const updateTimelinePos = (targetFrame, type) => {
@@ -1764,8 +1800,7 @@ export default function FaceSwap({
       if (!timelineRef.current || timelinePendingRef.current === null) return;
       const rect = timelineRef.current.getBoundingClientRect();
       const x = Math.max(0, Math.min(timelinePendingRef.current - rect.left, rect.width));
-      const pct = x / rect.width;
-      const f = Math.max(1, Math.min(Math.round(pct * (maxFrames - 1)) + 1, maxFrames));
+      const f = frameAtPct(x / rect.width);
       setHoverFrame((prev) => (prev === f ? prev : f));
     });
   };
@@ -1791,12 +1826,14 @@ export default function FaceSwap({
       if (!timelineRef.current || pendingX === null) return;
       const rect = timelineRef.current.getBoundingClientRect();
       const pct = Math.max(0, Math.min((pendingX - rect.left) / rect.width, 1));
-      let targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+      let targetFrame = frameAtPct(pct);
       // Magnetic snap: while dragging the playhead, pull it onto the In/Out
       // points and the clip ends when it lands within ~10px, so lining the
-      // playhead up with a marker doesn't require pixel-perfect aim.
+      // playhead up with a marker doesn't require pixel-perfect aim. The
+      // tolerance is ~10px of the VISIBLE span, so zooming in makes the snap
+      // proportionally finer instead of swallowing the precision it bought.
       if (dragType === 'playhead' && maxFrames > 1) {
-        const snapFrames = Math.max(1, Math.round((10 / rect.width) * (maxFrames - 1)));
+        const snapFrames = Math.max(1, Math.round((10 / rect.width) * viewSpan()));
         const snapPoints = [1, maxFrames, targets[selTarget]?.start_frame ?? 1, targets[selTarget]?.end_frame ?? maxFrames];
         let best = null, bestDist = Infinity;
         for (const sp of snapPoints) {
@@ -1843,11 +1880,11 @@ export default function FaceSwap({
     if (clientX === undefined) return;
     const x = clientX - rect.left;
     const pct = Math.max(0, Math.min(x / rect.width, 1));
-    const targetFrame = Math.round(pct * (maxFrames - 1)) + 1;
+    const targetFrame = frameAtPct(pct);
 
-    const sPct = ((targets[selTarget]?.start_frame ?? 1) - 1) / (maxFrames - 1);
-    const ePct = ((targets[selTarget]?.end_frame ?? maxFrames) - 1) / (maxFrames - 1);
-    const cPct = (frame - 1) / (maxFrames - 1);
+    const sPct = pctOfFrame(targets[selTarget]?.start_frame ?? 1);
+    const ePct = pctOfFrame(targets[selTarget]?.end_frame ?? maxFrames);
+    const cPct = pctOfFrame(frame);
 
     const distStart = Math.abs(pct - sPct);
     const distEnd = Math.abs(pct - ePct);
@@ -3334,6 +3371,8 @@ export default function FaceSwap({
                   hoverFrame={hoverFrame}
                   isScrubbing={isScrubbing}
                   storyboardThumbs={storyboardThumbs}
+                  view={view}
+                  setView={setView}
                   isPlaying={isPlaying}
                   setIsPlaying={setIsPlaying}
                   isLooping={isLooping}
@@ -3579,6 +3618,8 @@ export default function FaceSwap({
                 <div className="flex items-center justify-between"><span className="text-white/60">Set End Frame</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">]</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Reset Range</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">R</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Marker at playhead</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">M</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Zoom timeline</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Wheel on track</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Pan timeline</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">Shift + Wheel</kbd></div>
               </div>
               <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Compare & Zoom</h4>
