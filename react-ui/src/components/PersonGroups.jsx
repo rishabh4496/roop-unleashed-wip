@@ -111,13 +111,19 @@ export default function PersonGroups({
 
   // Scan the whole video and auto-capture this person at many poses, filling
   // their angle bank so identity survives turns without manual capturing.
+  // The backend does a coarse pass plus a targeted refine pass over the moments
+  // where the pose changed, so the toast reports what it actually looked at —
+  // "0 new angles" after 40 frames means something very different from after 400.
   const autoAngles = async (rank) => {
     setHarvesting(rank);
     try {
       const res = await postJSON('/api/target/auto_angles', { person: rank, index: selTarget });
       applyPayload(res);
-      if (res.count) notify(`🎯 Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}`);
-      else notify(res.message || 'No new angles found', 'warning');
+      const detail = res.scanned
+        ? ` — scanned ${res.scanned} frames in ${res.seconds}s, ${res.bins} pose bin${res.bins === 1 ? '' : 's'} covered`
+        : '';
+      if (res.count) notify(`🎯 Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}${detail}`);
+      else notify((res.message || 'No new angles found') + detail, 'warning');
     } catch (e) {
       notify(e.message, 'error');
     } finally {

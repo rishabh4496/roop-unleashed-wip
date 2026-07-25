@@ -442,6 +442,61 @@ def estimate_face_pose_from_kps(kps):
     except Exception:
         return "Front"
 
+
+# ── Fine pose bins (coverage accounting, NOT display) ────────────────────────
+# estimate_face_pose_from_kps() above is the human-readable label shown in the
+# UI and is deliberately coarse: its "Front" bucket spans roughly ±45° of yaw,
+# and there are only 9 labels in total. That is fine for a caption but useless
+# as a coverage measure — six mildly-turned faces fill the "Front" bucket and
+# then block further capture while true profiles are still missing entirely.
+# So auto-angle harvesting bins on the raw log-ratios instead: symmetric about
+# 0, one bin per meaningful step of yaw/pitch, 9 × 5 possible bins.
+_YAW_EDGES = (-1.20, -0.75, -0.43, -0.15, 0.15, 0.43, 0.75, 1.20)
+_PITCH_EDGES = (-0.75, -0.43, 0.37, 0.75)
+
+
+def _bin_index(value, edges):
+    i = 0
+    for e in edges:
+        if value >= e:
+            i += 1
+    return i
+
+
+def _pose_transition_intervals(timeline):
+    """Frame ranges worth re-scanning at fine stride, best first.
+
+    `timeline` is [(frame_pos, pose_bin | None), ...] from a coarse sweep. A pose
+    that never landed on a coarse sample has to lie BETWEEN two samples whose
+    bins differ, so those gaps — and only those — are where extra decoding pays
+    off. Ranked by how far apart the endpoint bins are: the widest jumps skipped
+    over the most unseen intermediate poses. A gap with the person on one side
+    only still counts (they entered, left, or turned too far to match) but ranks
+    last, because a plain scene cut looks identical and refining it is wasted."""
+    intervals = []
+    for (fa, ba), (fb, bb) in zip(timeline, timeline[1:]):
+        if fb - fa <= 1 or ba == bb:
+            continue
+        if ba is None and bb is None:
+            continue
+        span = 1 if (ba is None or bb is None) else abs(ba[0] - bb[0]) + abs(ba[1] - bb[1])
+        intervals.append((span, fa, fb))
+    intervals.sort(key=lambda x: -x[0])
+    return intervals
+
+
+def _pose_bin(kps):
+    """Fine (yaw_bin, pitch_bin) coverage bucket for a face, or None if unusable."""
+    try:
+        (lex, ley), (rex, rey), (nx, ny), (_lmx, lmy), (_rmx, rmy) = [tuple(p) for p in kps[:5]]
+        yaw = float(np.log((abs(nx - lex) + 1e-6) / (abs(rex - nx) + 1e-6)))
+        eye_y = (ley + rey) * 0.5
+        mouth_y = (lmy + rmy) * 0.5
+        pitch = float(np.log((abs(ny - eye_y) + 1e-6) / (abs(mouth_y - ny) + 1e-6)))
+    except Exception:
+        return None
+    return (_bin_index(yaw, _YAW_EDGES), _bin_index(pitch, _PITCH_EDGES))
+
 def _get_source_faces_info():
     source_faces_info = []
     for fs in roop_globals.INPUT_FACESETS:
@@ -1324,12 +1379,27 @@ def target_auto_angles(payload: dict = Body(...)):
     the whole video into their multi-angle bank — so their identity survives
     turns/profiles without hand-capturing 30 frames.
 
-    Walks sampled frames in time order and matches each frame's faces to the
-    person's GROWING angle bank (so gradual turns chain: each newly-added angle
-    extends coverage for the next). Adds pose-diverse, embedding-novel angles,
-    de-duplicated and capped. Wrong grabs (rare) are removable via the per-angle
-    ✕ in the UI. The swap already matches min-distance across a person's angles,
-    so a fuller bank directly improves pose robustness."""
+    Runs in two phases, both matching each frame's faces against the person's
+    GROWING angle bank (so gradual turns chain: each newly-added angle extends
+    coverage for the next):
+
+      1. a coarse pass over evenly-spaced samples across the whole video, and
+      2. a targeted refine pass that re-scans, at fine stride, only the
+         intervals BETWEEN coarse samples whose pose changed.
+
+    Phase 2 is what stops angles being missed. A head turn lasts well under a
+    second, so at a coarse stride the profile frames fall between samples; but
+    pose is continuous, so a pose that never landed on a sample must lie inside
+    an interval whose endpoints differ. Spending the extra decode there — rather
+    than on uniformly more frames, which mostly returns more of the same frontal
+    look — is what finds the extremes. The intermediate angles it picks up also
+    chain the bank outward, which is what lets a true profile pass ACCEPT at all.
+
+    Budget is per pose BIN (see _pose_bin) rather than one global count, so easy
+    frontal angles can no longer consume the whole allowance before the hard
+    poses are reached. Wrong grabs (rare) are removable via the per-angle ✕ in
+    the UI. The swap already matches min-distance across a person's angles, so a
+    fuller bank directly improves pose robustness."""
     from roop.face_util import get_all_faces, _attach_source_crops, clamp_cut_values
     if _progress["processing"]:
         return JSONResponse(status_code=409, content={"message": "busy processing"})
@@ -1348,7 +1418,7 @@ def target_auto_angles(payload: dict = Body(...)):
         return _target_faces_payload({"count": 0, "message": "no such person"})
 
     # Seed the growing bank + pose coverage from the person's existing angles.
-    bank, covered_poses = [], {}
+    bank, bin_counts = [], {}
     for i, g in enumerate(roop_globals.TARGET_FACE_GROUP):
         if g != raw_group:
             continue
@@ -1357,8 +1427,9 @@ def target_auto_angles(payload: dict = Body(...)):
         if e is not None:
             bank.append(np.asarray(e, dtype=np.float32))
         kps = getattr(f, 'kps', None)
-        pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
-        covered_poses[pose] = covered_poses.get(pose, 0) + 1
+        b = _pose_bin(kps) if kps is not None else None
+        if b is not None:
+            bin_counts[b] = bin_counts.get(b, 0) + 1
     if not bank:
         return _target_faces_payload({"count": 0, "message": "capture the person once first"})
 
@@ -1385,9 +1456,15 @@ def target_auto_angles(payload: dict = Body(...)):
     SEED_MAX = float(payload.get("seed_max", _ANGLE_SEED_MAX))  # max drift from an original angle
     AMBIG_MARGIN = float(payload.get("ambig_margin", 0.10))  # min gap to the runner-up
     NOVELTY = float(payload.get("novelty", 0.15))      # skip near-duplicate embeddings
-    MAX_ADD = int(payload.get("max_add", 24))
-    MAX_SAMPLES = int(payload.get("samples", 120))
-    PER_POSE_CAP = int(payload.get("per_pose_cap", 6))
+    # MAX_ADD is now only a safety stop — the real budget is PER_BIN_CAP, so a
+    # run can no longer spend its whole allowance on near-frontal angles and quit
+    # before the profiles. `per_pose_cap` is still accepted as the old spelling.
+    MAX_ADD = int(payload.get("max_add", 40))
+    MAX_SAMPLES = int(payload.get("samples", 150))
+    PER_BIN_CAP = int(payload.get("per_bin_cap", payload.get("per_pose_cap", 3)))
+    REFINE_STEPS = int(payload.get("refine_steps", 6))          # sub-samples per interval
+    MAX_REFINE = int(payload.get("refine_intervals", 24))       # intervals to revisit
+    TIME_BUDGET = float(payload.get("time_budget", 90.0))       # seconds, whole scan
 
     total = get_video_frame_total(target_path) or 0
     if total <= 1:
@@ -1395,16 +1472,34 @@ def target_auto_angles(payload: dict = Body(...)):
     stride = max(1, total // MAX_SAMPLES)
     roop_globals.target_path = target_path
 
+    t0 = time.time()
     added = 0
-    for fpos in range(1, total + 1, stride):
-        if added >= MAX_ADD:
-            break
+    scanned = 0
+    # Phase 1 gets a soft share of the budget. Past it, the coarse pass keeps
+    # SCANNING (the timeline has to span the whole video or phase 2 is blind to
+    # the tail) but stops ADDING, so the targeted pass always has room left to
+    # capture the hard poses it goes looking for.
+    P1_ADDS = max(1, (MAX_ADD * 2) // 3)
+    P1_TIME = TIME_BUDGET * 0.6
+
+    def out_of_budget(time_cap=None):
+        return added >= MAX_ADD or (time.time() - t0) > (TIME_BUDGET if time_cap is None else time_cap)
+
+    def consider_frame(fpos, allow_add=True):
+        """Detect on one frame; add the person's face if it fills a pose gap.
+
+        Returns the person's pose bin on that frame (None if they weren't found),
+        which phase 2 uses to decide which intervals are worth refining. Note the
+        bin is returned even when nothing is added — a frame can be a useful
+        *signpost* for a pose transition without itself being worth capturing."""
+        nonlocal added, scanned
         img = get_video_frame(target_path, fpos)
         if img is None:
-            continue
+            return None
+        scanned += 1
         faces = get_all_faces(img)
         if not faces:
-            continue
+            return None
         scored = []
         for f in faces:
             e = getattr(f, 'embedding', None)
@@ -1414,11 +1509,11 @@ def target_auto_angles(payload: dict = Body(...)):
             d = min(float(util.compute_cosine_distance(e, b)) for b in bank)
             scored.append((d, f, e))
         if not scored:
-            continue
+            return None
         scored.sort(key=lambda x: x[0])
         best_d, best_f, best_e = scored[0]
         if best_d > ACCEPT:
-            continue
+            return None
         # Anti-drift anchor: chaining against the growing bank follows gradual
         # turns, but is unbounded — over a long/crowded video it can walk onto a
         # different identity. Require every accepted angle to also stay within
@@ -1426,40 +1521,69 @@ def target_auto_angles(payload: dict = Body(...)):
         # never drift to a new person (the cause of "other faces get swapped").
         seed_d = min(float(util.compute_cosine_distance(best_e, s)) for s in seed)
         if seed_d > SEED_MAX:
-            continue
+            return None
         # Check against other captured target persons: do not capture a face that
         # belongs or is closer to another target person already in TARGET_FACES.
         if other_embeddings:
             other_d = min(float(util.compute_cosine_distance(best_e, oe)) for oe in other_embeddings)
             if other_d <= best_d + AMBIG_MARGIN:
-                continue
+                return None
         # Ambiguity guard: in a multi-person frame, only accept when the winner
         # is CLEARLY the closest. A near-tie means look-alikes are present and
         # grabbing the wrong one would poison the bank for the whole swap run.
         if len(scored) > 1 and scored[1][0] < best_d + AMBIG_MARGIN:
-            continue
+            return None
         kps = getattr(best_f, 'kps', None)
-        pose = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
-        # Skip only when it's BOTH a near-duplicate embedding AND that pose is
+        pose_bin = _pose_bin(kps) if kps is not None else None
+        if pose_bin is None:
+            return None
+        if not allow_add:
+            return pose_bin
+        # Skip only when it's BOTH a near-duplicate embedding AND that bin is
         # already represented — otherwise a new pose is always worth adding.
-        if best_d < NOVELTY and covered_poses.get(pose, 0) >= 1:
-            continue
-        if covered_poses.get(pose, 0) >= PER_POSE_CAP:
-            continue
+        if best_d < NOVELTY and bin_counts.get(pose_bin, 0) >= 1:
+            return pose_bin
+        if bin_counts.get(pose_bin, 0) >= PER_BIN_CAP:
+            return pose_bin
         (sx, sy, ex, ey) = best_f["bbox"].astype("int")
         sx, ex, sy, ey = clamp_cut_values(sx, ex, sy, ey, img)
         crop = img[sy:ey, sx:ex]
         if crop.size < 1:
-            continue
+            return pose_bin
         _attach_source_crops(best_f, img)
         roop_globals.TARGET_FACES.append(best_f)
         roop_globals.TARGET_FACE_GROUP.append(raw_group)
         ui_globals.ui_target_thumbs.append(util.convert_to_gradio(crop))
         bank.append(best_e)
-        covered_poses[pose] = covered_poses.get(pose, 0) + 1
+        bin_counts[pose_bin] = bin_counts.get(pose_bin, 0) + 1
         added += 1
+        return pose_bin
 
-    return _target_faces_payload({"count": added})
+    # ── Phase 1: coarse pass over the whole video ────────────────────────────
+    timeline = []   # (frame_pos, pose_bin | None) in time order
+    for fpos in range(1, total + 1, stride):
+        if out_of_budget(P1_TIME):
+            break
+        timeline.append((fpos, consider_frame(fpos, allow_add=added < P1_ADDS)))
+
+    # ── Phase 2: refine the intervals where the pose actually changed ────────
+    intervals = _pose_transition_intervals(timeline)
+    for _span, fa, fb in intervals[:MAX_REFINE]:
+        if out_of_budget():
+            break
+        sub = max(1, (fb - fa) // (REFINE_STEPS + 1))
+        for fpos in range(fa + sub, fb, sub):
+            if out_of_budget():
+                break
+            consider_frame(fpos)
+
+    return _target_faces_payload({
+        "count": added,
+        "scanned": scanned,
+        "bins": len(bin_counts),
+        "refined": min(len(intervals), MAX_REFINE),
+        "seconds": round(time.time() - t0, 1),
+    })
 
 
 @app.post("/api/target/remove_face")
