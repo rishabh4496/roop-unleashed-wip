@@ -1139,11 +1139,14 @@ def _refresh_target_frames(idx):
     filename = entry.filename
     if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
         total = get_video_frame_total(filename) or 1
-        if not filename.lower().endswith(".webp"):
-            try:
-                current_video_fps = util.detect_fps(filename)
-            except Exception:
-                current_video_fps = 30
+        # Animated WebP is detected too: utilities.detect_fps has a PIL path that
+        # derives the rate from the frame durations. Skipping it here left a .webp
+        # inheriting whatever fps the PREVIOUS target happened to have, so the
+        # render came out at the wrong speed.
+        try:
+            current_video_fps = util.detect_fps(filename)
+        except Exception:
+            current_video_fps = 30
         entry.fps = current_video_fps
     else:
         total = 1

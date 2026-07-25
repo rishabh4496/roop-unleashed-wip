@@ -113,13 +113,18 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             // NVENC codecs use -cq (a different scale than libx264/265 -crf); the
             // same number produces a much bigger, near-lossless file on GPU encoders.
             // Make the label/help reflect which rate control is actually in effect.
-            const isNvenc = /_nvenc$/.test(p.output_video_codec || '');
+            const codec = p.output_video_codec || '';
+            const isNvenc = /_nvenc$/.test(codec);
+            // Encoder-accepted range: x264/x265 and NVENC -cq stop at 51, the
+            // VP9/AV1 family at 63. The slider used to go to 100, and anything
+            // past the limit made ffmpeg refuse to start — the render failed.
+            const qMax = /libvpx|vp9|aom|av1/i.test(codec) ? 63 : 51;
             const qLabel = isNvenc ? 'Video quality (cq)' : 'Video quality (crf)';
             const qInfo = isNvenc
-              ? 'NVENC uses -cq, not CRF: LOWER = bigger/near-lossless (14 is huge). Try ~23 for a normal-size file.'
-              : 'default 14 (libx264/265 CRF: lower = bigger). Try ~23 for a normal-size file.';
+              ? `NVENC uses -cq, not CRF: LOWER = bigger/near-lossless (14 is huge). Try ~23 for a normal-size file. Max ${qMax}.`
+              : `default 14 (libx264/265 CRF: lower = bigger). Try ~23 for a normal-size file. Max ${qMax}.`;
             return (
-              <Slider label={qLabel} info={qInfo} min={0} max={100} step={1} value={p.video_quality ?? 14} onChange={(v) => set('video_quality', v)} />
+              <Slider label={qLabel} info={qInfo} min={0} max={qMax} step={1} value={Math.min(p.video_quality ?? 14, qMax)} onChange={(v) => set('video_quality', v)} />
             );
           })()}
           <Toggle label="Use OS temp folder" checked={!!p.use_os_temp_folder} onChange={(v) => set('use_os_temp_folder', v)} />

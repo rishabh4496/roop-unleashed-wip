@@ -65,9 +65,9 @@ _preview_process_mgr = None   # dedicated instance for live_swap — never share
 _preview_lock = _threading.Lock()
 
 
-if 'ROCMExecutionProvider' in roop.globals.execution_providers:
-    del torch
-
+# NOTE: upstream deleted the module-level `torch` name here on ROCm. That freed
+# nothing (the module stays in sys.modules) and left every later `torch.` in this
+# file raising NameError on an AMD/ROCm install — inert on NVIDIA, fatal there.
 warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
 warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 

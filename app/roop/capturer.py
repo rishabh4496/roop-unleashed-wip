@@ -64,7 +64,11 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
                 return _awebp_frames[idx]
             return None
 
-        if video_path != current_video_path:
+        # `or current_capture is None` matters: release_video() can be called
+        # directly (shutdown, between runs) and leaves the path set, so without
+        # this a second request for the SAME file would skip re-opening and then
+        # dereference a None capture.
+        if video_path != current_video_path or current_capture is None:
             release_video()
             current_capture = cv2.VideoCapture(video_path)
             current_video_path = video_path
@@ -85,7 +89,7 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
 
 
 def release_video():
-    global current_capture, current_next_pos
+    global current_capture, current_next_pos, current_video_path, current_frame_total
 
     # Caller must hold _capture_lock when called from get_video_frame;
     # direct callers (shutdown, etc.) should also acquire it.
@@ -93,6 +97,10 @@ def release_video():
         current_capture.release()
         current_capture = None
     current_next_pos = None
+    # Clear the identity too, so the next request re-opens instead of matching a
+    # path whose capture is gone (and re-reads the frame count, which was stale).
+    current_video_path = None
+    current_frame_total = 0
 
 
 def get_video_frame_total(video_path: str) -> int:

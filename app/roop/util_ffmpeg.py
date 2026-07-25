@@ -36,6 +36,30 @@ def run_ffmpeg(args: List[str]) -> bool:
 
 
 
+# Highest quality value each encoder family accepts. x264/x265 and NVENC's -cq
+# top out at 51; the VP9/AV1 family goes to 63. The settings slider used to offer
+# 0-100 and nothing clamped it, so any value above the limit made ffmpeg exit
+# with "Error setting option crf" and the whole render failed.
+_QUALITY_MAX = 51
+_QUALITY_MAX_WIDE = 63
+_WIDE_RANGE_CODECS = ('libvpx', 'vp9', 'aom', 'av1', 'svtav1')
+
+
+def quality_max(codec: str) -> int:
+    """Largest quality value *codec* accepts (0 = best quality for all of them)."""
+    c = (codec or '').lower()
+    return _QUALITY_MAX_WIDE if any(k in c for k in _WIDE_RANGE_CODECS) else _QUALITY_MAX
+
+
+def clamp_quality(codec: str, quality) -> int:
+    """Coerce *quality* into the range *codec* actually accepts."""
+    try:
+        q = int(round(float(quality)))
+    except (TypeError, ValueError):
+        q = 14
+    return max(0, min(q, quality_max(codec)))
+
+
 def _rate_control(codec: str, quality) -> List[str]:
     """Return the encoder rate-control args for *codec* at *quality*.
 
@@ -43,12 +67,13 @@ def _rate_control(codec: str, quality) -> List[str]:
     -cq under VBR with p1..p7 presets instead. Keeping this in one place means
     every re-encode path supports h264_nvenc/hevc_nvenc (GPU encode) correctly.
     """
+    q = clamp_quality(codec, quality)
     if codec in ('h264_nvenc', 'hevc_nvenc'):
         preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
         if preset not in {f'p{i}' for i in range(1, 8)}:
             preset = 'p5'
-        return ['-rc', 'vbr', '-cq', str(quality), '-preset', preset, '-tune', 'hq']
-    return ['-crf', str(quality)]
+        return ['-rc', 'vbr', '-cq', str(q), '-preset', preset, '-tune', 'hq']
+    return ['-crf', str(q)]
 
 
 def cut_video(original_video: str, cut_video: str, start_frame: int, end_frame: int, reencode: bool):

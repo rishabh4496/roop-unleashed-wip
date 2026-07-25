@@ -33,7 +33,7 @@ const MINOR_PER_MAJOR = 4;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
 
 /** m:ss under an hour, h:mm:ss above it. */
-export const fmtTC = (f, fps) => {
+const fmtTC = (f, fps) => {
   const total = Math.max(0, f) / (fps || 25);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);

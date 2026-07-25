@@ -39,6 +39,8 @@ def probe_encoder(codec="libx265", crf=14, timeout=30):
     Returns (ok: bool, message: str). message is empty on success.
     """
     import tempfile
+    from roop.util_ffmpeg import clamp_quality
+    crf = clamp_quality(codec, crf)
     tmp = os.path.join(tempfile.gettempdir(), f"roop_encoder_probe_{os.getpid()}.mp4")
     cmd = [
         FFMPEG_BINARY, '-hide_banner', '-loglevel', 'error', '-y',
@@ -173,6 +175,10 @@ class FFMPEG_VideoWriter:
             ])
 
         cmd.extend(['-vcodec', codec])
+        # Out-of-range quality makes ffmpeg exit before a single frame is written,
+        # so clamp to what this codec accepts rather than failing the whole render.
+        from roop.util_ffmpeg import clamp_quality
+        crf = clamp_quality(codec, crf)
         is_nvenc = codec in ('h264_nvenc', 'hevc_nvenc')
         if is_nvenc:
             # NVENC has no -crf; -cq is the constant-quality equivalent (same 0-51
