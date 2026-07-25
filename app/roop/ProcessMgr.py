@@ -1841,9 +1841,56 @@ class ProcessMgr():
         # (frame_idx, Future) pairs, oldest-submitted first — bounded to pool_workers
         # and always drained in this order, so consumption stays in frame order.
         in_flight = _deque()
+        # ── Read-ahead decode ────────────────────────────────────────────────
+        # Decoding used to run on this thread, in series with the wait for the
+        # oldest detection future, so the loop cost was decode + wait per frame
+        # even though the two use completely different hardware. Profiled on a
+        # 35,770-frame clip: track_decode 4.93ms + track_wait 5.88ms = 10.8ms a
+        # frame, against a detection pool that completed one every ~9.2ms — i.e.
+        # roughly 15% of the pre-pass was the detector idling while this thread
+        # pulled the next frame off the decoder. A one-thread read-ahead with a
+        # small bounded queue overlaps them; frames still arrive in order
+        # (single reader), so the scan is bit-identical. track_decode now times
+        # the wait FOR a decoded frame, so it still reads as the ceiling if the
+        # decoder is genuinely the slower half. ROOP_TRACK_READAHEAD=0 reverts.
+        readahead = cap is not None and os.environ.get('ROOP_TRACK_READAHEAD', '1') != '0'
+        frame_q = None
+        reader = None
+        reader_stop = False
+
+        def _read_loop():
+            try:
+                while not reader_stop and roop.globals.processing:
+                    ret_, fr_ = cap.read()
+                    if not ret_ or fr_ is None:
+                        break
+                    while not reader_stop and roop.globals.processing:
+                        try:
+                            frame_q.put(fr_, timeout=0.25)
+                            break
+                        except _QueueFull:
+                            continue        # consumer is behind (or paused) — hold
+                    else:
+                        return
+            except Exception:
+                pass
+            finally:
+                try:
+                    frame_q.put(None, timeout=1.0)   # EOF sentinel
+                except Exception:
+                    pass
+
         try:
             if cap is not None and frame_start and frame_start > 0:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
+            if readahead:
+                # Only a handful of frames of lead is needed to cover the jitter
+                # between decode and detect, and these are full-resolution: a
+                # deep queue would cost hundreds of MB on 4K material for no
+                # extra throughput.
+                frame_q = Queue(maxsize=6)
+                reader = Thread(target=_read_loop, daemon=True)
+                reader.start()
             idx = 0
             while roop.globals.processing:
                 wait_while_paused()
@@ -1853,6 +1900,17 @@ class ProcessMgr():
                     break
                 if frame_iter is not None:
                     frame = next(frame_iter, None)
+                    if frame is None:
+                        break
+                elif readahead:
+                    with _prof('track_decode'):
+                        frame = None
+                        while roop.globals.processing:
+                            try:
+                                frame = frame_q.get(timeout=0.25)
+                                break
+                            except _QueueEmpty:
+                                continue
                     if frame is None:
                         break
                 else:
@@ -1904,6 +1962,18 @@ class ProcessMgr():
             pbar.close()
             if det_executor is not None:
                 det_executor.shutdown(wait=False, cancel_futures=True)
+            # Stop the reader and let it leave cap.read() BEFORE releasing the
+            # capture — releasing under an in-flight read is a native-level crash,
+            # and the loop exits early on Stop far more often than it hits EOF.
+            reader_stop = True
+            if reader is not None:
+                if frame_q is not None:
+                    try:
+                        while True:
+                            frame_q.get_nowait()     # unblock a producer parked on put()
+                    except _QueueEmpty:
+                        pass
+                reader.join(timeout=5.0)
             if cap is not None:
                 cap.release()
 
@@ -2026,9 +2096,27 @@ class ProcessMgr():
             gap_max = int(os.environ.get('ROOP_TEMPORAL_GAP', '10') or '10')
         except ValueError:
             gap_max = 10
+        # Scan stride. The pre-pass is detection-bound — profiled at ~37ms per
+        # detect across a 4-instance pool, which on a long clip is the single
+        # biggest block of wall-clock outside the swap itself — and stepping the
+        # scan divides that cost directly. It stays at 1 by default because the
+        # gap-fill that covers the skipped frames is a LINEAR interpolation:
+        # fine while a head moves steadily, visibly behind on a fast turn. Raise
+        # it only for footage without quick motion. Stepping past the gap limit
+        # would leave the skipped frames with no faces at all, so it is capped.
+        try:
+            scan_step = max(1, int(os.environ.get('ROOP_TEMPORAL_STEP', '1') or '1'))
+        except ValueError:
+            scan_step = 1
+        if scan_step > gap_max:
+            print(f'[Temporal] scan step {scan_step} exceeds the gap limit {gap_max} — '
+                  f'clamping to {gap_max}, or the skipped frames would not be filled.')
+            scan_step = gap_max
+        if scan_step > 1:
+            print(f'[Temporal] scanning every {scan_step} frames; the rest are interpolated.')
         self._track_scanned = 0
         tracks = self._precompute_tracks(source_video, frame_start, frame_end, frame_count,
-                                         awebp_frames=awebp_frames, step=1, collect_obs=True,
+                                         awebp_frames=awebp_frames, step=scan_step, collect_obs=True,
                                          desc='Analyzing faces')
         self._temporal_faces = self._build_temporal_faces(tracks or [], gap_max)
         n_frames = len(self._temporal_faces)
