@@ -166,6 +166,43 @@ pip install -r app/requirements.txt
 
 ---
 
+## Freeing disk space
+
+A full install is around 35 GB. Most of that is the model library and the
+virtualenv, which have to stay — but a few GB is scratch and rebuildable cache.
+
+### Pinokio
+Click **Clean** in the sidebar (just under *Install*). It prints the size of each
+item for your install, then asks which ones to remove:
+
+| Item | What it is | Cost of removing it |
+|------|-----------|---------------------|
+| Uploaded media scratch | `app/temp/` — copies of files you dragged in | none, re-created on next upload |
+| Stale TensorRT engine caches | engines for a precision mode you no longer use | none, the caches for your current setting are kept |
+| Old run logs | everything but the newest 5 per folder and `latest` | loses older debugging history |
+| Python bytecode caches | `__pycache__` under `app/` | a second or two on next start |
+| Front-end build output | `react-ui/dist`, lint caches | none, unused at runtime |
+| **ALL** TensorRT engine caches | every built engine | frees the most by far, but each model recompiles its engine once on next use — minutes of extra startup |
+
+**Never touched:** `app/models/` (the model library), `app/env/` (the
+virtualenv), `app/facesets/` (your saved facesets), and `app/output/` — your
+rendered videos are never a cleanup target.
+
+If some files can't be removed, the app is still running and holding them open;
+stop it and run Clean again.
+
+To shrink the virtualenv instead, use **Save Disk Space** — it hardlinks
+duplicate library files rather than deleting anything.
+
+### Manual
+```bash
+python cleanup.py --report                 # what could be freed, with sizes
+python cleanup.py uploads trt-stale logs   # remove specific items
+```
+Targets: `uploads`, `pycache`, `trt-stale`, `trt-all`, `logs`, `build`.
+
+---
+
 ## Resetting / Reinstalling
 
 ### Pinokio

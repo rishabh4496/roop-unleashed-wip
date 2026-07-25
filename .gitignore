@@ -8,6 +8,7 @@
 __pycache__
 *.pth
 venv
+.ruff_cache
 
 # Pinokio launcher env/cache
 /env
