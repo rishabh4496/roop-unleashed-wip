@@ -41,6 +41,27 @@ Two guarantees are load-bearing and easy to break by accident:
 - **Upright faces must be bit-identical.** Frontal is the overwhelming majority
   of frames, so any mask change there is a regression in the common case.
 
+## Refactor safety harness
+
+`surface_snapshot.py` is a tool, not a test. It records everything a caller
+could depend on — every module-level name, every class method, every signature,
+and for `api.py` the full FastAPI route table including declaration order — so a
+decomposition can be *proven* to be a pure move rather than asserted to be one:
+
+```
+env/Scripts/python tests/surface_snapshot.py before.json
+# ...move code...
+env/Scripts/python tests/surface_snapshot.py after.json
+env/Scripts/python tests/surface_snapshot.py --diff before.json after.json
+```
+
+Route order matters: FastAPI matches in declaration order, so a reordering can
+silently shadow a handler without changing any path. The diff reports that
+case separately.
+
+Use it on `api.py` and `ProcessMgr.py`, which have no behavioural tests. A clean
+surface diff plus a green suite is what makes "I only moved code" checkable.
+
 ## Style
 
 Assert **properties**, not magic numbers. The bug that motivated this suite was a
