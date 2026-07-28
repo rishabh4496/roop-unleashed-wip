@@ -7,13 +7,11 @@ its own, which is why both api.py and the routers can import it freely.
 import base64
 import os
 import shutil
-import uuid
 
 import cv2
 import numpy as np
 from fastapi import UploadFile
 
-import roop.globals as roop_globals
 
 # Injected by api.py at import time — the same object, never rebound.
 API_TEMP = None

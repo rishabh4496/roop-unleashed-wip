@@ -11,20 +11,18 @@ import os
 import io
 import sys
 import json
-import base64
 import shutil
 import subprocess
 import threading
 import time
 import traceback
-import contextlib
 
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, Body, Request
+from fastapi import FastAPI, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import api_state as state
 from source_gallery import (
@@ -39,13 +37,7 @@ from source_gallery import (
     _source_faces_payload,
     _ingest_faceset,
 )
-from api_media import (
-    _save_upload,
-    _rgb_to_dataurl,
-    _bgr_to_dataurl,
-    _bgr_to_jpg_dataurl,
-    _dataurl_to_bgr,
-)
+from api_media import _save_upload, _rgb_to_dataurl, _bgr_to_dataurl, _dataurl_to_bgr
 import roop.globals as roop_globals
 from roop import utilities as util
 from roop.face_util import extract_face_images, get_all_faces
@@ -1918,26 +1910,7 @@ def _run_swap(payload):
 # ── AI upscale / interpolation second pass ─────────────────────────────────
 # Moved to post_swap.py — see that module's docstring. Imported back under
 # the original names so every call site in this file is unchanged.
-from post_swap import (  # noqa: E402
-    _snapshot_output_mtimes,
-    _outputs_since,
-    _upscale_image_inplace,
-    _select_upscale_encoder,
-    _upscale_video_inplace,
-    _cas_strength,
-    _upscale_max_dim,
-    _classical_target_dims,
-    _classical_spec,
-    _classical_vf,
-    _classical_image_apply,
-    _classical_image_inplace,
-    _classical_video_inplace,
-    _run_post_swap_upscale,
-    _parse_interp_mode,
-    _interp_video_rife,
-    _interp_video_minterpolate,
-    _run_post_swap_interp,
-)
+from post_swap import _snapshot_output_mtimes, _outputs_since, _classical_spec, _classical_image_apply, _run_post_swap_upscale, _run_post_swap_interp
 import post_swap as _post_swap  # noqa: E402
 
 
@@ -2311,9 +2284,21 @@ _routes_extras._FRAME_COLORIZERS = _FRAME_COLORIZERS
 _routes_extras._FRAME_FILTERS = _FRAME_FILTERS
 _routes_extras._FRAME_UPSCALERS = _FRAME_UPSCALERS
 
-# _make_frame_processor left with the extras routes, but the post_swap wiring
-# below still needs it under its original name.
+# Helpers that left with their route groups but are still called by code that
+# stayed here. Imported at the bottom rather than the top because these modules
+# import back from this one; by the time any of these is *called* (all uses are
+# inside request handlers or the run path) every module is fully initialised.
+#
+#   _make_frame_processor    -> the post_swap wiring just below
+#   _gpu_name                -> _run_swap(), recording GPU in the run history
+#   _faceset_library_dir     -> get_file(), resolving a served path
+#   _frontal_crop_from_images -> source_refresh_thumbs()
 from routes_extras import _make_frame_processor  # noqa: E402
+from routes_diagnostics import _gpu_name  # noqa: E402
+from routes_faceset import (  # noqa: E402
+    _faceset_library_dir,
+    _frontal_crop_from_images,
+)
 
 # ── post_swap shared-state wiring ────────────────────────────────────────────
 # post_swap.py holds the upscale/interpolation machinery that used to live here.

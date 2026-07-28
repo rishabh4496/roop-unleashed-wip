@@ -9,7 +9,6 @@ A mixin, so the method bodies move verbatim and `self` is unchanged.
 """
 
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Empty as _QueueEmpty, Full as _QueueFull
 from threading import Thread
@@ -23,10 +22,7 @@ import roop.globals
 from roop import session_pool
 from roop.face_util import get_all_faces, analysis_pooled
 from roop.utilities import compute_cosine_distance
-from roop.procmgr_runtime import (
-    _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT,
-    _TRACK_OVERLAP_FRAC, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN,
-)
+from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC
 
 
 class TrackingMixin:

@@ -7,7 +7,6 @@ so declaration order cannot change which handler matches.
 """
 
 from fastapi import APIRouter, Body
-import json
 import os
 import shutil
 import subprocess

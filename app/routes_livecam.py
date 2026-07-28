@@ -12,7 +12,6 @@ import traceback
 import cv2
 from fastapi.responses import JSONResponse, Response
 
-import roop.globals as roop_globals
 import ui.globals as ui_globals
 
 

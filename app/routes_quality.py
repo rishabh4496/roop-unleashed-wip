@@ -10,7 +10,6 @@ from fastapi import APIRouter, Body
 import os
 
 import cv2
-import numpy as np
 from fastapi.responses import JSONResponse
 
 import roop.globals as roop_globals

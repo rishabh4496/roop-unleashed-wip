@@ -6,9 +6,8 @@ safe here because every /api route is a literal path with no path parameters,
 so declaration order cannot change which handler matches.
 """
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter
 import os
-import shutil
 import traceback
 
 import cv2

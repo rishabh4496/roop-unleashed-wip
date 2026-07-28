@@ -3,11 +3,10 @@ import cv2
 import time
 import numpy as np
 import psutil
-import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled, kps_pose_ratios
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, analysis_pooled
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -17,27 +16,7 @@ from roop.procmgr_masking import MaskingMixin
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
-from roop.procmgr_runtime import (
-    _gpu_lock,
-    _PROFILE,
-    _TRACK_VETO_DIST,
-    _TRACK_VETO_MARGIN,
-    COLOR_RESET,
-    COLOR_ACCENT,
-    COLOR_CYAN,
-    COLOR_GREEN,
-    COLOR_GRAY,
-    COLOR_YELLOW,
-    _TRACK_OVERLAP_FRAC,
-    _prof_lock,
-    _prof_times,
-    _prof_counts,
-    _prof,
-    _prof_report,
-    _gpu_guard,
-    PROGRESS_BAR_FORMAT,
-    wait_while_paused,
-)
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
@@ -58,8 +37,6 @@ _DEBUG_POSE_LOG = False
 # stage's slice of total CPU work; "ms/call" is the real per-frame / per-face
 # cost. Zero overhead when disabled, so it never affects normal runs. A report
 # is printed once per video at the end of run_batch_inmem.
-from collections import defaultdict as _defaultdict
-from collections import deque as _deque
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 
@@ -252,7 +229,6 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
-from roop import session_pool
 from roop import swap_batcher
 import roop.globals
 

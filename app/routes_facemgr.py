@@ -14,14 +14,10 @@ import os
 import shutil
 
 import cv2
-import numpy as np
 
 import roop.globals as roop_globals
-import ui.globals as ui_globals
 from roop import utilities as util
-from roop.FaceSet import FaceSet
 from roop.face_util import extract_face_images
-from roop.capturer import get_image_frame
 from fastapi import File, Form, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from roop.capturer import get_video_frame, get_video_frame_total

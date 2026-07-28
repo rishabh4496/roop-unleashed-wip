@@ -12,7 +12,6 @@ import os
 import shutil
 
 import cv2
-import numpy as np
 
 import roop.globals as roop_globals
 import ui.globals as ui_globals
