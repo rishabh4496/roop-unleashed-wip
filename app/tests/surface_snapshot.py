@@ -56,15 +56,25 @@ def _describe(module):
         # Only record things this module defines or deliberately re-exports;
         # a re-exported name is part of the surface too, so it is kept.
         if inspect.isclass(value):
+            # Walk the MRO, not just vars(): moving methods onto a mixin keeps
+            # them callable on the class, and that effective surface is what
+            # callers depend on. Using vars() would report a mixin split as a
+            # pile of deleted methods.
             methods = {}
-            for mname, mval in sorted(vars(value).items()):
-                if callable(mval) or isinstance(mval, (staticmethod, classmethod, property)):
-                    target = mval
-                    if isinstance(target, (staticmethod, classmethod)):
-                        target = target.__func__
-                    elif isinstance(target, property):
-                        target = target.fget
-                    methods[mname] = _sig(target) if callable(target) else "<property>"
+            for mname in sorted(dir(value)):
+                if mname.startswith("__") and mname.endswith("__"):
+                    continue
+                try:
+                    mval = inspect.getattr_static(value, mname)
+                except AttributeError:
+                    continue
+                if isinstance(mval, (staticmethod, classmethod)):
+                    mval = mval.__func__
+                elif isinstance(mval, property):
+                    methods[mname] = "<property>"
+                    continue
+                if callable(mval):
+                    methods[mname] = _sig(mval)
             out["classes"][name] = methods
         elif callable(value):
             out["functions"][name] = _sig(value)
