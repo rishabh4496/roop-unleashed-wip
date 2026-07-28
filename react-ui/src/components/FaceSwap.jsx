@@ -12,6 +12,11 @@ import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import ProcessingTerminal from './faceswap/ProcessingTerminal';
 import DiagnosticsPanel from './faceswap/DiagnosticsPanel';
+import AmbilightGlow from './faceswap/AmbilightGlow';
+import FloatingActionDock from './faceswap/FloatingActionDock';
+import MediaTabSessionBar from './faceswap/MediaTabSessionBar';
+import PresetStudioModal from './faceswap/PresetStudioModal';
+import { popoutManager } from './faceswap/PopoutPreviewManager';
 import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
@@ -97,6 +102,12 @@ export default function FaceSwap({
   const [enhancerTimes, setEnhancerTimes] = useState({});
   const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
   const activeIntervalsRef = useRef({});
+
+  // ── Workspace Layout & Premium Experience State ──
+  const [workspaceMode, setWorkspaceMode] = useState('default'); // 'default' | 'cinema' | 'dual' | 'timeline'
+  const [ambilightEnabled, setAmbilightEnabled] = useState(true);
+  const [drawers, setDrawers] = useState({ left: true, right: true, bottom: true });
+  const [showPresetStudio, setShowPresetStudio] = useState(false);
 
   // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
   const [comparingMasks, setComparingMasks] = useState(false);
@@ -2253,7 +2264,7 @@ export default function FaceSwap({
           settings are already baked into the running job), and hiding it gives
           the whole viewport to the diagnostics, which is the only thing there is
           to look at until the run ends. Comes back on Stop / completion. */}
-      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${progress.processing ? 'hidden' : ''}`}>
+      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${(progress.processing || !drawers.left || workspaceMode === 'cinema') ? 'hidden' : ''}`}>
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -2618,7 +2629,7 @@ export default function FaceSwap({
 
         {/* COLUMN 2: Media Asset Manager — right rail (hidden while running, as
             with column 1 — sources/targets are locked in for the current job). */}
-        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${progress.processing ? 'hidden' : ''}`}>
+        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${(progress.processing || !drawers.right || workspaceMode === 'cinema') ? 'hidden' : ''}`}>
           <Section title="Target faces">
             <PersonGroups
               targetFaces={targetFaces}
@@ -3053,6 +3064,26 @@ export default function FaceSwap({
               </div>
             ) : (
               <div className="space-y-4">
+                {/* Media Session Tab Bar for multi-file workspace */}
+                <MediaTabSessionBar
+                  targets={targets}
+                  selTarget={selTarget}
+                  onSelectTarget={selectTarget}
+                  onRemoveTarget={removeTarget}
+                  onAddTarget={() => {
+                    const inputEl = document.createElement('input');
+                    inputEl.type = 'file';
+                    inputEl.accept = 'image/*,video/*,.webp';
+                    inputEl.multiple = true;
+                    inputEl.onchange = (e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        onAddTarget(e.target.files);
+                      }
+                    };
+                    inputEl.click();
+                  }}
+                />
+
                 {/* Live Slider Tracker Bar positioned directly above the preview box */}
                 <SliderTrackerBar
                   params={p}
@@ -3260,28 +3291,34 @@ export default function FaceSwap({
                   </div>
                 );
               })() : (
-                <InteractivePreview
-                  beforeSrc={(isPlaying && bufferedSrc) ? bufferedSrc : rawUrl}
-                  afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : ((isPlaying && bufferedSrc) ? bufferedSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
-                  scrubbing={scrubbingNow}
-                  onMaskChange={applyManualMask}
-                  maskApplied={!!manualMask}
-                  faces={previewFaces}
-                  personIds={previewPersonIds}
-                  onSelectPerson={addPersonFromBox}
-                  splitView={splitView}
-                  compare={compare}
-                  onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; })}
-                  sliderEffectEnabled={sliderEffectEnabled}
-                  onToggleSliderEffect={toggleSliderEffect}
-                  frame={frame}
-                  setFrame={setFrame}
-                  maxFrames={maxFrames}
-                  isPlaying={isPlaying}
-                  previewing={previewing}
-                  previewSecs={previewSecs}
-                  setIsPlaying={setIsPlaying}
-                />
+                <div className="relative rounded-2xl">
+                  <AmbilightGlow
+                    previewSrc={previewSrc || rawUrl}
+                    enabled={ambilightEnabled}
+                  />
+                  <InteractivePreview
+                    beforeSrc={(isPlaying && bufferedSrc) ? bufferedSrc : rawUrl}
+                    afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : ((isPlaying && bufferedSrc) ? bufferedSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
+                    scrubbing={scrubbingNow}
+                    onMaskChange={applyManualMask}
+                    maskApplied={!!manualMask}
+                    faces={previewFaces}
+                    personIds={previewPersonIds}
+                    onSelectPerson={addPersonFromBox}
+                    splitView={splitView}
+                    compare={compare}
+                    onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; })}
+                    sliderEffectEnabled={sliderEffectEnabled}
+                    onToggleSliderEffect={toggleSliderEffect}
+                    frame={frame}
+                    setFrame={setFrame}
+                    maxFrames={maxFrames}
+                    isPlaying={isPlaying}
+                    previewing={previewing}
+                    previewSecs={previewSecs}
+                    setIsPlaying={setIsPlaying}
+                  />
+                </div>
               )
             ) : (
               <div className="relative aspect-video rounded-2xl overflow-hidden bg-gradient-to-br from-white/[0.03] to-black/20 border border-white/10 flex items-center justify-center select-none">
@@ -3618,6 +3655,37 @@ export default function FaceSwap({
           </Card>
         </div>
       )}
+
+      {/* Floating Action Dock HUD */}
+      <FloatingActionDock
+        workspaceMode={workspaceMode}
+        setWorkspaceMode={setWorkspaceMode}
+        isRendering={progress.running}
+        onStartSwap={startSwap}
+        onCancelSwap={cancelSwap}
+        progress={progress.percent || 0}
+        onPreview={() => refreshPreview({ force: true })}
+        previewing={previewing}
+        ambilightEnabled={ambilightEnabled}
+        setAmbilightEnabled={setAmbilightEnabled}
+        onOpenPopout={() => popoutManager.openPopout(previewSrc || rawUrl)}
+        onOpenPresetStudio={() => setShowPresetStudio(true)}
+        drawers={drawers}
+        setDrawers={setDrawers}
+      />
+
+      {/* Preset Studio & Recipe Manager Modal */}
+      <PresetStudioModal
+        isOpen={showPresetStudio}
+        onClose={() => setShowPresetStudio(false)}
+        activeParams={p}
+        onApplyRecipe={(newParams) => {
+          Object.entries(newParams).forEach(([k, v]) => set(k, v));
+        }}
+        onExportRecipe={exportRecipe}
+        onImportRecipe={importRecipe}
+        notify={notify}
+      />
 
     </div>
   );
