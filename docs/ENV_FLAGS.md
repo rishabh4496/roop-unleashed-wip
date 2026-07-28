@@ -50,6 +50,18 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_LIVE_PREVIEW_WIDTH` | 480 | Width the live frame is downscaled to before encoding (min 160). |
 | `ROOP_RESUME_KEEP` | 0 (off) | Keep the segment parts + manifest after a deliberate **Stop** so that run can be resumed later. Off = Stop merges the parts into one finished output and deletes them. Crash-resume is unaffected either way. |
 
+## Timeline / preview frame decoding
+
+These govern how the **preview and timeline** fetch single frames. None of them
+touch the render pipeline, which uses its own readers.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_SEEK_WALK` | 90 | Largest FORWARD frame gap the capturer will reach by decoding through the frames in between (`grab()`, ~0.7 ms each) instead of seeking. A cv2 seek costs a flat ~125-180 ms whatever the distance, so walking wins out to roughly 190 frames; scrub drags and frame-stepping are nothing but short hops. `0` restores seek-always. |
+| `ROOP_PIPE_WALK` | 24 | Same idea for the ffmpeg-pipe reader (used for the HEVC formats cv2 mis-seeks). Lower because each skipped frame is a full decode and the alternative — respawning ffmpeg — is cheaper than cv2's seek. `0` disables. |
+| `ROOP_FRAME_CACHE_MB` | 192 | Byte budget for decoded preview frames, kept so the raw preview, the swap preview and the hover thumbnail don't each seek for the same frame, and so scrubbing back over ground just covered is free. `0` disables the cache. |
+| `ROOP_PREVIEW_PNG` | 0 | `1` sends the live preview frame as lossless PNG instead of quality-95 JPEG. Bigger and slower (≈1.4 MB vs 0.28 MB per 1080p frame); for pixel-peeping only. |
+
 ## Quality / precision
 
 | Flag | Default | Effect |

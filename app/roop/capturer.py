@@ -1,4 +1,5 @@
 from typing import Optional
+from collections import OrderedDict
 import json
 import os
 import subprocess
@@ -46,6 +47,127 @@ _capture_lock = threading.Lock()
 # PIL-based cache for animated webp (PIL is already in the env via clip)
 _awebp_path = None
 _awebp_frames = None   # list of BGR numpy arrays, populated lazily
+
+
+# ── Decoded-frame cache ──────────────────────────────────────────────────────
+# A random seek costs 40-200 ms on long-GOP video (measured: median 80 ms on a
+# 720p H.264 clip, worse at 4K) while a sequential read costs ~2 ms. The preview
+# UI asks for the SAME frame several times over: /api/target/preview draws the
+# raw frame, /api/preview decodes it again for the swap, and the timeline's hover
+# thumbnail asks for it a third time. Each of those arrives after the decoder has
+# already moved past the frame, so every one of them paid a full seek — three
+# seeks to show one frame, and scrubbing backwards paid a seek per frame even
+# over ground just covered.
+#
+# So keep the decoded frames themselves, keyed by (path, mtime, requested index),
+# under a byte budget. Lookups take their own lock and happen BEFORE the capture
+# lock: a hit must not queue behind another thread's 200 ms seek.
+_frame_cache = OrderedDict()     # key -> BGR array
+_frame_cache_bytes = 0
+_frame_cache_lock = threading.Lock()
+
+
+def _cache_budget() -> int:
+    """Bytes of decoded frames to retain. ~192 MB holds ~30 frames of 1080p or
+    ~8 of 4K, which is the working set of a scrub."""
+    try:
+        mb = int(os.environ.get("ROOP_FRAME_CACHE_MB", "192"))
+    except ValueError:
+        mb = 192
+    return max(0, mb) * 1024 * 1024
+
+
+def _cache_key(video_path: str, frame_number: int):
+    """Keyed on mtime as well as path so a file rewritten in place (a re-encode,
+    a re-download) can never serve frames from the old one. None means "don't
+    cache" — the file vanished, and the decode below will fail anyway."""
+    try:
+        return (video_path, os.path.getmtime(video_path), int(frame_number))
+    except OSError:
+        return None
+
+
+def _cache_get(key):
+    """The cached frame, or None. Returns a COPY — see _cache_put."""
+    if key is None:
+        return None
+    with _frame_cache_lock:
+        frame = _frame_cache.get(key)
+        if frame is None:
+            return None
+        _frame_cache.move_to_end(key)
+        return frame.copy()
+
+
+def _cache_put(key, frame):
+    """Store a frame. The cache keeps its OWN copy and hands out copies, so a
+    caller and the cache never share an array.
+
+    That costs a memcpy per decode (~1 ms at 1080p, against the 40-200 ms seek
+    this whole cache exists to avoid) and it is not optional: roop's preview path
+    draws mask outlines and face boxes onto the frame it is handed, so a shared
+    array would let one preview burn its overlay into every later reader's copy
+    of that frame — corruption that surfaces long after, on a frame nobody was
+    touching at the time."""
+    global _frame_cache_bytes
+    if key is None or frame is None:
+        return
+    budget = _cache_budget()
+    size = int(frame.nbytes)
+    if budget <= 0 or size > budget:
+        return
+    frame = frame.copy()
+    with _frame_cache_lock:
+        old = _frame_cache.pop(key, None)
+        if old is not None:
+            _frame_cache_bytes -= int(old.nbytes)
+        _frame_cache[key] = frame
+        _frame_cache_bytes += size
+        while _frame_cache_bytes > budget and len(_frame_cache) > 1:
+            _, evicted = _frame_cache.popitem(last=False)
+            _frame_cache_bytes -= int(evicted.nbytes)
+
+
+def clear_frame_cache():
+    """Drop every cached frame. Nothing in the normal flow needs this — the byte
+    budget bounds the cache and the key covers file identity — so it exists for
+    tests and for anywhere that wants the memory back deliberately."""
+    global _frame_cache_bytes
+    with _frame_cache_lock:
+        _frame_cache.clear()
+        _frame_cache_bytes = 0
+
+
+def frame_cache_stats():
+    """(entries, bytes) currently held."""
+    with _frame_cache_lock:
+        return len(_frame_cache), _frame_cache_bytes
+
+
+def _walk_max() -> int:
+    """How many frames to decode-and-discard forward rather than seeking.
+
+    Measured on a 720p H.264 clip: cv2's CAP_PROP_POS_FRAMES seek costs a flat
+    ~125-180 ms whatever the distance, while grab() (decode, skip conversion) is
+    0.67 ms/frame — so walking wins out to roughly 190 frames. Scrub drags and
+    frame-stepping move a handful of frames at a time and were paying the full
+    seek for every one of them. 90 keeps a wide margin under break-even for
+    files whose seek is cheaper than this one's."""
+    try:
+        return max(0, int(os.environ.get("ROOP_SEEK_WALK", "90")))
+    except ValueError:
+        return 90
+
+
+def _pipe_walk_max() -> int:
+    """Same idea for the ffmpeg-pipe reader, but its skip is a FULL decode plus a
+    pipe transfer (no cheap grab()), and the alternative — respawning ffmpeg with
+    an accurate input seek — costs ~110 ms rather than cv2's ~150 ms. So the
+    break-even sits much lower."""
+    try:
+        return max(0, int(os.environ.get("ROOP_PIPE_WALK", "24")))
+    except ValueError:
+        return 24
 
 
 def _load_animated_webp(video_path: str):
@@ -193,13 +315,25 @@ def _read_via_pipe(video_path: str, target: int):
     """Decode frame `target` (0-based) through the ffmpeg pipe reader.
 
     Keeps the pipe alive across calls: a request for the NEXT frame just reads
-    on, which is what makes playback and forward scrubbing usable; any other
-    frame re-spawns ffmpeg with an accurate input seek. Caller holds
+    on, which is what makes playback and forward scrubbing usable; a frame a
+    little further ahead is reached by reading through the ones between, and
+    anything else re-spawns ffmpeg with an accurate input seek. Caller holds
     _capture_lock, so the single shared reader needs no lock of its own."""
     global _pipe_reader, _pipe_path, _pipe_next
     info = _probe_video(video_path)
     if not info:
         return None
+    # A short hop forward — the shape of every scrub drag and frame-step — is
+    # cheaper to read through than to re-seek, so skip the frames between rather
+    # than tearing the pipe down (see _pipe_walk_max).
+    if (_pipe_reader is not None and _pipe_path == video_path
+            and _pipe_next is not None and 0 < target - _pipe_next <= _pipe_walk_max()):
+        while _pipe_next < target:
+            ok, _ = _pipe_reader.read()
+            if not ok:
+                _release_pipe()
+                break
+            _pipe_next += 1
     if _pipe_reader is not None and (_pipe_path != video_path or target != _pipe_next):
         _release_pipe()
     if _pipe_reader is None:
@@ -234,7 +368,23 @@ def get_image_frame(filename: str):
 def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
     global current_video_path, current_capture, current_frame_total, current_next_pos
 
+    # Cache lookup deliberately OUTSIDE _capture_lock: a hit is the common case
+    # while scrubbing (the same frame is asked for by the raw preview, the swap
+    # preview and the hover thumbnail) and must not wait behind another thread's
+    # seek.
+    key = _cache_key(video_path, frame_number)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
     with _capture_lock:
+        # Another thread may have decoded this exact frame while we queued for
+        # the lock — which is precisely what a burst of scrub requests looks
+        # like. Check again rather than seeking for a frame we now have.
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+
         # Animated WebP — use PIL-based reader (no FFmpeg involved)
         if video_path.lower().endswith(".webp"):
             _load_animated_webp(video_path)
@@ -280,15 +430,35 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
                   f"this format silently, so preview/timeline will decode it through "
                   f"ffmpeg instead.", flush=True)
         if video_path in _pipe_needed:
-            return _read_via_pipe(video_path, target)
+            frame = _read_via_pipe(video_path, target)
+            _cache_put(key, frame)
+            return frame
 
         # Fast path: the requested frame is exactly the next one in sequence, so
         # decode it in order without a seek (see current_next_pos note above).
+        #
+        # Near-fast path: it is a short hop FORWARD, so walk there with grab()
+        # (decode without the colour conversion, 0.67 ms/frame) instead of
+        # seeking. A seek costs a flat ~125-180 ms however short the hop, so
+        # stepping three frames forward used to cost forty times what walking
+        # does — and a scrub drag is nothing but short hops (see _walk_max).
         if target != current_next_pos:
-            current_capture.set(cv2.CAP_PROP_POS_FRAMES, target)
+            gap = target - current_next_pos if current_next_pos is not None else None
+            if gap is not None and 0 < gap <= _walk_max():
+                for _ in range(gap):
+                    if not current_capture.grab():
+                        # Ran off the end of what the decoder will give us; the
+                        # position is now unknown, so fall back to a real seek.
+                        current_next_pos = None
+                        break
+                else:
+                    current_next_pos = target
+            if target != current_next_pos:
+                current_capture.set(cv2.CAP_PROP_POS_FRAMES, target)
         has_frame, frame = current_capture.read()
         if has_frame:
             current_next_pos = target + 1
+            _cache_put(key, frame)
             return frame
         current_next_pos = None  # position unknown after a failed read
 
@@ -301,6 +471,7 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
             print(f"[Capturer] OpenCV could not decode frame {target} of "
                   f"{os.path.basename(video_path)} but ffmpeg could — using the "
                   f"ffmpeg pipe for this file (common with long H.265).", flush=True)
+        _cache_put(key, frame)
         return frame
 
 
@@ -318,6 +489,10 @@ def release_video():
     # path whose capture is gone (and re-reads the frame count, which was stale).
     current_video_path = None
     current_frame_total = 0
+    # NOT clear_frame_cache(): this runs on every target switch, and the cache is
+    # keyed by path, so cached frames of the file being switched away from are
+    # still valid — and switching back is the common move. The byte budget, not
+    # this, is what bounds the memory.
 
 
 def get_video_frame_total(video_path: str) -> int:

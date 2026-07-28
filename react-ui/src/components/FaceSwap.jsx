@@ -22,6 +22,7 @@ import { popoutManager } from './faceswap/PopoutPreviewManager';
 import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
+import useSequentialImage from './faceswap/useSequentialImage';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
@@ -541,6 +542,7 @@ export default function FaceSwap({
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [dragType, setDragType] = useState('playhead'); // 'playhead', 'start', 'end'
   const [storyboardThumbs, setStoryboardThumbs] = useState([]);
+  const storyboardRef = useRef([]);   // latest strip, for blob cleanup on unmount
   const [hoverFrame, setHoverFrame] = useState(null);
   // Timeline view window (inclusive frame range the track currently shows).
   // On a 95k-frame clip the full-width track puts ~100 frames in every pixel,
@@ -1551,9 +1553,17 @@ export default function FaceSwap({
   // HD/4K JPEG per frame makes dragging feel sluggish. Snap back to full
   // resolution the instant the user settles on a frame.
   const scrubbingNow = isScrubbing || isPlaying;
-  const rawUrl = targets.length > 0
+  const rawReqUrl = targets.length > 0
     ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}${scrubbingNow ? '&width=960' : ''}`
     : '';
+  // Load raw frames one at a time, latest wins (see useSequentialImage). Binding
+  // an <img> directly to rawReqUrl issued a request per intermediate frame of a
+  // drag, and since each one is a video seek on a single shared decoder, the
+  // frame you stopped on arrived behind every frame you swept past.
+  const loadedRawUrl = useSequentialImage(rawReqUrl);
+  // Until the first frame of a new target has loaded there is nothing better to
+  // show, so fall through to the request URL rather than blanking the box.
+  const rawUrl = loadedRawUrl || rawReqUrl;
 
   // Keep a detached pop-out monitor in sync. It used to receive exactly one
   // frame — the one it was opened with — because nothing ever called
@@ -1827,22 +1837,64 @@ export default function FaceSwap({
       setStoryboardThumbs([]);
       return;
     }
-    const id = setTimeout(() => {
+    let cancelled = false;
+    const id = setTimeout(async () => {
       // 12 across the strip: enough that the filmstrip reads as the shape of
       // the clip rather than eight stretched stills, still only 12 seeks.
       const numThumbs = 12;
       const lo = Math.max(1, view.start);
       const hi = Math.max(lo, Math.min(view.end, maxFrames));
       const step = (hi - lo) / Math.max(1, numThumbs - 1);
-      const urls = [];
+      const frames = [];
       for (let i = 0; i < numThumbs; i++) {
-        const f = Math.max(1, Math.min(maxFrames, Math.round(lo + i * step)));
-        urls.push(`${API}/api/target/preview?index=${selTarget}&frame=${f}&width=200`);
+        frames.push(Math.max(1, Math.min(maxFrames, Math.round(lo + i * step))));
       }
-      setStoryboardThumbs(urls);
+      // ONE request for all twelve. As twelve separate <img> URLs they competed
+      // for the browser's six connections to this origin, so re-drawing the
+      // filmstrip after a zoom could stall the request that actually matters —
+      // the frame under the playhead — behind a strip nobody is looking at yet.
+      // The server also decodes them in ascending order, which at high zoom
+      // means walking a few frames rather than seeking twelve times.
+      try {
+        const res = await fetch(
+          `${API}/api/target/preview_grid?index=${selTarget}&frames=${frames.join(',')}&width=200`);
+        if (!res.ok) throw new Error('grid failed');
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const urls = [];
+        let off = 0;
+        while (off + 4 <= buf.length) {
+          const len = (buf[off] << 24 | buf[off + 1] << 16 | buf[off + 2] << 8 | buf[off + 3]) >>> 0;
+          off += 4;
+          if (off + len > buf.length) break;
+          // A zero-length part is a frame the server could not read; keep its
+          // slot so the remaining stills stay under the right timecodes.
+          urls.push(len === 0 ? '' :
+            URL.createObjectURL(new Blob([buf.slice(off, off + len)], { type: 'image/jpeg' })));
+          off += len;
+        }
+        if (cancelled) { urls.forEach((u) => u && URL.revokeObjectURL(u)); return; }
+        // Revoke the outgoing strip HERE, not inside the setState updater:
+        // React 19 StrictMode runs updaters twice to check they are pure, and an
+        // updater that frees resources is not.
+        const outgoing = storyboardRef.current;
+        storyboardRef.current = urls;
+        setStoryboardThumbs(urls);
+        // Safe even though the old <img>s are still on screen for a tick:
+        // revoking a blob URL does not disturb an image that has already loaded
+        // from it, and any that had not are being unmounted anyway.
+        outgoing.forEach((u) => u && u.startsWith('blob:') && URL.revokeObjectURL(u));
+      } catch {
+        // The strip is decoration; a failed fetch leaves the previous one up.
+      }
     }, 220);
-    return () => clearTimeout(id);
+    return () => { cancelled = true; clearTimeout(id); };
   }, [selTarget, maxFrames, targets.length, view.start, view.end]);
+
+  // Release the last strip's blobs when the panel goes away. (storyboardRef is
+  // written next to the setState above, so it is always the live list.)
+  useEffect(() => () => {
+    storyboardRef.current.forEach((u) => u && u.startsWith('blob:') && URL.revokeObjectURL(u));
+  }, []);
 
   // ── Frame <-> track-position mapping, through the view window ─────────────
   // `pct` is 0..1 across the visible track, NOT across the clip. With the view

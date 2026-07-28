@@ -53,6 +53,28 @@ def _bgr_to_dataurl(bgr) -> str:
         return ""
     return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
 
+def _bgr_to_preview_dataurl(bgr) -> str:
+    """The live preview frame, as sent to the React panel on every scrub.
+
+    JPEG rather than PNG. This one image is re-encoded for every frame the user
+    lands on, and at 1080p PNG costs ~22 ms to encode and lands as a 1.4 MB
+    base64 string the browser then has to parse and decode; quality 95 JPEG is
+    ~14 ms and ~0.28 MB for a picture no one can tell apart at preview size.
+    It is a preview — the render itself never goes near this path.
+
+    ROOP_PREVIEW_PNG=1 restores lossless PNG for pixel-peeping."""
+    if bgr is None:
+        return ""
+    if os.environ.get("ROOP_PREVIEW_PNG", "").strip() == "1":
+        return _bgr_to_dataurl(bgr)
+    try:
+        ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        if not ok:
+            return _bgr_to_dataurl(bgr)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        return _bgr_to_dataurl(bgr)
+
 def _bgr_to_jpg_dataurl(bgr) -> str:
     if bgr is None:
         return ""

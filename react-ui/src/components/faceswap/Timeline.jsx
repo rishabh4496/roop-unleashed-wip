@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import useSequentialImage from './useSequentialImage';
 
 /**
  * The clip timeline — an editor-style scrubber for the target video.
@@ -400,6 +401,14 @@ export default function Timeline({
   // ── Frame read-out field ──────────────────────────────────────────────────
   const [frameDraft, setFrameDraft] = useState(null);
 
+  // Hover thumbnail, loaded one at a time. Sweeping the pointer across the track
+  // names a new frame roughly every pixel, and each one is a video seek on the
+  // same decoder the playhead's own frame needs — so an unthrottled hover strip
+  // could bury the main preview under a hundred requests for stills that were
+  // out of date before they finished (see useSequentialImage).
+  const hoverSrc = useSequentialImage(
+    hoverFrame !== null && thumbUrl ? thumbUrl(hoverFrame) : '');
+
   // Labels at the very edges would hang off the track; anchor those to the edge
   // instead of centring them.
   const anchor = (pct) => (pct < 3 ? 'translateX(0)' : pct > 97 ? 'translateX(-100%)' : 'translateX(-50%)');
@@ -474,14 +483,14 @@ export default function Timeline({
       {/* ── Track ────────────────────────────────────────────────────────── */}
       <div className="relative">
         {/* Hover scrub thumbnail */}
-        {hoverFrame !== null && thumbUrl && (
+        {hoverFrame !== null && thumbUrl && hoverSrc && (
           <div
             className="absolute bottom-[104px] z-50 flex flex-col items-center pointer-events-none -translate-x-1/2"
             style={{ left: `${clamp(pctOf(hoverFrame), 9, 91)}%` }}
           >
             <div className="rounded-xl border border-[var(--border-strong)] bg-[var(--card-bg)] p-1.5 backdrop-blur-xl shadow-[0_10px_30px_rgba(0,0,0,0.55)]">
               <img
-                src={thumbUrl(hoverFrame)}
+                src={hoverSrc}
                 alt=""
                 className="w-44 h-[99px] object-cover rounded-lg bg-black/60"
                 onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
@@ -507,10 +516,15 @@ export default function Timeline({
               look like grey mud; legibility comes from the scrim below instead. */}
           {storyboardThumbs.length > 0 && (
             <div className="absolute inset-0 flex pointer-events-none">
+              {/* An empty entry is a frame the server could not read. It keeps
+                  its slot (so the stills stay under the right timecodes) but
+                  must not become <img src="">, which re-requests the page. */}
               {storyboardThumbs.map((url, i) => (
-                <img key={i} src={url} alt="" loading="lazy"
-                     className="flex-1 min-w-0 h-full object-cover"
-                     onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                url
+                  ? <img key={i} src={url} alt="" loading="lazy"
+                         className="flex-1 min-w-0 h-full object-cover"
+                         onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                  : <span key={i} className="flex-1 min-w-0 h-full" />
               ))}
             </div>
           )}

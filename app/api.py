@@ -9,6 +9,8 @@ The Gradio UI (app/ui/) is the frozen legacy/backup UI and is NOT touched here.
 
 import os
 import io
+import hashlib
+from collections import OrderedDict
 import sys
 import json
 import shutil
@@ -37,7 +39,8 @@ from source_gallery import (
     _source_faces_payload,
     _ingest_faceset,
 )
-from api_media import _save_upload, _rgb_to_dataurl, _bgr_to_dataurl, _dataurl_to_bgr
+from api_media import (_save_upload, _rgb_to_dataurl, _bgr_to_dataurl,
+                       _bgr_to_preview_dataurl, _dataurl_to_bgr)
 import roop.globals as roop_globals
 from roop import utilities as util
 from roop.face_util import extract_face_images, get_all_faces
@@ -819,23 +822,65 @@ def target_set_frame(payload: dict = Body(...)):
     return _target_list_payload()
 
 
-@app.get("/api/target/preview")
-def target_preview(index: int = 0, frame: int = 1, width: int = 0, fmt: str = "jpg"):
-    """Return the raw target frame (no swap).
+def _frame_identity(filename: str) -> str:
+    """Cheap content identity for a target file — path, size and mtime. Enough to
+    build an ETag with, and it costs a stat rather than a decode."""
+    try:
+        st = os.stat(filename)
+        return f"{filename}:{st.st_size}:{int(st.st_mtime)}"
+    except OSError:
+        return filename
 
-    Defaults to JPEG — PNG encode of an HD/4K frame is 5-10x slower and much
-    larger, which made timeline scrubbing feel sluggish. Pass fmt=png for a
-    lossless frame, width=N for a server-side downscale (storyboard / hover
-    thumbnails don't need full-resolution frames)."""
-    if index < 0 or index >= len(list_files_process):
-        return JSONResponse(status_code=404, content={"message": "no target"})
-    filename = list_files_process[index].filename
-    if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
-        frame_img = get_video_frame(filename, frame)
-    else:
-        frame_img = get_image_frame(filename)
-    if frame_img is None:
-        return JSONResponse(status_code=404, content={"message": "no frame"})
+
+def _frame_etag(filename: str, frame: int, width: int, fmt: str, quality: int) -> str:
+    """Identity of one ENCODED still. Covers the file (path, size, mtime) and
+    every parameter that changes the bytes, so it doubles as an HTTP validator
+    and as the key of the encoded-response cache below."""
+    return 'W/"' + hashlib.sha1(
+        f"{_frame_identity(filename)}:{frame}:{width}:{fmt}:{quality}".encode("utf-8")
+    ).hexdigest() + '"'
+
+
+# Encoded stills, keyed by their ETag. The capturer caches decoded frames, which
+# removes the seek; this removes the resize-and-encode on top of it, so a frame
+# the UI has already asked for comes back in about a millisecond instead of
+# fifteen.
+#
+# Bounded by BYTES, not by entry count: a 200px filmstrip still is ~8 KB but a
+# full-resolution 4K one is ~1.5 MB, so any fixed number of entries is either
+# uselessly small for the first or hundreds of megabytes for the second.
+_ENCODED_CACHE_BYTES = 64 * 1024 * 1024
+_encoded_cache = OrderedDict()          # tag -> (bytes, media_type)
+_encoded_cache_used = 0
+_encoded_cache_lock = threading.Lock()
+
+
+def _encoded_get(tag: str):
+    with _encoded_cache_lock:
+        hit = _encoded_cache.get(tag)
+        if hit is not None:
+            _encoded_cache.move_to_end(tag)
+        return hit
+
+
+def _encoded_put(tag: str, data: bytes, media: str):
+    global _encoded_cache_used
+    if not data or len(data) > _ENCODED_CACHE_BYTES:
+        return
+    with _encoded_cache_lock:
+        old = _encoded_cache.pop(tag, None)
+        if old is not None:
+            _encoded_cache_used -= len(old[0])
+        _encoded_cache[tag] = (data, media)
+        _encoded_cache_used += len(data)
+        while _encoded_cache_used > _ENCODED_CACHE_BYTES and len(_encoded_cache) > 1:
+            _, evicted = _encoded_cache.popitem(last=False)
+            _encoded_cache_used -= len(evicted[0])
+
+
+def _encode_frame(frame_img, width: int, fmt: str, quality: int = 90):
+    """Downscale-then-encode used by every raw-frame endpoint. Returns
+    (bytes, media_type) or (None, None)."""
     if width and width > 0 and frame_img.shape[1] > width:
         h = max(1, round(frame_img.shape[0] * width / frame_img.shape[1]))
         frame_img = cv2.resize(frame_img, (width, h), interpolation=cv2.INTER_AREA)
@@ -843,11 +888,119 @@ def target_preview(index: int = 0, frame: int = 1, width: int = 0, fmt: str = "j
         ok, buf = cv2.imencode(".png", frame_img)
         media = "image/png"
     else:
-        ok, buf = cv2.imencode(".jpg", frame_img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        ok, buf = cv2.imencode(".jpg", frame_img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
         media = "image/jpeg"
     if not ok:
-        return JSONResponse(status_code=500, content={"message": "encode failed"})
-    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type=media)
+        return None, None
+    return buf.tobytes(), media
+
+
+def _read_target_frame(filename: str, frame: int):
+    if util.is_video(filename) or filename.lower().endswith("gif") or util.is_animated_webp(filename):
+        return get_video_frame(filename, frame)
+    return get_image_frame(filename)
+
+
+def _still(filename: str, frame: int, width: int, fmt: str, quality: int):
+    """One encoded still, from cache when we have it. Returns (tag, data, media);
+    data is None when the frame could not be read."""
+    tag = _frame_etag(filename, frame, width, fmt, quality)
+    hit = _encoded_get(tag)
+    if hit is not None:
+        return tag, hit[0], hit[1]
+    frame_img = _read_target_frame(filename, frame)
+    if frame_img is None:
+        return tag, None, None
+    data, media = _encode_frame(frame_img, width, fmt, quality)
+    if data is not None:
+        _encoded_put(tag, data, media)
+    return tag, data, media
+
+
+@app.get("/api/target/preview")
+def target_preview(request: Request, index: int = 0, frame: int = 1, width: int = 0,
+                   fmt: str = "jpg", quality: int = 90):
+    """Return the raw target frame (no swap).
+
+    Defaults to JPEG — PNG encode of an HD/4K frame is 5-10x slower and much
+    larger, which made timeline scrubbing feel sluggish. Pass fmt=png for a
+    lossless frame, width=N for a server-side downscale (storyboard / hover
+    thumbnails don't need full-resolution frames).
+
+    Answers conditional requests. A given (file, frame, width, format) is always
+    the same picture, so the browser is told it may reuse what it has; scrubbing
+    back across frames it has already shown then costs nothing at all, and the
+    revalidation that does happen is answered from a stat rather than a decode.
+    The validator covers the file's size and mtime, so a target replaced on disk
+    (or a different clip landing on the same list index) still re-renders."""
+    if index < 0 or index >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target"})
+    filename = list_files_process[index].filename
+    quality = max(30, min(int(quality), 100))
+
+    etag = _frame_etag(filename, frame, width, fmt, quality)
+    # `no-cache` (revalidate, don't blind-trust) rather than a max-age: the list
+    # index in the URL can come to mean a different file, and a stale first frame
+    # of the wrong clip is exactly the kind of bug that reads as "the timeline is
+    # broken". The ETag makes the revalidation free.
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    _, data, media = _still(filename, frame, width, fmt, quality)
+    if data is None:
+        return JSONResponse(status_code=404, content={"message": "no frame"})
+    return Response(content=data, media_type=media, headers=headers)
+
+
+@app.get("/api/target/preview_grid")
+def target_preview_grid(index: int = 0, frames: str = "", width: int = 200,
+                        quality: int = 78):
+    """Return an ARBITRARY set of frames in ONE response (the timeline's
+    filmstrip).
+
+    The strip is twelve stills spread across the visible range, and it was twelve
+    separate GETs — which is not just twelve round trips but twelve requests
+    competing for the browser's six connections to this origin, so the filmstrip
+    could hold up the one request that matters: the frame the playhead is on.
+
+    Decode order is ascending regardless of the order asked for, because the
+    capturer walks forward cheaply but seeks expensively; the response is in the
+    order requested. Body is the same length-prefixed stream preview_seq uses:
+        [4-byte big-endian JPEG length][JPEG bytes] ... repeated
+    A zero length means that frame could not be read — the client keeps its
+    place in the sequence rather than shifting every later still onto the wrong
+    slot."""
+    if index < 0 or index >= len(list_files_process):
+        return JSONResponse(status_code=404, content={"message": "no target"})
+    filename = list_files_process[index].filename
+    wanted = []
+    for part in (frames or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            wanted.append(int(part))
+        except ValueError:
+            continue
+    if not wanted:
+        return JSONResponse(status_code=400, content={"message": "no frames"})
+    wanted = wanted[:64]
+    quality = max(30, min(int(quality), 95))
+
+    encoded = {}
+    for f in sorted(set(wanted)):
+        _, data, _media = _still(filename, f, width, "jpg", quality)
+        if data is not None:
+            encoded[f] = data
+
+    parts = []
+    for f in wanted:
+        data = encoded.get(f, b"")
+        parts.append(len(data).to_bytes(4, "big"))
+        parts.append(data)
+    return StreamingResponse(io.BytesIO(b"".join(parts)),
+                             media_type="application/octet-stream")
 
 
 @app.get("/api/target/preview_seq")
@@ -882,13 +1035,9 @@ def target_preview_seq(index: int = 0, start: int = 1, count: int = 16,
         frame_img = get_video_frame(filename, start + i)
         if frame_img is None:
             break
-        if width and width > 0 and frame_img.shape[1] > width:
-            h = max(1, round(frame_img.shape[0] * width / frame_img.shape[1]))
-            frame_img = cv2.resize(frame_img, (width, h), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", frame_img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-        if not ok:
+        data, _ = _encode_frame(frame_img, width, "jpg", quality)
+        if data is None:
             break
-        data = buf.tobytes()
         parts.append(len(data).to_bytes(4, "big"))
         parts.append(data)
     return StreamingResponse(io.BytesIO(b"".join(parts)),
@@ -1638,7 +1787,7 @@ def preview(payload: dict = Body(...)):
         pass
 
     if not fake or len(roop_globals.INPUT_FACESETS) < 1:
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
 
     try:
         from roop.core import live_swap, get_processing_plugins
@@ -1688,11 +1837,11 @@ def preview(payload: dict = Body(...)):
 
         swapped = live_swap(current_frame, options, input_facesets=mapped)
         if swapped is None:
-            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
-        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+            return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+        return {"image": _bgr_to_preview_dataurl(swapped), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
     except Exception:
         traceback.print_exc()
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "error": "swap failed"}
+        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "error": "swap failed"}
 
 
 @app.post("/api/preview_upscale")
