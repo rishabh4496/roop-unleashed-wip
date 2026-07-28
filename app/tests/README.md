@@ -6,7 +6,7 @@ env/Scripts/python -m unittest discover -s tests -t .    # Windows
 python -m unittest discover -s tests -t .                # anywhere else
 ```
 
-30 tests, ~0.7 s. No GPU, no models, no video, no network — pure numpy/cv2 over a
+50 tests, ~2 s. No GPU, no models, no video, no network — pure numpy/cv2 over a
 synthetic head projected at a known pose (`tests/facegeom.py`), using the
 project's own 3-D reference face so the tests and the shipping pose code agree
 on what a head is shaped like.
@@ -24,6 +24,14 @@ have been: silent, pose-dependent, and invisible on frontal footage.
 | `test_pose_ratios.py` | `kps_pose_ratios` is **monotonic** in yaw to 90°, roll-invariant, and returns `(None, None)` rather than NaN on degenerate keypoints |
 | `test_alignment.py` | `estimate_norm` is a **bit-exact no-op** when `yaw_align` is off (1350 size × template × pose combinations); the profile path is gated off mid-angles and kills the nod-coupled rotation swing |
 | `test_landmark_mask.py` | `create_landmark_mask` is **bit-identical** on upright faces and **rotationally equivariant** on tilted ones; `_mask_crop_box` never returns a degenerate rectangle |
+| `test_settings_wiring.py` | A setting that reaches the UI actually reaches the render — no half-wired controls that silently do nothing |
+
+`test_settings_wiring.py` parses `FaceSwap.jsx` and `api.py` as text rather than
+importing them, which is how it can check across the Python/JavaScript boundary
+with no browser and no running server. Its exception lists (`VIA_MASK_OFFSET_HELPER`,
+`PREVIEW_ONLY`, `RUN_ONLY_TEMPORAL`, `RUN_ONLY_OUTPUT`) each carry the reason that
+setting is legitimately absent from the other side — if you add to them, add the
+reason too.
 
 Two guarantees are load-bearing and easy to break by accident:
 

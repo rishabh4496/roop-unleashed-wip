@@ -533,34 +533,60 @@ export default function FaceSwap({
 
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
-  const previewKey = JSON.stringify({
-    fp: fakePreview,
-    e: p.selected_enhancer, d: p.face_detection_mode, fd: p.max_face_distance,
-    br: p.blend_ratio, me: p.mask_engine, ct: p.mask_clip_text, nfa: p.no_face_action,
-    vr: p.vr_mode, ar: p.autorotate_faces, smo: p.show_mask_offsets,
-    rom: p.restore_original_mouth, ns: p.num_swap_steps, up: p.subsample_upscale,
-    r3: p.use_3d_recon, sb: p.use_source_bank, sm: p.swap_model,
-    uf: p.use_frontalization, fth: p.frontalization_threshold,
-    jr: p.jaw_reshape, jrs: p.jaw_reshape_strength, dts: p.detail_transfer_strength,
-    ctm: p.color_transfer_mode, s2: p.sam2_model_size,
-    cf_fid: p.codeformer_fidelity,
-    rl: p.refine_landmarks, ya: p.yaw_align, rsf: p.rescue_small_faces, de: p.detector_engine,
-    dds: p.default_det_size,
-    fds: p.face_detector_size,
-    fdt: p.face_detector_threshold,
-    fdn: p.face_detector_nms,
-    fm: faceMapping,
-    mask_top: p.mask_top,
-    mask_bottom: p.mask_bottom,
-    mask_left: p.mask_left,
-    mask_right: p.mask_right,
-    face_mask_blend: p.face_mask_blend,
-    mouth_mask_blend: p.mouth_mask_blend,
-    mouth_top_scale: p.mouth_top_scale,
-    mouth_bottom_scale: p.mouth_bottom_scale,
-    mouth_left_scale: p.mouth_left_scale,
-    mouth_right_scale: p.mouth_right_scale,
+  // ── The one place UI params become an /api/preview request ──────────────
+  // Both the request body and the cache/refresh signature are built from this
+  // single function, and the signature is literally the request body with the
+  // frame coordinates zeroed. That makes the failure this replaces structurally
+  // impossible: a setting cannot be sent to the backend without also
+  // invalidating the cache (a control that silently does nothing), nor keyed
+  // without being sent. There used to be six hand-maintained copies of this
+  // list -- and they had already drifted: the three comparison-grid keys were
+  // missing sam2_model_size, face_detector_nms and face_mapping, so those grids
+  // served stale cells when any of the three changed.
+  //
+  // `params` is the settings object to read from: `p` normally, or a grid's
+  // `localParams` (p with that grid's one override applied), which reproduces
+  // the override in the request for free.
+  const buildPreviewPayload = (params, { index, frame: fr, fake, ...overrides } = {}) => ({
+    index, frame: fr, fake_preview: fake,
+    enhancer: params.selected_enhancer, codeformer_fidelity: num(params.codeformer_fidelity, 0.5),
+    detection: params.face_detection_mode,
+    face_distance: num(params.max_face_distance, 0.85), blend_ratio: num(params.blend_ratio, 0.8),
+    mask_engine: params.mask_engine, clip_text: params.mask_clip_text,
+    no_face_action: params.no_face_action, vr_mode: params.vr_mode, autorotate: params.autorotate_faces,
+    show_mask_offsets: params.show_mask_offsets, restore_original_mouth: params.restore_original_mouth,
+    num_swap_steps: num(params.num_swap_steps, 1), upscale: params.subsample_upscale,
+    use_3d_recon: params.use_3d_recon, use_source_bank: params.use_source_bank,
+    use_frontalization: params.use_frontalization, frontalization_threshold: num(params.frontalization_threshold, 30),
+    jaw_reshape: params.jaw_reshape, jaw_reshape_strength: num(params.jaw_reshape_strength, 0.5),
+    detail_transfer_strength: num(params.detail_transfer_strength, 0),
+    swap_model: params.swap_model, default_det_size: params.default_det_size,
+    face_detector_size: params.face_detector_size, face_detector_threshold: params.face_detector_threshold,
+    face_detector_nms: params.face_detector_nms,
+    color_transfer_mode: params.color_transfer_mode, sam2_model_size: params.sam2_model_size,
+    refine_landmarks: params.refine_landmarks, yaw_align: params.yaw_align,
+    rescue_small_faces: params.rescue_small_faces,
+    detector_engine: params.detector_engine,
+    face_mapping: getFaceMappingArray(),
+    mask_top: params.mask_top,
+    mask_bottom: params.mask_bottom,
+    mask_left: params.mask_left,
+    mask_right: params.mask_right,
+    face_mask_blend: params.face_mask_blend,
+    mouth_mask_blend: params.mouth_mask_blend,
+    mouth_top_scale: params.mouth_top_scale,
+    mouth_bottom_scale: params.mouth_bottom_scale,
+    mouth_left_scale: params.mouth_left_scale,
+    mouth_right_scale: params.mouth_right_scale,
+    ...overrides,
   });
+
+  // index/frame are separate cache dimensions, so they are zeroed here rather
+  // than being part of the settings signature.
+  const previewSignature = (params, fake) =>
+    JSON.stringify(buildPreviewPayload(params, { index: 0, frame: 0, fake }));
+
+  const previewKey = previewSignature(p, fakePreview);
 
   // One-click speed/quality profiles. Each bundles the core levers (detection
   // resolution, pixel-boost upscale, enhancer, swap steps); other settings (mask
@@ -701,37 +727,7 @@ export default function FaceSwap({
     const ctrl = new AbortController();
     const killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
     try {
-      const res = await postJSON('/api/preview', {
-        index: idx, frame: fr, fake_preview: fake,
-        enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
-        detection: p.face_detection_mode,
-        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-        mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
-        show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
-        num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
-        use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
-        jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
-        detail_transfer_strength: num(p.detail_transfer_strength, 0),
-        swap_model: p.swap_model, default_det_size: p.default_det_size,
-        face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
-        face_detector_nms: p.face_detector_nms,
-        color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-        refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
-        detector_engine: p.detector_engine,
-        face_mapping: getFaceMappingArray(),
-        mask_top: p.mask_top,
-        mask_bottom: p.mask_bottom,
-        mask_left: p.mask_left,
-        mask_right: p.mask_right,
-        face_mask_blend: p.face_mask_blend,
-        mouth_mask_blend: p.mouth_mask_blend,
-        mouth_top_scale: p.mouth_top_scale,
-        mouth_bottom_scale: p.mouth_bottom_scale,
-        mouth_left_scale: p.mouth_left_scale,
-        mouth_right_scale: p.mouth_right_scale,
-      }, { signal: ctrl.signal });
+      const res = await postJSON('/api/preview', buildPreviewPayload(p, { index: idx, frame: fr, fake }), { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewPersonIds(res.person_ids || []);
       setPreviewSrc(res.image || '');
@@ -782,32 +778,7 @@ export default function FaceSwap({
     for (const enh of available) {
       if (!activeCheck()) return;
       const localParams = { ...p, selected_enhancer: enh };
-      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
-        fp: fakePreview,
-        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
-        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
-        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
-        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
-        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
-        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
-        ctm: localParams.color_transfer_mode,
-        cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
-        dds: localParams.default_det_size,
-        fds: localParams.face_detector_size,
-        fdt: localParams.face_detector_threshold,
-        mask_top: localParams.mask_top,
-        mask_bottom: localParams.mask_bottom,
-        mask_left: localParams.mask_left,
-        mask_right: localParams.mask_right,
-        face_mask_blend: localParams.face_mask_blend,
-        mouth_mask_blend: localParams.mouth_mask_blend,
-        mouth_top_scale: localParams.mouth_top_scale,
-        mouth_bottom_scale: localParams.mouth_bottom_scale,
-        mouth_left_scale: localParams.mouth_left_scale,
-        mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
       
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -826,37 +797,7 @@ export default function FaceSwap({
           }));
         }, 100);
 
-        const res = await postJSON('/api/preview', {
-          index: selTarget, frame: frame, fake_preview: fakePreview,
-          enhancer: enh, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
-          detection: p.face_detection_mode,
-          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-          mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
-          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
-          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
-          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
-          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
-        detail_transfer_strength: num(p.detail_transfer_strength, 0),
-          swap_model: p.swap_model, default_det_size: p.default_det_size,
-          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
-          face_detector_nms: p.face_detector_nms,
-          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
-          detector_engine: p.detector_engine,
-          face_mapping: getFaceMappingArray(),
-          mask_top: p.mask_top,
-          mask_bottom: p.mask_bottom,
-          mask_left: p.mask_left,
-          mask_right: p.mask_right,
-          face_mask_blend: p.face_mask_blend,
-          mouth_mask_blend: p.mouth_mask_blend,
-          mouth_top_scale: p.mouth_top_scale,
-          mouth_bottom_scale: p.mouth_bottom_scale,
-          mouth_left_scale: p.mouth_left_scale,
-          mouth_right_scale: p.mouth_right_scale,
-        });
+        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
         const duration = ((Date.now() - start) / 1000).toFixed(2);
         if (activeIntervalsRef.current[enh]) {
           clearInterval(activeIntervalsRef.current[enh]);
@@ -914,32 +855,7 @@ export default function FaceSwap({
     for (const me of available) {
       if (!activeCheck()) return;
       const localParams = { ...p, mask_engine: me };
-      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
-        fp: fakePreview,
-        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
-        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
-        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
-        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
-        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
-        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
-        ctm: localParams.color_transfer_mode,
-        cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
-        dds: localParams.default_det_size,
-        fds: localParams.face_detector_size,
-        fdt: localParams.face_detector_threshold,
-        mask_top: localParams.mask_top,
-        mask_bottom: localParams.mask_bottom,
-        mask_left: localParams.mask_left,
-        mask_right: localParams.mask_right,
-        face_mask_blend: localParams.face_mask_blend,
-        mouth_mask_blend: localParams.mouth_mask_blend,
-        mouth_top_scale: localParams.mouth_top_scale,
-        mouth_bottom_scale: localParams.mouth_bottom_scale,
-        mouth_left_scale: localParams.mouth_left_scale,
-        mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
 
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -955,31 +871,7 @@ export default function FaceSwap({
           setMaskRenderTimers(prev => ({ ...prev, [me]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
         }, 100);
 
-        const res = await postJSON('/api/preview', {
-          index: selTarget, frame: frame, fake_preview: fakePreview,
-          enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
-          detection: p.face_detection_mode,
-          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-          mask_engine: me, clip_text: p.mask_clip_text,
-          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
-          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
-          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
-          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
-          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
-        detail_transfer_strength: num(p.detail_transfer_strength, 0),
-          swap_model: p.swap_model, default_det_size: p.default_det_size,
-          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
-          face_detector_nms: p.face_detector_nms,
-          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
-          detector_engine: p.detector_engine,
-          face_mapping: getFaceMappingArray(),
-          mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
-          face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
-          mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
-          mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
-        });
+        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
         const duration = ((Date.now() - start) / 1000).toFixed(2);
         if (maskIntervalsRef.current[me]) {
           clearInterval(maskIntervalsRef.current[me]);
@@ -1038,32 +930,7 @@ export default function FaceSwap({
     for (const sm of available) {
       if (!activeCheck()) return;
       const localParams = { ...p, swap_model: sm };
-      const cacheKey = `${selTarget}_${frame}_${JSON.stringify({
-        fp: fakePreview,
-        e: localParams.selected_enhancer, d: localParams.face_detection_mode, fd: localParams.max_face_distance,
-        br: localParams.blend_ratio, me: localParams.mask_engine, ct: localParams.mask_clip_text, nfa: localParams.no_face_action,
-        vr: localParams.vr_mode, ar: localParams.autorotate_faces, smo: localParams.show_mask_offsets,
-        rom: localParams.restore_original_mouth, ns: localParams.num_swap_steps, up: localParams.subsample_upscale,
-        r3: localParams.use_3d_recon, sb: localParams.use_source_bank, sm: localParams.swap_model,
-        uf: localParams.use_frontalization, fth: localParams.frontalization_threshold,
-        jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
-        ctm: localParams.color_transfer_mode,
-        cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
-        dds: localParams.default_det_size,
-        fds: localParams.face_detector_size,
-        fdt: localParams.face_detector_threshold,
-        mask_top: localParams.mask_top,
-        mask_bottom: localParams.mask_bottom,
-        mask_left: localParams.mask_left,
-        mask_right: localParams.mask_right,
-        face_mask_blend: localParams.face_mask_blend,
-        mouth_mask_blend: localParams.mouth_mask_blend,
-        mouth_top_scale: localParams.mouth_top_scale,
-        mouth_bottom_scale: localParams.mouth_bottom_scale,
-        mouth_left_scale: localParams.mouth_left_scale,
-        mouth_right_scale: localParams.mouth_right_scale,
-      })}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
 
       if (previewCacheRef.current[cacheKey]) {
         if (!activeCheck()) return;
@@ -1079,31 +946,7 @@ export default function FaceSwap({
           setSwapperRenderTimers(prev => ({ ...prev, [sm]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
         }, 100);
 
-        const res = await postJSON('/api/preview', {
-          index: selTarget, frame: frame, fake_preview: fakePreview,
-          enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
-          detection: p.face_detection_mode,
-          face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-          mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-          no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
-          show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
-          num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
-          use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-          use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
-          jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
-        detail_transfer_strength: num(p.detail_transfer_strength, 0),
-          swap_model: sm, default_det_size: p.default_det_size,
-          face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
-          face_detector_nms: p.face_detector_nms,
-          color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
-          detector_engine: p.detector_engine,
-          face_mapping: getFaceMappingArray(),
-          mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
-          face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
-          mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
-          mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
-        });
+        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
         const duration = ((Date.now() - start) / 1000).toFixed(2);
         if (swapperIntervalsRef.current[sm]) {
           clearInterval(swapperIntervalsRef.current[sm]);
@@ -1166,31 +1009,7 @@ export default function FaceSwap({
     // (falls back to the raw frame server-side when there are no source faces).
     let baseImage = '';
     try {
-      const baseRes = await postJSON('/api/preview', {
-        index: selTarget, frame: frame, fake_preview: true,
-        enhancer: p.selected_enhancer, codeformer_fidelity: num(p.codeformer_fidelity, 0.5),
-        detection: p.face_detection_mode,
-        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-        mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        no_face_action: p.no_face_action, vr_mode: p.vr_mode, autorotate: p.autorotate_faces,
-        show_mask_offsets: p.show_mask_offsets, restore_original_mouth: p.restore_original_mouth,
-        num_swap_steps: num(p.num_swap_steps, 1), upscale: p.subsample_upscale,
-        use_3d_recon: p.use_3d_recon, use_source_bank: p.use_source_bank,
-        use_frontalization: p.use_frontalization, frontalization_threshold: num(p.frontalization_threshold, 30),
-        jaw_reshape: p.jaw_reshape, jaw_reshape_strength: num(p.jaw_reshape_strength, 0.5),
-        detail_transfer_strength: num(p.detail_transfer_strength, 0),
-        swap_model: p.swap_model, default_det_size: p.default_det_size,
-        face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
-        face_detector_nms: p.face_detector_nms,
-        color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-        refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
-        detector_engine: p.detector_engine,
-        face_mapping: getFaceMappingArray(),
-        mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
-        face_mask_blend: p.face_mask_blend, mouth_mask_blend: p.mouth_mask_blend,
-        mouth_top_scale: p.mouth_top_scale, mouth_bottom_scale: p.mouth_bottom_scale,
-        mouth_left_scale: p.mouth_left_scale, mouth_right_scale: p.mouth_right_scale,
-      });
+      const baseRes = await postJSON('/api/preview', buildPreviewPayload(p, { index: selTarget, frame, fake: true }));
       baseImage = baseRes.image || '';
     } catch {
       // handled below (no base → nothing to upscale)
