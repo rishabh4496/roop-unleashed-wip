@@ -62,15 +62,19 @@ export const TRACKER_SLIDERS = [
   },
   {
     key: 'max_face_distance',
-    label: 'Max Face Similarity',
+    label: 'Max Face Distance',
     icon: '🎯',
     min: 0.01,
     max: 1,
     step: 0.01,
-    defaultVal: 0.85,
-    bypassVal: 0.85,
-    format: (v) => Number(v ?? 0.85).toFixed(2),
-    info: 'Face matching distance threshold. Lower is stricter.',
+    // 0.66 is the measured same-person ceiling on a hard clip (different people
+    // sat at ~0.93-1.07), so this is the tightest value that still admits every
+    // observed frame of the right person. See procmgr_runtime._TRACK_VETO_DIST.
+    defaultVal: 0.66,
+    bypassVal: 0.66,
+    format: (v) => Number(v ?? 0.66).toFixed(2),
+    info: 'Cosine distance (0-2), NOT a similarity: higher is MORE permissive. '
+        + 'Same person measured under ~0.66, different people ~0.93-1.07.',
   },
   {
     key: 'num_swap_steps',

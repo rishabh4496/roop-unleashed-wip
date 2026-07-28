@@ -135,7 +135,7 @@ class Settings:
         self.use_os_temp_folder = self.default_get(data, 'use_os_temp_folder', False)
         self.output_show_video = self.default_get(data, 'output_show_video', True)
         self.launch_browser = self.default_get(data, 'launch_browser', False)
-        self.max_face_distance = self.default_get(data, 'max_face_distance', 0.85)
+        self.max_face_distance = self.default_get(data, 'max_face_distance', 0.66)
         # Faceswap session settings
         self.face_detection_mode = self.default_get(data, 'face_detection_mode', 'All faces')
         # Face-detector input resolution: True = 640x640 (accurate, default),

@@ -433,7 +433,7 @@ export default function FaceSwap({
           sam2_model_size: job.params.sam2_model_size,
           track_identities: job.params.track_identities,
           autorotate: job.params.autorotate_faces,
-          face_distance: num(job.params.max_face_distance, 0.85),
+          face_distance: num(job.params.max_face_distance, 0.66),
           blend_ratio: num(job.params.blend_ratio, 0.8),
           num_swap_steps: num(job.params.num_swap_steps, 1),
           face_mapping: job.faceMapping || [],
@@ -607,7 +607,7 @@ export default function FaceSwap({
       index, frame: fr, fake_preview: fake,
       enhancer: activeParams.selected_enhancer, codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
       detection: activeParams.face_detection_mode,
-      face_distance: num(activeParams.max_face_distance, 0.85), blend_ratio: num(activeParams.blend_ratio, 0.8),
+      face_distance: num(activeParams.max_face_distance, 0.66), blend_ratio: num(activeParams.blend_ratio, 0.8),
       mask_engine: activeParams.mask_engine, clip_text: activeParams.mask_clip_text,
       no_face_action: activeParams.no_face_action, vr_mode: activeParams.vr_mode, autorotate: activeParams.autorotate_faces,
       show_mask_offsets: activeParams.show_mask_offsets, restore_original_mouth: activeParams.restore_original_mouth,
@@ -1363,7 +1363,7 @@ export default function FaceSwap({
         upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
         sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
         autorotate: sp.autorotate_faces,
-        face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
+        face_distance: num(sp.max_face_distance, 0.66), blend_ratio: num(sp.blend_ratio, 0.8),
         num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
         imagemask: maskJson,
@@ -1879,7 +1879,7 @@ export default function FaceSwap({
         upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
         sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
         autorotate: sp.autorotate_faces,
-        face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
+        face_distance: num(sp.max_face_distance, 0.66), blend_ratio: num(sp.blend_ratio, 0.8),
         num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
         imagemask: maskJson,
@@ -2422,7 +2422,7 @@ export default function FaceSwap({
           <Toggle label="🔬 Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
-          <Slider label="Max face distance" info="How far from your captured target face a detected face may sit and still be swapped. This is a DISTANCE, not a similarity — 0 means identical and HIGHER IS MORE PERMISSIVE, so raising it makes look-alikes and bystanders start getting swapped. Scale is scipy cosine distance (0–2). Measured on a hard clip: the SAME person stays under ~0.66 even on bad frames, while DIFFERENT people sit at ~0.93–1.07. So ~0.7–0.8 sits in the gap; the 0.85 default is deliberately loose to avoid dropping hard poses, and is the value to lower first if the swap jumps to the wrong person mid-shot. Run with ROOP_DEBUG_MATCH=1 to print the real per-frame distances." min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.85)} onChange={(v) => set('max_face_distance', v)} />
+          <Slider label="Max face distance" info="How far from your captured target face a detected face may sit and still be swapped. This is a DISTANCE, not a similarity — 0 means identical and HIGHER IS MORE PERMISSIVE, so raising it makes look-alikes and bystanders start getting swapped. Scale is scipy cosine distance (0–2). Measured on a hard clip: the SAME person stays under ~0.66 even on bad frames, while DIFFERENT people sit at ~0.93–1.07. So ~0.7–0.8 sits in the gap; the 0.85 default is deliberately loose to avoid dropping hard poses, and is the value to lower first if the swap jumps to the wrong person mid-shot. Run with ROOP_DEBUG_MATCH=1 to print the real per-frame distances." min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.66)} onChange={(v) => set('max_face_distance', v)} />
           <Select label="Subsample upscale" value={p.subsample_upscale} onChange={(v) => set('subsample_upscale', v)} options={meta.upscale} />
           <Toggle label="🔎 AI upscale (after swap)" info="Runs an AI upscaler as the final step of the swap pass — each frame is swapped & enhanced first, then upscaled, producing a single output file (no second pass). Full-frame upscaling is heavy: ×4 on video is slow and VRAM-hungry." checked={!!p.upscale_after_swap} onChange={(v) => set('upscale_after_swap', v)} />
           {p.upscale_after_swap && (

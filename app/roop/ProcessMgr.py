@@ -16,7 +16,7 @@ from roop.procmgr_masking import MaskingMixin
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -1792,7 +1792,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         if veto is None:
                             claimed.add(best_j)
 
-                    if os.environ.get('ROOP_DEBUG_MATCH'):
+                    if _DEBUG_MATCH:
                         print(f"[TRACKMATCH] f={frame_idx} faces={len(faces)} "
                               f"entry_srcs={[e[1] for e in entries]} best_j={best_j} "
                               f"src={src_index} claimed={sorted(claimed)}"
@@ -1821,7 +1821,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             if d <= best_d:
                                 best_d, best_g = d, g
 
-                        if os.environ.get('ROOP_DEBUG_MATCH'):
+                        if _DEBUG_MATCH:
                             _dd = {}
                             for g, tis in persons.items():
                                 try:
@@ -1880,7 +1880,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 # single_person collapses two faces onto one source, (b) a person
                 # sits just over the distance threshold this frame, or (c) fewer
                 # source facesets than persons. Surface all three at a glance.
-                if os.environ.get('ROOP_DEBUG_MATCH'):
+                if _DEBUG_MATCH:
                     try:
                         dists = {fidx: {g: round(min(compute_cosine_distance(
                                     self.target_face_datas[ti].embedding, faces[fidx].embedding)
@@ -1902,7 +1902,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     if src_index < len(self.input_face_datas):
                         temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
                         num_faces_found += 1
-                    elif os.environ.get('ROOP_DEBUG_MATCH'):
+                    elif _DEBUG_MATCH:
                         print(f"[MATCH] person g={g} matched face {fidx} but src_index="
                               f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
 

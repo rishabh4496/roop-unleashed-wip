@@ -64,6 +64,13 @@ _TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
 _TRACK_VETO_SINGLE = float(os.environ.get('ROOP_TRACK_VETO_SINGLE', '0'))
 
 
+# Verbose match diagnostics ([TRACKASSIGN] / [TRACKMATCH]).
+# Read once, and treat '0'/'false'/'off' as OFF: the call sites used a bare
+# os.environ.get(), which is truthy for the STRING "0", so the documented way to
+# turn it back off left it running.
+_DEBUG_MATCH = os.environ.get('ROOP_DEBUG_MATCH', '').strip().lower() not in ('', '0', 'false', 'off')
+
+
 # Reject when a DIFFERENT selected person explains the face this much better.
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 

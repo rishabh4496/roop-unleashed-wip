@@ -27,6 +27,14 @@ module.exports = async (kernel) => {
             // OOMs or thrashes rebuilding engines, drop this or set
             // ROOP_TRT_POOL to 3. See docs/ENV_FLAGS.md.
             ROOP_EXPR_POOL: "2",
+            // Diagnostic for wrong-face swaps: prints [TRACKASSIGN] once per
+            // track (which person each track was bound to, and at what cosine
+            // distance) and [TRACKMATCH] per face per frame (chosen track,
+            // resolved source, and the reason for any veto). Read it to tell a
+            // too-permissive distance threshold apart from a tracker identity
+            // switch. VERBOSE — [TRACKMATCH] fires for every face of every
+            // frame, so set it back to "0" once the question is answered.
+            ROOP_DEBUG_MATCH: "1",
             OMP_NUM_THREADS: "1",
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",

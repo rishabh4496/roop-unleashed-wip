@@ -18,6 +18,8 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
+from roop.procmgr_runtime import _DEBUG_MATCH
+
 import roop.globals
 from roop import session_pool
 from roop.face_util import get_all_faces, analysis_pooled
@@ -533,7 +535,7 @@ class TrackingMixin:
         self._track_assignments = {
             f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
         }
-        if os.environ.get('ROOP_DEBUG_MATCH'):
+        if _DEBUG_MATCH:
             for t in tracks:
                 dd = {}
                 for g, tis in persons.items():
