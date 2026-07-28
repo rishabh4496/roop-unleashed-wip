@@ -265,9 +265,7 @@ def _pool_size():
 def _build_one(model_type, model_path, providers, file):
     """Construct ONE independent detector (its own ORT session)."""
     if model_type == 'r50':
-        so = onnxruntime.SessionOptions()
-        so.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        session = onnxruntime.InferenceSession(model_path, so, providers=providers)
+        session = onnxruntime.InferenceSession(model_path, providers=providers)
         det = RetinaFace3Output(model_path, session=session)
     else:
         from insightface.model_zoo import get_model
