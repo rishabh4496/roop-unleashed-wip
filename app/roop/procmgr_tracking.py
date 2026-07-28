@@ -18,7 +18,8 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from roop.procmgr_runtime import _DEBUG_MATCH, _TRACK_EMB_MAX
+from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
+                                  _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
 from roop import session_pool
@@ -472,6 +473,14 @@ class TrackingMixin:
         for i, g in enumerate(groups[:len(self.target_face_datas)]):
             persons.setdefault(g, []).append(i)
 
+        # Binding a track to a source is durable and is decided from the track's
+        # MEAN embedding, so it is gated tighter than one-frame matching — the
+        # loose per-frame threshold exists to carry a single bad frame, not to
+        # hand a stretch of frames to a track that merely resembles the target.
+        # See _TRACK_ASSIGN_MAX. A refused track still swaps via per-frame
+        # matching; it just doesn't get identity locking.
+        assign_max = min(threshold, _TRACK_ASSIGN_MAX) if _TRACK_ASSIGN_MAX > 0 else threshold
+
         candidates = []
         track_map = {t['id']: t for t in tracks}
         for t in tracks:
@@ -484,7 +493,7 @@ class TrackingMixin:
                 if not embs:
                     continue
                 d = min(compute_cosine_distance(e, t_emb) for e in embs)
-                if d <= threshold:
+                if d <= assign_max:
                     candidates.append((d, g, t['id']))
 
         candidates.sort(key=lambda c: c[0])
@@ -546,11 +555,11 @@ class TrackingMixin:
                     if embs and t.get('emb_mean') is not None:
                         dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
                 print(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
-                      f"obs={t.get('emb_n')} d(person)={dd} thr={threshold} "
+                      f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
                       f"-> src={track_src.get(t['id'])}")
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
-              f'{matched} matched to a source')
+              f'{matched} matched to a source (gate {assign_max:.2f})')
         return tracks
 
     def _precompute_temporal(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
@@ -601,8 +610,10 @@ class TrackingMixin:
         n_faces = sum(len(v) for v in self._temporal_faces.values())
         n_interp = sum(1 for v in self._temporal_faces.values()
                        for f in v if f.get('_interpolated'))
+        n_refused = int(getattr(self, '_interp_refused', 0) or 0)
         print(f'[Temporal] {len(tracks or [])} track(s); faces on {n_frames} frames '
-              f'({n_faces} total, {n_interp} gap-filled, gap limit {gap_max}).')
+              f'({n_faces} total, {n_interp} gap-filled, gap limit {gap_max}'
+              + (f', {n_refused} refused as unbridgeable' if n_refused else '') + ').')
 
         # ── Coverage guard ───────────────────────────────────────────────────
         # The swap pass trusts this cache INSTEAD of detecting, so a scan that
@@ -627,6 +638,29 @@ class TrackingMixin:
                   'per-frame detection for this clip.')
             self._temporal_mode = False
             self._temporal_faces = None
+
+    @staticmethod
+    def _bridgeable(a, b, span):
+        """Could a face plausibly have travelled from observation *a* to *b* over
+        *span* frames? Gap-fill invents a face for every frame in between, and an
+        invented face passes every identity check by construction (its embedding
+        IS the track mean), so an implausible bridge paints the swap onto the
+        background — see _INTERP_MAX_TRAVEL. Position/size only; identity was
+        already checked when the two observations joined the track."""
+        if _INTERP_MAX_TRAVEL <= 0:
+            return True
+        try:
+            ba = np.asarray(a.bbox, np.float64)
+            bb = np.asarray(b.bbox, np.float64)
+        except Exception:
+            return True                     # no geometry to judge on — behave as before
+        wa = max(1.0, float(ba[2] - ba[0]))
+        wb = max(1.0, float(bb[2] - bb[0]))
+        if _INTERP_MAX_SCALE > 0 and max(wa, wb) / min(wa, wb) > _INTERP_MAX_SCALE:
+            return False
+        travel = float(np.hypot((ba[0] + ba[2] - bb[0] - bb[2]) * 0.5,
+                                (ba[1] + ba[3] - bb[1] - bb[3]) * 0.5))
+        return travel <= _INTERP_MAX_TRAVEL * float(span) * (wa + wb) * 0.5
 
     @staticmethod
     def _interp_face(a, b, w, emb_mean):
@@ -664,6 +698,7 @@ class TrackingMixin:
         mc = float(getattr(self.options, 'stabilize_min_cutoff', 0.05))
         bt = float(getattr(self.options, 'stabilize_beta', 0.02))
         out = {}
+        self._interp_refused = 0
         for t in tracks:
             obs = t.get('obs') or {}
             if not obs:
@@ -676,6 +711,14 @@ class TrackingMixin:
                 if prev is not None and 1 < (i - prev) <= gap_max:
                     a, b = obs[prev], obs[i]
                     span = float(i - prev)
+                    # Only bridge a gap the face could actually have crossed. A
+                    # Re-ID reconnection carries no spatial constraint, so the two
+                    # anchors can be on opposite sides of the frame — filling that
+                    # in paints a swap across the background (see _bridgeable).
+                    if not self._bridgeable(a, b, span):
+                        self._interp_refused += (i - prev - 1)
+                        prev = i
+                        continue
                     for g in range(prev + 1, i):
                         merged[g] = self._interp_face(a, b, (g - prev) / span, emb_mean)
                 prev = i

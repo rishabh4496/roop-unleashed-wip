@@ -90,6 +90,54 @@ _TRACK_EMB_MAX = float(os.environ.get('ROOP_TRACK_EMB_MAX', '0.7'))
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 
 
+# ── Gap-fill continuity ──────────────────────────────────────────────────────
+# The temporal pre-pass fills a track's detection misses by LINEARLY
+# INTERPOLATING between the two observations either side of the gap, and the
+# only condition was that the gap be short enough (ROOP_TEMPORAL_GAP frames).
+# Nothing checked that the two anchors were in the same PLACE.
+#
+# They need not be. The scan's primary association is IoU-gated so it cannot
+# teleport, but the Re-ID fallback matches on embedding ALONE, with no spatial
+# constraint at all — by design, since it exists to reconnect a face that left
+# and came back. So a track can legitimately jump across the frame between two
+# consecutive observations, and the gap-filler would then manufacture a face for
+# every frame in between, sliding across whatever the background happens to be.
+#
+# Those manufactured faces are invisible to every identity check downstream:
+# _interp_face sets their embedding to the TRACK MEAN, so their distance to the
+# track is 0 (passes the appearance gate) and their distance to the captured
+# target is the track's own (which already passed the assignment gate). They are
+# swapped unconditionally, wherever they were placed — and because a source can
+# only be used once per frame, the real face in that frame is then refused.
+#
+# So bridge a gap only when the face could plausibly have travelled between the
+# anchors: at most this many face-widths per skipped frame, with a bounded size
+# change. Generous by construction — a head crossing half its own width every
+# frame is already fast motion. 0 disables the guard (pre-fix behaviour).
+_INTERP_MAX_TRAVEL = float(os.environ.get('ROOP_INTERP_MAX_TRAVEL', '0.5'))
+_INTERP_MAX_SCALE = float(os.environ.get('ROOP_INTERP_MAX_SCALE', '2.0'))
+
+
+# ── Track → source assignment gate ───────────────────────────────────────────
+# Binding a track to a source is a DURABLE decision: every face on that track,
+# for as long as it runs, is swapped with no further identity check beyond the
+# vetoes. It is also made from the track's MEAN embedding over every accepted
+# observation — a far cleaner measurement than any single frame.
+#
+# It was gated on max_face_distance, the same threshold as per-frame matching.
+# That threshold is deliberately loose because it has to carry one bad frame of
+# the right person; applied to a mean it lets a track that merely resembles the
+# target own the source for a whole stretch of frames. Measured: a real person's
+# track mean sat at 0.36 while background/blur false detections clustered at
+# 0.85-1.0 — i.e. exactly where a 0.75-0.85 threshold sits. A run of a 33k-frame
+# clip bound 16 of its 81 tracks to the one selected person.
+#
+# A track refused here is not dropped: its frames fall through to per-frame
+# matching at the full threshold, so a real face still swaps, just without
+# identity locking. 0 restores the old behaviour (gate == max_face_distance).
+_TRACK_ASSIGN_MAX = float(os.environ.get('ROOP_TRACK_ASSIGN_MAX', '0.6'))
+
+
 # ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
 # source is applied wherever the spatial association points).
 # Fraction of a track's frames that must overlap an already-assigned track of the

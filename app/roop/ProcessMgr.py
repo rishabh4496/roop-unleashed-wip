@@ -1711,6 +1711,35 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     ds = [d for d in ds if d is not None]
                     return min(ds) if ds else None
 
+                def _dist_to_any_person(face):
+                    """Closest captured angle of ANY selected person (inf if none)."""
+                    ds = []
+                    for tis in persons.values():
+                        for ti in tis:
+                            d = _ada.identity_distance(self.target_face_datas[ti], face, frame)
+                            if d is not None:
+                                ds.append(d)
+                    return min(ds) if ds else float('inf')
+
+                # ── Claim order ──────────────────────────────────────────────
+                # A source can be applied at most ONCE per frame (below), so
+                # whichever face reaches it first wins and every other face in
+                # the frame is refused. The faces arrive in x order, which has
+                # nothing to do with who they are: a false detection on the
+                # background could take the source and leave the real face
+                # unswapped for that frame. Nothing downstream could recover
+                # from it — the real face hits `src in claimed_sources_in_frame`
+                # and is skipped.
+                #
+                # So let the best claim first. Real detections outrank
+                # gap-filled ones (an interpolated face carries the TRACK MEAN
+                # as its embedding, so it would otherwise always score better
+                # than the real face it is competing with), then closest first.
+                # Ordering only — no face is added or dropped here.
+                faces = sorted(faces, key=lambda f: (
+                    bool(f.get('_interpolated')) if isinstance(f, dict) else False,
+                    _dist_to_any_person(f)))
+
                 for face in faces:
                     best_j, best_cost = -1, float('inf')
                     if entries:
