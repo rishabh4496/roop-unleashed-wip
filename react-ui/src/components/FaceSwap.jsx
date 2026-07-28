@@ -662,13 +662,26 @@ export default function FaceSwap({
     const fr = opts.frame ?? frame;
     const fake = opts.fake ?? fakePreview;
 
-    // Check client-side preview cache first
-    const cached = getCachedPreview(idx, fr);
-    if (cached) {
-      setPreviewFaces(cached.faces);
-      setPreviewPersonIds(cached.personIds || []);
-      setPreviewSrc(cached.image);
-      return;
+    // Check client-side preview cache first.
+    //
+    // `force` skips it AND evicts the entry. The cache key covers every setting
+    // that reaches the backend, so an automatic refresh after a settings change
+    // is always a miss and re-renders correctly. But the manual 🔄 Refresh button
+    // used to go through this same lookup, which made it a no-op whenever the
+    // cache was warm: nothing the user could do would re-run the swap for the
+    // current frame. Anything the key cannot see — a source file edited on disk,
+    // a model swapped underneath us, a backend restart — left a stale image with
+    // no way to clear it.
+    if (!opts.force) {
+      const cached = getCachedPreview(idx, fr);
+      if (cached) {
+        setPreviewFaces(cached.faces);
+        setPreviewPersonIds(cached.personIds || []);
+        setPreviewSrc(cached.image);
+        return;
+      }
+    } else {
+      delete previewCacheRef.current[getCacheKey(idx, fr)];
     }
 
     // Single-flight: the backend's live_swap shares one (non-thread-safe)
@@ -2169,7 +2182,7 @@ export default function FaceSwap({
     queue: addToQueue,
     compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; }),
     split: () => setSplitView((v) => !v),
-    preview: () => refreshPreview(),
+    preview: () => refreshPreview({ force: true }),   // explicit user action — same as 🔄 Refresh
     shortcuts: () => setShowShortcutHUD(true),
   };
   useEffect(() => {
@@ -3430,7 +3443,7 @@ export default function FaceSwap({
                 which is exactly what must not happen mid-run, so they go away
                 with everything else while a job is running. */}
             <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''} ${progress.processing ? 'hidden' : ''}`}>
-              <Button size="sm" variant="secondary" onClick={() => refreshPreview()}>🔄 Refresh</Button>
+              <Button size="sm" variant="secondary" title="Re-run the swap for this frame, ignoring the cached result" onClick={() => refreshPreview({ force: true })}>🔄 Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
               {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
                 <Button size="sm" variant="secondary" disabled={upscaling} onClick={upscaleThisFrame}
