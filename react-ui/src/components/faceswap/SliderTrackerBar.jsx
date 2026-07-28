@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const TRACKER_SLIDERS = [
@@ -92,7 +92,7 @@ const TRACKER_SLIDERS = [
   },
 ];
 
-const PRESETS = [
+const BUILTIN_PRESETS = [
   {
     name: 'Default',
     values: {
@@ -183,6 +183,31 @@ export default function SliderTrackerBar({
 }) {
   const [expanded, setExpanded] = useState(true);
   const [activePreset, setActivePreset] = useState('Default');
+  const [customPresets, setCustomPresets] = useState([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
+
+  // Load custom presets from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('roop_user_slider_presets');
+      if (saved) {
+        setCustomPresets(JSON.parse(saved));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Save custom presets to localStorage
+  const saveCustomPresetsToStorage = (updated) => {
+    setCustomPresets(updated);
+    try {
+      localStorage.setItem('roop_user_slider_presets', JSON.stringify(updated));
+    } catch {
+      /* ignore */
+    }
+  };
 
   const applyPreset = (pObj) => {
     setActivePreset(pObj.name);
@@ -192,7 +217,42 @@ export default function SliderTrackerBar({
     if (onRefreshPreview) onRefreshPreview();
   };
 
+  const handleSaveCurrentPreset = () => {
+    const name = newPresetName.trim();
+    if (!name) return;
+
+    // Collect current values of the 8 sliders from params
+    const values = {};
+    TRACKER_SLIDERS.forEach((s) => {
+      values[s.key] = num(params[s.key], s.defaultVal);
+    });
+
+    const newPreset = {
+      name: `★ ${name}`,
+      values,
+      isCustom: true,
+      id: Date.now().toString(),
+    };
+
+    const updated = [...customPresets.filter((p) => p.name !== newPreset.name), newPreset];
+    saveCustomPresetsToStorage(updated);
+    setActivePreset(newPreset.name);
+    setNewPresetName('');
+    setIsSaving(false);
+  };
+
+  const handleDeleteCustomPreset = (presetId, e) => {
+    e.stopPropagation();
+    const updated = customPresets.filter((p) => p.id !== presetId);
+    saveCustomPresetsToStorage(updated);
+    if (activePreset.includes(presetId)) {
+      setActivePreset('Default');
+    }
+  };
+
   const num = (v, fallback) => (typeof v === 'number' && !isNaN(v) ? v : fallback);
+
+  const allPresets = [...BUILTIN_PRESETS, ...customPresets];
 
   return (
     <div className="w-full rounded-2xl glass-panel p-4 mb-4 border border-white/10 shadow-2xl transition-all duration-300 relative overflow-hidden group">
@@ -313,30 +373,85 @@ export default function SliderTrackerBar({
         </div>
       </div>
 
-      {/* Preset Profiles Selector Strip */}
+      {/* Preset Profiles Selector & Save Strip */}
       {expanded && (
-        <div className="flex flex-wrap items-center gap-1.5 mt-3 pt-3 border-t border-white/5 select-none">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-white/40 mr-1.5">
-            Presets:
-          </span>
-          {PRESETS.map((p) => {
-            const isSel = activePreset === p.name;
-            return (
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-white/5 select-none">
+          {/* Left preset pills list */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-white/40 mr-1">
+              Presets:
+            </span>
+            {allPresets.map((p) => {
+              const isSel = activePreset === p.name;
+              return (
+                <div key={p.name || p.id} className="relative inline-flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    disabled={!sliderEffectEnabled}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all duration-200 flex items-center gap-1.5 ${
+                      isSel && sliderEffectEnabled
+                        ? 'bg-[var(--accent)] text-white border-white/20 shadow-[0_0_10px_var(--accent-glow)]'
+                        : 'bg-white/[0.03] border-white/10 text-white/70 hover:border-white/20 hover:text-white'
+                    } disabled:opacity-35 disabled:cursor-not-allowed`}
+                  >
+                    <span>{p.name}</span>
+                    {p.isCustom && (
+                      <span
+                        onClick={(e) => handleDeleteCustomPreset(p.id, e)}
+                        className="hover:text-red-300 font-extrabold ml-1 px-1 rounded bg-black/40"
+                        title="Delete custom preset"
+                      >
+                        ×
+                      </span>
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right Save Preset Button / Inline Input */}
+          <div className="flex items-center gap-1.5">
+            {isSaving ? (
+              <div className="flex items-center gap-1.5 bg-black/60 p-1 rounded-xl border border-[var(--accent)]/40 shadow-lg">
+                <input
+                  type="text"
+                  placeholder="Preset Name..."
+                  value={newPresetName}
+                  onChange={(e) => setNewPresetName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveCurrentPreset()}
+                  className="px-2 py-1 rounded-lg bg-black/80 text-white text-[11px] border border-white/10 focus:outline-none focus:border-[var(--accent)]"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveCurrentPreset}
+                  disabled={!newPresetName.trim()}
+                  className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-40"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSaving(false)}
+                  className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 text-white/60 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
               <button
-                key={p.name}
                 type="button"
-                onClick={() => applyPreset(p)}
+                onClick={() => setIsSaving(true)}
                 disabled={!sliderEffectEnabled}
-                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all duration-200 ${
-                  isSel && sliderEffectEnabled
-                    ? 'bg-[var(--accent)] text-white border-white/20 shadow-[0_0_10px_var(--accent-glow)]'
-                    : 'bg-white/[0.03] border-white/10 text-white/70 hover:border-white/20 hover:text-white'
-                } disabled:opacity-35 disabled:cursor-not-allowed`}
+                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                title="Save current slider values as a custom preset"
               >
-                {p.name}
+                <span>💾 Save Preset</span>
               </button>
-            );
-          })}
+            )}
+          </div>
         </div>
       )}
 
