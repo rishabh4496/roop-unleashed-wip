@@ -26,6 +26,14 @@ from fastapi import FastAPI, UploadFile, File, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
+import api_state as state
+from api_media import (
+    _save_upload,
+    _rgb_to_dataurl,
+    _bgr_to_dataurl,
+    _bgr_to_jpg_dataurl,
+    _dataurl_to_bgr,
+)
 import roop.globals as roop_globals
 from roop import utilities as util
 from roop.face_util import extract_face_images, get_all_faces
@@ -121,9 +129,6 @@ _ANGLE_SEED_MAX   = float(os.environ.get('ROOP_ANGLE_SEED_MAX', '0.85'))    # /t
 
 # ── Shared server-side state (mirrors the Gradio module globals) ──────────────
 list_files_process: list = []          # list[ProcessEntry] – the target media queue
-selected_input_face_index = 0          # which source faceset is "selected"
-selected_target_index = 0              # which target file is shown in preview
-current_video_fps = 30
 
 # Face Manager state (separate faceset builder)
 fm_thumbs: list = []                   # RGB numpy thumbnails
@@ -185,68 +190,14 @@ no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame"
                    "Skip Frame if no similar face", "Use last swapped"]
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-def _save_upload(file: UploadFile) -> str:
-    # Recreate the upload dir every time — the Gradio "clean temp" action and
-    # prepare_environment() can delete the whole temp/ tree out from under us.
-    os.makedirs(API_TEMP, exist_ok=True)
-    base = os.path.basename(file.filename)
-    path = os.path.join(API_TEMP, base)
-    # Never overwrite an earlier upload with the same name — existing target
-    # entries keep pointing at the old path, so clobbering it corrupts them.
-    stem, ext = os.path.splitext(base)
-    n = 1
-    while os.path.exists(path):
-        path = os.path.join(API_TEMP, f"{stem}_{n}{ext}")
-        n += 1
-    with open(path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return path
 
 
-def _rgb_to_dataurl(rgb) -> str:
-    """rgb: HxWx3 RGB numpy (as produced by util.convert_to_gradio) -> data URL."""
-    if rgb is None:
-        return ""
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    ok, buf = cv2.imencode(".png", bgr)
-    if not ok:
-        return ""
-    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
 
 
-def _bgr_to_dataurl(bgr) -> str:
-    if bgr is None:
-        return ""
-    ok, buf = cv2.imencode(".png", bgr)
-    if not ok:
-        return ""
-    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
 
 
-def _bgr_to_jpg_dataurl(bgr) -> str:
-    if bgr is None:
-        return ""
-    try:
-        ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-        if not ok:
-            return ""
-        return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
-    except Exception:
-        return ""
 
 
-def _dataurl_to_bgr(data_url: str):
-    """Decode a base64 data-URL (as produced by _bgr_to_dataurl) back into a BGR
-    frame. Returns None on any failure."""
-    if not data_url or "," not in data_url:
-        return None
-    try:
-        raw = base64.b64decode(data_url.split(",", 1)[1])
-        arr = np.frombuffer(raw, dtype=np.uint8)
-        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    except Exception:
-        return None
 
 
 def _mask_offsets_from_cfg():
@@ -258,7 +209,6 @@ def _mask_offsets_from_cfg():
 
 
 def _update_mask_offsets_from_payload(payload: dict):
-    global selected_input_face_index
     keys = ["mask_top", "mask_bottom", "mask_left", "mask_right",
             "face_mask_blend", "mouth_mask_blend",
             "mouth_top_scale", "mouth_bottom_scale", "mouth_left_scale", "mouth_right_scale"]
@@ -276,7 +226,7 @@ def _update_mask_offsets_from_payload(payload: dict):
             roop_globals.CFG.save()
 
     # Update current faceset face offsets
-    face_index = selected_input_face_index
+    face_index = state.selected_input_face_index
     if len(roop_globals.INPUT_FACESETS) > face_index:
         faceset = roop_globals.INPUT_FACESETS[face_index]
         if faceset.faces:
@@ -676,7 +626,7 @@ def get_state():
         "target_faces_info": _target_faces_info(),
         "target_names": _target_names_ranked(),
         "targets": targets,
-        "selected_target_index": selected_target_index,
+        "selected_target_index": state.selected_target_index,
         "faceset_count": len(roop_globals.INPUT_FACESETS),
     }
 
@@ -770,9 +720,8 @@ def source_clear():
 
 @app.post("/api/source/select")
 def source_select(payload: dict = Body(...)):
-    global selected_input_face_index
-    selected_input_face_index = int(payload.get("index", 0))
-    return {"selected": selected_input_face_index}
+    state.selected_input_face_index = int(payload.get("index", 0))
+    return {"selected": state.selected_input_face_index}
 
 
 @app.post("/api/source/refresh_thumbs")
@@ -1015,7 +964,7 @@ def faceset_library_list():
 @app.post("/api/faceset/library/save")
 def faceset_library_save(payload: dict = Body(...)):
     idx = payload.get("index", None)
-    idx = selected_input_face_index if idx is None else int(idx)
+    idx = state.selected_input_face_index if idx is None else int(idx)
     if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
         return JSONResponse(status_code=400, content={"message": "no source faceset selected"})
 
@@ -1153,7 +1102,6 @@ def faceset_library_open():
 # ── Target media ─────────────────────────────────────────────────────────────
 @app.post("/api/target/add")
 def target_add(files: list[UploadFile] = File(...)):
-    global current_video_fps, selected_target_index
     first_new = len(list_files_process)
     for f in files:
         path = _save_upload(f)
@@ -1162,12 +1110,11 @@ def target_add(files: list[UploadFile] = File(...)):
     # frame count/fps immediately — the UI's auto-queue and labels rely on it.
     for i in range(first_new, len(list_files_process)):
         _refresh_target_frames(i)
-    selected_target_index = first_new if first_new < len(list_files_process) else 0
+    state.selected_target_index = first_new if first_new < len(list_files_process) else 0
     return _target_list_payload()
 
 
 def _refresh_target_frames(idx):
-    global current_video_fps
     if idx >= len(list_files_process):
         return
     entry = list_files_process[idx]
@@ -1179,10 +1126,10 @@ def _refresh_target_frames(idx):
         # inheriting whatever fps the PREVIOUS target happened to have, so the
         # render came out at the wrong speed.
         try:
-            current_video_fps = util.detect_fps(filename)
+            state.current_video_fps = util.detect_fps(filename)
         except Exception:
-            current_video_fps = 30
-        entry.fps = current_video_fps
+            state.current_video_fps = 30
+        entry.fps = state.current_video_fps
     else:
         total = 1
         entry.fps = 0
@@ -1210,52 +1157,49 @@ def _target_entry_dict(entry):
 
 def _target_list_payload():
     targets = [_target_entry_dict(entry) for entry in list_files_process]
-    return {"targets": targets, "selected_target_index": selected_target_index,
-            "fps": current_video_fps}
+    return {"targets": targets, "selected_target_index": state.selected_target_index,
+            "fps": state.current_video_fps}
 
 
 @app.post("/api/target/select")
 def target_select(payload: dict = Body(...)):
-    global selected_target_index
     idx = int(payload.get("index", 0))
     # Clamp: a negative index would silently wrap to the last entry via
     # Python list indexing in downstream helpers.
-    selected_target_index = max(0, min(idx, max(0, len(list_files_process) - 1)))
-    _refresh_target_frames(selected_target_index)
+    state.selected_target_index = max(0, min(idx, max(0, len(list_files_process) - 1)))
+    _refresh_target_frames(state.selected_target_index)
     return _target_list_payload()
 
 
 @app.post("/api/target/remove")
 def target_remove(payload: dict = Body(...)):
     """Remove a single target media item from the queue."""
-    global selected_target_index
     idx = int(payload.get("index", -1))
     if 0 <= idx < len(list_files_process):
         list_files_process.pop(idx)
-    if selected_target_index >= len(list_files_process):
-        selected_target_index = max(0, len(list_files_process) - 1)
+    if state.selected_target_index >= len(list_files_process):
+        state.selected_target_index = max(0, len(list_files_process) - 1)
     if list_files_process:
-        _refresh_target_frames(selected_target_index)
+        _refresh_target_frames(state.selected_target_index)
     return _target_list_payload()
 
 
 @app.post("/api/target/clear")
 def target_clear():
-    global selected_target_index
     list_files_process.clear()
     roop_globals.TARGET_FACES.clear()
     roop_globals.TARGET_FACE_GROUP.clear()
     if getattr(roop_globals, 'TARGET_FACE_NAMES', None):
         roop_globals.TARGET_FACE_NAMES.clear()
     ui_globals.ui_target_thumbs.clear()
-    selected_target_index = 0
+    state.selected_target_index = 0
     return _target_list_payload()
 
 
 @app.post("/api/target/set_frame")
 def target_set_frame(payload: dict = Body(...)):
     """Set start/end frame of the selected target (Set as Start / End)."""
-    idx = selected_target_index
+    idx = state.selected_target_index
     which = payload.get("which", "start")
     frame = int(payload.get("frame", 1))
     if idx < len(list_files_process):
@@ -1444,7 +1388,7 @@ def target_use_face(payload: dict = Body(...)):
     boxes drawn on the live-preview overlay, so clicking a box adds exactly that
     person to the target faces.
     """
-    idx = int(payload.get("index", selected_target_index))
+    idx = int(payload.get("index", state.selected_target_index))
     frame = int(payload.get("frame", 1))
     if idx >= len(list_files_process):
         return {"target_faces": [], "target_groups": []}
@@ -1471,7 +1415,7 @@ def target_add_angle(payload: dict = Body(...)):
     person, picking the face in the current frame closest to that person so
     matching survives pose changes (anti-flicker, multi-angle tracking)."""
     person = int(payload.get("person", 0))     # 0-based person rank
-    idx = int(payload.get("index", selected_target_index))
+    idx = int(payload.get("index", state.selected_target_index))
     frame = int(payload.get("frame", 1))
     if idx >= len(list_files_process):
         return _target_faces_payload({"count": 0})
@@ -1551,7 +1495,7 @@ def target_auto_angles(payload: dict = Body(...)):
         return JSONResponse(status_code=409, content={"message": "busy processing"})
 
     person = int(payload.get("person", 0))
-    idx = int(payload.get("index", selected_target_index))
+    idx = int(payload.get("index", state.selected_target_index))
     if idx >= len(list_files_process):
         return _target_faces_payload({"count": 0, "message": "no target"})
     target_path = list_files_process[idx].filename
@@ -1935,132 +1879,10 @@ def save_profiles(payload: dict = Body(...)):
     return {"status": "success", "count": len(profiles)}
 
 
-# ── Quality report card ──────────────────────────────────────────────────────
-def _clamp(v, lo=0.0, hi=100.0):
-    return max(lo, min(hi, v))
 
 
-def _analyze_output_frame(img, src_embs):
-    """Detect the dominant face in a rendered frame and return its embedding,
-    best identity similarity vs the loaded source(s), and a sharpness score."""
-    faces = get_all_faces(img) or []
-    if not faces:
-        return None
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    emb = getattr(face, 'embedding', None)
-    x1, y1, x2, y2 = [int(v) for v in face.bbox]
-    x1, y1 = max(0, x1), max(0, y1)
-    crop = img[y1:max(y1 + 1, y2), x1:max(x1 + 1, x2)]
-    sharp = 0.0
-    try:
-        if crop.size:
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    except Exception:
-        pass
-    sim = None
-    if emb is not None and src_embs:
-        try:
-            sim = max(1.0 - util.compute_cosine_distance(emb, se) for se in src_embs)
-        except Exception:
-            sim = None
-    return {"emb": emb, "sharp": sharp, "sim": sim}
 
 
-@app.post("/api/quality/analyze")
-def quality_analyze(payload: dict = Body(...)):
-    """Post-run quality report: identity likeness vs the source, sharpness,
-    temporal stability (video), and detection coverage. Samples up to 24 frames
-    from the output and re-detects faces to measure the actual result."""
-    path = payload.get("path") or _last_output.get("path")
-    if not path or not os.path.exists(path):
-        return JSONResponse(status_code=404, content={"message": "No output available to analyze"})
-
-    src_embs = []
-    for fs in roop_globals.INPUT_FACESETS:
-        for f in fs.faces:
-            e = getattr(f, 'embedding', None)
-            if e is not None:
-                src_embs.append(e)
-
-    is_vid = util.is_video(path) or path.lower().endswith(("gif", "webp"))
-    sims, sharps, embs_seq = [], [], []
-    sampled = 0
-    detected = 0
-
-    try:
-        if is_vid:
-            total = int(get_video_frame_total(path) or 0)
-            n = min(24, max(1, total))
-            idxs = [int(i * (total - 1) / (n - 1)) + 1 for i in range(n)] if total > 1 else [1]
-            for fi in idxs:
-                frame = get_video_frame(path, fi)
-                if frame is None:
-                    continue
-                sampled += 1
-                r = _analyze_output_frame(frame, src_embs)
-                if r is None:
-                    continue
-                detected += 1
-                if r["sim"] is not None:
-                    sims.append(r["sim"])
-                sharps.append(r["sharp"])
-                if r["emb"] is not None:
-                    embs_seq.append(r["emb"])
-        else:
-            img = get_image_frame(path)
-            if img is not None:
-                sampled = 1
-                r = _analyze_output_frame(img, src_embs)
-                if r is not None:
-                    detected = 1
-                    if r["sim"] is not None:
-                        sims.append(r["sim"])
-                    sharps.append(r["sharp"])
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"Analysis failed: {e}"})
-
-    if detected == 0:
-        return {"ok": False, "message": "No face detected in the output", "is_video": is_vid,
-                "sampled": sampled, "detection_rate": 0}
-
-    metrics = {}
-    identity_sim = (sum(sims) / len(sims)) if sims else None
-    if identity_sim is not None:
-        metrics["identity_similarity"] = round(float(identity_sim), 3)
-        metrics["identity_score"] = round(_clamp((identity_sim - 0.15) / (0.55 - 0.15) * 100), 1)
-
-    mean_sharp = (sum(sharps) / len(sharps)) if sharps else 0.0
-    metrics["sharpness_raw"] = round(mean_sharp, 1)
-    metrics["sharpness_score"] = round(_clamp(mean_sharp / 800.0 * 100), 1)
-
-    detection_rate = detected / max(1, sampled)
-    metrics["detection_rate"] = round(detection_rate * 100, 1)
-
-    if is_vid and len(embs_seq) >= 2:
-        dists = [util.compute_cosine_distance(embs_seq[i], embs_seq[i + 1]) for i in range(len(embs_seq) - 1)]
-        stability = 1.0 - min(1.0, sum(dists) / len(dists))
-        metrics["temporal_stability"] = round(_clamp(stability * 100), 1)
-
-    # Weighted overall score across whatever metrics we have.
-    weights, total_w, acc = {}, 0.0, 0.0
-    if "identity_score" in metrics:
-        weights["identity_score"] = 0.45 if is_vid else 0.7
-    if "temporal_stability" in metrics:
-        weights["temporal_stability"] = 0.3
-    weights["sharpness_score"] = 0.15 if is_vid else 0.3
-    if is_vid:
-        weights["detection_rate"] = 0.1
-    for k, w in weights.items():
-        acc += metrics[k] * w
-        total_w += w
-    overall = acc / total_w if total_w else 0
-    metrics["overall_score"] = round(overall, 1)
-    metrics["grade"] = ("A" if overall >= 85 else "B" if overall >= 70 else
-                        "C" if overall >= 55 else "D" if overall >= 40 else "E")
-
-    return {"ok": True, "is_video": is_vid, "sampled": sampled,
-            "has_source": bool(src_embs), "metrics": metrics}
 
 
 # ── Person ids for the live-preview overlay ──────────────────────────────────
@@ -2160,9 +1982,8 @@ def _preview_person_ids(idx, faces):
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
     """Render the selected target frame, optionally with a live face swap."""
-    global selected_target_index
     _update_mask_offsets_from_payload(payload)
-    idx = int(payload.get("index", selected_target_index))
+    idx = int(payload.get("index", state.selected_target_index))
     frame = int(payload.get("frame", 1))
     fake = bool(payload.get("fake_preview", False))
 
@@ -2228,7 +2049,7 @@ def preview(payload: dict = Body(...)):
 
         swap_model = payload.get("swap_model", "inswapper")
         mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))
-        face_index = selected_input_face_index
+        face_index = state.selected_input_face_index
         if len(roop_globals.INPUT_FACESETS) <= face_index:
             face_index = 0
         face_mapping = payload.get("face_mapping")
@@ -2324,7 +2145,6 @@ def trigger_swap(payload: dict = Body(...)):
 
 
 def _run_swap(payload):
-    global selected_input_face_index
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
 
@@ -2448,7 +2268,7 @@ def _run_swap(payload):
             bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
             int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
             ApiProgress(),
-            mapped_selected_index(run_mapping, run_facesets, selected_input_face_index),
+            mapped_selected_index(run_mapping, run_facesets, state.selected_input_face_index),
             use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
             mask_per_frame_json="",
             use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
@@ -2891,7 +2711,6 @@ def _facemgr_faces_payload():
 def facemgr_add(files: list[UploadFile] = File(...),
                       detector: str = Form("scrfd"),
                       restore: bool = Form(False)):
-    global current_video_fps
     video_path = None
     for f in files:
         path = _save_upload(f)
@@ -2903,9 +2722,9 @@ def facemgr_add(files: list[UploadFile] = File(...),
             fm_files.append(path)
             video_path = path
             try:
-                current_video_fps = util.detect_fps(path)
+                state.current_video_fps = util.detect_fps(path)
             except Exception:
-                current_video_fps = 30
+                state.current_video_fps = 30
     resp = _facemgr_faces_payload()
     if video_path:
         resp["video"] = os.path.basename(video_path)
@@ -3020,65 +2839,6 @@ def facemgr_build():
     return {"path": finalzip, "name": "faceset.fsz"}
 
 
-# ── Extras: media editor (resize / rotate / fps / crop) ──────────────────────
-@app.post("/api/extras/apply")
-def extras_apply(file: UploadFile = File(...),
-                       resolution: str = Form("Original"),
-                       rotation: str = Form("None"),
-                       fps: float = Form(30.0),
-                       crop_left: int = Form(0), crop_right: int = Form(0),
-                       crop_top: int = Form(0), crop_bottom: int = Form(0)):
-    from ui.main import prepare_environment
-    prepare_environment()
-    path = _save_upload(file)
-    is_video = util.is_video(path) or path.lower().endswith("gif")
-
-    def _process_frame(img):
-        h, w = img.shape[:2]
-        x0 = int(w * crop_left / 100)
-        x1 = w - int(w * crop_right / 100)
-        y0 = int(h * crop_top / 100)
-        y1 = h - int(h * crop_bottom / 100)
-        if x1 > x0 and y1 > y0:
-            img = img[y0:y1, x0:x1]
-        if rotation == "90° Clockwise":
-            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        elif rotation == "90° Counter-Clockwise":
-            img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        elif rotation == "180°":
-            img = cv2.rotate(img, cv2.ROTATE_180)
-        if resolution and resolution != "Original":
-            try:
-                target_w = int(str(resolution).split("x")[0])
-                scale = target_w / img.shape[1]
-                img = cv2.resize(img, (target_w, int(img.shape[0] * scale)))
-            except Exception:
-                pass
-        return img
-
-    out_dir = roop_globals.output_path
-    if not is_video:
-        img = get_image_frame(path)
-        out = _process_frame(img)
-        outpath = os.path.join(out_dir, "edited_" + os.path.splitext(os.path.basename(path))[0] + ".png")
-        cv2.imwrite(outpath, out)
-        return {"path": outpath, "kind": "image"}
-
-    total = get_video_frame_total(path) or 1
-    first_frame = get_video_frame(path, 1)
-    if first_frame is None:
-        return JSONResponse(status_code=400, content={"message": "could not read the video's first frame"})
-    first = _process_frame(first_frame)
-    oh, ow = first.shape[:2]
-    outpath = os.path.join(out_dir, "edited_" + os.path.splitext(os.path.basename(path))[0] + ".mp4")
-    writer = cv2.VideoWriter(outpath, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))
-    for i in range(1, total + 1):
-        fr = get_video_frame(path, i)
-        if fr is None:
-            continue
-        writer.write(_process_frame(fr))
-    writer.release()
-    return {"path": outpath, "kind": "video"}
 
 
 # ── Extras: frame post-processors (AI upscale / colorize / stylize filters) ──
@@ -3089,147 +2849,16 @@ _FRAME_UPSCALERS = ["esrganx2", "esrganx4", "esrgan_anime_x4", "ultrasharp_x4", 
 _FRAME_COLORIZERS = ["deoldify_artistic", "deoldify_stable"]
 
 
-def _make_frame_processor(operation: str, subtype: str):
-    """Instantiate + initialize the requested frame processor. Returns a class
-    whose Run(frame)->frame does the work."""
-    from roop.utilities import get_device
-    devicename = get_device()
-    if operation == "upscale":
-        from roop.processors.Frame_Upscale import Frame_Upscale
-        proc = Frame_Upscale()
-    elif operation == "colorize":
-        from roop.processors.Frame_Colorizer import Frame_Colorizer
-        proc = Frame_Colorizer()
-    elif operation == "filter":
-        from roop.processors.Frame_Filter import Frame_Filter
-        proc = Frame_Filter()
-    else:
-        raise ValueError(f"unknown operation {operation}")
-    proc.Initialize({"devicename": devicename, "subtype": subtype})
-    return proc
 
 
-@app.get("/api/extras/frame_ops")
-def get_frame_ops():
-    return {"upscale": _FRAME_UPSCALERS, "colorize": _FRAME_COLORIZERS, "filter": _FRAME_FILTERS}
 
 
-@app.post("/api/extras/enhance")
-def extras_enhance(file: UploadFile = File(...),
-                         operation: str = Form("upscale"),
-                         subtype: str = Form("esrganx2")):
-    """Run a frame post-processor (AI upscale / colorize / stylize) over an
-    uploaded image or video and write the result to the output folder."""
-    from ui.main import prepare_environment
-    prepare_environment()   # ensures the Frame/* models are downloaded
-
-    valid = {"upscale": _FRAME_UPSCALERS, "colorize": _FRAME_COLORIZERS, "filter": _FRAME_FILTERS}
-    if operation not in valid or subtype not in valid[operation]:
-        return JSONResponse(status_code=400, content={"message": "invalid operation/subtype"})
-
-    path = _save_upload(file)
-    is_video = util.is_video(path) or path.lower().endswith("gif")
-    out_dir = roop_globals.output_path
-    stem = os.path.splitext(os.path.basename(path))[0]
-
-    try:
-        proc = _make_frame_processor(operation, subtype)
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": f"failed to load model: {e}"})
-
-    try:
-        if not is_video:
-            img = get_image_frame(path)
-            if img is None:
-                return JSONResponse(status_code=400, content={"message": "could not read image"})
-            out = proc.Run(img)
-            outpath = os.path.join(out_dir, f"{operation}_{subtype}_{stem}.png")
-            cv2.imwrite(outpath, out)
-            return {"path": outpath, "kind": "image"}
-
-        total = get_video_frame_total(path) or 1
-        first = get_video_frame(path, 1)
-        if first is None:
-            return JSONResponse(status_code=400, content={"message": "could not read the video's first frame"})
-        out_first = proc.Run(first)
-        oh, ow = out_first.shape[:2]
-        outpath = os.path.join(out_dir, f"{operation}_{subtype}_{stem}.mp4")
-        try:
-            fps = util.detect_fps(path)
-        except Exception:
-            fps = 30
-        writer = cv2.VideoWriter(outpath, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))
-        writer.write(out_first)
-        for i in range(2, total + 1):
-            fr = get_video_frame(path, i)
-            if fr is None:
-                continue
-            res = proc.Run(fr)
-            if res.shape[:2] != (oh, ow):
-                res = cv2.resize(res, (ow, oh))
-            writer.write(res)
-        writer.release()
-        return {"path": outpath, "kind": "video"}
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": f"processing failed: {e}"})
-    finally:
-        try:
-            proc.Release()
-        except Exception:
-            pass
 
 
-_GPU_NAME_CACHE = None
 
 
-def _gpu_name():
-    """Device name for the runtime-estimate signature (cached — it never changes
-    within a process)."""
-    global _GPU_NAME_CACHE
-    if _GPU_NAME_CACHE is not None:
-        return _GPU_NAME_CACHE
-    name = ""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            name = torch.cuda.get_device_name(0)
-    except Exception:
-        name = ""
-    _GPU_NAME_CACHE = name
-    return name
 
 
-@app.post("/api/runtime_estimate")
-def runtime_estimate(payload: dict = Body(...)):
-    """Predicted ms/frame for the current settings, learned from past completed
-    runs (see roop.runtime_calib). Returns nulls when there's no data yet — the
-    frontend falls back to its heuristic. `frames` in the payload is echoed into
-    total_ms for convenience."""
-    precision = getattr(roop_globals.CFG, 'trt_precision', 'mixed')
-    threads = roop_globals.CFG.max_threads
-    gpu = _gpu_name()
-    out = {"ms_per_frame": None, "samples": 0, "source": "none", "total_ms": None,
-           "density_bucket": None, "gpu": gpu, "threads": threads,
-           "precision": precision, "store": {"entries": 0, "global_samples": 0}}
-    try:
-        from roop import runtime_calib
-        frames = int(payload.get("frames", 1) or 1)
-        base = runtime_calib.signature_from_payload(
-            payload, gpu=gpu, threads=threads, precision=precision)
-        fc = payload.get("face_count")
-        bucket = runtime_calib.density_bucket(fc) if fc is not None else None
-        sig = runtime_calib.with_density(base, bucket) if bucket else base
-        out["density_bucket"] = bucket
-        out["store"] = runtime_calib.stats()
-        pred = runtime_calib.predict(sig)
-        if pred and pred.get("ms_per_frame"):
-            out.update({"ms_per_frame": pred["ms_per_frame"], "samples": pred["samples"],
-                        "source": pred["source"], "total_ms": frames * pred["ms_per_frame"]})
-    except Exception:
-        traceback.print_exc()
-    return out
 
 
 # ── Live camera (webcam → live swap → optional virtual camera) ───────────────
@@ -3239,332 +2868,54 @@ def runtime_estimate(payload: dict = Body(...)):
 # JPEG for the React panel's ~5fps preview. With stream_obs the swapped feed is
 # also pushed to a system virtual camera (OBS etc.) via pyvirtualcam.
 
-@app.get("/api/livecam/status")
-def livecam_status():
-    try:
-        from roop import virtualcam
-        return {"active": bool(virtualcam.cam_active)}
-    except Exception:
-        return {"active": False}
 
 
-@app.post("/api/livecam/start")
-def livecam_start(payload: dict = Body(...)):
-    if _progress["processing"]:
-        return JSONResponse(status_code=409, content={"message": "busy processing"})
-    try:
-        from roop import virtualcam
-    except Exception as e:
-        return JSONResponse(status_code=500,
-                            content={"message": f"virtual camera support unavailable: {e}"})
-    if virtualcam.cam_active:
-        return {"active": True}
-    try:
-        cam_number = int(payload.get("cam_number", 0))
-        resolution = str(payload.get("resolution", "1280x720"))
-        if "x" not in resolution:
-            resolution = "1280x720"
-        virtualcam.start_virtual_cam(
-            bool(payload.get("stream_obs", False)),
-            bool(payload.get("use_xseg", False)),
-            bool(payload.get("restore_mouth", False)),
-            cam_number, resolution)
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": f"could not start camera: {e}"})
-    # The capture thread opens the device asynchronously — the UI re-polls
-    # /status shortly after to confirm it actually came up.
-    return {"starting": True}
 
 
-@app.post("/api/livecam/stop")
-def livecam_stop():
-    try:
-        from roop import virtualcam
-        virtualcam.stop_virtual_cam()
-    except Exception:
-        traceback.print_exc()
-    return {"active": False}
 
 
-@app.get("/api/livecam/frame")
-def livecam_frame():
-    frame = getattr(ui_globals, "ui_camera_frame", None)
-    if frame is None:
-        return JSONResponse(status_code=404, content={"message": "no frame yet"})
-    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-    if not ok:
-        return JSONResponse(status_code=500, content={"message": "encode failed"})
-    return Response(content=buf.tobytes(), media_type="image/jpeg",
-                    headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/advisor")
-def settings_advisor(payload: dict = Body(...)):
-    """Analyze the selected target clip (face count/size, detection coverage,
-    motion, brightness) and recommend concrete Face Swap settings for it.
-    Pass the current settings object as `settings` so only actual CHANGES come
-    back. Read-only: nothing is applied server-side — the UI applies the
-    recommendations the user accepts."""
-    import statistics
-
-    if _progress["processing"]:
-        return JSONResponse(status_code=409, content={"message": "busy processing"})
-    idx = int(payload.get("index", selected_target_index))
-    if idx < 0 or idx >= len(list_files_process):
-        return JSONResponse(status_code=404, content={"message": "no target loaded"})
-    path = list_files_process[idx].filename
-    is_vid = util.is_video(path) or path.lower().endswith("gif") or util.is_animated_webp(path)
-    roop_globals.target_path = path
-
-    frames, pairs = [], []
-    if is_vid:
-        total = int(get_video_frame_total(path) or 0)
-        n = min(12, max(1, total))
-        idxs = sorted({int(i * (total - 1) / max(1, n - 1)) + 1 for i in range(n)})
-        for fi in idxs:
-            img = get_video_frame(path, fi)
-            if img is not None:
-                frames.append(img)
-        # Adjacent-frame pairs at 25/50/75% for a motion estimate.
-        for frac in (0.25, 0.5, 0.75):
-            fi = max(1, int(total * frac))
-            a = get_video_frame(path, fi)
-            b = get_video_frame(path, min(total, fi + 1))
-            if a is not None and b is not None and fi < total:
-                pairs.append((a, b))
-    else:
-        img = get_image_frame(path)
-        if img is not None:
-            frames.append(img)
-    if not frames:
-        return JSONResponse(status_code=500, content={"message": "could not read target frames"})
-
-    counts, rel_sizes, brightness = [], [], []
-    detected_frames = 0
-    for img in frames:
-        h, w = img.shape[:2]
-        faces = get_all_faces(img) or []
-        counts.append(len(faces))
-        if faces:
-            detected_frames += 1
-        for f in faces:
-            bb = f.bbox
-            rel_sizes.append(float(max((bb[3] - bb[1]) / h, (bb[2] - bb[0]) / w)))
-        brightness.append(float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean()))
-    motion = []
-    for a, b in pairs:
-        ga = cv2.cvtColor(cv2.resize(a, (96, 96)), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        gb = cv2.cvtColor(cv2.resize(b, (96, 96)), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        motion.append(float(np.abs(ga - gb).mean()))
-
-    coverage = detected_frames / len(frames)
-    med_count = statistics.median(counts) if counts else 0
-    min_rel = min(rel_sizes) if rel_sizes else 0.0
-    max_rel = max(rel_sizes) if rel_sizes else 0.0
-    bright = statistics.median(brightness) if brightness else 0.0
-    mot = statistics.median(motion) if motion else 0.0
-
-    stats = {
-        "sampled_frames": len(frames),
-        "detection_coverage": round(coverage * 100, 1),
-        "median_faces": med_count,
-        "min_face_size_pct": round(min_rel * 100, 1),
-        "max_face_size_pct": round(max_rel * 100, 1),
-        "brightness": round(bright, 1),
-        "motion": round(mot, 2),
-    }
-    if not rel_sizes:
-        return {"ok": True, "is_video": is_vid, "stats": stats, "recommendations": [],
-                "message": "No faces detected in the sampled frames — nothing to recommend. "
-                           "Try lowering the detection threshold manually."}
-
-    cur = payload.get("settings") or {}
-    recs = []
-
-    def rec(key, value, reason):
-        if any(r["key"] == key for r in recs):
-            return
-        if cur.get(key) == value:
-            return
-        recs.append({"key": key, "value": value, "reason": reason})
-
-    if is_vid and coverage < 0.9:
-        miss = round((1 - coverage) * 100)
-        rec("temporal_detection", True,
-            f"Faces went undetected on ~{miss}% of sampled frames — the temporal pre-pass "
-            f"gap-fills misses so the swap can't blink out.")
-        if (cur.get("detector_engine") or "scrfd") == "scrfd":
-            rec("detector_engine", "retinaface",
-                "RetinaFace has higher recall on hard poses/lighting than SCRFD — fewer missed detections.")
-    if min_rel < 0.05:
-        rec("rescue_small_faces", True,
-            f"Smallest face is only {stats['min_face_size_pct']}% of the frame — the 2x-upscale "
-            f"rescue catches tiny faces without raising the global detection resolution.")
-        if str(cur.get("face_detector_size") or "640") == "320":
-            rec("face_detector_size", "640", "Small faces need the full 640px detection resolution.")
-    if max_rel > 0.45 and str(cur.get("subsample_upscale") or "") != "512px":
-        rec("subsample_upscale", "512px",
-            f"Largest face fills {stats['max_face_size_pct']}% of the frame — 512px pixel boost "
-            f"keeps close-ups sharp (the swapper's native output is much smaller).")
-    elif max_rel > 0.22 and str(cur.get("subsample_upscale") or "") == "128px":
-        rec("subsample_upscale", "256px",
-            "Faces are fairly large — 128px subsampling will look soft; 256px is a better floor.")
-    if med_count > 1:
-        rec("face_detection_mode", "Selected face",
-            f"Multiple people per frame (median {med_count:g}) — select who to swap instead of "
-            f"swapping every face.")
-        if is_vid:
-            rec("track_identities", True,
-                "Multiple people in a video — identity tracking locks each person to one source "
-                "so identities can't flip mid-clip.")
-    if bright < 55:
-        cur_thr = float(cur.get("face_detector_threshold") or 0.5)
-        if cur_thr > 0.4:
-            rec("face_detector_threshold", 0.4,
-                f"Dark footage (median brightness {stats['brightness']}/255) — detections score "
-                f"lower in low light; a lower threshold keeps them.")
-    if is_vid and mot < 2.5 and not cur.get("stabilize_face"):
-        rec("stabilize_face", True,
-            "Near-static shot — keypoint smoothing removes residual frame-to-frame jitter "
-            "with no downside at this motion level.")
-    if is_vid and mot > 14:
-        rec("temporal_detection", True,
-            f"Fast motion (score {stats['motion']}) — motion blur causes detection dropouts; "
-            f"the temporal pre-pass bridges them.")
-
-    return {"ok": True, "is_video": is_vid, "stats": stats, "recommendations": recs}
 
 
-_nvsmi_cache = {"t": 0.0, "data": {}, "fails": 0}
-_nvsmi_lock = threading.Lock()
 
 
-def _nvidia_smi_stats():
-    """GPU utilisation / temp / power / SM clock via nvidia-smi.
-
-    torch reports VRAM but NOT utilisation, and utilisation is the number that
-    distinguishes "the GPU is the bottleneck" from "the GPU is idle waiting on a
-    lock or on decode" — the single most useful figure when a run is slower than
-    expected. Spawning a process is far too expensive per poll, so the result is
-    cached for _NVSMI_TTL and the probe disables itself after repeated failures
-    (no NVIDIA GPU, driver mismatch) rather than paying the cost forever.
-    """
-    _NVSMI_TTL = 2.0
-    with _nvsmi_lock:
-        if _nvsmi_cache["fails"] >= 3:
-            return {}
-        if time.time() - _nvsmi_cache["t"] < _NVSMI_TTL:
-            return dict(_nvsmi_cache["data"])
-    data = {}
-    try:
-        proc = subprocess.run(
-            ["nvidia-smi",
-             "--query-gpu=utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3,
-            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
-        line = (proc.stdout or "").strip().splitlines()[0]
-        vals = [v.strip() for v in line.split(",")]
-        keys = ["gpu_util", "gpu_mem_util", "gpu_temp", "gpu_power", "gpu_clock"]
-        for k, v in zip(keys, vals):
-            try:
-                data[k] = round(float(v), 1)
-            except ValueError:
-                pass
-    except Exception:
-        with _nvsmi_lock:
-            _nvsmi_cache["fails"] += 1
-        return {}
-    with _nvsmi_lock:
-        _nvsmi_cache.update({"t": time.time(), "data": dict(data), "fails": 0})
-    return data
 
 
-@app.get("/api/system/profile")
-def get_stage_profile():
-    """Live per-stage timing breakdown (decode / detect / mask / swap / enhance…).
-
-    Reads the same accumulators ROOP_PROFILE's end-of-run STAGE TIMING report
-    prints, but mid-run, so the UI can show WHERE the time is going while it is
-    still going there. Shares are wall-clock summed across worker threads, so
-    they describe relative cost, not a fraction of elapsed time.
-
-    Returns enabled:false when ROOP_PROFILE is off — the accumulators are simply
-    never written in that case, which is why the numbers cost nothing normally.
-    """
-    try:
-        from roop import ProcessMgr as _pm
-        with _pm._prof_lock:
-            times = dict(_pm._prof_times)
-            counts = dict(_pm._prof_counts)
-        if not _pm._PROFILE:
-            return {"enabled": False, "stages": []}
-        total = sum(times.values()) or 1.0
-        stages = [{
-            "stage": k,
-            "total_s": round(times[k], 3),
-            "share": round(times[k] / total, 4),
-            "calls": counts.get(k, 0),
-            "ms_per_call": round(times[k] * 1000.0 / max(1, counts.get(k, 0)), 2),
-        } for k in sorted(times, key=lambda x: -times[x])]
-        return {"enabled": True, "stages": stages}
-    except Exception as e:
-        return {"enabled": False, "stages": [], "message": str(e)}
 
 
-@app.get("/api/system/telemetry")
-def get_telemetry():
-    telemetry = {
-        "gpu": "CPU Only",
-        "vram_total": 0.0,
-        "vram_used": 0.0,
-        "cpu_percent": 0.0,
-        "ram_total": 0.0,
-        "ram_used": 0.0,
-        "threads": 0
-    }
-    telemetry.update(_nvidia_smi_stats())
-    try:
-        import psutil
-        cpu_percent = psutil.cpu_percent()
-        ram = psutil.virtual_memory()
-        telemetry["cpu_percent"] = cpu_percent
-        telemetry["ram_total"] = round(ram.total / (1024 ** 3), 2)
-        telemetry["ram_used"] = round(ram.used / (1024 ** 3), 2)
-    except Exception:
-        pass
-
-    try:
-        import torch
-        if torch.cuda.is_available():
-            telemetry["gpu"] = torch.cuda.get_device_name(0)
-            try:
-                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
-                telemetry["vram_total"] = round(total_bytes / (1024 ** 3), 2)
-                telemetry["vram_used"] = round((total_bytes - free_bytes) / (1024 ** 3), 2)
-            except Exception:
-                telemetry["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
-                telemetry["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
-    except Exception:
-        pass
-
-    # Free space on the output drive. A long render writes tens of GB of frames
-    # and the failure mode when it runs out is losing the whole run at the encode
-    # step, so it belongs next to the other run-limiting resources.
-    try:
-        out = getattr(roop_globals, "output_path", None)
-        probe = out if (out and os.path.isdir(out)) else os.getcwd()
-        usage = shutil.disk_usage(probe)
-        telemetry["disk_free"] = round(usage.free / (1024 ** 3), 1)
-        telemetry["disk_total"] = round(usage.total / (1024 ** 3), 1)
-    except Exception:
-        pass
-
-    telemetry["threads"] = threading.active_count()
-    return telemetry
 
 
+
+
+# ── route modules ───────────────────────────────────────────────────────────
+# Cohesive groups of endpoints split out of this file. Inclusion order is not
+# significant: every /api route is a literal path with no path parameters, so
+# none can shadow another.
+import api_media as _api_media
+import routes_diagnostics as _routes_diagnostics
+import routes_livecam as _routes_livecam
+import routes_quality as _routes_quality
+import routes_extras as _routes_extras
+app.include_router(_routes_diagnostics.router)
+app.include_router(_routes_livecam.router)
+app.include_router(_routes_quality.router)
+app.include_router(_routes_extras.router)
+
+# Shared objects the route modules read. All are mutated in place and never
+# rebound here, so these bind one object rather than copying a value.
+_api_media.API_TEMP = API_TEMP
+_routes_diagnostics._progress = _progress
+_routes_diagnostics.list_files_process = list_files_process
+_routes_livecam._progress = _progress
+_routes_quality._last_output = _last_output
+_routes_extras._FRAME_COLORIZERS = _FRAME_COLORIZERS
+_routes_extras._FRAME_FILTERS = _FRAME_FILTERS
+_routes_extras._FRAME_UPSCALERS = _FRAME_UPSCALERS
+
+# _make_frame_processor left with the extras routes, but the post_swap wiring
+# below still needs it under its original name.
+from routes_extras import _make_frame_processor  # noqa: E402
 
 # ── post_swap shared-state wiring ────────────────────────────────────────────
 # post_swap.py holds the upscale/interpolation machinery that used to live here.

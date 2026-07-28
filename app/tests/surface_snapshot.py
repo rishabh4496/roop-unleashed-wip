@@ -84,16 +84,45 @@ def _describe(module):
 
 
 def _routes(api_module):
+    """Every path the app will actually serve.
+
+    Routes added via include_router do NOT appear directly in app.routes on
+    modern FastAPI: it stores a lazy `_IncludedRouter` wrapper whose own `path`
+    is None, so a naive walk silently reports every included endpoint as
+    missing. Recurse into `original_router` (and the older `.router`/`.routes`
+    shapes) so a decomposition into routers compares against the same table as
+    the monolith it replaced.
+    """
     app = getattr(api_module, "app", None)
     if app is None:
         return []
-    rows = []
-    for route in app.routes:
-        rows.append({
-            "path": getattr(route, "path", None),
-            "methods": sorted(getattr(route, "methods", []) or []),
-            "name": getattr(route, "name", None),
-        })
+
+    rows, seen = [], set()
+
+    def walk(routes, depth=0):
+        if depth > 5:
+            return
+        for route in routes:
+            inner = (getattr(route, "original_router", None)
+                     or getattr(route, "router", None))
+            if inner is not None and hasattr(inner, "routes"):
+                walk(inner.routes, depth + 1)
+                continue
+            path = getattr(route, "path", None)
+            if path is None:
+                continue
+            row = {
+                "path": path,
+                "methods": sorted(getattr(route, "methods", []) or []),
+                "name": getattr(route, "name", None),
+            }
+            key = (row["path"], tuple(row["methods"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+
+    walk(app.routes)
     return rows
 
 
