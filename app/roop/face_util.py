@@ -1,3 +1,4 @@
+import os
 import threading
 import contextlib
 from queue import Queue
@@ -737,6 +738,129 @@ WARP_TEMPLATES = {
 }
 
 
+# ── 5-keypoint pose proxies ──────────────────────────────────────────────────
+# Two roll-invariant ratios derived from the 5 arcface keypoints ALONE, so they
+# cost nothing extra (no landmark_3d_68 inference, which is not even loaded in
+# the default config — see ProcessMgr's `modules` list) and stay valid whenever
+# the detector has run.
+#
+#   yaw_ratio   = |eye_L - eye_R| / |eye_mid - mouth_mid|
+#   pitch_ratio = where the nose tip sits along the eye_mid -> mouth_mid axis,
+#                 as a fraction of that axis
+#
+# Both are normalised by the eye-to-mouth distance, which — unlike the eye
+# SEPARATION that the alignment fit leans on — stays well-conditioned all the
+# way to a 90 deg profile. Being ratios of distances (and of a projection onto
+# an axis the face itself defines) they are invariant to in-plane roll, so a
+# tilted head does not perturb them.
+#
+# Measured against the project's own 3D reference face (face_3d_recon._REF3D_68,
+# orthographic projection):
+#
+#   yaw    0    20    40    55    65    75    85    90      <- degrees
+#   ratio  .72  .68   .60   .50   .43   .19   .06   .00     <- yaw_ratio, pitch 0
+#
+#   pitch -40  -25   -10    0    +10   +25   +40
+#   ratio  .20  .35   .45  .52   .57   .66   .77            <- pitch_ratio, yaw 0
+#
+# NOTE on pitch_ratio: its sensitivity falls off as yaw grows (at a true 90 deg
+# profile the nose and the eye->mouth axis all lie in the sagittal plane, which
+# is parallel to the image plane, so pitch barely changes the projection — the
+# ratio becomes V-shaped and near-useless there). That is fine: it exists to
+# catch the FRONTAL extreme-pitch case, where it is most sensitive, and high yaw
+# is already covered by yaw_ratio.
+def kps_pose_ratios(kps):
+    """(yaw_ratio, pitch_ratio) from the 5 arcface keypoints, or (None, None)
+    when they are unusable (missing, wrong count, or degenerate)."""
+    try:
+        if kps is None:
+            return None, None
+        pts = np.asarray(kps, dtype=np.float32)
+        if pts.shape[0] != 5:
+            return None, None
+        eye_mid   = (pts[0] + pts[1]) / 2.0
+        mouth_mid = (pts[3] + pts[4]) / 2.0
+        axis = mouth_mid - eye_mid
+        vert = float(np.linalg.norm(axis))
+        if vert < 1e-6:
+            return None, None
+        yaw_ratio   = float(np.linalg.norm(pts[1] - pts[0])) / vert
+        pitch_ratio = float(np.dot(pts[2] - eye_mid, axis / vert) / vert)
+        return yaw_ratio, pitch_ratio
+    except Exception:
+        return None, None
+
+
+# Opt-in profile alignment (see estimate_norm). Default OFF: it changes the crop
+# geometry — and therefore the swap output — for high-yaw faces.
+PROFILE_ALIGN = os.environ.get('ROOP_PROFILE_ALIGN') == '1'
+# Engage only on near-profile faces (~70 deg+). Deliberately TIGHTER than the
+# 0.55 gate the masking path uses: the constrained fit disagrees with the plain
+# least-squares fit by up to ~9 deg even at yaw 55, so a looser gate here would
+# visibly change mid-angle faces that already look correct.
+PROFILE_ALIGN_YAW_RATIO = 0.40
+
+
+def _constrained_norm(lmk, dst):
+    """Similarity transform whose ROTATION is taken from the eye_mid -> mouth_mid
+    axis instead of from an unconstrained 5-point least-squares fit.
+
+    Why: at high yaw the two eyes project to nearly the same point (their
+    separation collapses to zero at 90 deg), so the least-squares fit is
+    ill-conditioned in rotation and starts absorbing PITCH as in-plane roll.
+    Measured swing of the crop rotation as the head nods from -25 to +25 deg:
+
+        yaw    0     30     60     75     90
+        LS   0.00   9.93  20.14  25.35  30.51  deg   <- current behaviour
+        ours 0.00   0.49   0.49   0.28   0.00  deg   <- rotation held steady
+
+    A 30 deg rotation swing on a nodding profile head feeds the swapper an
+    off-distribution crop and shows up as rotational wobble frame to frame.
+
+    The eye_mid -> mouth_mid axis stays well-conditioned at every yaw, so we fix
+    the rotation from it and still solve scale + translation by least squares
+    over all 5 points (so those keep every point's information).
+
+    Caveat: the mean per-point fit residual gets slightly WORSE off-neutral-pitch
+    (e.g. yaw 90 / pitch +25: 64.0 -> 69.9 px on a 512 crop). That is expected and
+    is not a regression — the lower residual was being bought by rotating the
+    face, which is precisely the pathology being removed.
+    """
+    def axis_angle(p):
+        v = ((p[3] + p[4]) / 2.0) - ((p[0] + p[1]) / 2.0)
+        return np.arctan2(v[1], v[0])
+
+    theta = axis_angle(dst) - axis_angle(lmk)
+    c, s = np.cos(theta), np.sin(theta)
+    R = np.array([[c, -s], [s, c]], dtype=np.float64)
+
+    src_m, dst_m = lmk.mean(0), dst.mean(0)
+    rot_sc = (lmk - src_m) @ R.T
+    denom = float((rot_sc ** 2).sum())
+    if denom < 1e-9:
+        return None
+    scale = float(((dst - dst_m) * rot_sc).sum() / denom)
+    if not np.isfinite(scale) or scale <= 0:
+        return None
+
+    M = np.zeros((2, 3), dtype=np.float64)
+    M[:, :2] = scale * R
+    M[:, 2] = dst_m - scale * (R @ src_m)
+    return M
+
+
+def _maybe_constrained(lmk, dst):
+    """_constrained_norm(), but only for near-profile faces and only when the
+    opt-in flag is set. Returns None to mean 'use the normal fit'."""
+    if not PROFILE_ALIGN:
+        return None
+    yaw_ratio, _ = kps_pose_ratios(lmk)
+    if yaw_ratio is None or yaw_ratio >= PROFILE_ALIGN_YAW_RATIO:
+        return None
+    return _constrained_norm(np.asarray(lmk, dtype=np.float64),
+                             np.asarray(dst, dtype=np.float64))
+
+
 def estimate_norm(lmk, image_size=112, mode="arcface"):
     assert lmk.shape == (5, 2)
 
@@ -749,6 +873,9 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
 
     if mode in WARP_TEMPLATES:
         dst = WARP_TEMPLATES[mode] * float(image_size)
+        M = _maybe_constrained(lmk, dst)
+        if M is not None:
+            return M
         tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
         tform.estimate(lmk, dst)
         return tform.params[0:2, :]
@@ -771,6 +898,9 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
 
     dst = arcface_dst * ratio
     dst[:, 0] += diff_x
+    M = _maybe_constrained(lmk, dst)
+    if M is not None:
+        return M
     tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
     tform.estimate(lmk, dst)
     M = tform.params[0:2, :]

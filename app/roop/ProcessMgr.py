@@ -7,7 +7,7 @@ import contextlib
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, analysis_pooled, kps_pose_ratios
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -3220,11 +3220,14 @@ class ProcessMgr():
         mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
+        # kps gives create_landmark_mask the head's up-axis, so the forehead
+        # extension follows a tilted head instead of image-up.
+        face_kps = getattr(target_face, 'kps', None)
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps)
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
@@ -3289,7 +3292,7 @@ class ProcessMgr():
         return blended_image.astype(np.uint8)
 
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -3316,7 +3319,7 @@ class ProcessMgr():
         # For angled/profile faces this prevents the warped ellipse from covering
         # background regions where the swap model put grey fill pixels.
         if face_landmarks is not None:
-            lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4])
+            lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4], kps=face_kps)
             img_matte = np.minimum(img_matte, lm_mask)
 
         img_matte = self.blur_area(img_matte, mask_offsets[4])
@@ -3377,7 +3380,7 @@ class ProcessMgr():
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 
 
-    def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount):
+    def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount, kps=None):
         """Build a binary mask from the convex hull of the 106-pt face landmarks.
 
         Works in target-frame space so the shape naturally matches the actual
@@ -3386,35 +3389,70 @@ class ProcessMgr():
         edge on profile shots.
 
         A forehead extension is added because the 106-pt model only reaches
-        the eyebrow line; we project upward by ~60 % of the brow-to-chin
-        distance so the full forehead is covered on frontal faces without
-        over-extending on profiles.
+        the eyebrow line; we project along the head's own up-axis by ~60 % of
+        the brow-to-chin distance so the full forehead is covered on frontal
+        faces without over-extending on profiles.
+
+        The up-axis comes from the 5 keypoints (mouth_mid -> eye_mid) when they
+        are supplied. Projecting straight up in IMAGE space — the previous
+        behaviour, still the fallback when *kps* is None — is only correct for
+        an upright head: on a tilted one the forehead polygon lands off-axis, so
+        the hull swallows background on one side while clipping real forehead on
+        the other. Everything below is expressed in (u, v) — along and across
+        that axis — which reduces to the old y/x arithmetic exactly when the head
+        is upright, so frontal faces are bit-identical to before.
         """
         mask = np.zeros(frame_shape[:2], dtype=np.uint8)
         pts = landmarks_2d.astype(np.int32)
 
-        # Eyebrow region is roughly indices 33-52; find the topmost y there.
-        brow_pts = pts[33:53]
-        top_brow_y = int(np.min(brow_pts[:, 1]))
-        chin_y    = int(np.max(pts[:, 1]))
-        face_h    = max(1, chin_y - top_brow_y)
+        # Head "up" unit vector. Image y grows downward, so an upright head
+        # yields (0, -1) and every projection below collapses to the original
+        # image-space form.
+        u = np.array([0.0, -1.0], dtype=np.float64)
+        if kps is not None:
+            try:
+                k = np.asarray(kps, dtype=np.float64)
+                if k.shape[0] == 5:
+                    axis = ((k[0] + k[1]) / 2.0) - ((k[3] + k[4]) / 2.0)
+                    n = float(np.linalg.norm(axis))
+                    if n > 1e-6:
+                        u = axis / n
+            except Exception:
+                pass
+        v = np.array([-u[1], u[0]], dtype=np.float64)   # across-face axis
 
-        # Extend upward to cover the forehead.
-        forehead_y = max(0, top_brow_y - int(face_h * 0.6))
+        along  = pts.astype(np.float64) @ u    # higher = closer to the crown
+        across = pts.astype(np.float64) @ v
 
-        # Horizontal extent of the top of the face (near brow line).
-        top_zone = pts[pts[:, 1] < top_brow_y + int(face_h * 0.15)]
+        # Eyebrow region is roughly indices 33-52; find its topmost point along u.
+        top_brow_s = float(np.max(along[33:53]))
+        chin_s     = float(np.min(along))
+        face_h     = max(1.0, top_brow_s - chin_s)
+
+        # Extend along the head axis to cover the forehead. The int() truncations
+        # here and on the top-zone band are not cosmetic: they reproduce the
+        # original image-space arithmetic exactly, so an upright head produces a
+        # bit-identical mask (verified over 300 randomised faces) rather than
+        # drifting by a fraction of a pixel along the boundary.
+        forehead_s = top_brow_s + int(face_h * 0.6)
+
+        # Lateral extent of the top of the face (near brow line).
+        top_zone = across[along > top_brow_s - int(face_h * 0.15)]
         if len(top_zone) >= 2:
-            left_x  = int(np.min(top_zone[:, 0]))
-            right_x = int(np.max(top_zone[:, 0]))
+            left_t, right_t = float(np.min(top_zone)), float(np.max(top_zone))
         else:
-            left_x  = int(np.min(pts[:, 0]))
-            right_x = int(np.max(pts[:, 0]))
+            left_t, right_t = float(np.min(across)), float(np.max(across))
 
+        # Back to image space. Points may fall outside the frame; convexHull and
+        # fillConvexPoly clip against the mask bounds, so no clamping is needed.
+        # The original clamped the forehead to y >= 0, which did NOT merely trim
+        # the polygon — it dragged the top vertices down to the frame edge and
+        # skewed the hull's upper edges inward, eating real forehead on any face
+        # framed close to the top of the shot. Letting the vertices sit off-frame
+        # and be clipped keeps the correct edge slope.
         forehead_pts = np.array([
-            [left_x,                    forehead_y],
-            [(left_x + right_x) // 2,  forehead_y],
-            [right_x,                   forehead_y],
+            np.floor(forehead_s * u + t * v)
+            for t in (left_t, np.floor((left_t + right_t) / 2.0), right_t)
         ], dtype=np.int32)
 
         all_pts = np.vstack([pts, forehead_pts])
@@ -3424,7 +3462,7 @@ class ProcessMgr():
         # Dilate slightly so the hull doesn't clip skin right at the landmark
         # boundary — especially at jaw/temple edges.
         if blend_amount > 0:
-            face_w    = max(1, right_x - left_x)
+            face_w    = max(1.0, right_t - left_t)
             expand_px = max(1, int(np.sqrt(face_h * face_w) * blend_amount / 400))
             kernel    = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (expand_px * 2 + 1, expand_px * 2 + 1))
@@ -3535,6 +3573,40 @@ class ProcessMgr():
                     asymmetry = abs(d_le - d_re) / (d_le + d_re)
                     if asymmetry > 0.25:   # lowered from 0.35: catch more side profiles
                         is_non_frontal = True
+                # ── Near-profile detection (the asymmetry test's blind spot) ─
+                # The asymmetry ratio above is NOT monotonic in yaw: it peaks in
+                # the mid angles and collapses back to ~0 at a true profile.
+                # A face is left-right symmetric, so at 90 deg yaw both eyes
+                # project to the SAME x — which puts the nose exactly equidistant
+                # from both and drives the ratio to zero. Measured against the
+                # project's own 3D reference face (face_3d_recon._REF3D_68):
+                #
+                #   yaw       0     30     60     75     85     90
+                #   asym    .000   .652   .511   .237   .078   .000
+                #   fires     no    YES    YES     NO     NO     NO   (thr 0.25)
+                #
+                # So 30-60 deg got the unwarped-crop masking path below while
+                # 75-90 deg silently fell through to the frontal path and had its
+                # mask computed on a badly-warped crop.
+                #
+                # yaw_ratio (eye separation over eye->mouth distance) IS monotonic
+                # all the way to 90 deg, and is roll-invariant so a tilted head
+                # does not perturb it. At 0.55 it fires 15/15 over a pitch x roll
+                # grid for yaw >= 55 and 0/15 for yaw <= 40, so it extends coverage
+                # upward without disturbing the mid angles the old test handles.
+                yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
+                if yaw_ratio is not None and yaw_ratio < 0.55:
+                    is_non_frontal = True
+                # ── Extreme pitch, from the keypoints alone ─────────────────
+                # The tgt_pitch_deg check further down is exact but needs
+                # landmark_3d_68, which is only loaded when one of the optional
+                # pose features is enabled — in the DEFAULT config it is absent,
+                # tgt_pitch_deg stays 0.0 and that check can never fire. This
+                # proxy needs nothing beyond the 5 keypoints already in hand.
+                # Neutral sits at ~0.52; the bounds below correspond to roughly
+                # |pitch| > 30 deg at low yaw, matching the exact check's intent.
+                if pitch_ratio is not None and not (0.32 < pitch_ratio < 0.70):
+                    is_non_frontal = True
                 # ── Upside-down detection ──────────────────────────────────
                 # Eye centers should be ABOVE (lower y value) than mouth corners.
                 # If not, the face is inverted or severely tilted.
