@@ -19,6 +19,9 @@ from roop.procmgr_tracking import TrackingMixin
 from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
+
+# Guards the one-time build of the expression restorer (see _expression_restorer).
+_EXPR_BUILD_LOCK = Lock()
 from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
 
 
@@ -1513,17 +1516,27 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
     #    instances + frame-time via thread-local storage; otherwise the shared
     #    single-thread instances are used. ─────────────────────────────────────
     def _expression_restorer(self):
-        """Lazily built and shared across worker threads. The models are ~537 MB
-        and stateless per call, so one instance is right; its own lock keeps the
-        ORT sessions single-threaded, and the global GPU guard already serialises
-        the surrounding stage."""
+        """Lazily built and shared across worker threads.
+
+        The models are ~537 MB and stateless per call, so one instance is right
+        unless ROOP_EXPR_POOL asks for more; the restorer handles its own
+        exclusion (a lock when unpooled, a slot lease when pooled).
+
+        Construction is locked because this is now called OUTSIDE the GPU guard —
+        the guard has to know whether the restorer is pooled before it can decide
+        whether to serialise, so it can no longer be what protects the build.
+        """
         r = getattr(self, '_expr_restorer', None)
-        if r is None:
-            from roop.processors.Expression_LivePortrait import Expression_LivePortrait
-            from roop.utilities import get_device
-            r = Expression_LivePortrait()
-            r.Initialize({"devicename": get_device()})
-            self._expr_restorer = r
+        if r is not None:
+            return r
+        with _EXPR_BUILD_LOCK:
+            r = getattr(self, '_expr_restorer', None)
+            if r is None:
+                from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+                from roop.utilities import get_device
+                r = Expression_LivePortrait()
+                r.Initialize({"devicename": get_device()})
+                self._expr_restorer = r
         return r
 
     def _cur_kps_stab(self):
@@ -2286,8 +2299,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         _ex = float(getattr(roop.globals, 'expression_restore_strength', 0.0) or 0.0)
         if _ex > 0.0:
             try:
-                with _prof('expression'), _gpu_guard():
-                    restorer = self._expression_restorer()
+                # Built before the guard so its pooled-ness can decide the guard:
+                # with a pool of independent TensorRT contexts this stage does not
+                # need the global lock, and holding it would keep the one stage
+                # that runs single-file while swap/mask/detect all run N-wide.
+                restorer = self._expression_restorer()
+                with _prof('expression'), _gpu_guard(pooled=restorer.pooled):
                     _region = getattr(roop.globals, 'expression_restore_region', 'all')
                     if enhanced_frame is not None:
                         enhanced_frame = restorer.Run(enhanced_frame, aligned_img, _ex, _region)

@@ -50,6 +50,7 @@ import onnxruntime
 
 import roop.globals
 from roop.gridsample5d import ensure_patched_model
+from roop.session_pool import SessionPool, expression_pool_size
 from roop.typing import Frame
 from roop.utilities import resolve_relative_path, conditional_download
 
@@ -242,6 +243,31 @@ class Expression_LivePortrait:
         self.sessions = {}
         self.devicename = 'cpu'
         self._lock = threading.Lock()
+        self.pool = None
+
+    @property
+    def pooled(self) -> bool:
+        """Whether this restorer owns independent contexts per worker thread.
+
+        ProcessMgr gates the global GPU lock on this: with a pool the stage is
+        safe to run concurrently, without one it must stay serialised.
+        """
+        return self.pool is not None
+
+    @contextlib.contextmanager
+    def _leased(self):
+        """The session set to use for one call, and the right exclusion for it.
+
+        Pooled: take a slot from the queue — no global serialisation, because no
+        two threads can hold the same slot. Unpooled: the single set behind its
+        own lock, since onnxruntime sessions are not thread-safe.
+        """
+        if self.pool is not None:
+            with self.pool.lease() as sessions:
+                yield sessions
+        else:
+            with self._lock:
+                yield self.sessions
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -291,26 +317,44 @@ class Expression_LivePortrait:
                       "on CPU (~0.25s per face). TensorRT parser warnings about "
                       "'addGridSample ... nbDims == 4' are expected and silenced.")
 
-        for key, spec in MODELS.items():
-            path = os.path.join(model_dir, spec["file"])
-            if key == "warping":
-                # The parser errors only exist on the unpatched path; keep real
-                # errors visible once the rewrite has removed their cause.
-                ctx = contextlib.nullcontext() if is_patched else _quiet_trt_parser()
-                with ctx:
-                    self.sessions[key] = onnxruntime.InferenceSession(
-                        patched_path, None, providers=warp_providers)
-            else:
-                self.sessions[key] = onnxruntime.InferenceSession(
-                    path, None, providers=providers)
+        def build_sessions(_slot=0):
+            built = {}
+            for key, spec in MODELS.items():
+                path = os.path.join(model_dir, spec["file"])
+                if key == "warping":
+                    # The parser errors only exist on the unpatched path; keep
+                    # real errors visible once the rewrite removed their cause.
+                    ctx = contextlib.nullcontext() if is_patched else _quiet_trt_parser()
+                    with ctx:
+                        built[key] = onnxruntime.InferenceSession(
+                            patched_path, None, providers=warp_providers)
+                else:
+                    built[key] = onnxruntime.InferenceSession(
+                        path, None, providers=providers)
+            return built
+
+        # One set of sessions per pool slot. Each slot owns its own TensorRT
+        # engine + execution context, which is what makes concurrent use safe —
+        # the contexts themselves are not thread-safe, only distinct ones are.
+        size = expression_pool_size()
+        if size >= 2:
+            print(f"[Expression] Session pool: {size} instances "
+                  f"(~{size}x the VRAM of one restorer; ROOP_EXPR_POOL={size}).")
+            self.pool = SessionPool(build_sessions, size)
+            self.sessions = self.pool._items[0]
+        else:
+            self.sessions = build_sessions()
 
     def Release(self):
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
         self.sessions = {}
         self.plugin_options = None
 
     # ── inference helpers ────────────────────────────────────────────────────
 
-    def _run(self, key, feeds):
+    def _run(self, sessions, key, feeds):
         """Bind inputs BY NAME, never by position.
 
         warping_spade declares its inputs as (feature_3d, kp_driving, kp_source)
@@ -318,7 +362,7 @@ class Expression_LivePortrait:
         positional list against the session's input order silently swapped them,
         applying the expression backwards. Naming them makes that class of
         mistake impossible and self-documenting at the call site."""
-        sess = self.sessions[key]
+        sess = sessions[key]
         expected = {i.name for i in sess.get_inputs()}
         missing = expected - set(feeds)
         if missing:
@@ -326,12 +370,12 @@ class Expression_LivePortrait:
                            f"missing {sorted(missing)}")
         return sess.run(None, {k: v for k, v in feeds.items() if k in expected})
 
-    def _motion(self, img):
+    def _motion(self, sessions, img):
         """-> (pitch, yaw, roll, t, exp, scale, kp).
 
         Verified against the FasterLivePortrait export: outputs are declared in
         exactly this order, with exp and kp flattened to (1, 63) = 21 points."""
-        out = self._run("motion", {"img": img})
+        out = self._run(sessions, "motion", {"img": img})
         pitch, yaw, roll, t, exp, scale, kp = out[:7]
         return (headpose_pred_to_degree(pitch), headpose_pred_to_degree(yaw),
                 headpose_pred_to_degree(roll),
@@ -357,18 +401,19 @@ class Expression_LivePortrait:
             src_in = _to_input(swapped_bgr)
             drv_in = _to_input(driving_bgr)
 
-            with self._lock:            # ORT sessions are not thread-safe
-                feature = self._run("appearance", {"img": src_in})[0]
-                p_s, y_s, r_s, t_s, exp_s, scale_s, kp_s = self._motion(src_in)
-                _, _, _, _, exp_d, _, _ = self._motion(drv_in)
+            with self._leased() as sessions:
+                feature = self._run(sessions, "appearance", {"img": src_in})[0]
+                p_s, y_s, r_s, t_s, exp_s, scale_s, kp_s = self._motion(sessions, src_in)
+                _, _, _, _, exp_d, _, _ = self._motion(sessions, drv_in)
 
                 rot_s = get_rotation_matrix(p_s, y_s, r_s)
                 x_s = transform_keypoint(kp_s, exp_s, scale_s, t_s, rot_s)
                 x_d = driving_keypoints(x_s, scale_s, exp_s, exp_d, strength, region)
 
-                if use_stitching and "stitching" in self.sessions:
+                if use_stitching and "stitching" in sessions:
                     delta = np.asarray(
-                        self._run("stitching", {"input": concat_feat(x_s, x_d)})[0],
+                        self._run(sessions, "stitching",
+                                  {"input": concat_feat(x_s, x_d)})[0],
                         np.float32)
                     n = x_d.shape[1]
                     if delta.size >= n * 3 + 2:
@@ -376,9 +421,9 @@ class Expression_LivePortrait:
                         x_d = x_d + flat[:n * 3].reshape(1, n, 3)
                         x_d[:, :, :2] += flat[n * 3:n * 3 + 2].reshape(1, 1, 2)
 
-                out = self._run("warping", {"feature_3d": feature,
-                                            "kp_source": x_s,
-                                            "kp_driving": x_d})[0]
+                out = self._run(sessions, "warping", {"feature_3d": feature,
+                                                      "kp_source": x_s,
+                                                      "kp_driving": x_d})[0]
 
             img = np.asarray(out, np.float32)
             if img.ndim == 4:

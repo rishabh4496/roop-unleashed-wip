@@ -24,6 +24,48 @@ from roop.processors.Expression_LivePortrait import (  # noqa: E402
 RNG = np.random.default_rng(11)
 
 
+class TestPoolingContract(unittest.TestCase):
+    """How the restorer excludes concurrent threads, without loading models.
+
+    ProcessMgr decides whether to hold the global GPU lock from `pooled`. If
+    those two ever disagree the failure is not a wrong pixel — it is either a
+    stage silently running single-file (the bug this exists to prevent) or two
+    threads sharing one TensorRT context, which corrupts the CUDA context.
+    """
+
+    def _restorer(self):
+        from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+        return Expression_LivePortrait()
+
+    def test_unpooled_by_default_and_leases_the_single_set(self):
+        r = self._restorer()
+        r.sessions = {"warping": object()}
+        self.assertFalse(r.pooled)
+        with r._leased() as sessions:
+            self.assertIs(sessions, r.sessions)
+
+    def test_pooled_leases_distinct_sets_and_returns_them(self):
+        from roop.session_pool import SessionPool
+        r = self._restorer()
+        r.pool = SessionPool(lambda i: {"slot": i}, 2)
+        self.assertTrue(r.pooled)
+        with r._leased() as a:
+            with r._leased() as b:
+                self.assertNotEqual(a["slot"], b["slot"])
+        # Both must be back in the queue, or the pool deadlocks on reuse.
+        with r._leased():
+            with r._leased():
+                pass
+
+    def test_release_drops_the_pool(self):
+        from roop.session_pool import SessionPool
+        r = self._restorer()
+        r.pool = SessionPool(lambda i: {"slot": i}, 2)
+        r.Release()
+        self.assertIsNone(r.pool)
+        self.assertFalse(r.pooled)
+
+
 def _kp(n=21):
     return RNG.normal(size=(1, n, 3)).astype(np.float32)
 

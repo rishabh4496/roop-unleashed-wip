@@ -176,6 +176,31 @@ the Face Swap tab. One env flag exists, for the GridSample rewrite below.
 | variable | default | meaning |
 |---|---|---|
 | `ROOP_EXPR_PATCH_GRIDSAMPLE` | `1` | Rewrite the warping module's 5-D `GridSample` nodes so it runs entirely on the GPU. `0` keeps the stock model and its CPU partition. |
+| `ROOP_EXPR_POOL` | `0` (off) | Independent restorer instances so the stage runs N-wide instead of serialised. **Costs ~Nx its VRAM** — see below. |
+
+### What the feature costs, and the one stage still running single-file
+
+Measured across three runs of the same pipeline, 192-frame chunks on an RTX 4070:
+
+| run | expression restore | mean chunk | max |
+|---|---|---|---|
+| off | — | **9.00 s** | 11.34 s |
+| on | stock (CPU partition) | 17.49 s | 30.09 s |
+| on | rewritten (below) | **13.53 s** | 16.79 s |
+
+So the rewrite cut the feature's cost by ~23%, and what remains is ~4.5 s per
+chunk over having it off. Almost all of that adds **in series**: expression
+restore is the only GPU stage without a session pool, so while swap, mask and
+detect run N-wide behind `_gpu_guard(pooled=True)`, this one holds the global
+lock.
+
+`ROOP_EXPR_POOL=2` gives it independent TensorRT contexts and removes that.
+It is **off by default and deliberately not VRAM-auto-tuned** like
+`ROOP_TRT_POOL`/`ROOP_DETMASK_POOL`, because those defaults were chosen before
+these models existed: a 12 GB card running 4 swapper + 4 detmask instances was
+measured with only 1.0 GB free mid-render, which is not enough for a second
+restorer. Expect to trade it against `ROOP_TRT_POOL` rather than add it for
+free, and watch for OOM / engine-build thrash on the first run after enabling.
 
 ### The constraint
 

@@ -143,6 +143,25 @@ def detmask_pooling_enabled() -> bool:
     return detmask_pool_size() >= 2
 
 
+# Separate, opt-in pool for the LivePortrait expression restorer. It is the only
+# GPU stage still running one-wide behind the global lock while the swapper, mask
+# and detect stages run N-wide, so on a chunk where it is enabled its cost adds
+# almost entirely in series. Measured on an RTX 4070: a 192-frame chunk went
+# 9.00s with expression off to 13.53s with it on, i.e. ~4.5s of serialised work.
+#
+# Deliberately NOT auto-tuned by VRAM like the other two. Those pools were sized
+# when the expression models did not exist; adding a second set of them on a card
+# already running 4 swapper + 4 detmask instances can exhaust it (a 12GB 4070
+# measured 1.0GB free mid-render). So this defaults to 0 — set ROOP_EXPR_POOL=2
+# only if there is headroom, and expect to trade it against ROOP_TRT_POOL.
+def expression_pool_size() -> int:
+    return _resolve('ROOP_EXPR_POOL', 0)
+
+
+def expression_pooling_enabled() -> bool:
+    return expression_pool_size() >= 2
+
+
 class SessionPool:
     """A fixed set of interchangeable per-model resources (e.g. an onnxruntime
     session, optionally paired with its own io_binding). `lease()` hands one
