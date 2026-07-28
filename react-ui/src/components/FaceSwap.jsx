@@ -16,8 +16,10 @@ import AmbilightGlow from './faceswap/AmbilightGlow';
 import FloatingActionDock from './faceswap/FloatingActionDock';
 import MediaTabSessionBar from './faceswap/MediaTabSessionBar';
 import PresetStudioModal from './faceswap/PresetStudioModal';
+import LiveProcessingPeek from './faceswap/LiveProcessingPeek';
+import ProcessingDock from './faceswap/ProcessingDock';
 import { popoutManager } from './faceswap/PopoutPreviewManager';
-import { num, fmtTime } from './faceswap/utils';
+import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
@@ -108,6 +110,19 @@ export default function FaceSwap({
   const [ambilightEnabled, setAmbilightEnabled] = useState(true);
   const [drawers, setDrawers] = useState({ left: true, right: true, bottom: true });
   const [showPresetStudio, setShowPresetStudio] = useState(false);
+  const [desktopAlerts, setDesktopAlerts] = useState(false);
+  const [powerSaver, setPowerSaver] = useState(false);
+
+  const prevProcessingRef = useRef(false);
+  useEffect(() => {
+    if (prevProcessingRef.current && !progress.processing) {
+      playChime();
+      if (desktopAlerts) {
+        notifyDesktop('Roop Unleashed Render Complete!', 'Your face swap processing run has finished.');
+      }
+    }
+    prevProcessingRef.current = progress.processing;
+  }, [progress.processing, desktopAlerts]);
 
   // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
   const [comparingMasks, setComparingMasks] = useState(false);
@@ -3042,21 +3057,44 @@ export default function FaceSwap({
                     );
                   })()}
 
-                  {/* Diagnostics — throughput trend, GPU/VRAM/CPU, per-stage cost
-                      and the settings in force. Fills what used to be empty box. */}
-                  <DiagnosticsPanel
-                    desc={progress.desc}
-                    telemetry={telemetry}
-                    processing={progress.processing}
+                  {/* Processing Action Control Dock */}
+                  <ProcessingDock
                     paused={progress.paused}
-                    config={runConfigSummary}
-                    elapsedMs={elapsedMs}
-                    etaMs={etaMs}
-                    prog={prog}
+                    onTogglePause={pauseSwap}
+                    onCancelJob={cancelSwap}
+                    desktopAlerts={desktopAlerts}
+                    onToggleDesktopAlerts={() => setDesktopAlerts(!desktopAlerts)}
+                    powerSaver={powerSaver}
+                    onTogglePowerSaver={() => setPowerSaver(!powerSaver)}
                   />
 
-                  {/* Live terminal feed — mirrors what the real console prints
-                      (stage changes, per-frame FPS, encode/combine, done/errors). */}
+                  {/* Live Processing Frame Peek & Diagnostics */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 min-h-0">
+                    <div className="lg:col-span-1">
+                      <LiveProcessingPeek
+                        previewSrc={previewSrc}
+                        rawUrl={rawUrl}
+                        frame={frame}
+                        maxFrames={maxFrames}
+                        progressDesc={progress.desc}
+                        paused={progress.paused}
+                      />
+                    </div>
+                    <div className="lg:col-span-2">
+                      <DiagnosticsPanel
+                        desc={progress.desc}
+                        telemetry={telemetry}
+                        processing={progress.processing}
+                        paused={progress.paused}
+                        config={runConfigSummary}
+                        elapsedMs={elapsedMs}
+                        etaMs={etaMs}
+                        prog={prog}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Live terminal feed — mirrors what the real console prints */}
                   <ProcessingTerminal log={progress.log || []} paused={progress.paused} className="flex-1 min-h-0" bodyClass="h-full" />
 
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}

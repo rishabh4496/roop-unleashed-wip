@@ -1,0 +1,76 @@
+import React, { useState } from 'react';
+
+/**
+ * ProcessingDock
+ * Interactive control dock positioned inside the processing stage box.
+ * Gives direct control over pause/resume, desktop alerts, power-saver mode, and cancellation.
+ */
+export default function ProcessingDock({
+  paused = false,
+  onTogglePause,
+  onCancelJob,
+  desktopAlerts = false,
+  onToggleDesktopAlerts,
+  powerSaver = false,
+  onTogglePowerSaver,
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-2xl border border-white/10 bg-neutral-950/70 backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        {/* Pause / Resume Button */}
+        <button
+          onClick={onTogglePause}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 ${
+            paused
+              ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+              : 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20'
+          }`}
+          title={paused ? 'Resume execution' : 'Pause execution'}
+        >
+          <span>{paused ? '▶' : '⏸'}</span>
+          <span>{paused ? 'Resume Render' : 'Pause Render'}</span>
+        </button>
+
+        {/* Cancel Job Button */}
+        <button
+          onClick={onCancelJob}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition-all active:scale-95"
+          title="Cancel current swap run"
+        >
+          <span>⏹</span>
+          <span>Cancel Job</span>
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {/* Desktop Alert Notification Toggle */}
+        <button
+          onClick={onToggleDesktopAlerts}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+            desktopAlerts
+              ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+              : 'bg-white/5 text-neutral-400 border-white/10 hover:text-neutral-200'
+          }`}
+          title="Send desktop alert notification when job finishes"
+        >
+          <span>🔔</span>
+          <span className="hidden sm:inline">{desktopAlerts ? 'Alerts On' : 'Desktop Alerts'}</span>
+        </button>
+
+        {/* Power Saver Mode Toggle */}
+        <button
+          onClick={onTogglePowerSaver}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+            powerSaver
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+              : 'bg-white/5 text-neutral-400 border-white/10 hover:text-neutral-200'
+          }`}
+          title="Power saver mode reduces CPU/GPU background load"
+        >
+          <span>🔋</span>
+          <span className="hidden sm:inline">{powerSaver ? 'Power Saver' : 'Eco Mode'}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
