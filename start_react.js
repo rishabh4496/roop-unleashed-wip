@@ -34,7 +34,11 @@ module.exports = async (kernel) => {
             // too-permissive distance threshold apart from a tracker identity
             // switch. VERBOSE — [TRACKMATCH] fires for every face of every
             // frame, so set it back to "0" once the question is answered.
-            ROOP_DEBUG_MATCH: "1",
+            // Off: it was left on after a wrong-face investigation and was
+            // producing 461 of every 587 log lines on a real render. Set to "1"
+            // when a wrong-face question comes up again. (It no longer breaks
+            // the progress bar either way — these go through bar_write now.)
+            ROOP_DEBUG_MATCH: "0",
             // Closes the one path max_face_distance cannot reach: with a single
             // selected person the tracked swap applies the source by SPATIAL
             // association with no identity check at all, so a tracker ID switch

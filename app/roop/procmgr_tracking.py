@@ -16,7 +16,6 @@ from collections import deque as _deque
 
 import cv2
 import numpy as np
-from tqdm import tqdm
 
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
@@ -25,7 +24,7 @@ import roop.globals
 from roop import session_pool
 from roop.face_util import get_all_faces, analysis_pooled
 from roop.utilities import compute_cosine_distance
-from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC
+from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC, ChunkedProgress, bar_write
 
 
 class TrackingMixin:
@@ -139,8 +138,8 @@ class TrackingMixin:
         # Terminal progress bar (same style as the swap phase) so the pre-pass is
         # visible in the console too, not just the web UI.
         _bar_fmt = PROGRESS_BAR_FORMAT
-        pbar = tqdm(total=frame_count or 0, desc=desc, unit='frames',
-                    dynamic_ncols=True, bar_format=_bar_fmt)
+        pbar = ChunkedProgress(total=frame_count or 0, desc=desc, unit='frames',
+                               dynamic_ncols=True, bar_format=_bar_fmt)
 
         # Parallelize detection across the FaceAnalysis pool (see analysis_pooled()/
         # lease_face_analyser() in face_util.py — "detection is ~43% of video time";
@@ -554,9 +553,9 @@ class TrackingMixin:
                     embs = [e for e in embs if e is not None]
                     if embs and t.get('emb_mean') is not None:
                         dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
-                print(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
-                      f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
-                      f"-> src={track_src.get(t['id'])}")
+                bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
+                          f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
+                          f"-> src={track_src.get(t['id'])}")
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
               f'{matched} matched to a source (gate {assign_max:.2f})')

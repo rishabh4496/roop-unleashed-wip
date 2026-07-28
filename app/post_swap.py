@@ -137,7 +137,7 @@ def _upscale_video_inplace(proc, path):
     from roop.util_ffmpeg import restore_audio
     from concurrent.futures import ThreadPoolExecutor
     from collections import deque
-    from tqdm import tqdm
+    from roop.procmgr_runtime import ChunkedProgress
 
     ext = os.path.splitext(path)[1].lower() or ".mp4"
     d = os.path.dirname(path)
@@ -252,7 +252,7 @@ def _upscale_video_inplace(proc, path):
         enc = _select_upscale_encoder(ow, oh)
         print(f"\n[Stage 3/4] AI UPSCALE → {ow}x{oh}, {total or '?'} frames, "
               f"{n_sessions} session(s), enc={enc} ({os.path.basename(path)})", flush=True)
-        pbar = tqdm(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
+        pbar = ChunkedProgress(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
         # audiofile=None → silent encode; audio muxed afterwards via restore_audio.
         writer = FFMPEG_VideoWriter(
             tmp_silent, (ow, oh), fps,
@@ -621,7 +621,7 @@ def _interp_video_rife(path, factor):
     from roop.rife import RIFE
     from roop.ffmpeg_writer import FFMPEG_VideoWriter
     from roop.util_ffmpeg import restore_audio
-    from tqdm import tqdm
+    from roop.procmgr_runtime import ChunkedProgress
 
     ext = os.path.splitext(path)[1].lower() or ".mp4"
     d = os.path.dirname(path)
@@ -650,7 +650,7 @@ def _interp_video_rife(path, factor):
     try:
         writer = FFMPEG_VideoWriter(tmp_silent, (w, h), fps * factor,
                                     codec=enc, crf=roop_globals.video_quality, audiofile=None)
-        pbar = tqdm(total=out_total or None, desc="Interpolating", unit="frame", dynamic_ncols=True)
+        pbar = ChunkedProgress(total=out_total or None, desc="Interpolating", unit="frame", dynamic_ncols=True)
 
         def _emit(fr):
             nonlocal written

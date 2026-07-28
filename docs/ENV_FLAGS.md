@@ -50,6 +50,17 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_LIVE_PREVIEW_WIDTH` | 480 | Width the live frame is downscaled to before encoding (min 160). |
 | `ROOP_RESUME_KEEP` | 0 (off) | Keep the segment parts + manifest after a deliberate **Stop** so that run can be resumed later. Off = Stop merges the parts into one finished output and deletes them. Crash-resume is unaffected either way. |
 
+## Terminal progress output
+
+How a run reports itself in the **console** (Pinokio's log / a shell). The web
+UI's progress bar and ETA are fed separately and are unaffected by all of these.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_PROGRESS_STYLE` | `auto` | `auto` draws a live tqdm bar when stderr is a terminal and prints one compact line per chunk otherwise (a captured log cannot rewrite a line in place, so a redrawn bar becomes one 451-character line per frame). `bar` forces the live bar, `chunk` forces the per-chunk lines. |
+| `ROOP_PROGRESS_EVERY` | = `ROOP_RESUME_CHUNK` (1000) | Frames per reported chunk, so a line in the terminal covers the same stretch as a tab in the console's part strip. |
+| `ROOP_PROGRESS_SECS` | 15 | Longest silence allowed between lines. A chunk can take minutes on a slow model, and a console that has said nothing for that long reads as a hang — whichever comes first, frames or seconds, triggers the line. |
+
 ## Timeline / preview frame decoding
 
 These govern how the **preview and timeline** fetch single frames. None of them

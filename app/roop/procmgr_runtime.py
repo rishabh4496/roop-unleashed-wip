@@ -11,9 +11,12 @@ their original comments explaining the measured values behind them.
 
 import contextlib
 import os
+import sys
 import time
 from threading import Lock
 from collections import defaultdict as _defaultdict
+
+from tqdm import tqdm
 
 import roop.globals
 
@@ -226,6 +229,189 @@ PROGRESS_BAR_FORMAT = (
     f"[{COLOR_GREEN}{{elapsed}}{COLOR_RESET}<{COLOR_GREEN}{{remaining}}{COLOR_RESET}, "
     f"{COLOR_YELLOW}{{rate_fmt}}{COLOR_RESET}{{postfix}}]"
 )
+
+
+# ── Terminal progress ────────────────────────────────────────────────────────
+# A progress bar is something you REWRITE IN PLACE. That needs two things which
+# do not hold during a render here: a terminal to move the cursor on, and no
+# other output interleaved with it.
+#
+# The run's output goes to Pinokio's captured log, and the swap loop prints its
+# own per-frame diagnostics. Every one of those lands in the middle of the bar's
+# line and terminates it, so what should have been ONE line being redrawn became
+# one 451-character line per FRAME — measured on a real 48,501-frame render:
+# 340 bar lines in the last 671 frames alone, a median of one per frame, burying
+# every message actually worth reading.
+#
+# So when nothing can rewrite a bar, don't draw one. tqdm keeps doing all the
+# arithmetic (n, rate, elapsed, and the ETA the web UI reads), but draws to a
+# sink, and ChunkedProgress prints one compact line per CHUNK of frames instead.
+# The chunk defaults to the resume-segment size, so a line in the terminal and a
+# tab in the console's part strip cover the same stretch of the render.
+
+
+class _NullStream:
+    """Somewhere for tqdm to draw when nobody is watching it draw."""
+
+    def write(self, _s):
+        return 0
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
+def _progress_style() -> str:
+    """`auto` (bar on a terminal, chunks otherwise) | `bar` | `chunk`."""
+    v = os.environ.get("ROOP_PROGRESS_STYLE", "auto").strip().lower()
+    return v if v in ("auto", "bar", "chunk") else "auto"
+
+
+def _stream_is_terminal() -> bool:
+    # tqdm defaults to stderr, so that is the stream whose behaviour decides
+    # whether an in-place rewrite means anything.
+    try:
+        return bool(sys.stderr.isatty())
+    except Exception:
+        return False
+
+
+def _progress_every() -> int:
+    """Frames per reported chunk."""
+    raw = os.environ.get("ROOP_PROGRESS_EVERY")
+    if raw is None:
+        raw = os.environ.get("ROOP_RESUME_CHUNK", "1000")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _progress_max_gap() -> float:
+    """Longest silence allowed between lines. A chunk of a thousand frames can
+    take minutes on a slow model, and a terminal that has said nothing for that
+    long reads as a hang — so report on whichever comes first, frames or time."""
+    try:
+        return max(0.0, float(os.environ.get("ROOP_PROGRESS_SECS", "15")))
+    except (TypeError, ValueError):
+        return 15.0
+
+
+class ChunkedProgress(tqdm):
+    """tqdm that reports in chunks when its output cannot be rewritten in place.
+
+    A drop-in replacement: same constructor, same `n`/`format_dict`, so callers
+    reading the rate for the web UI are unaffected. On a real terminal it IS an
+    ordinary tqdm bar.
+    """
+
+    def __init__(self, *args, **kwargs):
+        style = _progress_style()
+        self._chunked = style == "chunk" or (style == "auto" and not _stream_is_terminal())
+        if self._chunked:
+            # Draw nowhere. Everything tqdm computes stays available; only the
+            # rendering is suppressed, so `set_postfix` and `refresh` calls
+            # scattered through the render loops stay harmless no-ops.
+            kwargs["file"] = _NullStream()
+            kwargs["mininterval"] = float("inf")
+        super().__init__(*args, **kwargs)
+        self._every = _progress_every()
+        self._max_gap = _progress_max_gap()
+        self._last_n = 0
+        self._last_t = time.perf_counter()
+
+    # perf_counter, not time(): time() has ~15 ms granularity on Windows, so a
+    # chunk that goes by quickly measures as having taken exactly zero seconds
+    # and its rate is unreportable. Both uses here are elapsed intervals, which
+    # is what a monotonic clock is for.
+    def update(self, n=1):
+        ret = super().update(n)
+        if self._chunked:
+            now = time.perf_counter()
+            if (self.n - self._last_n) >= self._every or (now - self._last_t) >= self._max_gap:
+                self._emit(now)
+        return ret
+
+    def close(self):
+        # Always land on a final line, so the log records where a stage actually
+        # finished rather than at the last chunk boundary before it — but not a
+        # second copy of one just emitted, which is what a total that divides
+        # exactly by the chunk size would otherwise produce.
+        if self._chunked and not self.disable and self.n and self.n != self._last_n:
+            self._emit(time.perf_counter())
+        return super().close()
+
+    def _emit(self, now):
+        # This chunk's own rate, not a lifetime average: the point of a per-chunk
+        # line is to show that THIS stretch ran slower than the last one, which
+        # an average smooths away. tqdm's own `rate` is unavailable here — it is
+        # only recomputed when the bar redraws, and the bar never redraws.
+        dn = self.n - self._last_n
+        dt = now - self._last_t
+        rate = (dn / dt) if (dn > 0 and dt > 0) else None
+        if not rate:
+            elapsed = self.format_dict.get("elapsed") or 0
+            rate = (self.n / elapsed) if elapsed > 0 else None
+        self._last_n = self.n
+        self._last_t = now
+        try:
+            print(self._chunk_line(rate), flush=True)
+        except Exception:
+            pass
+
+    def _chunk_line(self, rate=None) -> str:
+        d = self.format_dict
+        n = int(d.get("n") or 0)
+        total = int(d.get("total") or 0)
+        rate = rate or 0
+        elapsed = d.get("elapsed") or 0
+        unit = self.unit or "it"
+
+        if total:
+            chunks = max(1, -(-total // self._every))
+            here = min(chunks, max(1, -(-n // self._every)))
+            head = f"{self.desc or 'Progress'} chunk {here}/{chunks}"
+            count = f"{n:,}/{total:,} {unit}  {n / total * 100:5.1f}%"
+        else:
+            head = f"{self.desc or 'Progress'}"
+            count = f"{n:,} {unit}"
+
+        bits = [f"{COLOR_CYAN}{count}{COLOR_RESET}"]
+        if rate:
+            bits.append(f"{COLOR_YELLOW}{rate:.1f} {unit}/s{COLOR_RESET}")
+        bits.append(f"{COLOR_GREEN}{self.format_interval(int(elapsed))}{COLOR_RESET} elapsed")
+        if rate and total and total > n:
+            bits.append(f"{COLOR_GREEN}{self.format_interval(int((total - n) / rate))}{COLOR_RESET} left")
+        if self.postfix:
+            bits.append(str(self.postfix))
+        return f"{COLOR_ACCENT}{head}{COLOR_RESET}  ·  " + "  ·  ".join(bits)
+
+
+def bar_write(msg):
+    """print() that will not corrupt an active progress bar.
+
+    tqdm draws by rewriting the current line, so a bare print() lands in the
+    middle of it and terminates it — which is exactly how one rewritten bar
+    turned into a line per frame. tqdm.write() clears the bar, prints, and
+    redraws it.
+
+    Swallows everything. run.py puts stdout into UTF-8, but if that ever fails
+    the console is left on the Windows ANSI codepage, where a single ✓ in a
+    status line raises UnicodeEncodeError — and a diagnostic has no business
+    killing an hour-long render, so unprintable characters degrade instead."""
+    text = str(msg)
+    try:
+        tqdm.write(text)
+        return
+    except Exception:
+        pass
+    try:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(enc, "replace").decode(enc, "replace"), flush=True)
+    except Exception:
+        pass
 
 
 def wait_while_paused():

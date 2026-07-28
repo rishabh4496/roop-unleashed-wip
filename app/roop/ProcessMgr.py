@@ -18,7 +18,7 @@ from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -231,7 +231,6 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
 
 
 
-from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
 from roop import swap_batcher
@@ -696,7 +695,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         progress_bar_format = PROGRESS_BAR_FORMAT
         self.total_frames = len(source_files)
         self.num_threads = threads
-        with tqdm(total=self.total_frames, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+        with ChunkedProgress(total=self.total_frames, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 futures = []
                 queue = create_queue(source_files)
@@ -1068,7 +1067,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             if use_parallel_stab:
                 print(f"[Stabilize] parallel stabilization ON (threads={threads}, warm-up overlap) — "
                       f"both kps and enhancer smoothing run multi-threaded.")
-                with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+                with ChunkedProgress(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
                     self._run_stab_parallel(source_video, awebp_frames, frame_start, frame_end,
                                             frame_count, threads, lambda: self.update_progress(progress))
             else:
@@ -1087,7 +1086,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 self._swap_batcher = self._make_swap_batcher(threads)
 
                 try:
-                    with tqdm(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
+                    with ChunkedProgress(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
                         with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
                             futures = []
                             for threadindex in range(threads):
@@ -1432,10 +1431,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         memory_usage = process.memory_info().rss / 1024 / 1024 / 1024
         mem_str = f"{COLOR_CYAN}{memory_usage:.2f}GB{COLOR_RESET}"
         thread_str = f"{COLOR_YELLOW}{self.num_threads}{COLOR_RESET}"
+        # refresh=False: this fires once per FRAME, and a refreshing set_postfix
+        # re-renders the whole bar each time on top of the render update() is
+        # about to do anyway. The values are picked up by the next draw.
         progress.set_postfix({
             'memory_usage': mem_str,
             'execution_threads': thread_str
-        })
+        }, refresh=False)
         progress.update(1)
         if self.progress_gradio is not None:
             n = progress.n
@@ -1847,10 +1849,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             claimed.add(best_j)
 
                     if _DEBUG_MATCH:
-                        print(f"[TRACKMATCH] f={frame_idx} faces={len(faces)} "
-                              f"entry_srcs={[e[1] for e in entries]} best_j={best_j} "
-                              f"src={src_index} claimed={sorted(claimed)}"
-                              + (f" VETO: {veto}" if veto else ""))
+                        bar_write(f"[TRACKMATCH] f={frame_idx} faces={len(faces)} "
+                                  f"entry_srcs={[e[1] for e in entries]} best_j={best_j} "
+                                  f"src={src_index} claimed={sorted(claimed)}"
+                                  + (f" VETO: {veto}" if veto else ""))
 
                     if src_index is not None:
                         claimed_sources_in_frame.add(src_index)
@@ -1952,11 +1954,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                                     self.target_face_datas[ti].embedding, faces[fidx].embedding)
                                     for ti in tis), 3) for g, tis in persons.items()}
                                  for fidx in range(len(faces))}
-                        print(f"[MATCH] persons={len(persons)} single_person={single_person} "
-                              f"faces={len(faces)} sources={len(self.input_face_datas)} "
-                              f"thr={threshold} dist(face->person)={dists}")
+                        bar_write(f"[MATCH] persons={len(persons)} single_person={single_person} "
+                                  f"faces={len(faces)} sources={len(self.input_face_datas)} "
+                                  f"thr={threshold} dist(face->person)={dists}")
                     except Exception as _e:
-                        print(f"[MATCH] diag failed: {_e}")
+                        bar_write(f"[MATCH] diag failed: {_e}")
 
                 claimed_faces, claimed_persons = set(), set()
                 for d, g, fidx in candidates:
@@ -1969,8 +1971,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
                         num_faces_found += 1
                     elif _DEBUG_MATCH:
-                        print(f"[MATCH] person g={g} matched face {fidx} but src_index="
-                              f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
+                        bar_write(f"[MATCH] person g={g} matched face {fidx} but src_index="
+                                  f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
                 gender = 'F' if self.options.swap_mode == "all_female" else 'M'
