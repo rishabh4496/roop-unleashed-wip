@@ -194,13 +194,31 @@ restore is the only GPU stage without a session pool, so while swap, mask and
 detect run N-wide behind `_gpu_guard(pooled=True)`, this one holds the global
 lock.
 
-`ROOP_EXPR_POOL=2` gives it independent TensorRT contexts and removes that.
-It is **off by default and deliberately not VRAM-auto-tuned** like
-`ROOP_TRT_POOL`/`ROOP_DETMASK_POOL`, because those defaults were chosen before
-these models existed: a 12 GB card running 4 swapper + 4 detmask instances was
-measured with only 1.0 GB free mid-render, which is not enough for a second
-restorer. Expect to trade it against `ROOP_TRT_POOL` rather than add it for
-free, and watch for OOM / engine-build thrash on the first run after enabling.
+`ROOP_EXPR_POOL=N` gives it independent TensorRT contexts and removes that.
+Measured with 8 threads sharing one restorer, as ProcessMgr uses it:
+
+| `ROOP_EXPR_POOL` | throughput | per call | VRAM held |
+|---|---|---|---|
+| 0 *(serialised)* | 28.7 faces/s | 34.8 ms | 1162 MB |
+| **2** | **39.2 faces/s** | 25.5 ms | 1822 MB |
+| 3 | 38.6 faces/s | 25.9 ms | 2518 MB |
+| 4 | 37.4 faces/s | 26.7 ms | 3180 MB |
+
+**2 is the sweet spot: +37% for +660 MB.** Past that the GPU is saturated and
+extra contexts cost more than they return. Note that pool 0 with 8 threads lands
+at exactly the single-threaded 34.8 ms, which is what "fully serialised" looks
+like. Output is **bit-exact** against the unpooled path, and identical across
+slots — the pool changes scheduling only.
+
+Still **off by default**, and deliberately not VRAM-auto-tuned like
+`ROOP_TRT_POOL`/`ROOP_DETMASK_POOL`, whose defaults were chosen before these
+models existed. A 12 GB card running 4 swapper + 4 detmask instances measured
+1.0 GB free mid-render, so `=2` fits with roughly 380 MB to spare — enough, but
+not comfortable. If it is unstable, drop `ROOP_TRT_POOL` to 3.
+
+The +37% is the isolated gain. In the real pipeline the pooled stage also stops
+holding the global lock, so it can overlap with swap/mask/detect as well; that
+part is unmeasured and can only be larger, not smaller.
 
 ### The constraint
 
