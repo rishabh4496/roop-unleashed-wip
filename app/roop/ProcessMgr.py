@@ -16,7 +16,7 @@ from roop.procmgr_masking import MaskingMixin
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -1773,6 +1773,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             elif (multi_person and d_own is not None
                                     and d_own > _TRACK_VETO_DIST):
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
+                            elif (not multi_person and _TRACK_VETO_SINGLE > 0
+                                    and d_own is not None
+                                    and d_own > _TRACK_VETO_SINGLE):
+                                # Opt-in catch for a tracker identity switch when
+                                # only one person is selected — see the constant.
+                                veto = (f'face is {d_own:.2f} from the selected person '
+                                        f'(> {_TRACK_VETO_SINGLE}, single-person veto)')
                             elif (d_own is not None and d_other is not None
                                     and d_other + _TRACK_VETO_MARGIN < d_own):
                                 veto = f'another person fits better ({d_other:.2f} vs {d_own:.2f})'

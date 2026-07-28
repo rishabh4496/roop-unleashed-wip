@@ -143,6 +143,7 @@ not by tightening these absolute cutoffs.
 |------|---------|--------|
 | `ROOP_TRACK_VETO` | 0.85 | Distance beyond which a tracked source is refused for a face (guards ID switches, crossings, bystanders). `0` disables the veto — a tracked source then applies wherever spatial association points. |
 | `ROOP_TRACK_VETO_MARGIN` | 0.15 | Also veto when a *different* selected person explains the face this much better. |
+| `ROOP_TRACK_VETO_SINGLE` | 0 (off) | Absolute veto for the **single selected person** case, which `ROOP_TRACK_VETO` deliberately skips. Catches a tracker identity switch (two people cross; one leaves and another stands where the track was), which otherwise keeps swapping the wrong face for a run of frames with no identity check at all. Set only high enough to catch unambiguous mismatches — different people measured ~0.93–1.07, so `1.0` is a reasonable trial; values near the match threshold make hard poses blink instead. |
 | `ROOP_TRACK_OVERLAP_FRAC` | 0.15 | Fraction of a track's frames that must overlap an already-assigned track of the same person before it counts as a genuinely concurrent second body rather than an occlusion handoff. |
 | `ROOP_TRACK_TRUEMEAN` | 1 (on) | Identity-lock matches on the true mean embedding. `0` restores the old recency-biased EMA (the "only the first faceset swaps" behaviour). |
 

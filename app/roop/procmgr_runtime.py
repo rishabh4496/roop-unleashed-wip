@@ -44,6 +44,26 @@ _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 _TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
 
 
+# Absolute veto for the SINGLE-selected-person case, which _TRACK_VETO_DIST
+# deliberately skips (see the reasoning at its use site: with nobody else's
+# faceset to protect, an absolute gate can only take swaps away, and a profile
+# or motion-blurred frame of the right person routinely exceeds 0.85).
+#
+# That reasoning holds for a lone subject, but it leaves one hole: if the
+# TRACKER itself switches identity — two people cross, or one leaves and another
+# stands where the track was — the track keeps its source and every face on it is
+# swapped, with no identity check at swap time at all. That reads as the swap
+# jumping to the wrong person for a run of frames.
+#
+# OFF by default (0) because it is the same class of change as the Re-ID gates
+# reverted in f7cbdb6, which broke recognition on hard poses. Set it to catch
+# UNAMBIGUOUS mismatches only — different people measured ~0.93-1.07 on the clip
+# these constants were tuned on, so ~1.0 vetoes strangers while leaving even a
+# full profile of the right person (up to ~1.0 from a frontal capture) alone.
+# Anything near the match threshold will make hard frames blink instead.
+_TRACK_VETO_SINGLE = float(os.environ.get('ROOP_TRACK_VETO_SINGLE', '0'))
+
+
 # Reject when a DIFFERENT selected person explains the face this much better.
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 
