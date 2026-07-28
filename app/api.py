@@ -1566,6 +1566,7 @@ def preview(payload: dict = Body(...)):
 
     faces_list = []
     person_ids = []
+    kps_list = []
     try:
         from roop.face_util import get_all_faces
         faces = get_all_faces(current_frame)
@@ -1573,12 +1574,16 @@ def preview(payload: dict = Body(...)):
             for f in faces:
                 bbox = f["bbox"].astype(int).tolist()
                 faces_list.append(bbox)
+                # 5-point keypoints, so a mask painted in frame space can carry
+                # ref_kps and be warped into the aligned face crop.
+                k = f.get("kps") if isinstance(f, dict) else getattr(f, "kps", None)
+                kps_list.append(np.asarray(k).astype(float).tolist() if k is not None else None)
             person_ids = _preview_person_ids(idx, faces)
     except Exception:
         pass
 
     if not fake or len(roop_globals.INPUT_FACESETS) < 1:
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
 
     try:
         from roop.core import live_swap, get_processing_plugins
@@ -1612,7 +1617,10 @@ def preview(payload: dict = Body(...)):
             get_processing_plugins(mask_engine, swap_model=swap_model),
             roop_globals.distance_threshold, roop_globals.blend_ratio,
             roop_globals.face_swap_mode, face_index, payload.get("clip_text", ""),
-            None, int(payload.get("num_swap_steps", 1)), roop_globals.subsample_size,
+            # Manual brush mask from the preview box. ProcessMgr parses this JSON
+            # ({"<faceset>": {exclude, canonical, ref_kps}}); '' means none.
+            payload.get("imagemask") or None,
+            int(payload.get("num_swap_steps", 1)), roop_globals.subsample_size,
             bool(payload.get("show_mask_offsets", False)),
             bool(payload.get("restore_original_mouth", False)),
             use_3d_recon=bool(payload.get("use_3d_recon", False)),
@@ -1625,11 +1633,11 @@ def preview(payload: dict = Body(...)):
 
         swapped = live_swap(current_frame, options, input_facesets=mapped)
         if swapped is None:
-            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids}
-        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list, "person_ids": person_ids}
+            return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+        return {"image": _bgr_to_dataurl(swapped), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
     except Exception:
         traceback.print_exc()
-        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "error": "swap failed"}
+        return {"image": _bgr_to_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "error": "swap failed"}
 
 
 @app.post("/api/preview_upscale")
@@ -1818,7 +1826,10 @@ def _run_swap(payload):
         run_facesets = mapped_facesets(run_mapping, roop_globals.face_swap_mode)
         batch_process_regular(
             output_method, files_to_process, mask_engine, clip_text,
-            processing_method == "In-Memory processing", None,
+            processing_method == "In-Memory processing",
+            # imagemask — the preview box's brush mask. Was hardcoded None, so a
+            # painted mask was silently dropped on the way to the render.
+            payload.get("imagemask") or None,
             bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
             int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
             ApiProgress(),

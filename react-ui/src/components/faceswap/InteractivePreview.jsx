@@ -50,6 +50,8 @@ function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
 }
 
 const ZOOM_MAX = 8;
+const LENS_R = 88;        // lens radius in px (the glass is 2R across)
+const LENS_ZOOM = 3.5;    // magnification ON TOP of the stage's own zoom
 
 export default function InteractivePreview({
   beforeSrc,
@@ -70,11 +72,15 @@ export default function InteractivePreview({
   previewing = false,
   previewSecs = 0,
   scrubbing = false,
+  onMaskChange,
+  maskApplied = false,
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
   const imageRef = useRef(null);
   const maskCanvasRef = useRef(null);
+  const maskExportRef = useRef(null);
+  const lastPtRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
 
   const [zoom, setZoom] = useState(1);
@@ -112,6 +118,7 @@ export default function InteractivePreview({
       setIsPanning(false);
       setIsPeekingOriginal(false);
       setIsDrawingMask(false);
+      lastPtRef.current = null;   // next press starts a new stroke
     };
     window.addEventListener('mouseup', handleMouseUp);
     window.addEventListener('touchend', handleMouseUp);
@@ -130,6 +137,9 @@ export default function InteractivePreview({
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+      // Bare keys only. Without this, Ctrl/Cmd+C hit the 'c' branch below and
+      // its preventDefault() swallowed the copy — the same for Ctrl+M/Ctrl+B.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
@@ -173,7 +183,7 @@ export default function InteractivePreview({
   const handlePointerDown = (e) => {
     if (maskBrushActive) {
       setIsDrawingMask(true);
-      drawMaskStroke(e);
+      drawMaskStroke(e, true);   // start a fresh stroke, no join to the last one
       return;
     }
     if (zoom > 1 && !isDraggingSlider) {
@@ -194,16 +204,25 @@ export default function InteractivePreview({
     const cy = e.clientY ?? e.touches?.[0]?.clientY;
     if (cx === undefined) return;
 
-    // Update Magnifier glass position
+    // Update Magnifier glass position.
+    // We record the DISPLAYED image box (imageRef, so the rect already includes
+    // the zoom/pan transform) in container-local coordinates. The lens then
+    // reproduces exactly that layout scaled by LENS_ZOOM and offsets it so the
+    // pixel under the cursor lands dead centre. The previous version scaled a
+    // copy of the image squeezed into the 176px SQUARE lens and used a
+    // transform-origin taken from the 16:9 container, so the glass showed a
+    // letterboxed, differently-proportioned region that did not correspond to
+    // what was under the pointer.
     if (magnifierActive && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const relX = ((cx - rect.left) / rect.width) * 100;
-      const relY = ((cy - rect.top) / rect.height) * 100;
+      const ir = imageRef.current?.getBoundingClientRect();
       setLensPos({
         x: cx - rect.left,
         y: cy - rect.top,
-        relX,
-        relY,
+        imgW: ir?.width || rect.width,
+        imgH: ir?.height || rect.height,
+        imgX: (ir?.left ?? rect.left) - rect.left,
+        imgY: (ir?.top ?? rect.top) - rect.top,
         visible: cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom,
       });
     }
@@ -229,44 +248,84 @@ export default function InteractivePreview({
     });
   };
 
-  const drawMaskStroke = (e) => {
+  // Every stroke is painted onto TWO canvases with identical geometry:
+  //   maskCanvasRef  — visible, translucent accent, purely a viewing aid
+  //   maskExportRef  — offscreen, solid white on transparent, what gets sent
+  // The backend decodes the mask with cv2.IMREAD_GRAYSCALE, so exporting the
+  // translucent pink layer would land at grey ~121 and be read as a HALF-
+  // strength mask everywhere the user painted. White gives a clean 0/255.
+  const drawMaskStroke = (e, isStart = false) => {
     const canvas = maskCanvasRef.current;
-    if (!canvas) return;
+    const exportCanvas = maskExportRef.current;
+    if (!canvas || !exportCanvas) return;
     const rect = canvas.getBoundingClientRect();
     const cx = e.clientX ?? e.touches?.[0]?.clientX;
     const cy = e.clientY ?? e.touches?.[0]?.clientY;
-    if (cx === undefined) return;
+    if (cx === undefined || !rect.width) return;
 
-    const x = ((cx - rect.left) / rect.width) * canvas.width;
-    const y = ((cy - rect.top) / rect.height) * canvas.height;
+    // brushSize is a SCREEN measurement; the canvas is at the media's native
+    // resolution, so it has to be converted or the stroke is the wrong size by
+    // exactly the display scale factor (e.g. 2.4x off for 1920px media in an
+    // 800px box). The rect already includes the stage zoom/pan transform.
+    const scale = canvas.width / rect.width;
+    const x = (cx - rect.left) * scale;
+    const y = (cy - rect.top) * scale;
+    const r = Math.max(0.5, (brushSize / 2) * scale);
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    // Join to the previous sample, otherwise a quick drag leaves a dotted trail
+    // of disconnected circles instead of a stroke.
+    const prev = isStart ? null : lastPtRef.current;
+    const erase = brushMode === 'erase';
 
-    ctx.lineWidth = brushSize;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    if (brushMode === 'erase') {
-      ctx.globalCompositeOperation = 'destination-out';
+    for (const [c, color] of [[canvas, 'rgba(233, 69, 96, 0.45)'], [exportCanvas, '#ffffff']]) {
+      const ctx = c.getContext('2d');
+      if (!ctx) continue;
+      ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+      ctx.fillStyle = color;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = r * 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (prev) {
+        ctx.beginPath();
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      }
       ctx.beginPath();
-      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = 'rgba(233, 69, 96, 0.45)';
-      ctx.strokeStyle = 'rgba(233, 69, 96, 0.45)';
-      ctx.beginPath();
-      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+      ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
     }
+    lastPtRef.current = { x, y };
+  };
+
+  // Hand the painted region to the parent as a PNG data URL (null when nothing
+  // is painted). Explicit rather than per-stroke: each commit re-renders the
+  // preview through the backend.
+  const commitMask = () => {
+    if (!onMaskChange) return;
+    const c = maskExportRef.current;
+    if (!c) return;
+    let painted = false;
+    try {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      // Step 4 pixels; the smallest brush covers far more than that.
+      for (let i = 3; i < d.length; i += 16) {
+        if (d[i] > 8) { painted = true; break; }
+      }
+    } catch {
+      painted = true;   // tainted canvas shouldn't silently drop the mask
+    }
+    onMaskChange(painted ? c.toDataURL('image/png') : null);
   };
 
   const clearMaskCanvas = () => {
-    const canvas = maskCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const c of [maskCanvasRef.current, maskExportRef.current]) {
+      const ctx = c?.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+    }
+    lastPtRef.current = null;
+    if (onMaskChange) onMaskChange(null);
   };
 
   const handleDoubleClick = (e) => {
@@ -356,6 +415,11 @@ export default function InteractivePreview({
       if (nz === 1) setPan({ x: 0, y: 0 });
       return nz;
     });
+
+  // The 50/50 split branch returns early and renders neither the lens overlay
+  // nor the mask canvas, so offering their buttons there just lit up an "active"
+  // badge for a tool that could not do anything.
+  const splitMode = compare && splitView;
 
   // Main HUD Control Bar inside Preview Box
   const hudBar = () => (
@@ -449,6 +513,7 @@ export default function InteractivePreview({
         <span className="w-px h-5 bg-white/10 mx-1" />
 
         {/* Feature 1: Magnifier Lens Button */}
+        {!splitMode && (
         <button
           onClick={() => setMagnifierActive((m) => !m)}
           title="Toggle interactive 3.5× Magnifier Glass Lens (M)"
@@ -460,8 +525,10 @@ export default function InteractivePreview({
         >
           🔍 Lens
         </button>
+        )}
 
         {/* Feature 2: Face Mask Brush Tool Button */}
+        {!splitMode && (
         <button
           onClick={() => setMaskBrushActive((b) => !b)}
           title="Toggle interactive Face Mask Brush tool (B)"
@@ -473,6 +540,7 @@ export default function InteractivePreview({
         >
           🖌️ Mask Brush
         </button>
+        )}
 
         {/* Slider Effect Toggle Button inside Preview Box HUD */}
         {onToggleSliderEffect && (
@@ -551,12 +619,12 @@ export default function InteractivePreview({
           Compare Active
         </span>
       )}
-      {magnifierActive && (
+      {magnifierActive && !splitMode && (
         <span className="rounded-lg bg-cyan-500/20 text-cyan-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-cyan-400/30">
           🔍 Magnifier Lens (3.5×)
         </span>
       )}
-      {maskBrushActive && (
+      {maskBrushActive && !splitMode && (
         <span className="rounded-lg bg-pink-500/20 text-pink-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-pink-400/30">
           🖌️ Mask Brush Active ({brushMode})
         </span>
@@ -684,6 +752,20 @@ export default function InteractivePreview({
           >
             ↺ Clear
           </button>
+          {onMaskChange && (
+            <button
+              type="button"
+              onClick={commitMask}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                maskApplied
+                  ? 'bg-emerald-500 text-black'
+                  : 'bg-[var(--accent)] text-white hover:brightness-110'
+              }`}
+              title="Send the painted region to the swap — painted areas keep the ORIGINAL face"
+            >
+              {maskApplied ? '✓ Mask Applied' : '✅ Apply Mask'}
+            </button>
+          )}
         </div>
       )}
 
@@ -735,14 +817,33 @@ export default function InteractivePreview({
             />
           </div>
 
-          {/* Interactive Mask Paint Canvas Overlay */}
-          {maskBrushActive && (
-            <canvas
-              ref={maskCanvasRef}
-              width={imgDim?.w || 1000}
-              height={imgDim?.h || 600}
-              className="absolute inset-0 w-full h-full object-contain z-35 cursor-crosshair pointer-events-auto"
-            />
+          {/* Interactive Mask Paint Canvas Overlay.
+              Mounted for as long as the media dimensions are known, NOT only
+              while the brush is active: a canvas loses its bitmap when it
+              unmounts (and again whenever its width/height attributes are
+              re-assigned), so gating it on maskBrushActive silently threw the
+              painting away every time the tool was toggled off. */}
+          {imgDim && (
+            <>
+              <canvas
+                ref={maskCanvasRef}
+                width={imgDim.w}
+                height={imgDim.h}
+                className={`absolute inset-0 w-full h-full object-contain z-[35] ${
+                  maskBrushActive
+                    ? 'cursor-crosshair pointer-events-auto'
+                    : 'pointer-events-none opacity-60'
+                }`}
+              />
+              {/* Offscreen solid-white twin — this is what gets exported. */}
+              <canvas
+                ref={maskExportRef}
+                width={imgDim.w}
+                height={imgDim.h}
+                style={{ display: 'none' }}
+                aria-hidden
+              />
+            </>
           )}
 
           {/* Draggable Vertical Compare Slider Handle */}
@@ -775,27 +876,34 @@ export default function InteractivePreview({
       {/* Feature 1: Interactive Magnifier Glass Lens Overlay */}
       {magnifierActive && lensPos.visible && (
         <div
-          className="absolute w-44 h-44 rounded-full border-2 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.6)] overflow-hidden pointer-events-none z-50 bg-black"
+          className="absolute rounded-full border-2 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.6)] overflow-hidden pointer-events-none z-50 bg-black"
           style={{
-            left: `${lensPos.x - 88}px`,
-            top: `${lensPos.y - 88}px`,
+            width: LENS_R * 2,
+            height: LENS_R * 2,
+            left: `${lensPos.x - LENS_R}px`,
+            top: `${lensPos.y - LENS_R}px`,
           }}
         >
-          <div
-            className="w-full h-full relative overflow-hidden flex items-center justify-center"
+          <img
+            src={isPeekingOriginal ? beforeSrc : (afterSrc || beforeSrc)}
+            alt="Magnifier lens view"
+            draggable={false}
             style={{
-              transform: 'scale(3.5)',
-              transformOrigin: `${lensPos.relX}% ${lensPos.relY}%`,
+              position: 'absolute',
+              width: lensPos.imgW * LENS_ZOOM,
+              height: lensPos.imgH * LENS_ZOOM,
+              maxWidth: 'none',
+              objectFit: 'contain',
+              // Put the pixel under the cursor at the centre of the glass.
+              left: -((lensPos.x - lensPos.imgX) * LENS_ZOOM - LENS_R),
+              top: -((lensPos.y - lensPos.imgY) * LENS_ZOOM - LENS_R),
             }}
-          >
-            <img
-              src={afterSrc || beforeSrc}
-              alt="Magnifier lens view"
-              className="w-full h-full object-contain"
-            />
-          </div>
+          />
+          {/* Crosshair so the exact sampled pixel is unambiguous */}
+          <span className="absolute left-1/2 top-1/2 w-4 h-px -translate-x-1/2 -translate-y-1/2 bg-cyan-300/70" />
+          <span className="absolute left-1/2 top-1/2 h-4 w-px -translate-x-1/2 -translate-y-1/2 bg-cyan-300/70" />
           <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/80 backdrop-blur border border-cyan-400/40 text-[9px] font-mono font-bold text-cyan-300 tracking-wider">
-            3.5× LENS
+            {(LENS_ZOOM * zoom).toFixed(1)}× LENS
           </span>
         </div>
       )}

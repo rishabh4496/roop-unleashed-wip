@@ -1,6 +1,33 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TRACKER_SLIDERS, TRACKER_DEFAULT_VALUES } from './trackerConfig';
+
+const STORAGE_KEY = 'roop_user_slider_presets';
+
+const num = (v, fallback) => (typeof v === 'number' && !isNaN(v) ? v : fallback);
+
+// Slider steps are 0.01/0.05, so values that came back through parseFloat or
+// JSON can be a float ULP off what the preset table holds. Compare with a
+// tolerance rather than ===, or a preset would never register as "active".
+const valuesMatch = (params, values) =>
+  TRACKER_SLIDERS.every((s) =>
+    Math.abs(num(params[s.key], s.defaultVal) - num(values[s.key], s.defaultVal)) < 1e-6);
+
+// Custom presets come from localStorage, which is user-writable and survives
+// across versions — anything malformed in there would otherwise crash the whole
+// Face Swap tab on the spread below.
+const sanitizeCustomPresets = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p) => p && typeof p.name === 'string' && p.values && typeof p.values === 'object')
+    .map((p, i) => ({
+      name: p.name,
+      values: Object.fromEntries(
+        TRACKER_SLIDERS.map((s) => [s.key, num(p.values[s.key], s.defaultVal)])),
+      isCustom: true,
+      id: String(p.id ?? `legacy-${i}`),
+    }));
+};
 
 const BUILTIN_PRESETS = [
   { name: 'Default', values: TRACKER_DEFAULT_VALUES },
@@ -80,7 +107,6 @@ export default function SliderTrackerBar({
   onRefreshPreview,
 }) {
   const [expanded, setExpanded] = useState(true);
-  const [activePreset, setActivePreset] = useState('Default');
   const [customPresets, setCustomPresets] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
@@ -88,10 +114,8 @@ export default function SliderTrackerBar({
   // Load custom presets from localStorage on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('roop_user_slider_presets');
-      if (saved) {
-        setCustomPresets(JSON.parse(saved));
-      }
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setCustomPresets(sanitizeCustomPresets(JSON.parse(saved)));
     } catch {
       /* ignore */
     }
@@ -101,14 +125,25 @@ export default function SliderTrackerBar({
   const saveCustomPresetsToStorage = (updated) => {
     setCustomPresets(updated);
     try {
-      localStorage.setItem('roop_user_slider_presets', JSON.stringify(updated));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
     } catch {
       /* ignore */
     }
   };
 
+  const allPresets = useMemo(() => [...BUILTIN_PRESETS, ...customPresets], [customPresets]);
+
+  // DERIVED, never stored. As state it went stale in four ways: it started at
+  // 'Default' regardless of the loaded config, it did not follow edits made in
+  // the main settings panel, clicking every "def:" pip left it reading 'Custom',
+  // and "↺ Reset" and preset-delete had to remember to correct it by hand.
+  // Reading it off `params` means the highlight is always the truth.
+  const activePreset = useMemo(() => {
+    const hit = allPresets.find((pr) => valuesMatch(params, pr.values));
+    return hit ? hit.name : 'Custom';
+  }, [params, allPresets]);
+
   const applyPreset = (pObj) => {
-    setActivePreset(pObj.name);
     Object.entries(pObj.values).forEach(([k, v]) => {
       if (onSetParam) onSetParam(k, v);
     });
@@ -116,45 +151,33 @@ export default function SliderTrackerBar({
   };
 
   const handleSaveCurrentPreset = () => {
-    const name = newPresetName.trim();
+    // Strip any ★ the user typed (or pasted from an existing pill's label) so
+    // re-saving "★ mine" cannot produce "★ ★ mine".
+    const name = newPresetName.replace(/^[★\s]+/, '').trim();
     if (!name) return;
 
-    // Collect current values of the 8 sliders from params
-    const values = {};
-    TRACKER_SLIDERS.forEach((s) => {
-      values[s.key] = num(params[s.key], s.defaultVal);
-    });
+    const values = Object.fromEntries(
+      TRACKER_SLIDERS.map((s) => [s.key, num(params[s.key], s.defaultVal)]));
 
     const newPreset = {
       name: `★ ${name}`,
       values,
       isCustom: true,
-      id: Date.now().toString(),
+      // Date.now() alone collides when two presets are saved inside the same
+      // millisecond, which would make one delete remove both.
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     };
 
-    const updated = [...customPresets.filter((p) => p.name !== newPreset.name), newPreset];
-    saveCustomPresetsToStorage(updated);
-    setActivePreset(newPreset.name);
+    saveCustomPresetsToStorage(
+      [...customPresets.filter((p) => p.name !== newPreset.name), newPreset]);
     setNewPresetName('');
     setIsSaving(false);
   };
 
   const handleDeleteCustomPreset = (presetId, e) => {
     e.stopPropagation();
-    const doomed = customPresets.find((p) => p.id === presetId);
-    const updated = customPresets.filter((p) => p.id !== presetId);
-    saveCustomPresetsToStorage(updated);
-    // activePreset holds a NAME ("★ foo"), never an id, so the old
-    // activePreset.includes(presetId) test could never fire and the pill stayed
-    // highlighted on a preset that no longer existed.
-    if (doomed && activePreset === doomed.name) {
-      setActivePreset('Default');
-    }
+    saveCustomPresetsToStorage(customPresets.filter((p) => p.id !== presetId));
   };
-
-  const num = (v, fallback) => (typeof v === 'number' && !isNaN(v) ? v : fallback);
-
-  const allPresets = [...BUILTIN_PRESETS, ...customPresets];
 
   return (
     <div className="w-full rounded-2xl glass-panel p-4 mb-4 border border-white/10 shadow-2xl transition-all duration-300 relative overflow-hidden group">
@@ -230,10 +253,7 @@ export default function SliderTrackerBar({
           {onResetSliders && (
             <button
               type="button"
-              onClick={() => {
-                setActivePreset('Default');
-                onResetSliders();
-              }}
+              onClick={onResetSliders}
               className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/60 hover:text-white transition-colors"
               title="Reset all trackers to default values"
             >
@@ -283,6 +303,14 @@ export default function SliderTrackerBar({
             <span className="text-[10px] font-bold uppercase tracking-wider text-white/40 mr-1">
               Presets:
             </span>
+            {activePreset === 'Custom' && (
+              <span
+                className="px-2 py-1 rounded-lg text-[10px] font-bold border border-dashed border-white/25 text-white/60 bg-white/[0.03]"
+                title="Current slider values do not match any saved preset"
+              >
+                Custom
+              </span>
+            )}
             {allPresets.map((p) => {
               const isSel = activePreset === p.name;
               return (
@@ -423,10 +451,7 @@ export default function SliderTrackerBar({
                         step={s.step}
                         value={val}
                         disabled={!sliderEffectEnabled}
-                        onChange={(e) => {
-                          setActivePreset('Custom');
-                          if (onSetParam) onSetParam(s.key, parseFloat(e.target.value));
-                        }}
+                        onChange={(e) => onSetParam && onSetParam(s.key, parseFloat(e.target.value))}
                         className="w-full h-1.5 rounded-lg appearance-none bg-white/10 cursor-pointer accent-[var(--accent)] focus:outline-none disabled:cursor-not-allowed"
                         style={{
                           background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${percent}%, rgba(255,255,255,0.1) ${percent}%, rgba(255,255,255,0.1) 100%)`,
@@ -439,12 +464,7 @@ export default function SliderTrackerBar({
                       <span>{s.min}</span>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (sliderEffectEnabled && onSetParam) {
-                            setActivePreset('Custom');
-                            onSetParam(s.key, s.defaultVal);
-                          }
-                        }}
+                        onClick={() => sliderEffectEnabled && onSetParam && onSetParam(s.key, s.defaultVal)}
                         disabled={!sliderEffectEnabled}
                         className={`hover:text-white transition-colors cursor-pointer ${
                           isModified ? 'text-[var(--accent)] font-bold' : ''

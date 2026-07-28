@@ -60,6 +60,13 @@ export default function FaceSwap({
   const [previewSrc, setPreviewSrc] = useState('');
   const [previewFaces, setPreviewFaces] = useState([]);
   const [previewPersonIds, setPreviewPersonIds] = useState([]);
+  const [previewKps, setPreviewKps] = useState([]);
+  // Manual mask painted in the preview box (PNG data URL) + the face keypoints
+  // it was painted against. maskVersion is a cheap token for the preview cache
+  // key so the multi-KB data URL never has to be stringified per render.
+  const [manualMask, setManualMask] = useState(null);
+  const [maskRefKps, setMaskRefKps] = useState(null);
+  const [maskVersion, setMaskVersion] = useState(0);
   // Single-frame AI-upscale spot-check (result shown in a modal).
   const [upscaledSrc, setUpscaledSrc] = useState('');
   const [upscaledDims, setUpscaledDims] = useState(null);
@@ -534,6 +541,29 @@ export default function FaceSwap({
        p.subsample_upscale, p.upscale_after_swap, p.upscale_model_after,
        p.track_identities, p.temporal_detection, p.stabilize_face, p.stabilize_enhancer]);
 
+  // Manual mask painted in the preview box. ProcessMgr already understands this
+  // format ({"<faceset>": {exclude, canonical, ref_kps}}) — it was simply never
+  // being sent: both /api/preview and /api/swap passed a literal None for the
+  // imagemask, so the brush was a drawing toy. Painted areas KEEP THE ORIGINAL
+  // face (exclude semantics), which is what the red paint has always implied.
+  const maskJson = useMemo(() => {
+    if (!manualMask) return '';
+    const entry = { exclude: manualMask, canonical: false };
+    // ref_kps lets the backend warp a full-frame mask into the face-crop space.
+    // Without it the mask can only be interpreted as already-canonical, which a
+    // frame-space painting is not.
+    if (maskRefKps) entry.ref_kps = maskRefKps;
+    return JSON.stringify({ [String(selSource)]: entry });
+  }, [manualMask, maskRefKps, selSource]);
+
+  const applyManualMask = (dataUrl) => {
+    setManualMask(dataUrl);
+    // Bind the mask to the currently selected target face's keypoints so the
+    // backend can map frame-space paint onto the aligned crop.
+    setMaskRefKps(dataUrl ? (previewKps[selTargetFace] || previewKps[0] || null) : null);
+    setMaskVersion((v) => v + 1);
+  };
+
   // "Slider Effect: BYPASSED" neutralises the eight Slider Tracker values.
   // This MUST be applied to the render payload too, not just the preview —
   // otherwise the preview shows a bypassed result while Run quietly renders
@@ -606,6 +636,8 @@ export default function FaceSwap({
       mouth_bottom_scale: activeParams.mouth_bottom_scale,
       mouth_left_scale: activeParams.mouth_left_scale,
       mouth_right_scale: activeParams.mouth_right_scale,
+      // Manual brush mask (JSON string, '' when nothing is painted).
+      imagemask: maskJson,
       ...overrides,
     };
   };
@@ -616,9 +648,14 @@ export default function FaceSwap({
   };
 
   // index/frame are separate cache dimensions, so they are zeroed here rather
-  // than being part of the settings signature.
+  // than being part of the settings signature. imagemask is swapped for its
+  // short version token: it is a base64 PNG that can run to tens of kilobytes,
+  // and the signature is re-stringified on every render. The token still bumps
+  // on every mask edit, so the invalidate-when-it-changes guarantee holds.
   const previewSignature = (params, fake) =>
-    JSON.stringify(buildPreviewPayload(params, { index: 0, frame: 0, fake }));
+    JSON.stringify(buildPreviewPayload(params, {
+      index: 0, frame: 0, fake, imagemask: `mask:${maskVersion}`,
+    }));
 
   const previewKey = previewSignature(p, fakePreview);
 
@@ -737,6 +774,7 @@ export default function FaceSwap({
       if (cached) {
         setPreviewFaces(cached.faces);
         setPreviewPersonIds(cached.personIds || []);
+        setPreviewKps(cached.kps || []);
         setPreviewSrc(cached.image);
         return;
       }
@@ -764,9 +802,10 @@ export default function FaceSwap({
       const res = await postJSON('/api/preview', buildPreviewPayload(p, { index: idx, frame: fr, fake }), { signal: ctrl.signal });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewPersonIds(res.person_ids || []);
+      setPreviewKps(res.kps || []);
       setPreviewSrc(res.image || '');
       if (res.image) {
-        setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], image: res.image });
+        setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], kps: res.kps || [], image: res.image });
       }
     } catch (e) {
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
@@ -1327,6 +1366,7 @@ export default function FaceSwap({
         face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
         num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
+        imagemask: maskJson,
       });
       setStartTime(Date.now());
       // Ask for desktop-notification permission so we can ping on completion if
@@ -1842,6 +1882,7 @@ export default function FaceSwap({
         face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
         num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
+        imagemask: maskJson,
         target_index: selTarget,
         // Quick 5s preview clip: skip the heavy post-swap AI upscale so the
         // preview stays fast (the real render still upscales).
@@ -3223,6 +3264,8 @@ export default function FaceSwap({
                   beforeSrc={(isPlaying && bufferedSrc) ? bufferedSrc : rawUrl}
                   afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : ((isPlaying && bufferedSrc) ? bufferedSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
                   scrubbing={scrubbingNow}
+                  onMaskChange={applyManualMask}
+                  maskApplied={!!manualMask}
                   faces={previewFaces}
                   personIds={previewPersonIds}
                   onSelectPerson={addPersonFromBox}
