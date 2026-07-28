@@ -71,6 +71,21 @@ _TRACK_VETO_SINGLE = float(os.environ.get('ROOP_TRACK_VETO_SINGLE', '0'))
 _DEBUG_MATCH = os.environ.get('ROOP_DEBUG_MATCH', '').strip().lower() not in ('', '0', 'false', 'off')
 
 
+# Appearance gate for track association. The tracking SCAN has always gated on
+# this (procmgr_tracking: `if cos_dist > EMB_MAX: continue`) — a detection that
+# looks wrong is refused outright rather than merely made expensive, which is
+# standard tracking-by-detection practice (BoT-SORT/ByteTrack `appearance_thresh`).
+#
+# The swap-time re-association did NOT. It scored entries with
+#     cost = d_spatial * (1.0 + 2.5 * d_cosine)
+# and took the best one however bad the appearance match was, so a large identity
+# mismatch could always be outweighed by a small spatial distance. Same tracker,
+# two different rules. This constant is now the single source for both.
+#
+# 0 disables the swap-time gate (restores the pre-fix behaviour).
+_TRACK_EMB_MAX = float(os.environ.get('ROOP_TRACK_EMB_MAX', '0.7'))
+
+
 # Reject when a DIFFERENT selected person explains the face this much better.
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 

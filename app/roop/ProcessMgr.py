@@ -16,7 +16,8 @@ from roop.procmgr_masking import MaskingMixin
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
+from roop import recognizer_adaface as _ada
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -443,6 +444,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
     def initialize(self, input_faces, target_faces, options):
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
+        # Decide ONCE per run whether AdaFace drives identity matching, and warm
+        # every captured target face. All-or-nothing: a run must not compare some
+        # pairs on one metric and some on another against a single threshold.
+        # No-op unless ROOP_ADAFACE is set. Swap identity is never affected —
+        # w600k still feeds the swapper.
+        try:
+            _ada.begin_run(target_faces)
+        except Exception as e:
+            print(f'[AdaFace] init skipped ({e})')
         # Multi-angle target groups: person id per target face (default = each its
         # own person). Multiple angles of one person share an id; matching uses
         # the min distance across a person's angles → robust to pose (anti-flicker).
@@ -1670,6 +1680,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 rank = {g: r for r, g in enumerate(uniq)}
                 single_person = len(uniq) <= 1
                 threshold = self.options.face_distance_threshold
+                # When AdaFace drives identity, distances are on ITS scale —
+                # comparing them against max_face_distance would be meaningless.
+                id_threshold = _ada.active_threshold(threshold)
 
                 # person group id -> its captured target-face (angle) indices.
                 # Hoisted out of the per-face fallback below because the source
@@ -1692,9 +1705,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     tis = rank_to_tis.get(src)
                     if not tis or getattr(face, 'embedding', None) is None:
                         return None
-                    ds = [compute_cosine_distance(self.target_face_datas[ti].embedding, face.embedding)
+                    ds = [_ada.identity_distance(self.target_face_datas[ti], face, frame)
                           for ti in tis
                           if getattr(self.target_face_datas[ti], 'embedding', None) is not None]
+                    ds = [d for d in ds if d is not None]
                     return min(ds) if ds else None
 
                 for face in faces:
@@ -1711,7 +1725,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                                 d_cosine = float(compute_cosine_distance(entry[2], face.embedding))
                             else:
                                 d_cosine = 0.0
-                            
+
+                            # Appearance GATE, matching the one the tracking scan
+                            # already applies when it builds these tracks. Without
+                            # it the multiplicative cost below can always be won by
+                            # a small spatial distance no matter how wrong the face
+                            # looks, which is how a track hands its source to
+                            # whoever is standing closest. Refusing the association
+                            # outright is the standard tracking-by-detection rule.
+                            if _TRACK_EMB_MAX > 0 and d_cosine > _TRACK_EMB_MAX:
+                                continue
+
                             # Combine spatial distance penalized by cosine similarity distance
                             cost = d_spatial * (1.0 + 2.5 * d_cosine)
                             if cost < best_cost:
@@ -1771,17 +1795,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             if src_index in claimed_sources_in_frame:
                                 veto = 'source already used this frame'
                             elif (multi_person and d_own is not None
-                                    and d_own > _TRACK_VETO_DIST):
+                                    and d_own > _ada.scale(_TRACK_VETO_DIST, threshold)):
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
                             elif (not multi_person and _TRACK_VETO_SINGLE > 0
                                     and d_own is not None
-                                    and d_own > _TRACK_VETO_SINGLE):
+                                    and d_own > _ada.scale(_TRACK_VETO_SINGLE, threshold)):
                                 # Opt-in catch for a tracker identity switch when
                                 # only one person is selected — see the constant.
                                 veto = (f'face is {d_own:.2f} from the selected person '
                                         f'(> {_TRACK_VETO_SINGLE}, single-person veto)')
                             elif (d_own is not None and d_other is not None
-                                    and d_other + _TRACK_VETO_MARGIN < d_own):
+                                    and d_other + _ada.scale(_TRACK_VETO_MARGIN, threshold) < d_own):
                                 veto = f'another person fits better ({d_other:.2f} vs {d_own:.2f})'
                             if veto:
                                 src_index = None
@@ -1808,7 +1832,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         # instead of being silently skipped. Threshold-gated and
                         # 1:1 (a source already used this frame is skipped), so a
                         # face here can only ever get its OWN person's source.
-                        best_g, best_d = None, threshold
+                        best_g, best_d = None, id_threshold
                         for g, tis in persons.items():
                             r_src = self.options.selected_index if single_person else rank.get(g, 0)
                             if r_src in claimed_sources_in_frame:
@@ -1817,7 +1841,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             embs = [e for e in embs if e is not None]
                             if not embs or getattr(face, 'embedding', None) is None:
                                 continue
-                            d = min(compute_cosine_distance(e, face.embedding) for e in embs)
+                            _ds = [_ada.identity_distance(self.target_face_datas[ti], face, frame)
+                                   for ti in tis]
+                            _ds = [x for x in _ds if x is not None]
+                            if not _ds:
+                                continue
+                            d = min(_ds)
                             if d <= best_d:
                                 best_d, best_g = d, g
 
@@ -1857,6 +1886,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 rank = {g: r for r, g in enumerate(uniq)}
                 single_person = len(uniq) <= 1
                 threshold = self.options.face_distance_threshold
+                # When AdaFace drives identity, distances are on ITS scale —
+                # comparing them against max_face_distance would be meaningless.
+                id_threshold = _ada.active_threshold(threshold)
 
                 # person group id -> list of its target-face (angle) indices
                 persons = {}
@@ -1868,9 +1900,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 candidates = []
                 for fidx, face in enumerate(faces):
                     for g, tis in persons.items():
-                        d = min(compute_cosine_distance(self.target_face_datas[ti].embedding, face.embedding)
-                                for ti in tis)
-                        if d <= threshold:
+                        _ds = [_ada.identity_distance(self.target_face_datas[ti], face, frame)
+                               for ti in tis]
+                        _ds = [x for x in _ds if x is not None]
+                        if not _ds:
+                            continue
+                        d = min(_ds)
+                        if d <= id_threshold:
                             candidates.append((d, g, fidx))
                 candidates.sort(key=lambda c: c[0])   # greedily assign closest pairs first
 

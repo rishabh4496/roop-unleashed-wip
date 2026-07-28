@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from roop.procmgr_runtime import _DEBUG_MATCH
+from roop.procmgr_runtime import _DEBUG_MATCH, _TRACK_EMB_MAX
 
 import roop.globals
 from roop import session_pool
@@ -118,7 +118,9 @@ class TrackingMixin:
         active, retired = [], []
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
-        IOU_MIN, EMB_MAX, STALE = 0.2, 0.7, 15
+        # EMB_MAX is shared with the swap-time re-association in ProcessMgr so the
+        # two halves of the tracker cannot drift apart (see _TRACK_EMB_MAX).
+        IOU_MIN, EMB_MAX, STALE = 0.2, (_TRACK_EMB_MAX or 0.7), 15
         print(f'[Track] {desc}: scanning frames (step={TRACK_STEP})...')
 
         def _predict_bbox(t, f_idx):
