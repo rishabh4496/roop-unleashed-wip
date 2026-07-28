@@ -27,6 +27,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 import api_state as state
+from source_gallery import (
+    _mask_offsets_from_cfg,
+    estimate_face_pose_from_kps,
+    _sources_append,
+    _sources_pop,
+    _sources_move,
+    _sources_clear,
+    _sources_desync,
+    _get_source_faces_info,
+    _source_faces_payload,
+    _ingest_faceset,
+)
 from api_media import (
     _save_upload,
     _rgb_to_dataurl,
@@ -130,13 +142,7 @@ _ANGLE_SEED_MAX   = float(os.environ.get('ROOP_ANGLE_SEED_MAX', '0.85'))    # /t
 # ── Shared server-side state (mirrors the Gradio module globals) ──────────────
 list_files_process: list = []          # list[ProcessEntry] – the target media queue
 
-# Face Manager state (separate faceset builder)
-fm_thumbs: list = []                   # RGB numpy thumbnails
-fm_images: list = []                   # BGR numpy full face images
-fm_scores: list = []                   # FIQA quality score 0..1 per face (parallel to fm_images)
-fm_meta: list = []                     # FIQA breakdown dict per face (parallel to fm_images)
 fm_selected_index = -1
-fm_files: list = []                    # uploaded source paths for the facemgr tab
 
 # Live progress, polled by the React UI
 _progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
@@ -200,12 +206,6 @@ no_face_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame"
 
 
 
-def _mask_offsets_from_cfg():
-    c = roop_globals.CFG
-    return [c.mask_top, c.mask_bottom, c.mask_left, c.mask_right,
-            c.face_mask_blend, c.mouth_mask_blend,
-            c.mouth_top_scale, c.mouth_bottom_scale,
-            c.mouth_left_scale, c.mouth_right_scale]
 
 
 def _update_mask_offsets_from_payload(payload: dict):
@@ -435,43 +435,6 @@ def _available_video_codecs():
     return out
 
 
-def estimate_face_pose_from_kps(kps):
-    try:
-        left_eye_x, left_eye_y = kps[0]
-        right_eye_x, right_eye_y = kps[1]
-        nose_x, nose_y = kps[2]
-        left_mouth_x, left_mouth_y = kps[3]
-        right_mouth_x, right_mouth_y = kps[4]
-        
-        dx_left = abs(nose_x - left_eye_x)
-        dx_right = abs(right_eye_x - nose_x)
-        ratio = dx_left / (dx_right + 1e-6)
-        
-        yaw_label = "Front"
-        if ratio < 0.65:
-            yaw_label = "Left Profile"
-        elif ratio > 1.55:
-            yaw_label = "Right Profile"
-            
-        eye_y = (left_eye_y + right_eye_y) * 0.5
-        mouth_y = (left_mouth_y + right_mouth_y) * 0.5
-        dy_eyes = abs(nose_y - eye_y)
-        dy_mouth = abs(mouth_y - nose_y)
-        v_ratio = dy_eyes / (dy_mouth + 1e-6)
-        
-        pitch_label = ""
-        if v_ratio < 0.65:
-            pitch_label = "Up Tilt"
-        elif v_ratio > 1.45:
-            pitch_label = "Down Tilt"
-            
-        if pitch_label:
-            if yaw_label == "Front":
-                return pitch_label
-            return f"{yaw_label} + {pitch_label}"
-        return yaw_label
-    except Exception:
-        return "Front"
 
 
 # ── Fine pose bins (coverage accounting, NOT display) ────────────────────────
@@ -528,21 +491,6 @@ def _pose_bin(kps):
         return None
     return (_bin_index(yaw, _YAW_EDGES), _bin_index(pitch, _PITCH_EDGES))
 
-def _get_source_faces_info():
-    source_faces_info = []
-    for fs in roop_globals.INPUT_FACESETS:
-        faces_poses = []
-        for face in fs.faces:
-            kps = getattr(face, 'kps', None)
-            if kps is None and isinstance(face, dict) and 'kps' in face:
-                kps = face['kps']
-            poses_str = estimate_face_pose_from_kps(kps) if kps is not None else "Front"
-            faces_poses.append(poses_str)
-        source_faces_info.append({
-            "count": len(fs.faces),
-            "poses": faces_poses
-        })
-    return source_faces_info
 
 # ── The source gallery is TWO parallel lists ─────────────────────────────────
 # `roop_globals.INPUT_FACESETS` holds what the swap actually uses;
@@ -554,62 +502,16 @@ def _get_source_faces_info():
 # screen to say so. These four helpers are the only supported way to change the
 # gallery, so the two lists cannot drift apart one edit at a time.
 
-def _sources_append(faceset, thumb_rgb):
-    roop_globals.INPUT_FACESETS.append(faceset)
-    ui_globals.ui_input_thumbs.append(thumb_rgb)
 
 
-def _sources_pop(idx):
-    """Remove one entry. Returns True when something was actually removed."""
-    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
-        return False
-    roop_globals.INPUT_FACESETS.pop(idx)
-    if 0 <= idx < len(ui_globals.ui_input_thumbs):
-        ui_globals.ui_input_thumbs.pop(idx)
-    return True
 
 
-def _sources_move(idx, new_idx):
-    n = len(roop_globals.INPUT_FACESETS)
-    if not (0 <= idx < n and 0 <= new_idx < n):
-        return False
-    for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
-        if idx < len(arr) and new_idx < len(arr):
-            arr.insert(new_idx, arr.pop(idx))
-    return True
 
 
-def _sources_clear():
-    roop_globals.INPUT_FACESETS.clear()
-    ui_globals.ui_input_thumbs.clear()
 
 
-def _sources_desync():
-    """Non-empty message when the two lists have fallen out of step.
-
-    Checked on every gallery payload, so a divergence surfaces on the very next
-    UI refresh instead of being discovered later as "that face didn't swap".
-    """
-    nf = len(roop_globals.INPUT_FACESETS)
-    nt = len(ui_globals.ui_input_thumbs)
-    if nf == nt:
-        return ""
-    msg = (f"source gallery out of step: {nf} faceset(s) but {nt} thumbnail(s) — "
-           f"clear the input faces and re-add them")
-    print(f"[SOURCES] BUG: {msg}", flush=True)
-    return msg
 
 
-def _source_faces_payload():
-    payload = {
-        "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
-        "source_faces_info": _get_source_faces_info(),
-        "faceset_count": len(roop_globals.INPUT_FACESETS),
-    }
-    desync = _sources_desync()
-    if desync:
-        payload["desync"] = desync
-    return payload
 
 
 @app.get("/api/state")
@@ -662,40 +564,6 @@ def source_add(files: list[UploadFile] = File(...)):
     return _source_faces_payload()
 
 
-def _ingest_faceset(path):
-    unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
-    if os.path.isdir(unzipfolder):
-        shutil.rmtree(unzipfolder, ignore_errors=True)
-    os.makedirs(unzipfolder, exist_ok=True)
-    util.unzip(path, unzipfolder)
-    face_set = FaceSet()
-    best_crop = None
-    best_score = None
-    for file in sorted(os.listdir(unzipfolder)):
-        if file.endswith(".png"):
-            filename = os.path.join(unzipfolder, file)
-            frame = get_image_frame(filename)
-            for fd in extract_face_images(filename, (False, 0)):
-                face = fd[0]
-                face.mask_offsets = _mask_offsets_from_cfg()
-                face_set.faces.append(face)
-                face_set.ref_images.append(frame)
-                # Use the most frontal face as the gallery thumbnail, not just
-                # the first one (which is often a profile in a multi-angle set).
-                kps = getattr(face, "kps", None)
-                if kps is None and isinstance(face, dict):
-                    kps = face.get("kps")
-                score = _frontality(kps) if kps is not None else 999.0
-                if best_score is None or score < best_score:
-                    best_score, best_crop = score, fd[1]
-    if len(face_set.faces) > 0:
-        if len(face_set.faces) > 1:
-            face_set.AverageEmbeddings()
-        # A faceset with no usable crop still gets a (blank) gallery slot: the
-        # two lists are positional, so skipping the thumbnail would shift every
-        # later face's picture onto the wrong faceset.
-        _sources_append(face_set,
-                        util.convert_to_gradio(best_crop) if best_crop is not None else None)
 
 
 @app.post("/api/source/remove")
@@ -745,358 +613,48 @@ def source_refresh_thumbs():
 # and — by pointing the folder at OneDrive/Dropbox/Google Drive (Settings →
 # "Faceset library folder") — sync across devices automatically.
 
-def _faceset_library_dir() -> str:
-    p = ""
-    if roop_globals.CFG:
-        p = getattr(roop_globals.CFG, "faceset_library_path", "") or ""
-    if not p:
-        p = os.path.join(os.getcwd(), "facesets")
-    p = os.path.abspath(os.path.expanduser(p))
-    try:
-        os.makedirs(p, exist_ok=True)
-    except Exception:
-        traceback.print_exc()
-    return p
 
 
-def _imread_unicode(path):
-    # cv2.imread mangles non-ASCII paths on Windows (the library may live under a
-    # unicode OneDrive/Dropbox path), so decode from raw bytes instead.
-    try:
-        data = np.fromfile(path, dtype=np.uint8)
-        return cv2.imdecode(data, cv2.IMREAD_COLOR)
-    except Exception:
-        return None
 
 
-def _imwrite_unicode(path, img) -> bool:
-    ext = os.path.splitext(path)[1] or ".png"
-    try:
-        ok, buf = cv2.imencode(ext, img)
-        if not ok:
-            return False
-        buf.tofile(path)
-        return True
-    except Exception:
-        traceback.print_exc()
-        return False
 
 
-def _slugify_faceset_name(name: str) -> str:
-    name = (name or "").strip()
-    # Keep it a safe, cross-platform filename stem.
-    keep = "".join(c for c in name if c.isalnum() or c in " ._-()").strip(" .")
-    return keep or "faceset"
 
 
-def _unique_fsz_path(name: str) -> str:
-    lib = _faceset_library_dir()
-    stem = _slugify_faceset_name(name)
-    path = os.path.join(lib, f"{stem}.fsz")
-    n = 1
-    while os.path.exists(path):
-        path = os.path.join(lib, f"{stem} ({n}).fsz")
-        n += 1
-    return path
 
 
-def _library_thumb_dataurl(fsz_path: str) -> str:
-    thumb_path = os.path.splitext(fsz_path)[0] + ".png"
-    if os.path.exists(thumb_path):
-        return _bgr_to_jpg_dataurl(_imread_unicode(thumb_path))
-    return ""
 
 
-def _faceset_face_count(fsz_path: str) -> int:
-    try:
-        import zipfile
-        with zipfile.ZipFile(fsz_path, "r") as zf:
-            return sum(1 for n in zf.namelist() if n.lower().endswith(".png"))
-    except Exception:
-        return 0
 
 
-def _library_entries() -> list:
-    lib = _faceset_library_dir()
-    entries = []
-    try:
-        names = os.listdir(lib)
-    except Exception:
-        names = []
-    for fn in names:
-        if not fn.lower().endswith(".fsz"):
-            continue
-        fsz_path = os.path.join(lib, fn)
-        try:
-            st = os.stat(fsz_path)
-        except Exception:
-            continue
-        entries.append({
-            "filename": fn,
-            "name": os.path.splitext(fn)[0],
-            "path": fsz_path,
-            "size": st.st_size,
-            "mtime": st.st_mtime,
-            "faces": _faceset_face_count(fsz_path),
-            "thumb": _library_thumb_dataurl(fsz_path),
-        })
-    entries.sort(key=lambda e: e["name"].lower())
-    return entries
 
 
-def _faceset_library_payload(extra=None) -> dict:
-    payload = {"entries": _library_entries(), "dir": _faceset_library_dir()}
-    if extra:
-        payload.update(extra)
-    return payload
 
 
-def _frontality(kps):
-    """0 = perfectly frontal, larger = more turned to a profile. Uses the same
-    eye/nose geometry as estimate_face_pose_from_kps (ratio ~1 == front)."""
-    try:
-        import math
-        le_x = kps[0][0]
-        re_x = kps[1][0]
-        nose_x = kps[2][0]
-        dx_left = abs(nose_x - le_x)
-        dx_right = abs(re_x - nose_x)
-        ratio = dx_left / (dx_right + 1e-6)
-        return abs(math.log(ratio + 1e-6))
-    except Exception:
-        return 999.0
 
 
-def _shrink_for_thumb(img, max_side=256):
-    """Downscale a thumbnail candidate so sidecars (and the base64 data URLs the
-    library list embeds for every entry) stay small even when the source is a
-    full-resolution frame."""
-    h, w = img.shape[:2]
-    s = max(h, w)
-    if s <= max_side:
-        return img
-    scale = max_side / float(s)
-    return cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
-                      interpolation=cv2.INTER_AREA)
 
 
-def _frontal_crop_from_images(images):
-    """Return the most frontal face crop (BGR) across a list of BGR images, so
-    a multi-angle faceset shows a front-facing thumbnail instead of a profile."""
-    best = None
-    best_score = None
-    # Unique temp name: concurrent calls (e.g. rebuild while a save runs) must
-    # not clobber each other's scratch file.
-    tmp = os.path.join(API_TEMP, f"_libthumb_{os.getpid()}_{threading.get_ident()}.png")
-    os.makedirs(API_TEMP, exist_ok=True)
-    # Cap the scan — a frontal face is found quickly and we only need a preview.
-    for img in list(images)[:15]:
-        if img is None:
-            continue
-        if best_score is not None and best_score < 0.05:
-            break  # already have a near-perfect frontal crop
-        _imwrite_unicode(tmp, img)
-        try:
-            for fd in extract_face_images(tmp, (False, 0), 0.5):
-                face, crop = fd[0], fd[1]
-                kps = getattr(face, "kps", None)
-                if kps is None and isinstance(face, dict):
-                    kps = face.get("kps")
-                score = _frontality(kps) if kps is not None else 999.0
-                if best_score is None or score < best_score:
-                    best_score, best = score, crop
-        except Exception:
-            pass
-    try:
-        os.remove(tmp)
-    except Exception:
-        pass
-    return best
 
 
-def _write_library_thumb(fsz_path: str, images=None):
-    """Write the `<name>.png` thumbnail sidecar, choosing the most frontal face.
-    `images` (BGR) is used when known; otherwise the .fsz PNGs are read back."""
-    try:
-        if images is None:
-            import zipfile
-            images = []
-            with zipfile.ZipFile(fsz_path, "r") as zf:
-                for n in sorted(n for n in zf.namelist() if n.lower().endswith(".png")):
-                    img = cv2.imdecode(np.frombuffer(zf.read(n), dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if img is not None:
-                        images.append(img)
-        if not images:
-            return
-        thumb = _frontal_crop_from_images(images)
-        if thumb is None:
-            thumb = images[0]  # fall back to the raw first image
-        _imwrite_unicode(os.path.splitext(fsz_path)[0] + ".png", _shrink_for_thumb(thumb))
-    except Exception:
-        traceback.print_exc()
 
 
-def _faceset_member_images(idx: int):
-    """BGR images to store in the .fsz for source faceset `idx`.
-
-    Prefer the full reference frames (facesets loaded from .fsz keep these), so
-    embeddings re-average identically on reload; fall back to the cropped thumb
-    for facesets that came from a single image upload.
-    """
-    imgs = []
-    if 0 <= idx < len(roop_globals.INPUT_FACESETS):
-        fs = roop_globals.INPUT_FACESETS[idx]
-        for rimg in getattr(fs, "ref_images", None) or []:
-            if rimg is not None:
-                imgs.append(rimg)
-    if not imgs and 0 <= idx < len(ui_globals.ui_input_thumbs):
-        rgb = ui_globals.ui_input_thumbs[idx]
-        if rgb is not None:
-            imgs.append(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-    return imgs
 
 
-@app.get("/api/faceset/library")
-def faceset_library_list():
-    return _faceset_library_payload()
 
 
-@app.post("/api/faceset/library/save")
-def faceset_library_save(payload: dict = Body(...)):
-    idx = payload.get("index", None)
-    idx = state.selected_input_face_index if idx is None else int(idx)
-    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
-        return JSONResponse(status_code=400, content={"message": "no source faceset selected"})
-
-    imgs = _faceset_member_images(idx)
-    if not imgs:
-        return JSONResponse(status_code=400, content={"message": "nothing to save for this faceset"})
-
-    # Write member PNGs into an ASCII temp dir, then zip into the (possibly
-    # unicode) library path — zipfile handles the unicode zipname fine.
-    tmpdir = os.path.join(API_TEMP, "_libsave")
-    shutil.rmtree(tmpdir, ignore_errors=True)
-    os.makedirs(tmpdir, exist_ok=True)
-    imgnames = []
-    for j, img in enumerate(imgs):
-        fn = os.path.join(tmpdir, f"{j}.png")
-        _imwrite_unicode(fn, img)
-        imgnames.append(fn)
-
-    fsz_path = _unique_fsz_path(payload.get("name", ""))
-    util.zip(imgnames, fsz_path)
-
-    # Thumbnail sidecar: pick the most frontal face in the set (fall back to the
-    # source panel's crop) so the preview is never a side profile.
-    _write_library_thumb(fsz_path, images=imgs)
-    thumb_sidecar = os.path.splitext(fsz_path)[0] + ".png"
-    if not os.path.exists(thumb_sidecar) and 0 <= idx < len(ui_globals.ui_input_thumbs) \
-            and ui_globals.ui_input_thumbs[idx] is not None:
-        _imwrite_unicode(thumb_sidecar,
-                         _shrink_for_thumb(cv2.cvtColor(ui_globals.ui_input_thumbs[idx], cv2.COLOR_RGB2BGR)))
-
-    shutil.rmtree(tmpdir, ignore_errors=True)
-    return _faceset_library_payload({"saved": os.path.splitext(os.path.basename(fsz_path))[0]})
 
 
-@app.post("/api/faceset/library/load")
-def faceset_library_load(payload: dict = Body(...)):
-    fn = os.path.basename(str(payload.get("filename", "")))
-    path = os.path.join(_faceset_library_dir(), fn)
-    if not (fn.lower().endswith(".fsz") and os.path.exists(path)):
-        return JSONResponse(status_code=404, content={"message": "faceset not found"})
-    try:
-        _ingest_faceset(path)
-    except Exception:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": "failed to load faceset"})
-    return _source_faces_payload()
 
 
-@app.post("/api/faceset/library/rename")
-def faceset_library_rename(payload: dict = Body(...)):
-    fn = os.path.basename(str(payload.get("filename", "")))
-    lib = _faceset_library_dir()
-    old = os.path.join(lib, fn)
-    if not (fn.lower().endswith(".fsz") and os.path.exists(old)):
-        return JSONResponse(status_code=404, content={"message": "faceset not found"})
-    # Renaming to the current name must be a no-op — _unique_fsz_path would see
-    # the file itself and "dedupe" it into "<name> (1).fsz".
-    if _slugify_faceset_name(payload.get("name", "")) == os.path.splitext(fn)[0]:
-        return _faceset_library_payload()
-    new = _unique_fsz_path(payload.get("name", ""))
-    try:
-        os.replace(old, new)
-        old_thumb = os.path.splitext(old)[0] + ".png"
-        if os.path.exists(old_thumb):
-            os.replace(old_thumb, os.path.splitext(new)[0] + ".png")
-    except Exception:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": "rename failed"})
-    return _faceset_library_payload()
 
 
-@app.post("/api/faceset/library/delete")
-def faceset_library_delete(payload: dict = Body(...)):
-    fn = os.path.basename(str(payload.get("filename", "")))
-    lib = _faceset_library_dir()
-    path = os.path.join(lib, fn)
-    if fn.lower().endswith(".fsz") and os.path.exists(path):
-        try:
-            os.remove(path)
-            thumb = os.path.splitext(path)[0] + ".png"
-            if os.path.exists(thumb):
-                os.remove(thumb)
-        except Exception:
-            traceback.print_exc()
-    return _faceset_library_payload()
 
 
-@app.post("/api/faceset/library/import")
-def faceset_library_import(file: UploadFile = File(...)):
-    base = os.path.basename(file.filename or "")
-    if not base.lower().endswith(".fsz"):
-        return JSONResponse(status_code=400, content={"message": "expected a .fsz file"})
-    dest = _unique_fsz_path(os.path.splitext(base)[0])
-    with open(dest, "wb") as buf:
-        shutil.copyfileobj(file.file, buf)
-    _write_library_thumb(dest)
-    return _faceset_library_payload({"imported": os.path.splitext(os.path.basename(dest))[0]})
 
 
-@app.post("/api/faceset/library/rebuild_thumbs")
-def faceset_library_rebuild_thumbs(payload: dict = Body(default=None)):
-    """Regenerate the frontal-face thumbnail sidecars from each .fsz's contents.
-    Use this to refresh facesets saved before frontal-thumbnail selection existed,
-    or any whose preview looks like a side profile. Optionally pass {"filename"}
-    to rebuild just one; otherwise rebuilds every faceset in the library."""
-    lib = _faceset_library_dir()
-    only = os.path.basename(str((payload or {}).get("filename", ""))) if payload else ""
-    rebuilt = 0
-    for fn in os.listdir(lib) if os.path.isdir(lib) else []:
-        if not fn.lower().endswith(".fsz"):
-            continue
-        if only and fn != only:
-            continue
-        _write_library_thumb(os.path.join(lib, fn))
-        rebuilt += 1
-    return _faceset_library_payload({"rebuilt": rebuilt})
 
 
-@app.post("/api/faceset/library/open")
-def faceset_library_open():
-    d = _faceset_library_dir()
-    try:
-        if sys.platform.startswith("win"):
-            os.startfile(d)  # Windows-only API; branch is platform-guarded
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", d])
-        else:
-            subprocess.Popen(["xdg-open", d])
-    except Exception:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": "could not open folder"})
-    return {"dir": d}
 
 
 # ── Target media ─────────────────────────────────────────────────────────────
@@ -2642,201 +2200,32 @@ def get_file(path: str, request: Request):
 # the user harvest faces tricky footage where a different detector locks on.
 _FACEMGR_DETECTORS = ["scrfd", "retinaface", "retinaface_r50", "yoloface", "yunet"]
 
-# Lazily-built face restorer (GFPGAN v1.4, already shipped in models/). Cleaning
-# a soft/compressed reference before it is baked into the faceset gives the swap
-# a sharper identity to blend from. Kept as a module singleton so repeated adds
-# don't reload the ONNX session.
-_fm_restorer = None
 
 
-def _get_fm_restorer():
-    global _fm_restorer
-    if _fm_restorer is None:
-        from roop.processors.Enhance_GFPGAN import Enhance_GFPGAN
-        from roop.utilities import get_device
-        r = Enhance_GFPGAN()
-        r.Initialize({"devicename": get_device()})
-        _fm_restorer = r
-    return _fm_restorer
 
 
-def _restore_crop(crop_bgr):
-    """Return a face-restored copy of the crop, or the original on any failure."""
-    try:
-        out, _scale = _get_fm_restorer().Run(None, None, crop_bgr)
-        return out
-    except Exception:
-        traceback.print_exc()
-        return crop_bgr
 
 
-def _facemgr_ingest(face, crop_bgr, restore):
-    """Score one detected face, optionally restore its crop, and append it to the
-    Face Manager state (image + thumbnail + FIQA score + breakdown)."""
-    from roop import face_quality
-    # Score the ORIGINAL crop — quality is a property of the captured face, not of
-    # what the restorer can invent; a low score should still gate a blurry source.
-    score, breakdown = face_quality.score_face(face, crop_bgr)
-    stored = _restore_crop(crop_bgr) if restore else crop_bgr
-    fm_images.append(stored)
-    fm_thumbs.append(util.convert_to_gradio(stored))
-    fm_scores.append(round(float(score), 3))
-    fm_meta.append(breakdown)
 
 
-@contextlib.contextmanager
-def _facemgr_detector(detector):
-    """Temporarily point the shared detector at `detector` for one extraction,
-    then restore whatever the pipeline had, so a Face Manager choice never leaks
-    into a later swap run."""
-    prev = getattr(roop_globals, "detector_engine", "scrfd")
-    use = detector if detector in _FACEMGR_DETECTORS else prev
-    roop_globals.detector_engine = use
-    try:
-        yield
-    finally:
-        roop_globals.detector_engine = prev
 
 
-def _facemgr_faces_payload():
-    """Uniform response body: thumbnails + parallel scores + breakdowns."""
-    return {
-        "faces": [_rgb_to_dataurl(t) for t in fm_thumbs],
-        "scores": list(fm_scores),
-        "meta": list(fm_meta),
-    }
 
 
-@app.post("/api/facemgr/add")
-def facemgr_add(files: list[UploadFile] = File(...),
-                      detector: str = Form("scrfd"),
-                      restore: bool = Form(False)):
-    video_path = None
-    for f in files:
-        path = _save_upload(f)
-        if util.has_image_extension(path):
-            with _facemgr_detector(detector):
-                for fd in extract_face_images(path, (False, 0), 0.5):
-                    _facemgr_ingest(fd[0], fd[1], restore)
-        elif util.is_video(path) or path.lower().endswith("gif"):
-            fm_files.append(path)
-            video_path = path
-            try:
-                state.current_video_fps = util.detect_fps(path)
-            except Exception:
-                state.current_video_fps = 30
-    resp = _facemgr_faces_payload()
-    if video_path:
-        resp["video"] = os.path.basename(video_path)
-        resp["frames"] = get_video_frame_total(video_path) or 1
-    return resp
 
 
-@app.post("/api/facemgr/faceset")
-def facemgr_faceset(file: UploadFile = File(...)):
-    path = _save_upload(file)
-    fm_thumbs.clear()
-    fm_images.clear()
-    fm_scores.clear()
-    fm_meta.clear()
-    if path.lower().endswith("fsz"):
-        unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
-        if os.path.isdir(unzipfolder):
-            shutil.rmtree(unzipfolder, ignore_errors=True)
-        os.makedirs(unzipfolder, exist_ok=True)
-        util.unzip(path, unzipfolder)
-        for file_ in os.listdir(unzipfolder):
-            if file_.endswith(".png"):
-                for fd in extract_face_images(os.path.join(unzipfolder, file_), (False, 0), 0.5):
-                    _facemgr_ingest(fd[0], fd[1], False)
-    return _facemgr_faces_payload()
 
 
-@app.get("/api/facemgr/frame")
-def facemgr_frame(frame: int = 1):
-    if not fm_files:
-        return JSONResponse(status_code=404, content={"message": "no video"})
-    img = get_video_frame(fm_files[-1], frame)
-    if img is None:
-        return JSONResponse(status_code=404, content={"message": "no frame"})
-    ok, buf = cv2.imencode(".jpg", img)
-    return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/jpeg")
 
 
-@app.post("/api/facemgr/cut")
-def facemgr_cut(payload: dict = Body(...)):
-    frame = int(payload.get("frame", 1))
-    detector = payload.get("detector", "scrfd")
-    restore = bool(payload.get("restore", False))
-    if not fm_files:
-        return _facemgr_faces_payload()
-    with _facemgr_detector(detector):
-        for fd in extract_face_images(fm_files[-1], (True, frame), 0.5):
-            _facemgr_ingest(fd[0], fd[1], restore)
-    return _facemgr_faces_payload()
 
 
-@app.post("/api/facemgr/remove")
-def facemgr_remove(payload: dict = Body(...)):
-    idx = int(payload.get("index", -1))
-    if 0 <= idx < len(fm_thumbs):
-        fm_thumbs.pop(idx)
-        fm_images.pop(idx)
-        if idx < len(fm_scores):
-            fm_scores.pop(idx)
-        if idx < len(fm_meta):
-            fm_meta.pop(idx)
-    return _facemgr_faces_payload()
 
 
-@app.post("/api/facemgr/prune")
-def facemgr_prune(payload: dict = Body(...)):
-    """Drop every face whose FIQA score is below `threshold` (0..1) — the quality
-    gate. Returns how many were removed alongside the surviving set."""
-    try:
-        threshold = float(payload.get("threshold", 0.0))
-    except (TypeError, ValueError):
-        threshold = 0.0
-    before = len(fm_images)
-    keep = [i for i, s in enumerate(fm_scores) if s >= threshold]
-    # Rebuild the three parallel lists in place so any held references stay valid.
-    kept_imgs = [fm_images[i] for i in keep]
-    kept_thumbs = [fm_thumbs[i] for i in keep]
-    kept_scores = [fm_scores[i] for i in keep]
-    kept_meta = [fm_meta[i] for i in keep]
-    fm_images.clear(); fm_images.extend(kept_imgs)
-    fm_thumbs.clear(); fm_thumbs.extend(kept_thumbs)
-    fm_scores.clear(); fm_scores.extend(kept_scores)
-    fm_meta.clear(); fm_meta.extend(kept_meta)
-    resp = _facemgr_faces_payload()
-    resp["removed"] = before - len(keep)
-    return resp
 
 
-@app.post("/api/facemgr/clear")
-def facemgr_clear():
-    fm_thumbs.clear()
-    fm_images.clear()
-    fm_scores.clear()
-    fm_meta.clear()
-    fm_files.clear()
-    return _facemgr_faces_payload()
 
 
-@app.post("/api/facemgr/build")
-def facemgr_build():
-    if len(fm_images) < 1:
-        return JSONResponse(status_code=400, content={"message": "no faces"})
-    from ui.main import prepare_environment
-    prepare_environment()
-    imgnames = []
-    for index, img in enumerate(fm_images):
-        filename = os.path.join(roop_globals.output_path, f"{index}.png")
-        cv2.imwrite(filename, img)
-        imgnames.append(filename)
-    finalzip = os.path.join(roop_globals.output_path, "faceset.fsz")
-    util.zip(imgnames, finalzip)
-    return {"path": finalzip, "name": "faceset.fsz"}
 
 
 
@@ -2892,6 +2281,15 @@ _FRAME_COLORIZERS = ["deoldify_artistic", "deoldify_stable"]
 # Cohesive groups of endpoints split out of this file. Inclusion order is not
 # significant: every /api route is a literal path with no path parameters, so
 # none can shadow another.
+import source_gallery as _source_gallery
+import routes_faceset as _routes_faceset
+import routes_facemgr as _routes_facemgr
+app.include_router(_routes_faceset.router)
+app.include_router(_routes_facemgr.router)
+_source_gallery.API_TEMP = API_TEMP
+_routes_faceset.API_TEMP = API_TEMP
+_routes_facemgr.API_TEMP = API_TEMP
+_routes_facemgr._FACEMGR_DETECTORS = _FACEMGR_DETECTORS
 import api_media as _api_media
 import routes_diagnostics as _routes_diagnostics
 import routes_livecam as _routes_livecam
