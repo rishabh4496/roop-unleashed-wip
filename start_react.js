@@ -35,6 +35,17 @@ module.exports = async (kernel) => {
             // switch. VERBOSE — [TRACKMATCH] fires for every face of every
             // frame, so set it back to "0" once the question is answered.
             ROOP_DEBUG_MATCH: "1",
+            // Closes the one path max_face_distance cannot reach: with a single
+            // selected person the tracked swap applies the source by SPATIAL
+            // association with no identity check at all, so a tracker ID switch
+            // keeps swapping the wrong face. 1.0 is the conservative setting —
+            // it vetoes unambiguous strangers (measured ~0.93-1.07) while
+            // leaving even a full profile of the right person alone. Tighten
+            // toward 0.9 if strangers still get through AND several angles of
+            // the target are captured (the check takes the closest angle, so a
+            // multi-angle bank keeps same-person distances low). Too tight and
+            // hard frames blink off instead. "0" restores the old behaviour.
+            ROOP_TRACK_VETO_SINGLE: "1.0",
             OMP_NUM_THREADS: "1",
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",
