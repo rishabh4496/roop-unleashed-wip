@@ -17,65 +17,81 @@ export default function PresetStudioModal({
 }) {
   const [selectedRecipe, setSelectedRecipe] = useState(null);
 
+  // Every key here must be a REAL setting key and every value a value the
+  // backend accepts, because Apply writes them straight into the live params.
+  // The first draft used invented names (enhancer_blend, face_upscaler,
+  // mask_blur) and values that are not in the option lists ('GPEN-BFR-512',
+  // no_face_action 'skip'), so applying a recipe changed almost nothing and the
+  // diff compared against undefined. Checked against faceswap/defaults.js and
+  // api.py's meta lists by app/tests/test_ui_preset_recipes.py.
   const CURATED_RECIPES = [
     {
       id: 'cinematic_4k',
       title: '🎬 Cinematic 4K Ultra',
-      desc: 'Maximum fidelity & sharpness. Uses GPEN face enhancer + Real-ESRGAN x4 upscale + temporal anti-flicker.',
+      desc: 'Maximum fidelity. GPEN 1024 face restore, Real-ESRGAN ×4 second pass, temporal anti-flicker and enhancer stabilisation.',
       badge: 'PRO QUALITY',
       color: 'from-amber-500/20 to-orange-500/20 border-amber-500/40 text-amber-300',
       params: {
-        selected_enhancer: 'GPEN-BFR-512',
-        enhancer_blend: 0.85,
-        face_upscaler: 'esrganx4',
+        selected_enhancer: 'GPEN 1024',
+        blend_ratio: 0.85,
+        subsample_upscale: '512px',
+        upscale_after_swap: true,
+        upscale_model_after: 'esrganx4',
         temporal_detection: true,
         stabilize_enhancer: true,
-        jaw_reshape: true,
-        jaw_reshape_strength: 0.5,
-        mask_blur: 0.3,
+        stabilize_enhancer_strength: 0.6,
+        num_swap_steps: 2,
+        face_mask_blend: 25,
       },
     },
     {
       id: 'fast_draft',
       title: '⚡ Fast Live Draft',
-      desc: 'Optimized for instant preview speed. Disables heavy enhancers and uses fast Lanczos scaling.',
+      desc: 'Optimised for turnaround. No face restore, no second pass, no temporal pre-pass — the fastest honest preview of the swap itself.',
       badge: 'HIGH SPEED',
       color: 'from-blue-500/20 to-cyan-500/20 border-blue-500/40 text-blue-300',
       params: {
         selected_enhancer: 'None',
-        enhancer_blend: 0.5,
-        face_upscaler: 'lanczos_x2',
+        blend_ratio: 1,
+        subsample_upscale: '128px',
+        upscale_after_swap: false,
         temporal_detection: false,
         stabilize_enhancer: false,
-        jaw_reshape: false,
+        num_swap_steps: 1,
+        expression_restore_strength: 0,
       },
     },
     {
       id: 'anime_art',
       title: '🎨 Anime & Stylized Art',
-      desc: 'Tailored for illustration and anime characters using Real-ESRGAN Anime x4 and DFL XSeg mask.',
+      desc: 'For illustration and anime: Real-ESRGAN Anime ×4 second pass, XSeg masking, no colour transfer to keep flat shading intact.',
       badge: 'ART & ANIME',
       color: 'from-pink-500/20 to-purple-500/20 border-pink-500/40 text-pink-300',
       params: {
         selected_enhancer: 'Restoreformer++',
-        enhancer_blend: 0.75,
-        face_upscaler: 'esrgan_anime_x4',
+        blend_ratio: 0.75,
+        upscale_after_swap: true,
+        upscale_model_after: 'esrgan_anime_x4',
         mask_engine: 'DFL XSeg',
+        color_transfer_mode: 'none',
         temporal_detection: true,
       },
     },
     {
       id: 'group_scene',
       title: '👥 Multi-Person Crowd',
-      desc: 'Best for scenes with multiple people. Identity locking enabled with temporal gap filling.',
+      desc: 'Scenes with several people: identity locking on, temporal gap-fill on, and frames with no match left untouched instead of guessed.',
       badge: 'MULTI-FACE',
       color: 'from-emerald-500/20 to-teal-500/20 border-emerald-500/40 text-emerald-300',
       params: {
         selected_enhancer: 'GFPGAN',
-        enhancer_blend: 0.8,
+        blend_ratio: 0.8,
+        face_detection_mode: 'Selected face',
+        track_identities: true,
         temporal_detection: true,
         stabilize_enhancer: true,
-        no_face_action: 'skip',
+        max_face_distance: 0.7,
+        no_face_action: 'Use untouched original frame',
       },
     },
   ];

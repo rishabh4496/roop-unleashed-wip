@@ -23,14 +23,15 @@ export default function FloatingActionDock({
   drawers,
   setDrawers,
 }) {
-  const [pinned, setPinned] = useState(true);
   const [showModeMenu, setShowModeMenu] = useState(false);
 
+  // Descriptions state what each mode ACTUALLY does — the table these map onto
+  // lives in FaceSwap.jsx (WORKSPACE_LAYOUT). Keep the two in step.
   const MODES = [
-    { id: 'default', label: '🎛️ Standard Studio', desc: 'Balanced workspace view' },
-    { id: 'cinema', label: '🎬 Cinema Canvas', desc: 'Maximized media preview view' },
-    { id: 'dual', label: '👥 Dual Inspector', desc: 'Side-by-side face & parameters' },
-    { id: 'timeline', label: '🎞️ Timeline Deck', desc: 'Expanded precision keyframe timeline' },
+    { id: 'default', label: '🎛️ Standard Studio', desc: 'Faces, settings and timeline' },
+    { id: 'cinema', label: '🎬 Cinema Canvas', desc: 'Canvas only — panels and timeline hidden' },
+    { id: 'dual', label: '👥 Dual Inspector', desc: 'Faces + parameters, no timeline' },
+    { id: 'timeline', label: '🎞️ Timeline Deck', desc: 'Canvas and timeline, panels hidden' },
   ];
 
   const currentMode = MODES.find((m) => m.id === workspaceMode) || MODES[0];

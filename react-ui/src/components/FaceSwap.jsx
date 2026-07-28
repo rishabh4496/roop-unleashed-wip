@@ -109,9 +109,52 @@ export default function FaceSwap({
   const [workspaceMode, setWorkspaceMode] = useState('default'); // 'default' | 'cinema' | 'dual' | 'timeline'
   const [ambilightEnabled, setAmbilightEnabled] = useState(true);
   const [drawers, setDrawers] = useState({ left: true, right: true, bottom: true });
+
+  // ── What each workspace mode actually does ───────────────────────────────
+  // The dock offered four modes but only 'cinema' changed anything; 'dual' and
+  // 'timeline' were menu entries that did nothing at all, and the dock's third
+  // drawer button toggled a `bottom` flag nothing read. Each mode is now one row
+  // of this table and every panel reads its visibility from here, so a mode
+  // cannot quietly become decorative again.
+  //
+  //            left faces   right settings   timeline deck
+  //  default       ✓              ✓                ✓
+  //  cinema        ✗              ✗                ✗        (all canvas)
+  //  dual          ✓              ✓                ✗        (faces + params)
+  //  timeline      ✗              ✗                ✓        (precision scrub)
+  const WORKSPACE_LAYOUT = {
+    default: { left: true, right: true, bottom: true },
+    cinema: { left: false, right: false, bottom: false },
+    dual: { left: true, right: true, bottom: false },
+    timeline: { left: false, right: false, bottom: true },
+  };
+  const layout = WORKSPACE_LAYOUT[workspaceMode] || WORKSPACE_LAYOUT.default;
+  // The dock's drawer buttons stay authoritative: a mode sets the baseline, and
+  // closing a drawer by hand still closes it.
+  const showLeftPanel = layout.left && drawers.left;
+  const showRightPanel = layout.right && drawers.right;
+  const showTimelineDeck = layout.bottom && drawers.bottom;
   const [showPresetStudio, setShowPresetStudio] = useState(false);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
-  const [powerSaver, setPowerSaver] = useState(false);
+
+  // notifyDesktop() silently does nothing unless permission is already granted,
+  // so ask when the toggle is switched ON — otherwise enabling alerts is a
+  // no-op for anyone who has not started a run first (start() also asks).
+  const toggleDesktopAlerts = () => {
+    const on = !desktopAlerts;
+    setDesktopAlerts(on);
+    if (on) {
+      try {
+        if (!('Notification' in window)) {
+          notify('This browser has no desktop notifications', 'error');
+        } else if (Notification.permission === 'denied') {
+          notify('Desktop notifications are blocked for this site', 'error');
+        } else if (Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      } catch { /* ignore */ }
+    }
+  };
 
   const prevProcessingRef = useRef(false);
   useEffect(() => {
@@ -1442,6 +1485,18 @@ export default function FaceSwap({
     ? `${API}/api/target/preview?index=${selTarget}&frame=${frame}${scrubbingNow ? '&width=960' : ''}`
     : '';
 
+  // Keep a detached pop-out monitor in sync. It used to receive exactly one
+  // frame — the one it was opened with — because nothing ever called
+  // sendUpdate() again, so it sat frozen on that image while the main window
+  // carried on. Only broadcasts while a pop-out is actually open: a rendered
+  // preview is a multi-MB data URI.
+  useEffect(() => {
+    const src = previewSrc || rawUrl;
+    if (src && popoutManager.isOpen()) {
+      popoutManager.sendUpdate({ type: 'UPDATE_PREVIEW', src });
+    }
+  }, [previewSrc, rawUrl]);
+
   const revealOutput = async () => {
     try { await postJSON('/api/reveal', { path: out?.path }); }
     catch (e) { notify(e.message, 'error'); }
@@ -2279,7 +2334,7 @@ export default function FaceSwap({
           settings are already baked into the running job), and hiding it gives
           the whole viewport to the diagnostics, which is the only thing there is
           to look at until the run ends. Comes back on Stop / completion. */}
-      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${(progress.processing || !drawers.left || workspaceMode === 'cinema') ? 'hidden' : ''}`}>
+      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${(progress.processing || !showLeftPanel) ? 'hidden' : ''}`}>
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -2644,7 +2699,7 @@ export default function FaceSwap({
 
         {/* COLUMN 2: Media Asset Manager — right rail (hidden while running, as
             with column 1 — sources/targets are locked in for the current job). */}
-        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${(progress.processing || !drawers.right || workspaceMode === 'cinema') ? 'hidden' : ''}`}>
+        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${(progress.processing || !showRightPanel) ? 'hidden' : ''}`}>
           <Section title="Target faces">
             <PersonGroups
               targetFaces={targetFaces}
@@ -3060,12 +3115,10 @@ export default function FaceSwap({
                   {/* Processing Action Control Dock */}
                   <ProcessingDock
                     paused={progress.paused}
-                    onTogglePause={pauseSwap}
-                    onCancelJob={cancelSwap}
+                    onTogglePause={() => (progress.paused ? resume() : pause())}
+                    onCancelJob={stop}
                     desktopAlerts={desktopAlerts}
-                    onToggleDesktopAlerts={() => setDesktopAlerts(!desktopAlerts)}
-                    powerSaver={powerSaver}
-                    onTogglePowerSaver={() => setPowerSaver(!powerSaver)}
+                    onToggleDesktopAlerts={toggleDesktopAlerts}
                   />
 
                   {/* Live Processing Frame Peek & Diagnostics */}
@@ -3415,7 +3468,7 @@ export default function FaceSwap({
             {/* Clip timeline — hidden while running: scrubbing a clip that is
                 being written is meaningless, and the space belongs to the
                 diagnostics. */}
-            {maxFrames > 1 && !progress.processing && (
+            {maxFrames > 1 && !progress.processing && showTimelineDeck && (
               <div className="pt-4 border-t border-[var(--border-color)]">
                 <Timeline
                   fps={targets[selTarget]?.fps || 25}
@@ -3705,10 +3758,10 @@ export default function FaceSwap({
       <FloatingActionDock
         workspaceMode={workspaceMode}
         setWorkspaceMode={setWorkspaceMode}
-        isRendering={progress.running}
-        onStartSwap={startSwap}
-        onCancelSwap={cancelSwap}
-        progress={progress.percent || 0}
+        isRendering={!!progress.processing}
+        onStartSwap={start}
+        onCancelSwap={stop}
+        progress={Math.round((progress.progress || 0) * 100)}
         onPreview={() => refreshPreview({ force: true })}
         previewing={previewing}
         ambilightEnabled={ambilightEnabled}

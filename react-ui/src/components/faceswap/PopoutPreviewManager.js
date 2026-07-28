@@ -136,14 +136,27 @@ class PopoutPreviewManager {
     }
   }
 
+  /** Is a pop-out monitor actually open? Callers use this to avoid paying for
+   *  a broadcast (a preview frame is a multi-MB data URI) with nobody looking. */
+  isOpen() {
+    return !!(this.popoutWin && !this.popoutWin.closed);
+  }
+
   sendUpdate(payload) {
     if (this.channel) {
       this.channel.postMessage(payload);
+      return;                     // the channel delivered it; see below
     }
+    // localStorage is the fallback for browsers without BroadcastChannel, and
+    // ONLY that: a preview frame is a base64 data URI of a full-resolution
+    // still, and writing one per preview filled the 5 MB quota within a few
+    // frames — after which every later write threw and the mirror silently
+    // stopped updating. The channel path no longer touches storage at all.
     try {
-      localStorage.setItem(`${this.channelName}_latest`, JSON.stringify({ ...payload, timestamp: Date.now() }));
-    } catch (e) {
-      // Ignore storage errors
+      localStorage.setItem(`${this.channelName}_latest`,
+                           JSON.stringify({ ...payload, timestamp: Date.now() }));
+    } catch {
+      // Quota or private mode — the pop-out keeps its last frame.
     }
   }
 

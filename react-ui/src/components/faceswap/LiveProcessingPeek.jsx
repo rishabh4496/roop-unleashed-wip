@@ -2,8 +2,15 @@ import React from 'react';
 
 /**
  * LiveProcessingPeek
- * Renders a visual frame thumbnail snapshot inside the processing box while a job runs.
- * Shows active frame position, resolution, and real-time processing status badge.
+ * The still shown inside the processing box while a job runs.
+ *
+ * It is NOT a live render frame and must not claim to be one. The pipeline
+ * deliberately stopped publishing swapped frames (`_publish_live` is a no-op) —
+ * encoding a JPEG per poll cost real throughput for a thumbnail nobody could
+ * read — so what is available here is the last preview that was rendered for
+ * the frame the timeline is parked on. Labelling that "🔴 LIVE" made every run
+ * look like it was stuck on one frame. It is labelled for what it is, and the
+ * frame number says which frame it belongs to rather than implying progress.
  */
 export default function LiveProcessingPeek({
   previewSrc,
@@ -28,7 +35,7 @@ export default function LiveProcessingPeek({
         ) : (
           <div className="flex flex-col items-center gap-2 text-neutral-500">
             <div className="h-8 w-8 rounded-full border-2 border-white/10 border-t-indigo-500 animate-spin" />
-            <span className="text-xs">Buffering live frame...</span>
+            <span className="text-xs">No preview rendered for this frame</span>
           </div>
         )}
 
@@ -39,12 +46,15 @@ export default function LiveProcessingPeek({
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
               : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
           }`}>
-            {paused ? '⏸ PAUSED' : '🔴 LIVE FRAME PEEK'}
+            {paused ? '⏸ PAUSED' : '🖼 PREVIEW STILL'}
           </span>
 
           {maxFrames > 1 && (
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-black/70 backdrop-blur-md border border-white/15 text-white">
-              Frame {frame} / {maxFrames}
+            <span
+              className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-black/70 backdrop-blur-md border border-white/15 text-white"
+              title="The frame this preview was rendered for — not the frame the render has reached"
+            >
+              of frame {frame} / {maxFrames}
             </span>
           )}
         </div>

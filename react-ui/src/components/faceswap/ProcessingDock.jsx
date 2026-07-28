@@ -1,9 +1,15 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 /**
  * ProcessingDock
  * Interactive control dock positioned inside the processing stage box.
- * Gives direct control over pause/resume, desktop alerts, power-saver mode, and cancellation.
+ * Gives direct control over pause/resume, desktop alerts, and cancellation.
+ *
+ * There was a "Power Saver / Eco Mode" button here too. It flipped a flag that
+ * nothing read, and there is nothing for it to drive: the process deliberately
+ * opts OUT of Windows EcoQoS and holds a wake lock for the whole run (a render
+ * froze outright when the display powered off), and thread count is fixed when
+ * a run starts. A control that cannot change anything is worse than no control.
  */
 export default function ProcessingDock({
   paused = false,
@@ -11,8 +17,6 @@ export default function ProcessingDock({
   onCancelJob,
   desktopAlerts = false,
   onToggleDesktopAlerts,
-  powerSaver = false,
-  onTogglePowerSaver,
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-2xl border border-white/10 bg-neutral-950/70 backdrop-blur-md">
@@ -55,20 +59,6 @@ export default function ProcessingDock({
         >
           <span>🔔</span>
           <span className="hidden sm:inline">{desktopAlerts ? 'Alerts On' : 'Desktop Alerts'}</span>
-        </button>
-
-        {/* Power Saver Mode Toggle */}
-        <button
-          onClick={onTogglePowerSaver}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-            powerSaver
-              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-              : 'bg-white/5 text-neutral-400 border-white/10 hover:text-neutral-200'
-          }`}
-          title="Power saver mode reduces CPU/GPU background load"
-        >
-          <span>🔋</span>
-          <span className="hidden sm:inline">{powerSaver ? 'Power Saver' : 'Eco Mode'}</span>
         </button>
       </div>
     </div>
