@@ -3127,6 +3127,10 @@ export default function FaceSwap({
                       <LiveProcessingPeek
                         previewSrc={previewSrc}
                         rawUrl={rawUrl}
+                        // Keyed on live_seq, which only changes when the
+                        // pipeline publishes a newer frame — so the browser
+                        // refetches then and not once per poll.
+                        liveSrc={progress.live_seq ? `${API}/api/live_frame?seq=${progress.live_seq}` : ''}
                         frame={frame}
                         maxFrames={maxFrames}
                         progressDesc={progress.desc}

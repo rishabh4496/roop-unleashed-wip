@@ -22,7 +22,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 import api_state as state
 from source_gallery import (
@@ -45,6 +45,7 @@ from roop.FaceSet import FaceSet
 from roop.capturer import get_video_frame, get_video_frame_total, get_image_frame
 from roop.ProcessEntry import ProcessEntry
 from roop import segment_writer
+from roop import live_preview
 import ui.globals as ui_globals
 
 app = FastAPI()
@@ -1741,6 +1742,9 @@ def _run_swap(payload):
     # Parts are per-run: clear now rather than waiting for the writer, which is
     # only constructed once encoding starts (and never, for an image job).
     segment_writer.reset_parts()
+    # Likewise the live frame — otherwise a new run opens showing the last
+    # frame of the previous one.
+    live_preview.reset()
     _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     _run_stats.update({"start": time.time(), "frames_done": 0, "frames_total": 0})
@@ -2062,11 +2066,36 @@ def get_progress():
         parts = segment_writer.parts_snapshot()
     except Exception:
         parts = []
-    return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0,
+    # live_seq changes whenever the pipeline publishes a newer frame; the UI
+    # uses it as /api/live_frame's cache key, so the image refetches exactly
+    # when there is something new and never per poll. live_frame stays empty —
+    # inlining a base64 still into every poll is what made this expensive.
+    return {**_progress, "output": _last_output, "live_frame": "",
+            "live_seq": live_preview.seq(),
             "log": list(_log_lines), "parts": parts,
             # The counter the console pins and rewrites in place instead of
             # scrolling — `desc` when it IS a counter, else the last one seen.
             "status_line": _log_state.get("status", "")}
+
+
+@app.get("/api/live_frame")
+def live_frame(seq: int = 0):
+    """The newest processed frame, as a small JPEG.
+
+    Already encoded by the pipeline (roop/live_preview.py), so this hands back
+    bytes — no numpy, no lock held across an encode, and any number of pollers
+    cost the same. `seq` is only a cache-buster: the UI puts the live_seq from
+    /api/progress in the URL so the browser refetches exactly when a newer frame
+    exists. 204 while nothing has been published (before the first frame, or
+    with ROOP_LIVE_PREVIEW=0), which the UI reads as "show the still instead".
+    """
+    data, cur_seq, size = live_preview.snapshot()
+    if not data:
+        return Response(status_code=204)
+    return Response(content=data, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store",
+                             "X-Live-Seq": str(cur_seq),
+                             "X-Source-Size": f"{size[0]}x{size[1]}"})
 
 
 @app.get("/api/output")

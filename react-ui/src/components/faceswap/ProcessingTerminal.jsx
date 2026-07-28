@@ -100,11 +100,18 @@ export default function ProcessingTerminal({
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/70" />
           </span>
 
-          {/* Tabs: All · errors (only when there are any) · one per output part */}
+          {/* Tabs: All · errors (only when there are any) · one per output part.
+              The count is spelled out next to "All" because the chips scroll:
+              on a narrow box the part chips can sit off-screen, and then a
+              missing tab strip is indistinguishable from a backend that is not
+              reporting parts at all. */}
           <div ref={tabsRef} className="flex items-center gap-1 overflow-x-auto no-scrollbar">
             <button onClick={() => setTab('all')} className={chip(tab === 'all')} title="Everything this run printed">
               All
             </button>
+            <span className="shrink-0 px-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">
+              {parts.length ? `${parts.length} part${parts.length > 1 ? 's' : ''}` : 'no parts yet'}
+            </span>
             {errorCount > 0 && (
               <button onClick={() => setTab('errors')} className={chip(tab === 'errors')} title="Warnings and errors only">
                 ⚠ {errorCount}

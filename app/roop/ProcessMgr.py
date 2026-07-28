@@ -17,6 +17,7 @@ from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop import recognizer_adaface as _ada
+from roop import live_preview as _live_preview
 from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
@@ -1446,11 +1447,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
 
 
     def _publish_live(self, frame):
-        # The UI's live preview-frame view was removed in favour of a progress
-        # bar, so there's no consumer for latest_swapped_frame anymore. Skip the
-        # per-frame full-frame copy that used to feed it (pure overhead on the
-        # hot swap path). Kept as a no-op so the existing call sites stay valid.
-        return
+        # Feed the processing box's live view. This used to keep a full-frame
+        # COPY per frame for the UI, which is why it was turned off; the module
+        # now throttles to ~2 frames a second and downscales + encodes once, so
+        # the cost no longer scales with frame rate. See roop/live_preview.py.
+        _live_preview.publish(frame)
 
     def process_frame(self, frame:Frame, frame_idx=None):
         # ── Pause support ────────────────────────────────────────────────────

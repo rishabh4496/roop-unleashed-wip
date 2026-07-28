@@ -44,7 +44,10 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_NVENC_PRESET` | `p5` | NVENC encoder preset (`p1`–`p7`). |
 | `ROOP_ENCODER_PRESET` | model default | CPU x264/x265 preset (e.g. `faster`) — lossless encode speedup at fixed CRF. |
 | `ROOP_RESUME` | 1 (on) | Crash-resume: write segments every chunk + manifest so an interrupted run continues. `0` disables. |
-| `ROOP_RESUME_CHUNK` | 1000 | Frames per resume segment (min 50). |
+| `ROOP_RESUME_CHUNK` | 1000 | Frames per resume segment (min 50). Also the granularity of the console's part tabs and of the "✓ part N written" lines. |
+| `ROOP_LIVE_PREVIEW` | 1 (on) | Publish the most recent processed frame for the processing box's live view (`/api/live_frame`). Throttled and downscaled, so unlike the per-frame full-frame copy this replaced, the cost does not scale with frame rate — measured 1.7 ms per publish on 1080p, i.e. ~3.4 ms per second of wall clock. `0` disables it and the box falls back to the last rendered preview still. |
+| `ROOP_LIVE_PREVIEW_MS` | 500 | Minimum gap between published live frames. Lower is smoother and proportionally more expensive; a publish inside the gap costs one clock read. |
+| `ROOP_LIVE_PREVIEW_WIDTH` | 480 | Width the live frame is downscaled to before encoding (min 160). |
 | `ROOP_RESUME_KEEP` | 0 (off) | Keep the segment parts + manifest after a deliberate **Stop** so that run can be resumed later. Off = Stop merges the parts into one finished output and deletes them. Crash-resume is unaffected either way. |
 
 ## Quality / precision
