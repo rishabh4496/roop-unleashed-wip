@@ -34,6 +34,12 @@ _gpu_lock = Lock()
 # the GPU. Off by default; flip to True only when debugging pose correction.
 _DEBUG_POSE_LOG = False
 
+# Per-face angle/mask-routing diagnostic (ROOP_DEBUG_ANGLE=1). Prints the yaw and
+# pitch proxies, the non-frontal verdict, which masking path was taken, and how
+# much of the canonical crop the unwarped box actually covers. Use on a single
+# preview frame — it prints per face per processor, so it is noisy on a video.
+_DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
+
 # ── Optional per-stage timing probe (enable with env ROOP_PROFILE=1) ─────────
 # Sums wall-clock per pipeline stage across all worker threads. "share" is each
 # stage's slice of total CPU work; "ms/call" is the real per-frame / per-face
@@ -3561,6 +3567,7 @@ class ProcessMgr():
         # Both cases cause the standard affine-aligned crop to be distorted, so the
         # mask model (trained on frontal crops) will mis-label the face region.
         is_non_frontal = False
+        yaw_ratio = pitch_ratio = None   # stay defined for the ROOP_DEBUG_ANGLE print
         if target_face is not None and getattr(target_face, 'kps', None) is not None:
             kps = target_face.kps
             if len(kps) == 5:
@@ -3630,12 +3637,47 @@ class ProcessMgr():
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
 
+        # Isolation switch for the unwarped-crop masking path (ROOP_NONFRONTAL_MASK):
+        #   unset/auto — route by is_non_frontal (normal behaviour)
+        #   0          — never take it; mask in canonical crop space as if frontal
+        #   1          — always take it for a dense masker
+        # Exists because widening the non-frontal test to cover 75-90 deg yaw also
+        # newly routes those angles down this path. If a profile face looks wrong,
+        # `0` isolates whether it is the mask ROUTING or the detection change.
+        _nf_mode = os.environ.get('ROOP_NONFRONTAL_MASK', 'auto').strip().lower()
+        if _nf_mode == '0':
+            is_non_frontal = False
+        elif _nf_mode == '1':
+            is_non_frontal = True
+
         # The unwarped-crop path needs a real, on-screen rectangle. _mask_crop_box
         # returns None when there isn't one, and we fall back to masking in
         # canonical crop space instead of crashing (see that method).
         crop_box = None
         if is_non_frontal and orig_frame is not None and M is not None and p_name in dense_maskers:
             crop_box = self._mask_crop_box(target_face, orig_frame)
+
+        if _DEBUG_ANGLE:
+            # How much of the canonical crop does the unwarped box actually cover?
+            # Anything the box misses defaults to 1.0 ("restore original"), which
+            # would cut the swap off along a straight box edge.
+            cov = None
+            if crop_box is not None:
+                _x0, _y0, _x1, _y1, _cx0, _cy0, _cx1, _cy1 = crop_box
+                _hf, _wf = orig_frame.shape[:2]
+                _probe = np.zeros((_hf, _wf), dtype=np.float32)
+                _probe[_cy0:_cy1, _cx0:_cx1] = 1.0
+                _ch, _cw = frame.shape[:2]
+                _w = cv2.warpAffine(_probe, M, (_cw, _ch), flags=cv2.INTER_NEAREST,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                cov = float(_w.mean())
+            print(f"[ANGLE] {p_name} yaw_ratio="
+                  f"{'n/a' if yaw_ratio is None else f'{yaw_ratio:.3f}'} "
+                  f"pitch_ratio={'n/a' if pitch_ratio is None else f'{pitch_ratio:.3f}'} "
+                  f"pitch_deg={tgt_pitch_deg:+.1f} non_frontal={is_non_frontal} "
+                  f"path={'unwarped-box' if crop_box is not None else 'canonical-crop'}"
+                  f"{'' if cov is None else f' box_covers={cov * 100:.1f}% of crop'}",
+                  flush=True)
 
         if crop_box is not None:
             # Run mask on the unwarped bounding-box crop so the face appears in its
