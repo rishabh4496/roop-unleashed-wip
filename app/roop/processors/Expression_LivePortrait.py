@@ -49,6 +49,7 @@ import numpy as np
 import onnxruntime
 
 import roop.globals
+from roop.gridsample5d import ensure_patched_model
 from roop.typing import Frame
 from roop.utilities import resolve_relative_path, conditional_download
 
@@ -71,8 +72,22 @@ INPUT_SIZE = 256          # LivePortrait's native crop size
 NUM_BINS = 66             # head-pose regression bins
 
 
+def _provider_names(providers):
+    return [str(p[0] if isinstance(p, (tuple, list)) else p).lower() for p in providers]
+
+
+def _has_gpu_provider(providers):
+    """True if anything in the list can execute the rewritten graph on a GPU."""
+    return any('tensorrt' in n or 'cuda' in n for n in _provider_names(providers))
+
+
 def warping_providers(providers):
-    """Providers that can actually execute the warping module.
+    """Providers that can execute the STOCK warping module.
+
+    This is the fallback path. Normally roop.gridsample5d rewrites the two 5-D
+    GridSample nodes into ops every backend can build, and the session just uses
+    the standard provider list; this function is what remains for when that
+    rewrite is disabled or fails.
 
     warping_spade warps a 5-D feature volume (1,32,16,64,64) with GridSample.
     onnxruntime's **CUDA** GridSample kernel is 4-D only, so with CUDA in the
@@ -242,20 +257,49 @@ class Expression_LivePortrait:
         os.makedirs(model_dir, exist_ok=True)
         conditional_download(model_dir, [m["url"] for m in MODELS.values()])
         providers = roop.globals.execution_providers
-        warp_providers = warping_providers(providers)
-        if warp_providers == ['CPUExecutionProvider']:
-            print("[Expression] No TensorRT provider — the warping module runs on CPU "
-                  "(~1.9s per face). Fine for a preview, far too slow for video.")
+
+        # The stock warping module cannot run entirely on the GPU: its two 5-D
+        # GridSample nodes are rejected by TensorRT and by onnxruntime's CUDA
+        # kernel alike, so they land on the CPU and split the rest into nine
+        # separate TensorRT subgraphs. Rewriting them into TRT-native gathers
+        # collapses that to one engine: measured 237.8ms -> 34.0ms per restored
+        # face. ROOP_EXPR_PATCH_GRIDSAMPLE=0 keeps the stock model and its split.
+        # Only worth it on a GPU: measured on CPU the expansion is ~9% SLOWER
+        # than onnxruntime's own kernel (2.66s vs 2.44s), because eight gathers
+        # beat one fused kernel only when there are cores to spread them over.
+        warp_path = os.path.join(model_dir, MODELS["warping"]["file"])
+        patched_path = warp_path
+        if os.environ.get('ROOP_EXPR_PATCH_GRIDSAMPLE', '1') != '0' and \
+                _has_gpu_provider(providers):
+            patched_path = ensure_patched_model(warp_path)
+        is_patched = patched_path != warp_path
+
+        if is_patched:
+            # Nothing 5-D survives the rewrite, so the normal provider list
+            # applies — including CUDA, which the stock model has to exclude.
+            warp_providers = providers
+            print("[Expression] Warping module: fully on the GPU — the two 5-D "
+                  "GridSample nodes were rewritten into TRT-native ops, so there "
+                  "is no CPU partition.")
         else:
-            print("[Expression] Warping module: TensorRT with the two GridSample nodes "
-                  "on CPU (~0.25s per face). TensorRT parser warnings about "
-                  "'addGridSample ... nbDims == 4' are expected and silenced.")
+            warp_providers = warping_providers(providers)
+            if warp_providers == ['CPUExecutionProvider']:
+                print("[Expression] No TensorRT provider — the warping module runs on CPU "
+                      "(~1.9s per face). Fine for a preview, far too slow for video.")
+            else:
+                print("[Expression] Warping module: TensorRT with the two GridSample nodes "
+                      "on CPU (~0.25s per face). TensorRT parser warnings about "
+                      "'addGridSample ... nbDims == 4' are expected and silenced.")
+
         for key, spec in MODELS.items():
             path = os.path.join(model_dir, spec["file"])
             if key == "warping":
-                with _quiet_trt_parser():
+                # The parser errors only exist on the unpatched path; keep real
+                # errors visible once the rewrite has removed their cause.
+                ctx = contextlib.nullcontext() if is_patched else _quiet_trt_parser()
+                with ctx:
                     self.sessions[key] = onnxruntime.InferenceSession(
-                        path, None, providers=warp_providers)
+                        patched_path, None, providers=warp_providers)
             else:
                 self.sessions[key] = onnxruntime.InferenceSession(
                     path, None, providers=providers)

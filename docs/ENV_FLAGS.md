@@ -170,36 +170,81 @@ renormalised away.
 
 ## Expression restore (LivePortrait)
 
-Not env-driven — the **😀 Expression restore** slider and **Expression region**
-selector live in the Face Swap tab. Documented here because of one hard runtime
-constraint:
+The **😀 Expression restore** slider and **Expression region** selector live in
+the Face Swap tab. One env flag exists, for the GridSample rewrite below.
 
-`warping_spade.onnx` warps a 5-D feature volume `(1,32,16,64,64)` with
-`GridSample`. **onnxruntime's CUDA GridSample kernel is 4-D only**, so with CUDA
-selected the node is assigned to it and the run fails with *"Only 4-D tensor is
-supported"*. Measured on this project:
-
-TensorRT cannot build those nodes either — its parser reports
-`addGridSample ... nbDims == 4` / `INVALID_NODE` for
-`/dense_motion_network/GridSample` and `/GridSample`. **Those messages are not a
-failure.** onnxruntime partitions just those two nodes to CPU and runs the rest
-on TensorRT:
-
-| provider | warping module | time per face |
+| variable | default | meaning |
 |---|---|---|
-| TensorRT (+CPU for 2 nodes) | ✅ works | **~0.25 s** warm |
-| CUDA | ❌ fails outright | — |
-| CPU only | ✅ works | ~1.9 s |
+| `ROOP_EXPR_PATCH_GRIDSAMPLE` | `1` | Rewrite the warping module's 5-D `GridSample` nodes so it runs entirely on the GPU. `0` keeps the stock model and its CPU partition. |
 
-So the processor picks providers for that one session itself: TensorRT if
-available, otherwise CPU, never CUDA. The other three models are ordinary 4-D
-networks and use the normal provider list.
+### The constraint
 
-The parser errors are silenced around session construction. `SessionOptions.
-log_severity_level` does **not** work for this — the messages come from the
-TensorRT logger bridged through onnxruntime's *global* logger — so the global
-severity is raised for the duration of that one session build and restored
-afterwards.
+`warping_spade.onnx` warps a 5-D feature volume `(1,32,16,64,64)` with two
+`GridSample` nodes, and **nothing in the GPU stack executes them as shipped**:
+
+* TensorRT's `IGridSampleLayer` is documented 4-D only, so its parser rejects
+  both nodes (`addGridSample ... nbDims == 4` / `INVALID_NODE` for
+  `/dense_motion_network/GridSample` and `/GridSample`).
+* onnxruntime's CUDA GridSample kernel is likewise 4-D only and fails at run
+  time with *"Only 4-D tensor is supported"*.
+
+onnxruntime's answer is to partition just those two nodes to CPU. Profiled per
+call: 134 ms for the `(22,4,16,64,64)` node plus 12 ms for the
+`(1,32,16,64,64)` one — 146 ms, against 1.5 ms for the same maths on the GPU.
+
+### The rewrite (default on)
+
+`roop/gridsample5d.py` replaces each 5-D `GridSample` with its definition —
+eight corner gathers and a trilinear weighted sum — using only ops TensorRT
+builds natively. The result is cached beside the source as
+`warping_spade-trt.onnx`, with a `.meta` stamp recording `PATCH_VERSION` and the
+source mtime so an edited rewrite cannot serve a stale graph.
+
+Measured on an RTX 4070, warping module only, FP16 TensorRT, error against an
+FP32 CPU run of the stock model:
+
+| path | median | max abs err |
+|---|---|---|
+| stock — TensorRT + 2 nodes on CPU | 165.2 ms | 4.99e-02 |
+| **rewritten — full TensorRT** | **26.8 ms** | 4.71e-02 |
+| rewritten — CUDA only | 87.8 ms | 4.40e-03 |
+| stock — CPU only *(ground truth)* | 2784 ms | — |
+| stock — CUDA | ❌ fails outright | — |
+
+**6.16x on TensorRT**, and it gives CUDA-only machines a working GPU path for
+the first time. Accuracy is unchanged: the rewritten graph's FP16 error is no
+larger than the stock TensorRT path's.
+
+End-to-end, a whole `Expression_LivePortrait.Run()` (appearance + motion x2 +
+stitching + warping + the numpy pre/post) goes **237.8 ms -> 34.0 ms per face,
+7.0x** — lifting the stage's throughput ceiling from ~4 to ~29 faces/sec.
+
+The gain is larger than the 146 ms of CPU kernel time because the partition cost
+more than the kernels. Profiling the provider assignment shows the stock model
+was **9 separate TensorRT subgraphs** wrapped around the 2 CPU nodes, with a
+device round-trip at every boundary; the rewritten model is **1 engine**.
+
+Two constraints that are not obvious and cost real debugging:
+
+* **The flattened index is computed in INT32, never in float.** TensorRT runs
+  this graph with FP16 enabled; FP16's largest value is 65504 with a spacing of
+  32 near the top, and the big node addresses 16·64·64 = 65536 voxels. With the
+  index in float the module was still 6.7x faster and *agreed to 3e-06 on CPU* —
+  but produced 0.71 max abs error on a [0,1] output under TensorRT.
+* **Applied only when a GPU provider is present.** On CPU the expansion is ~9%
+  *slower* than onnxruntime's own kernel (2.66 s vs 2.44 s): eight gathers beat
+  one fused kernel only when there are cores to spread them over.
+
+### Fallback path
+
+With `ROOP_EXPR_PATCH_GRIDSAMPLE=0`, or if the rewrite fails, the processor
+picks providers for that one session itself: TensorRT if available, otherwise
+CPU, never CUDA. The parser errors are then silenced around session
+construction — `SessionOptions.log_severity_level` does **not** work for this,
+since the messages come from the TensorRT logger bridged through onnxruntime's
+*global* logger, so the global severity is raised for that one session build and
+restored afterwards. On the rewritten path they are not silenced, because the
+rewrite removes their cause and any remaining error is real.
 
 FasterLivePortrait also publishes `warping_spade-fix.onnx`, which swaps the node
 for a custom `GridSample3D` op. That needs a plugin library this project does not
