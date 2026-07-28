@@ -560,6 +560,8 @@ export default function FaceSwap({
     use_frontalization: params.use_frontalization, frontalization_threshold: num(params.frontalization_threshold, 30),
     jaw_reshape: params.jaw_reshape, jaw_reshape_strength: num(params.jaw_reshape_strength, 0.5),
     detail_transfer_strength: num(params.detail_transfer_strength, 0),
+    expression_restore_strength: num(params.expression_restore_strength, 0),
+    expression_restore_region: params.expression_restore_region || 'all',
     swap_model: params.swap_model, default_det_size: params.default_det_size,
     face_detector_size: params.face_detector_size, face_detector_threshold: params.face_detector_threshold,
     face_detector_nms: params.face_detector_nms,
@@ -2350,6 +2352,10 @@ export default function FaceSwap({
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
           <Slider label="Skin detail transfer" info="Adds the ORIGINAL footage's real high-frequency texture (pores, stubble, grain) onto the swapped face. The generator smooths skin and the enhancer fakes flickery pores; this uses genuine detail from the scene instead. 0 = off. Start ~0.3–0.5; too high reintroduces the target's skin identity." min={0} max={1} step={0.05} value={num(p.detail_transfer_strength, 0)} onChange={(v) => set('detail_transfer_strength', v)} />
+          <Slider label="😀 Expression restore" info="Puts the TARGET's own expression back onto the swapped face using LivePortrait. Swappers pull faces toward the average expression of their training data, so laughing, crying and grimacing come out flattened — this reads the expression off the original frame and re-applies it. 0 = off (bit-exact no-op). Try ~0.8–1.0; above 1 exaggerates past the original, which helps when the swap compressed an expression rather than removed it. Only the expression moves — head pose cannot drift by construction. Downloads ~537MB on first use and measured ~0.33s per face on TensorRT, so it roughly doubles a slow render; needs TensorRT, since onnxruntime's CUDA GridSample cannot run this model and the CPU fallback is ~1.9s per face." min={0} max={2} step={0.05} value={num(p.expression_restore_strength, 0)} onChange={(v) => set('expression_restore_strength', v)} />
+          {num(p.expression_restore_strength, 0) > 0 && (
+            <Select label="Expression region" info="Which part of the face the restored expression is applied to. 'lips' is the usual choice for speech and laughing; 'eyes' for blinks and squinting; 'all' transfers everything including brow and jaw." value={p.expression_restore_region || 'all'} onChange={(v) => set('expression_restore_region', v)} options={['all', 'lips', 'eyes']} />
+          )}
         </Section>
 
         <Section title="Masking parameters" collapsible defaultOpen={false}>

@@ -208,6 +208,9 @@ class Settings:
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
         # Skin detail transfer strength (high-frequency texture from footage)
         self.detail_transfer_strength = self.default_get(data, 'detail_transfer_strength', 0.0)
+        # Expression restorer (LivePortrait) — see roop.globals
+        self.expression_restore_strength = self.default_get(data, 'expression_restore_strength', 0.0)
+        self.expression_restore_region = self.default_get(data, 'expression_restore_region', 'all')
         self.rescue_small_faces = self.default_get(data, 'rescue_small_faces', False)
         self.detector_engine = self.default_get(data, 'detector_engine', 'scrfd')
         # Temporal detection pre-pass (video anti-flicker): tracked detection with
@@ -310,6 +313,8 @@ class Settings:
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,
+            'expression_restore_strength': self.expression_restore_strength,
+            'expression_restore_region': self.expression_restore_region,
             'rescue_small_faces': self.rescue_small_faces,
             'detector_engine': self.detector_engine,
             'face_detector_nms': self.face_detector_nms,

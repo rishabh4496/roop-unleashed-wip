@@ -167,3 +167,31 @@ renormalised away.
 | `ROOP_FIQA_W_RES` | 0.20 | Weight of the resolution term. |
 | `ROOP_FIQA_W_POSE` | 0.15 | Weight of the frontality term. |
 | `ROOP_FIQA_W_NORM` | 0.10 | Weight of the embedding-norm term. |
+
+## Expression restore (LivePortrait)
+
+Not env-driven — the **😀 Expression restore** slider and **Expression region**
+selector live in the Face Swap tab. Documented here because of one hard runtime
+constraint:
+
+`warping_spade.onnx` warps a 5-D feature volume `(1,32,16,64,64)` with
+`GridSample`. **onnxruntime's CUDA GridSample kernel is 4-D only**, so with CUDA
+selected the node is assigned to it and the run fails with *"Only 4-D tensor is
+supported"*. Measured on this project:
+
+| provider | warping module | time per face |
+|---|---|---|
+| TensorRT | ✅ works | **~0.33 s** (warm, full restore) |
+| CUDA | ❌ fails outright | — |
+| CPU | ✅ works | ~1.9 s |
+
+So the processor picks providers for that one session itself: TensorRT if
+available, otherwise CPU, never CUDA. The other three models are ordinary 4-D
+networks and use the normal provider list. With no TensorRT the feature still
+runs, but only sensibly for a single preview frame.
+
+FasterLivePortrait also publishes `warping_spade-fix.onnx`, which swaps the node
+for a custom `GridSample3D` op. That needs a plugin library this project does not
+ship — the model fails to load at all — so it is deliberately not used.
+
+Models (~537 MB) download to `app/models/liveportrait/` on first use.

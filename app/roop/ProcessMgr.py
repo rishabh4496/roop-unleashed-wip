@@ -1512,6 +1512,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
     # ── Stabilizer accessors: in the parallel path each worker has its own
     #    instances + frame-time via thread-local storage; otherwise the shared
     #    single-thread instances are used. ─────────────────────────────────────
+    def _expression_restorer(self):
+        """Lazily built and shared across worker threads. The models are ~537 MB
+        and stateless per call, so one instance is right; its own lock keeps the
+        ORT sessions single-threaded, and the global GPU guard already serialises
+        the surrounding stage."""
+        r = getattr(self, '_expr_restorer', None)
+        if r is None:
+            from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+            from roop.utilities import get_device
+            r = Expression_LivePortrait()
+            r.Initialize({"devicename": get_device()})
+            self._expr_restorer = r
+        return r
+
     def _cur_kps_stab(self):
         return getattr(self._tls, 'kps', None) if self._parallel_stab else self.kps_stabilizer
 
@@ -2261,6 +2275,26 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         if (self._stab_active and _es is not None
                 and enhanced_frame is not None and rotation_action is None):
             enhanced_frame = _es.apply(enhanced_frame, target_face.kps, self._cur_stab_t())
+
+        # ── Expression restore ────────────────────────────────────────────────
+        # Put the target's own expression back on the swapped face. Runs AFTER
+        # the enhancer and its flicker stabiliser deliberately: the stabiliser
+        # damps per-frame change to kill enhancer shimmer, and restoring first
+        # would let it smooth the expression straight back out. aligned_img is
+        # the untouched target crop in the same face-template space, so it is
+        # the driving face — no extra detection or alignment needed.
+        _ex = float(getattr(roop.globals, 'expression_restore_strength', 0.0) or 0.0)
+        if _ex > 0.0:
+            try:
+                with _prof('expression'), _gpu_guard():
+                    restorer = self._expression_restorer()
+                    _region = getattr(roop.globals, 'expression_restore_region', 'all')
+                    if enhanced_frame is not None:
+                        enhanced_frame = restorer.Run(enhanced_frame, aligned_img, _ex, _region)
+                    else:
+                        fake_frame = restorer.Run(fake_frame, aligned_img, _ex, _region)
+            except Exception as e:
+                print(f"[ProcessMgr] expression restore failed: {e}")
 
         # ── Skin detail transfer ──────────────────────────────────────────────
         # The generator produces smooth 256px skin and the enhancer hallucinates

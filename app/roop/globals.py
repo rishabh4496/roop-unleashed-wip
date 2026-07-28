@@ -70,6 +70,14 @@ jaw_reshape_strength = 0.5
 # Skin detail transfer: inject the original footage's high-frequency texture
 # (pores, grain) onto the swapped/enhanced face. 0 = off (no-op), 0..1 = amount.
 detail_transfer_strength = 0.0
+# Expression restorer (LivePortrait): put the TARGET's expression back onto the
+# swapped face. Swappers regress toward their training set's mean expression, so
+# laughing/crying/grimacing get flattened; this reads the expression deformation
+# off the original frame and re-applies it. 0 = off (bit-exact no-op), 1 = adopt
+# the target's expression fully, >1 exaggerates past it. Region limits the
+# transfer to 'all' | 'lips' | 'eyes'.
+expression_restore_strength = 0.0
+expression_restore_region = 'all'
 # Small-face rescue: when a frame yields no detections, retry on a 2x upscale
 # so tiny/distant faces get picked up (without raising the global det size).
 rescue_small_faces = False
