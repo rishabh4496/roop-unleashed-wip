@@ -30,11 +30,55 @@ scans (e.g. the upscale pass's _outputs_since) ignore them.
 import json
 import os
 import subprocess
+import threading
 
 import roop.globals
 from roop.ffmpeg_writer import FFMPEG_VideoWriter, FFMPEG_BINARY
 
 MANIFEST_VERSION = 1
+
+
+# ── Live parts registry ──────────────────────────────────────────────────────
+# The parts are the only thing on disk while a long run is in flight, so the UI
+# shows them: /api/progress serves this snapshot and the console groups its log
+# lines by the part that was open when each line arrived. Purely observational —
+# nothing here feeds encoding or resume, which stay driven by the manifest.
+#
+# Written only by the encoder thread (one writer per run) and read by request
+# threads, so the lock guards the list swap, not the per-frame counter.
+_parts_lock = threading.Lock()
+_parts = []          # finalized, oldest first
+_current = None      # the part being written, or None between/after segments
+
+
+def reset_parts():
+    """Called at the start of a run — the previous run's parts are gone."""
+    global _parts, _current
+    with _parts_lock:
+        _parts, _current = [], None
+
+
+def parts_snapshot():
+    """[{index, file, frames, first, last, bytes, done}] — finalized parts plus
+    the one in progress. Frame numbers are 1-based and absolute for the run
+    (a resumed run counts from the frames it inherited, not from 1)."""
+    with _parts_lock:
+        out = list(_parts)
+        cur = dict(_current) if _current else None
+    if cur:
+        cur["frames"] = cur.pop("_written", 0)
+        cur["last"] = cur["first"] + max(0, cur["frames"] - 1)
+        out.append(cur)
+    return out
+
+
+def current_part_index():
+    """Index of the part being written (1-based), or the count of finished ones
+    when nothing is open. 0 before any frame is encoded — used to tag log lines."""
+    cur = _current
+    if cur:
+        return cur["index"]
+    return len(_parts)
 
 
 def manifest_path(target_video: str) -> str:
@@ -96,7 +140,34 @@ class SegmentedVideoWriter:
         self._writer = None
         self._cur_seg_file = None
         self._cur_frames = 0
+        # Absolute frame number (1-based) the next segment starts at. Registering
+        # the inherited parts walks this forward to resume_frames + 1, so the
+        # parts a user sees are numbered continuously with the video rather than
+        # restarting at 1 on a resumed run.
+        self._next_first = 1
+        reset_parts()
+        for i, s in enumerate(self.segments, 1):     # parts inherited by a resume
+            self._register(i, s["file"], int(s.get("frames", 0) or 0),
+                           done=True, inherited=True)
         self._write_manifest()
+
+    # ── UI registry ──────────────────────────────────────────────────────────
+    def _register(self, index, filename, frames, first=None, done=False,
+                  inherited=False):
+        first = self._next_first if first is None else first
+        entry = {"index": index, "file": filename, "frames": frames,
+                 "first": first, "last": first + max(0, frames - 1),
+                 "bytes": self._size_of(filename), "done": done,
+                 "inherited": inherited}
+        with _parts_lock:
+            _parts.append(entry)
+        self._next_first = entry["last"] + 1
+
+    def _size_of(self, filename):
+        try:
+            return os.path.getsize(os.path.join(self._dir, filename))
+        except OSError:
+            return 0
 
     # ── resume detection ─────────────────────────────────────────────────────
     def _load_resume(self):
@@ -127,31 +198,46 @@ class SegmentedVideoWriter:
 
     # ── writing ──────────────────────────────────────────────────────────────
     def _open_next_segment(self):
+        global _current
         self._cur_seg_file = f"{self._seg_prefix}{self._seg_index:04d}{self._seg_ext}"
         path = os.path.join(self._dir, self._cur_seg_file)
         self._writer = FFMPEG_VideoWriter(path, self.size, self.fps,
                                           codec=self.codec, crf=self.crf,
                                           audiofile=None)
         self._cur_frames = 0
+        _current = {"index": len(self.segments) + 1, "file": self._cur_seg_file,
+                    "first": self._next_first, "_written": 0, "bytes": 0,
+                    "done": False, "inherited": False}
 
     def write_frame(self, img_array):
         if self._writer is None:
             self._open_next_segment()
         self._writer.write_frame(img_array)
         self._cur_frames += 1
+        if _current is not None:
+            _current["_written"] = self._cur_frames
         if self._cur_frames >= self.chunk:
             self._finalize_segment()
 
     def _finalize_segment(self):
         """Close the current segment (writes its trailer → playable) and commit
         it to the manifest. From this moment its frames survive a crash."""
+        global _current
         if self._writer is None:
             return
         self._writer.close()
         self._writer = None
+        _current = None
         if self._cur_frames > 0:
             self.segments.append({"file": self._cur_seg_file, "frames": self._cur_frames})
             self._seg_index += 1
+            self._register(len(self.segments), self._cur_seg_file, self._cur_frames,
+                           done=True)
+            last = _parts[-1]
+            # One line per part, so the console says what is safe on disk. This is
+            # the only crash-survival signal a long run gives while it is running.
+            print(f"[Resume] ✓ part {last['index']} written · frames "
+                  f"{last['first']}-{last['last']} · {last['bytes'] / 1048576:.0f} MB")
             self._write_manifest()
         else:
             try:

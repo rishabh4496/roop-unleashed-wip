@@ -44,6 +44,7 @@ from roop.face_util import extract_face_images, get_all_faces
 from roop.FaceSet import FaceSet
 from roop.capturer import get_video_frame, get_video_frame_total, get_image_frame
 from roop.ProcessEntry import ProcessEntry
+from roop import segment_writer
 import ui.globals as ui_globals
 
 app = FastAPI()
@@ -155,16 +156,31 @@ _run_stats = {"start": 0.0, "frames_done": 0, "frames_total": 0}
 # regardless of which stage produced it (swap / upscale / interpolate / combine).
 from collections import deque as _deque
 _log_lines = _deque(maxlen=250)
-_log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": ""}
+_log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": "", "status": ""}
 
 
-def _push_log(msg, force=False):
-    """Append a line to the rolling terminal feed, de-duped + throttled.
+# A status line the UI pins and rewrites in place rather than scrolling. Matches
+# "12 / 300", "45%", "20.3 fps" — anything whose whole content is a counter that
+# changes every poll. Keeping these OUT of the log is what makes the history
+# readable: one run used to bury its stage changes under thousands of near
+# identical frame lines, which is the same information the progress bar already
+# shows, once per frame instead of once.
+_COUNTER_RE = _re.compile(r"\d[\d,]*\s*/\s*\d[\d,]*|\bfps\b|\d+\s*%", _re.I)
 
-    High-frequency per-frame updates ("Processing frame 120 / 300") would flood
-    the feed, so identical lines are skipped and frame-style lines are rate-limited
-    to read like a live `tail` rather than a wall of text. `force=True` bypasses the
-    throttle for meaningful one-off events (start, done, errors, stage changes).
+
+def is_counter_line(msg):
+    """True for a live counter (frames done / fps / percent) — pinned, not logged."""
+    return bool(msg) and bool(_COUNTER_RE.search(msg))
+
+
+def _push_log(msg, force=False, part=None):
+    """Append a line to the rolling terminal feed, de-duped.
+
+    Per-frame counters never land here: they are the pinned status line instead
+    (see is_counter_line), so the history holds only things that happened once —
+    stage changes, finalized parts, warnings, errors, done. `force=True` keeps a
+    line even if it looks like a counter (a stage's opening/closing message may
+    legitimately carry a frame count).
     """
     import time as _time
     if not msg:
@@ -172,13 +188,21 @@ def _push_log(msg, force=False):
     msg = str(msg).strip()
     if not msg or msg == _log_state["last"]:
         return
-    now = _time.time()
-    if not force and "frame" in msg.lower() and (now - _log_state["last_ts"]) < 0.6:
+    if not force and is_counter_line(msg):
         return
     _log_state["last"] = msg
-    _log_state["last_ts"] = now
+    _log_state["last_ts"] = _time.time()
     _log_state["seq"] += 1
-    _log_lines.append({"t": _time.strftime("%H:%M:%S"), "msg": msg, "seq": _log_state["seq"]})
+    # Tag the line with the output part that was open when it arrived, so the
+    # console can group its history by part (the [1✓][2✓][3•] tabs). An explicit
+    # `part` is for lines ABOUT a part, which are emitted just after it closed.
+    if part is None:
+        try:
+            part = segment_writer.current_part_index()
+        except Exception:
+            part = 0
+    _log_lines.append({"t": _time.strftime("%H:%M:%S"), "msg": msg,
+                       "seq": _log_state["seq"], "part": part})
 # Set by /api/stop, reset at the start of each run — lets the post-swap upscale
 # pass know the run was aborted (so it doesn't start a long upscale on a
 # deliberately-stopped output).
@@ -1712,7 +1736,11 @@ def _run_swap(payload):
     _stop_requested["flag"] = False
     # Fresh terminal feed for this run.
     _log_lines.clear()
-    _log_state.update({"last": "", "last_ts": 0.0, "seq": 0, "last_err": ""})
+    _log_state.update({"last": "", "last_ts": 0.0, "seq": 0, "last_err": "",
+                       "status": "", "parts_seen": 0})
+    # Parts are per-run: clear now rather than waiting for the writer, which is
+    # only constructed once encoding starts (and never, for an image job).
+    segment_writer.reset_parts()
     _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     _run_stats.update({"start": time.time(), "frames_done": 0, "frames_total": 0})
@@ -1992,7 +2020,28 @@ def get_progress():
             _log_state["last_err"] = err
             _push_log("⚠ " + err, force=True)
         desc = _progress.get("desc", "")
+        # The pinned line always mirrors the live status (including stages whose
+        # desc carries no counter, e.g. "Analyzing faces", so it never goes
+        # stale); the log keeps only the descs that are not per-frame counters.
+        if desc:
+            _log_state["status"] = desc
         _push_log(desc)
+        # Announce each output part as it is finalized. Reported from here rather
+        # than from the writer so segment_writer stays free of UI plumbing — and
+        # the console is the only place a long run says what is already safe on
+        # disk. Tagged with its own part so it lands in that tab.
+        try:
+            done_parts = [p for p in segment_writer.parts_snapshot() if p.get("done")]
+        except Exception:
+            done_parts = []
+        seen = int(_log_state.get("parts_seen", 0) or 0)
+        if len(done_parts) > seen:
+            for p in done_parts[seen:]:
+                _push_log(f"✓ part {p['index']} written · frames {p['first']}–{p['last']}"
+                          f" · {p['bytes'] / 1048576:.0f} MB"
+                          + (" (resumed)" if p.get("inherited") else ""),
+                          force=True, part=p["index"])
+            _log_state["parts_seen"] = len(done_parts)
         # Track the furthest "done / total" seen so the run can be summarised in
         # history. Max (not last) because the count restarts per stage; a stage
         # never has more frames than the source, so the peak total is the real
@@ -2009,8 +2058,15 @@ def get_progress():
                         _run_stats["frames_total"] = total
                 except ValueError:
                     pass
+    try:
+        parts = segment_writer.parts_snapshot()
+    except Exception:
+        parts = []
     return {**_progress, "output": _last_output, "live_frame": "", "live_seq": 0,
-            "log": list(_log_lines)}
+            "log": list(_log_lines), "parts": parts,
+            # The counter the console pins and rewrites in place instead of
+            # scrolling — `desc` when it IS a counter, else the last one seen.
+            "status_line": _log_state.get("status", "")}
 
 
 @app.get("/api/output")

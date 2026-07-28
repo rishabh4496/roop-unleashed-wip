@@ -3095,7 +3095,14 @@ export default function FaceSwap({
                   </div>
 
                   {/* Live terminal feed — mirrors what the real console prints */}
-                  <ProcessingTerminal log={progress.log || []} paused={progress.paused} className="flex-1 min-h-0" bodyClass="h-full" />
+                  <ProcessingTerminal
+                    log={progress.log || []}
+                    parts={progress.parts || []}
+                    statusLine={progress.status_line || progress.desc}
+                    paused={progress.paused}
+                    className="flex-1 min-h-0"
+                    bodyClass="h-full"
+                  />
 
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
                 </div>

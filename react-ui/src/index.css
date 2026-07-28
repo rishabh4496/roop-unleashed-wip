@@ -1109,3 +1109,9 @@ input[type="range"]::-webkit-slider-thumb:active {
   white-space: nowrap;
   border: 0;
 }
+
+/* Horizontal tab strips (media sessions, console part tabs) scroll but should
+   not show a scrollbar over their own chips — the overflow is discoverable by
+   dragging/wheel and a 15px bar would eat a third of the strip's height. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
