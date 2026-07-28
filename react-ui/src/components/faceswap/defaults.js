@@ -51,6 +51,10 @@ export const FACESWAP_DEFAULTS = {
   jaw_reshape: false,
   jaw_reshape_strength: 0.5,
   detail_transfer_strength: 0,
+  // Expression restore is an editable Face Swap control and a heavy GPU stage,
+  // but was missing here — so "Reset defaults" left it at whatever it was.
+  expression_restore_strength: 0,
+  expression_restore_region: 'all',
 
   // Video parameters
   video_swapping_method: 'In-Memory processing',

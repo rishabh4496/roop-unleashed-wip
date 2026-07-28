@@ -16,6 +16,7 @@ import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
+import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
 
 // AI upscale models folded into the swap pass (mirrors the Extras post-processor
@@ -533,6 +534,27 @@ export default function FaceSwap({
        p.subsample_upscale, p.upscale_after_swap, p.upscale_model_after,
        p.track_identities, p.temporal_detection, p.stabilize_face, p.stabilize_enhancer]);
 
+  // "Slider Effect: BYPASSED" neutralises the eight Slider Tracker values.
+  // This MUST be applied to the render payload too, not just the preview —
+  // otherwise the preview shows a bypassed result while Run quietly renders
+  // with the slider values still applied, and the two disagree.
+  const withSliderBypass = (params) =>
+    sliderEffectEnabled ? params : { ...params, ...TRACKER_BYPASS_VALUES };
+
+  // Flip the toggle only. The refresh CANNOT happen inside the setState updater
+  // (as it used to): an updater must be pure, React 19 StrictMode runs it twice
+  // in dev, and — the real defect — refreshPreview() called from in there still
+  // closes over the PREVIOUS sliderEffectEnabled, so the toggle rendered a
+  // preview of the state you just left. Refreshing from an effect means the new
+  // value is committed before the request is built.
+  const toggleSliderEffect = () => setSliderEffectEnabled((v) => !v);
+  const sliderEffectMounted = useRef(false);
+  useEffect(() => {
+    if (!sliderEffectMounted.current) { sliderEffectMounted.current = true; return; }
+    refreshPreview({ force: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sliderEffectEnabled]);
+
   // While face-swap preview is on, auto-refresh when the swapped result would
   // change: new source faces, target faces, or any swap/mask parameter.
   // ── The one place UI params become an /api/preview request ──────────────
@@ -550,17 +572,7 @@ export default function FaceSwap({
   // `localParams` (p with that grid's one override applied), which reproduces
   // the override in the request for free.
   const buildPreviewPayload = (params, { index, frame: fr, fake, ...overrides } = {}) => {
-    const activeParams = sliderEffectEnabled ? params : {
-      ...params,
-      blend_ratio: 0.8,
-      detail_transfer_strength: 0,
-      expression_restore_strength: 0,
-      jaw_reshape_strength: 0,
-      stabilize_enhancer_strength: 0,
-      face_mask_blend: 20,
-      max_face_distance: 0.85,
-      num_swap_steps: 1,
-    };
+    const activeParams = withSliderBypass(params);
     return {
       index, frame: fr, fake_preview: fake,
       enhancer: activeParams.selected_enhancer, codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
@@ -599,14 +611,7 @@ export default function FaceSwap({
   };
 
   const resetTrackerSliders = () => {
-    set('blend_ratio', 0.8);
-    set('detail_transfer_strength', 0);
-    set('expression_restore_strength', 0);
-    set('max_face_distance', 0.85);
-    set('face_mask_blend', 20);
-    set('num_swap_steps', 1);
-    set('jaw_reshape_strength', 0.5);
-    set('stabilize_enhancer_strength', 0.5);
+    Object.entries(TRACKER_DEFAULT_VALUES).forEach(([k, v]) => set(k, v));
     refreshPreview({ force: true });
   };
 
@@ -1310,16 +1315,17 @@ export default function FaceSwap({
   // ── start / stop ──
   const start = async () => {
     try {
+      const sp = withSliderBypass(p);
       await postJSON('/api/settings', p);            // persist CFG
       await postJSON('/api/swap', {
-        ...p,
-        enhancer: p.selected_enhancer, detection: p.face_detection_mode,
-        output_method: p.output_method, video_method: p.video_swapping_method,
-        upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
-        autorotate: p.autorotate_faces,
-        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-        num_swap_steps: num(p.num_swap_steps, 1),
+        ...sp,
+        enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
+        output_method: sp.output_method, video_method: sp.video_swapping_method,
+        upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
+        sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
+        autorotate: sp.autorotate_faces,
+        face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
+        num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
       });
       setStartTime(Date.now());
@@ -1824,16 +1830,17 @@ export default function FaceSwap({
       await postJSON('/api/target/set_frame', { which: 'end', frame: previewEnd });
 
       // Start the swap with current settings
+      const sp = withSliderBypass(p);
       await postJSON('/api/settings', p);
       await postJSON('/api/swap', {
-        ...p,
-        enhancer: p.selected_enhancer, detection: p.face_detection_mode,
-        output_method: p.output_method, video_method: p.video_swapping_method,
-        upscale: p.subsample_upscale, mask_engine: p.mask_engine, clip_text: p.mask_clip_text,
-        sam2_model_size: p.sam2_model_size, track_identities: p.track_identities,
-        autorotate: p.autorotate_faces,
-        face_distance: num(p.max_face_distance, 0.85), blend_ratio: num(p.blend_ratio, 0.8),
-        num_swap_steps: num(p.num_swap_steps, 1),
+        ...sp,
+        enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
+        output_method: sp.output_method, video_method: sp.video_swapping_method,
+        upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
+        sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
+        autorotate: sp.autorotate_faces,
+        face_distance: num(sp.max_face_distance, 0.85), blend_ratio: num(sp.blend_ratio, 0.8),
+        num_swap_steps: num(sp.num_swap_steps, 1),
         face_mapping: getFaceMappingArray(),
         target_index: selTarget,
         // Quick 5s preview clip: skip the heavy post-swap AI upscale so the
@@ -3012,13 +3019,7 @@ export default function FaceSwap({
                     set(key, val);
                   }}
                   sliderEffectEnabled={sliderEffectEnabled}
-                  onToggleSliderEffect={() => {
-                    setSliderEffectEnabled((v) => {
-                      const next = !v;
-                      refreshPreview({ force: true });
-                      return next;
-                    });
-                  }}
+                  onToggleSliderEffect={toggleSliderEffect}
                   onResetSliders={resetTrackerSliders}
                   onRefreshPreview={() => refreshPreview({ force: true })}
                 />
@@ -3229,13 +3230,7 @@ export default function FaceSwap({
                   compare={compare}
                   onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; })}
                   sliderEffectEnabled={sliderEffectEnabled}
-                  onToggleSliderEffect={() => {
-                    setSliderEffectEnabled((v) => {
-                      const next = !v;
-                      refreshPreview({ force: true });
-                      return next;
-                    });
-                  }}
+                  onToggleSliderEffect={toggleSliderEffect}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}

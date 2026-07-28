@@ -1,111 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-const TRACKER_SLIDERS = [
-  {
-    key: 'blend_ratio',
-    label: 'Original / Enhanced Blend',
-    icon: '🧪',
-    min: 0,
-    max: 1,
-    step: 0.01,
-    defaultVal: 0.8,
-    format: (v) => Number(v ?? 0.8).toFixed(2),
-    info: 'Blends between original target face and enhanced swapped result.',
-  },
-  {
-    key: 'detail_transfer_strength',
-    label: 'Skin Detail Transfer',
-    icon: '✨',
-    min: 0,
-    max: 1,
-    step: 0.05,
-    defaultVal: 0,
-    format: (v) => Number(v ?? 0).toFixed(2),
-    info: "Transfers target's original skin texture (pores, grain, stubble) onto swapped face.",
-  },
-  {
-    key: 'expression_restore_strength',
-    label: 'Expression Restore',
-    icon: '😀',
-    min: 0,
-    max: 2,
-    step: 0.05,
-    defaultVal: 0,
-    format: (v) => Number(v ?? 0).toFixed(2),
-    info: "Re-applies target's original expression using LivePortrait model.",
-  },
-  {
-    key: 'face_mask_blend',
-    label: 'Face Mask Edge Blend',
-    icon: '🎭',
-    min: 0,
-    max: 200,
-    step: 1,
-    defaultVal: 20,
-    format: (v) => `${Math.round(v ?? 20)}px`,
-    info: 'Feathering softness around the border of the face mask.',
-  },
-  {
-    key: 'max_face_distance',
-    label: 'Max Face Similarity',
-    icon: '🎯',
-    min: 0.01,
-    max: 1,
-    step: 0.01,
-    defaultVal: 0.85,
-    format: (v) => Number(v ?? 0.85).toFixed(2),
-    info: 'Face matching distance threshold. Lower is stricter.',
-  },
-  {
-    key: 'num_swap_steps',
-    label: 'Swapping Steps',
-    icon: '⚡',
-    min: 1,
-    max: 5,
-    step: 1,
-    defaultVal: 1,
-    format: (v) => `${Math.round(v ?? 1)}×`,
-    info: 'Swap iteration passes. Higher values increase source likeness.',
-  },
-  {
-    key: 'jaw_reshape_strength',
-    label: 'Jaw Reshape Strength',
-    icon: '🗿',
-    min: 0,
-    max: 1,
-    step: 0.05,
-    defaultVal: 0.5,
-    format: (v) => Number(v ?? 0.5).toFixed(2),
-    info: 'Blends source jaw & chin contours onto target face.',
-  },
-  {
-    key: 'stabilize_enhancer_strength',
-    label: 'Flicker Reduction',
-    icon: '🎬',
-    min: 0,
-    max: 1,
-    step: 0.05,
-    defaultVal: 0.5,
-    format: (v) => Number(v ?? 0.5).toFixed(2),
-    info: 'Temporal stabilization strength for video frames.',
-  },
-];
+import { TRACKER_SLIDERS, TRACKER_DEFAULT_VALUES } from './trackerConfig';
 
 const BUILTIN_PRESETS = [
-  {
-    name: 'Default',
-    values: {
-      blend_ratio: 0.8,
-      detail_transfer_strength: 0,
-      expression_restore_strength: 0,
-      face_mask_blend: 20,
-      max_face_distance: 0.85,
-      num_swap_steps: 1,
-      jaw_reshape_strength: 0.5,
-      stabilize_enhancer_strength: 0.5,
-    },
-  },
+  { name: 'Default', values: TRACKER_DEFAULT_VALUES },
   {
     name: '✨ Ultra Realism',
     values: {
@@ -243,9 +141,13 @@ export default function SliderTrackerBar({
 
   const handleDeleteCustomPreset = (presetId, e) => {
     e.stopPropagation();
+    const doomed = customPresets.find((p) => p.id === presetId);
     const updated = customPresets.filter((p) => p.id !== presetId);
     saveCustomPresetsToStorage(updated);
-    if (activePreset.includes(presetId)) {
+    // activePreset holds a NAME ("★ foo"), never an id, so the old
+    // activePreset.includes(presetId) test could never fire and the pill stayed
+    // highlighted on a preset that no longer existed.
+    if (doomed && activePreset === doomed.name) {
       setActivePreset('Default');
     }
   };
@@ -384,28 +286,36 @@ export default function SliderTrackerBar({
             {allPresets.map((p) => {
               const isSel = activePreset === p.name;
               return (
-                <div key={p.name || p.id} className="relative inline-flex items-center">
+                // The delete control is a SIBLING of the preset button, not a
+                // child of it: a disabled <button> swallows clicks on its
+                // descendants, so nesting it made "×" dead whenever the effect
+                // was bypassed — and a button inside a button is invalid markup.
+                <div
+                  key={p.id || p.name}
+                  className={`relative inline-flex items-center rounded-lg border transition-all duration-200 ${
+                    isSel && sliderEffectEnabled
+                      ? 'bg-[var(--accent)] text-white border-white/20 shadow-[0_0_10px_var(--accent-glow)]'
+                      : 'bg-white/[0.03] border-white/10 text-white/70 hover:border-white/20 hover:text-white'
+                  } ${sliderEffectEnabled ? '' : 'opacity-35'}`}
+                >
                   <button
                     type="button"
                     onClick={() => applyPreset(p)}
                     disabled={!sliderEffectEnabled}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all duration-200 flex items-center gap-1.5 ${
-                      isSel && sliderEffectEnabled
-                        ? 'bg-[var(--accent)] text-white border-white/20 shadow-[0_0_10px_var(--accent-glow)]'
-                        : 'bg-white/[0.03] border-white/10 text-white/70 hover:border-white/20 hover:text-white'
-                    } disabled:opacity-35 disabled:cursor-not-allowed`}
+                    className="px-2.5 py-1 text-[10px] font-bold disabled:cursor-not-allowed"
                   >
-                    <span>{p.name}</span>
-                    {p.isCustom && (
-                      <span
-                        onClick={(e) => handleDeleteCustomPreset(p.id, e)}
-                        className="hover:text-red-300 font-extrabold ml-1 px-1 rounded bg-black/40"
-                        title="Delete custom preset"
-                      >
-                        ×
-                      </span>
-                    )}
+                    {p.name}
                   </button>
+                  {p.isCustom && (
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteCustomPreset(p.id, e)}
+                      className="mr-1.5 px-1 rounded bg-black/40 text-[10px] font-extrabold hover:text-red-300 transition-colors"
+                      title="Delete custom preset"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}
