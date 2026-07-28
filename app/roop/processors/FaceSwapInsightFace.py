@@ -389,6 +389,7 @@ class FaceSwapInsightFace():
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
                 sess_options.enable_cpu_mem_arena = False
+                sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
                 return onnxruntime.InferenceSession(
                     model_arg, sess_options, providers=swap_providers)
 
@@ -517,6 +518,7 @@ class FaceSwapInsightFace():
         def _build(_i=0):
             sess_options = onnxruntime.SessionOptions()
             sess_options.enable_cpu_mem_arena = False
+            sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             return onnxruntime.InferenceSession(
                 self._model_arg, sess_options, providers=providers)
         self.model_swap_insightface = _build()

@@ -2,29 +2,24 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import AIScannerOverlay from './AIScannerOverlay';
 
 // Cross-fades between src changes using TWO persistent <img> layers that are
-// never remounted. The incoming frame is loaded into the hidden (back) layer
-// while the current frame stays painted on the front layer; only once the back
-// layer has fully decoded do we flip which layer is on top, so the fade always
-// runs from one complete frame to the next and never blanks to black in between.
-// (Remounting a single <img> via a changing `key` is what caused the old black
-// flicker — a fresh <img> paints nothing until it decodes.)
+// never remounted.
 function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
   const [layers, setLayers] = useState({ a: src, b: src, front: 'a' });
 
   useEffect(() => {
     setLayers((s) => {
-      if (src === s[s.front]) return s;              // already the visible frame
+      if (src === s[s.front]) return s;
       const back = s.front === 'a' ? 'b' : 'a';
-      if (src === s[back]) return s;                 // already loading it
-      return { ...s, [back]: src };                  // start decoding into back
+      if (src === s[back]) return s;
+      return { ...s, [back]: src };
     });
   }, [src]);
 
   const promote = (which, e) => {
     if (onLoad) onLoad(e);
     setLayers((s) => {
-      if (s.front === which) return s;               // already front
-      if (s[which] !== src) return s;                // stale load — newer src pending
+      if (s.front === which) return s;
+      if (s[which] !== src) return s;
       return { ...s, front: which };
     });
   };
@@ -38,15 +33,22 @@ function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
       draggable={false}
       onLoad={(e) => promote(which, e)}
       className={className}
-      style={{ ...style, opacity: layers.front === which ? 1 : 0, transition: `opacity ${fadeMs}ms ease-out` }}
+      style={{
+        ...style,
+        opacity: layers.front === which ? 1 : 0,
+        transition: `opacity ${fadeMs}ms ease-out`,
+      }}
     />
   );
 
-  return <>{renderLayer('a')}{renderLayer('b')}</>;
+  return (
+    <>
+      {renderLayer('a')}
+      {renderLayer('b')}
+    </>
+  );
 }
 
-// Pixel-peeping a 4K frame in a ~1000px stage needs ~4×; 5 was not quite enough
-// to reach 1:1 on large sources, so the ceiling is 8.
 const ZOOM_MAX = 8;
 
 export default function InteractivePreview({
@@ -58,6 +60,8 @@ export default function InteractivePreview({
   splitView = false,
   compare = false,
   onToggleCompare,
+  sliderEffectEnabled = true,
+  onToggleSliderEffect,
   frame = 1,
   setFrame,
   maxFrames = 1,
@@ -70,6 +74,7 @@ export default function InteractivePreview({
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
   const imageRef = useRef(null);
+  const maskCanvasRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
 
   const [zoom, setZoom] = useState(1);
@@ -78,6 +83,17 @@ export default function InteractivePreview({
   const [startPan, setStartPan] = useState({ x: 0, y: 0 });
   const [showBoxes, setShowBoxes] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPeekingOriginal, setIsPeekingOriginal] = useState(false);
+
+  // Feature 1: Interactive Magnifier Glass Lens State
+  const [magnifierActive, setMagnifierActive] = useState(false);
+  const [lensPos, setLensPos] = useState({ x: 0, y: 0, relX: 0, relY: 0, visible: false });
+
+  // Feature 2: Interactive Face Mask Brush Tool State
+  const [maskBrushActive, setMaskBrushActive] = useState(false);
+  const [brushMode, setBrushMode] = useState('paint'); // 'paint' | 'erase'
+  const [brushSize, setBrushSize] = useState(30);
+  const [isDrawingMask, setIsDrawingMask] = useState(false);
 
   const [imgDim, setImgDim] = useState(null);
 
@@ -91,7 +107,12 @@ export default function InteractivePreview({
   };
 
   useEffect(() => {
-    const handleMouseUp = () => { setIsDraggingSlider(false); setIsPanning(false); };
+    const handleMouseUp = () => {
+      setIsDraggingSlider(false);
+      setIsPanning(false);
+      setIsPeekingOriginal(false);
+      setIsDrawingMask(false);
+    };
     window.addEventListener('mouseup', handleMouseUp);
     window.addEventListener('touchend', handleMouseUp);
     return () => {
@@ -100,18 +121,14 @@ export default function InteractivePreview({
     };
   }, []);
 
-  // Keep isFullscreen in sync when the user exits fullscreen via Esc (the
-  // browser fires no click on our toggle in that case).
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // Keyboard Navigation: Zoom controls
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Ignore if user is typing in input fields
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
 
       if (e.key === '=' || e.key === '+') {
@@ -124,19 +141,19 @@ export default function InteractivePreview({
           if (nz === 1) setPan({ x: 0, y: 0 });
           return nz;
         });
+      } else if (e.key.toLowerCase() === 'c' && onToggleCompare) {
+        e.preventDefault();
+        onToggleCompare();
+      } else if (e.key.toLowerCase() === 'm') {
+        setMagnifierActive((m) => !m);
+      } else if (e.key.toLowerCase() === 'b') {
+        setMaskBrushActive((b) => !b);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onToggleCompare]);
 
-  // Wheel-to-zoom must be a NATIVE, non-passive listener. React registers its
-  // onWheel handlers as passive, so calling preventDefault() there is silently
-  // ignored — the page scrolls behind the zoom and the console warns. Binding
-  // the listener ourselves with { passive: false } lets us actually stop the
-  // page from scrolling while zooming the preview. Re-bind when the compare /
-  // split branch swaps the container node. Functional setState avoids stale
-  // zoom/pan captured in the effect closure.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -154,16 +171,20 @@ export default function InteractivePreview({
   }, [compare, splitView]);
 
   const handlePointerDown = (e) => {
+    if (maskBrushActive) {
+      setIsDrawingMask(true);
+      drawMaskStroke(e);
+      return;
+    }
     if (zoom > 1 && !isDraggingSlider) {
       setIsPanning(true);
-      setStartPan({ x: (e.clientX || e.touches?.[0]?.clientX) - pan.x, y: (e.clientY || e.touches?.[0]?.clientY) - pan.y });
+      setStartPan({
+        x: (e.clientX || e.touches?.[0]?.clientX) - pan.x,
+        y: (e.clientY || e.touches?.[0]?.clientY) - pan.y,
+      });
     }
   };
 
-  // Pan/slider updates are coalesced to one per animation frame. Pointer-move
-  // fires faster than React can re-render this whole subtree, so without this
-  // the events queue up and the image visibly lags behind the cursor. rAF
-  // batching keeps panning locked to the display refresh instead.
   const rafRef = useRef(null);
   const pendingRef = useRef(null);
   useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
@@ -172,6 +193,27 @@ export default function InteractivePreview({
     const cx = e.clientX ?? e.touches?.[0]?.clientX;
     const cy = e.clientY ?? e.touches?.[0]?.clientY;
     if (cx === undefined) return;
+
+    // Update Magnifier glass position
+    if (magnifierActive && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const relX = ((cx - rect.left) / rect.width) * 100;
+      const relY = ((cy - rect.top) / rect.height) * 100;
+      setLensPos({
+        x: cx - rect.left,
+        y: cy - rect.top,
+        relX,
+        relY,
+        visible: cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom,
+      });
+    }
+
+    // Mask Brush drawing
+    if (maskBrushActive && isDrawingMask) {
+      drawMaskStroke(e);
+      return;
+    }
+
     if (!isDraggingSlider && !(isPanning && zoom > 1)) return;
     pendingRef.current = { cx, cy };
     if (rafRef.current) return;
@@ -187,29 +229,64 @@ export default function InteractivePreview({
     });
   };
 
-  // Double click toggles between fit-to-screen and 2.5x zoom
+  const drawMaskStroke = (e) => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    if (cx === undefined) return;
+
+    const x = ((cx - rect.left) / rect.width) * canvas.width;
+    const y = ((cy - rect.top) / rect.height) * canvas.height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (brushMode === 'erase') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath();
+      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(233, 69, 96, 0.45)';
+      ctx.strokeStyle = 'rgba(233, 69, 96, 0.45)';
+      ctx.beginPath();
+      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const clearMaskCanvas = () => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
   const handleDoubleClick = (e) => {
     if (zoom > 1) {
       setZoom(1);
       setPan({ x: 0, y: 0 });
     } else {
       setZoom(2.5);
-      // Center pan coordinates roughly where clicked
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
         const clickX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
         const clickY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
         setPan({
           x: (rect.width / 2 - clickX) * 1.5,
-          y: (rect.height / 2 - clickY) * 1.5
+          y: (rect.height / 2 - clickY) * 1.5,
         });
       }
     }
   };
 
-  // Face boxes are pure geometry derived from the detections + image size, so
-  // memoise them. Otherwise every pan/zoom re-render (many per second) would
-  // rebuild the entire box list, which is wasted work while the user drags.
   const faceBoxes = useMemo(() => {
     if (!faces.length || !imgDim || !showBoxes) return null;
     const clickable = typeof onSelectPerson === 'function';
@@ -223,7 +300,11 @@ export default function InteractivePreview({
       return (
         <div
           key={i}
-          className={`absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 ${clickable ? 'pointer-events-auto cursor-pointer group/face hover:bg-[var(--accent)]/10 transition-colors' : 'pointer-events-none'}`}
+          className={`absolute border-2 border-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)] z-20 ${
+            clickable
+              ? 'pointer-events-auto cursor-pointer group/face hover:bg-[var(--accent)]/10 transition-colors'
+              : 'pointer-events-none'
+          }`}
           style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
           title={clickable ? `Click to add Person ${label} to target faces` : undefined}
           onPointerDown={clickable ? (e) => e.stopPropagation() : undefined}
@@ -242,9 +323,6 @@ export default function InteractivePreview({
     });
   }, [faces, imgDim, showBoxes, personIds, onSelectPerson]);
 
-  // Skip the smoothing transition while the user is actively panning or the
-  // slider is being dragged — otherwise every frame chases a 75ms ease and the
-  // image trails the cursor. Discrete zoom (buttons/wheel) still eases nicely.
   const interacting = isPanning || isDraggingSlider;
   const transformStyle = {
     transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
@@ -265,151 +343,290 @@ export default function InteractivePreview({
   const stepFrame = (delta) => setFrame && setFrame((f) => Math.max(1, Math.min(maxFrames, f + delta)));
   const isVideo = maxFrames > 1;
 
-  // Zoom to actual pixels: the frame is letterboxed to fit, so 1:1 is however
-  // much magnification puts one source pixel on one screen pixel. Face-swap
-  // artefacts (seams, mask edges, enhancer texture) live at that scale, and
-  // guessing at it with +/- steps is exactly what made close inspection tedious.
   const zoomToActual = () => {
-    // imageRef is only attached in the single-stage layout; fall back to the
-    // container so the button still does something in split view.
     const box = (imageRef.current || containerRef.current)?.getBoundingClientRect();
     if (!box || !imgDim || !box.width) return;
     setZoom(Math.min(Math.max(imgDim.w / box.width, 1), ZOOM_MAX));
     setPan({ x: 0, y: 0 });
   };
 
-  const zoomBy = (d) => setZoom((z) => {
-    const nz = Math.min(Math.max(1, z + d), ZOOM_MAX);
-    if (nz === 1) setPan({ x: 0, y: 0 });
-    return nz;
-  });
+  const zoomBy = (d) =>
+    setZoom((z) => {
+      const nz = Math.min(Math.max(1, z + d), ZOOM_MAX);
+      if (nz === 1) setPan({ x: 0, y: 0 });
+      return nz;
+    });
 
-  // Shared floating HUD. One glass surface split into labelled zones (view /
-  // overlays / transport / window) instead of a single undifferentiated row of
-  // look-alike buttons, and it now reports the state it controls — the zoom
-  // factor and the frame — rather than only offering the controls.
+  // Main HUD Control Bar inside Preview Box
   const hudBar = () => (
     <div className="absolute inset-x-0 bottom-0 z-50 flex justify-center p-3 pointer-events-none">
-      {/* Rests at reduced opacity rather than fully hidden: the bar is not just
-          controls, it REPORTS state (zoom factor, face count, whether Compare
-          is on), and state you have to hover to discover is state you will
-          miss. Comes to full strength on hover or keyboard focus. */}
-      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-45 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300">
-        {/* View */}
-        <button onClick={() => zoomBy(-0.5)} disabled={zoom <= 1}
-                className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30" title="Zoom out (−)">−</button>
-        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
-                className={`px-2 h-7 rounded-lg text-[10px] font-bold font-mono tabular-nums ${zoom > 1 ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}
-                title="Reset to fit">
+      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-70 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300 shadow-2xl border border-white/10">
+        {/* View Zoom controls */}
+        <button
+          onClick={() => zoomBy(-0.5)}
+          disabled={zoom <= 1}
+          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
+          title="Zoom out (−)"
+        >
+          −
+        </button>
+        <button
+          onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+          className={`px-2 h-7 rounded-lg text-[10px] font-bold font-mono tabular-nums ${
+            zoom > 1
+              ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
+              : 'hud-glass-button'
+          }`}
+          title="Reset to fit"
+        >
           {zoom > 1 ? `${zoom.toFixed(1)}×` : 'FIT'}
         </button>
-        <button onClick={() => zoomBy(0.5)} disabled={zoom >= ZOOM_MAX}
-                className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30" title="Zoom in (+)">+</button>
-        <button onClick={zoomToActual} className="px-2 h-7 rounded-lg text-[10px] font-bold hud-glass-button" title="Zoom to actual pixels (1 source pixel = 1 screen pixel)">1:1</button>
-
-        <span className="w-px h-5 bg-white/10 mx-1.5" />
-
-        {/* Overlays */}
-        <button onClick={() => setShowBoxes(b => !b)} title="Show detected face boxes"
-                className={`px-2 h-7 rounded-lg text-[10px] font-bold ${showBoxes ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>
-          Faces{faces.length > 0 && <span className="ml-1 opacity-60 tabular-nums">{faces.length}</span>}
+        <button
+          onClick={() => zoomBy(0.5)}
+          disabled={zoom >= ZOOM_MAX}
+          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
+          title="Zoom in (+)"
+        >
+          +
         </button>
+        <button
+          onClick={zoomToActual}
+          className="px-2 h-7 rounded-lg text-[10px] font-bold hud-glass-button"
+          title="Zoom 1:1"
+        >
+          1:1
+        </button>
+
+        <span className="w-px h-5 bg-white/10 mx-1" />
+
+        {/* Faces Overlays Toggle */}
+        <button
+          onClick={() => setShowBoxes((b) => !b)}
+          title="Show detected face boxes"
+          className={`px-2 h-7 rounded-lg text-[10px] font-bold ${
+            showBoxes
+              ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
+              : 'hud-glass-button'
+          }`}
+        >
+          Faces
+          {faces.length > 0 && <span className="ml-1 opacity-60 tabular-nums">{faces.length}</span>}
+        </button>
+
+        {/* COMPARE SWAP FACES Button inside Preview Box */}
         {onToggleCompare && (
-          <button onClick={() => onToggleCompare()} title="Toggle before/after compare (C)"
-                  className={`px-2 h-7 rounded-lg text-[10px] font-bold ${compare ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}>Compare</button>
+          <button
+            onClick={() => onToggleCompare()}
+            title="Toggle Compare Swap Faces (C)"
+            className={`px-2.5 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-all duration-200 ${
+              compare
+                ? 'text-white bg-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)] border border-white/20'
+                : 'hud-glass-button text-white/80 hover:text-white'
+            }`}
+          >
+            <span>🎭 Compare Faces</span>
+            {compare && <span className="text-[9px] bg-black/40 px-1 rounded font-mono">{Math.round(sliderPosition)}%</span>}
+          </button>
         )}
 
+        {/* Peek Original Button */}
+        <button
+          onMouseDown={() => setIsPeekingOriginal(true)}
+          onMouseUp={() => setIsPeekingOriginal(false)}
+          onMouseLeave={() => setIsPeekingOriginal(false)}
+          onTouchStart={() => setIsPeekingOriginal(true)}
+          onTouchEnd={() => setIsPeekingOriginal(false)}
+          title="Press and hold to view original target image"
+          className={`px-2 h-7 rounded-lg text-[10px] font-bold transition-all duration-200 select-none ${
+            isPeekingOriginal
+              ? 'bg-amber-500 text-black border border-amber-300 font-extrabold shadow-[0_0_10px_rgba(245,158,11,0.5)]'
+              : 'hud-glass-button text-white/70'
+          }`}
+        >
+          👁️ Hold Peek
+        </button>
+
+        <span className="w-px h-5 bg-white/10 mx-1" />
+
+        {/* Feature 1: Magnifier Lens Button */}
+        <button
+          onClick={() => setMagnifierActive((m) => !m)}
+          title="Toggle interactive 3.5× Magnifier Glass Lens (M)"
+          className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+            magnifierActive
+              ? 'text-cyan-300 bg-cyan-500/20 border border-cyan-400/40 shadow-[0_0_10px_rgba(6,182,212,0.3)]'
+              : 'hud-glass-button text-white/70'
+          }`}
+        >
+          🔍 Lens
+        </button>
+
+        {/* Feature 2: Face Mask Brush Tool Button */}
+        <button
+          onClick={() => setMaskBrushActive((b) => !b)}
+          title="Toggle interactive Face Mask Brush tool (B)"
+          className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+            maskBrushActive
+              ? 'text-pink-300 bg-pink-500/20 border border-pink-400/40 shadow-[0_0_10px_rgba(236,72,153,0.3)]'
+              : 'hud-glass-button text-white/70'
+          }`}
+        >
+          🖌️ Mask Brush
+        </button>
+
+        {/* Slider Effect Toggle Button inside Preview Box HUD */}
+        {onToggleSliderEffect && (
+          <button
+            onClick={() => onToggleSliderEffect()}
+            title="Toggle Slider Effects ON/OFF"
+            className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+              sliderEffectEnabled
+                ? 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/30'
+                : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${sliderEffectEnabled ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            <span>Effect {sliderEffectEnabled ? 'ON' : 'OFF'}</span>
+          </button>
+        )}
+
+        {/* Video Frame controls */}
         {isVideo && (
           <>
-            <span className="w-px h-5 bg-white/10 mx-1.5" />
+            <span className="w-px h-5 bg-white/10 mx-1" />
             <button onClick={() => stepFrame(-1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Previous frame (←)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
             </button>
-            <button onClick={() => setIsPlaying && setIsPlaying(p => !p)}
-                    className={`grid place-items-center h-7 w-7 rounded-lg ${isPlaying ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'}`}
-                    title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
-              {isPlaying
-                ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-                : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
+            <button
+              onClick={() => setIsPlaying && setIsPlaying((p) => !p)}
+              className={`grid place-items-center h-7 w-7 rounded-lg ${
+                isPlaying ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'
+              }`}
+              title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            >
+              {isPlaying ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              )}
             </button>
             <button onClick={() => stepFrame(1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Next frame (→)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
             </button>
-            <span className="px-1.5 text-[10px] font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
+            <span className="px-1 text-[10px] font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
               {frame.toLocaleString()}<span className="opacity-40">/{maxFrames.toLocaleString()}</span>
             </span>
           </>
         )}
 
-        <span className="w-px h-5 bg-white/10 mx-1.5" />
+        <span className="w-px h-5 bg-white/10 mx-1" />
+
+        {/* Fullscreen Button */}
         <button onClick={triggerFullscreen} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Toggle fullscreen">
-          {isFullscreen
-            ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
-            : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>}
+          {isFullscreen ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          )}
         </button>
       </div>
     </div>
   );
 
-  // Small always-on status cluster, top-left: what you are looking at and at
-  // what magnification. Pure read-out, so it stays out of the way at low
-  // opacity until the pointer enters the stage.
+  // Top info overlay
   const stageInfo = () => (
-    <div className="absolute top-3 left-3 z-40 flex items-center gap-1.5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+    <div className="absolute top-3 left-3 z-40 flex items-center gap-2 pointer-events-none">
       {imgDim && (
-        <span className="rounded-md bg-black/65 backdrop-blur px-2 py-1 font-mono text-[10px] tabular-nums text-white/65 border border-white/10">
+        <span className="rounded-lg bg-black/75 backdrop-blur-md px-2.5 py-1 font-mono text-[10px] tabular-nums text-white/80 border border-white/10 shadow-lg">
           {imgDim.w}×{imgDim.h}
         </span>
       )}
       {zoom > 1 && (
-        <span className="rounded-md bg-[var(--accent)]/80 backdrop-blur px-2 py-1 font-mono text-[10px] font-bold tabular-nums text-white">
+        <span className="rounded-lg bg-[var(--accent)]/90 backdrop-blur-md px-2.5 py-1 font-mono text-[10px] font-bold tabular-nums text-white shadow-lg">
           {zoom.toFixed(1)}×
+        </span>
+      )}
+      {compare && (
+        <span className="rounded-lg bg-[var(--accent)] text-white backdrop-blur-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider shadow-lg border border-white/20 animate-pulse">
+          Compare Active
+        </span>
+      )}
+      {magnifierActive && (
+        <span className="rounded-lg bg-cyan-500/20 text-cyan-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-cyan-400/30">
+          🔍 Magnifier Lens (3.5×)
+        </span>
+      )}
+      {maskBrushActive && (
+        <span className="rounded-lg bg-pink-500/20 text-pink-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-pink-400/30">
+          🖌️ Mask Brush Active ({brushMode})
         </span>
       )}
     </div>
   );
 
-  // Split View comparisons
+  // Split View comparison (50/50 dual pane)
   if (compare && splitView) {
     return (
       <div
         ref={containerRef}
-        className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage group ${isFullscreen ? 'h-screen w-screen max-h-none' : ''}`}
-        onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+        className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage group border border-white/10 shadow-2xl ${
+          isFullscreen ? 'h-screen w-screen max-h-none' : ''
+        }`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onDoubleClick={handleDoubleClick}
+        style={{ touchAction: 'none' }}
       >
         {stageInfo()}
         <div className={`flex w-full h-full ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
-          <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/50">
+          <div className="flex-1 relative border-r border-white/10 flex items-center justify-center overflow-hidden bg-black/60">
             <div className="relative" style={aspectStyle}>
-              <img src={beforeSrc} alt="Before" className="w-full h-full object-contain pointer-events-none"
-                   onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })} />
+              <img
+                src={beforeSrc}
+                alt="Before"
+                className="w-full h-full object-contain pointer-events-none"
+                onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
+              />
               <div className="absolute inset-0 pointer-events-none">{faceBoxes}</div>
             </div>
-            <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-black/65 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white/70">Before</span>
+            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white/80 border border-white/10">
+              Before (Target Original)
+            </span>
           </div>
-          <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black/50">
+          <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black/60">
             <div className="relative" style={aspectStyle}>
-              <img src={afterSrc} alt="After" className="w-full h-full object-contain pointer-events-none" />
+              <img
+                src={isPeekingOriginal ? beforeSrc : afterSrc}
+                alt="After"
+                className="w-full h-full object-contain pointer-events-none"
+              />
             </div>
-            <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-[var(--accent)]/85 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white">After</span>
+            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white border border-white/20 shadow-lg">
+              {isPeekingOriginal ? 'Original (Peek)' : 'After (Swapped)'}
+            </span>
           </div>
         </div>
 
-        {/* HUD control bar overlays */}
         {hudBar()}
       </div>
     );
   }
 
-  // Standard or Slide-Comparison View
+  // Standard or Slide-Comparison View (Vertical slider handle)
+  const currentClipPosition = isPeekingOriginal ? 0 : compare ? sliderPosition : 100;
+
   return (
     <div
-      className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage select-none group ${isFullscreen ? 'h-screen w-screen max-h-none' : ''}`}
-      ref={containerRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onDoubleClick={handleDoubleClick} style={{ touchAction: 'none' }}
+      className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage select-none group border border-white/10 shadow-2xl ${
+        isFullscreen ? 'h-screen w-screen max-h-none' : ''
+      }`}
+      ref={containerRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onDoubleClick={handleDoubleClick}
+      style={{ touchAction: 'none' }}
     >
-      {/* Render indicator: an indeterminate bar along the top edge plus a single
-          scanner sweep. Replaces the pulsing glow that used to breathe around
-          the whole panel — the border is chrome, not a status light. */}
+      {/* Render indicator */}
       {previewing && (
         <div className="absolute inset-x-0 top-0 h-[3px] z-50 overflow-hidden bg-white/[0.06]">
           <div className="h-full w-1/3 rounded-full bg-[var(--accent)] preview-indeterminate" />
@@ -418,7 +635,7 @@ export default function InteractivePreview({
       {previewing && <AIScannerOverlay />}
       {previewing && (
         <div className="absolute top-4 right-3 z-50">
-          <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/70 backdrop-blur-md text-[11px] font-semibold text-white/90 tabular-nums border border-white/10">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/80 backdrop-blur-md text-[11px] font-semibold text-white/90 tabular-nums border border-white/10 shadow-2xl">
             <span className="h-3 w-3 rounded-full border-2 border-white/25 border-t-[var(--accent)] animate-spin" />
             Rendering {previewSecs}s
           </div>
@@ -427,36 +644,71 @@ export default function InteractivePreview({
 
       {stageInfo()}
 
-      {/* Frame navigation shortcuts guide (video only) */}
-      {maxFrames > 1 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/55 backdrop-blur text-[10px] font-semibold text-white/45 border border-white/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5 whitespace-nowrap">
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">←/→</span>
-          <span>frame</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">⇧</span>
-          <span>×10</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">[ ]</span>
-          <span>in/out</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">M</span>
-          <span>marker</span>
-          <span className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 font-mono">Space</span>
-          <span>play</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">2×click</span>
-          <span>zoom</span>
+      {/* Mask Brush Toolbar Controls Overlay */}
+      {maskBrushActive && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/85 backdrop-blur-md border border-white/15 shadow-2xl">
+          <button
+            type="button"
+            onClick={() => setBrushMode('paint')}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+              brushMode === 'paint' ? 'bg-pink-500 text-white' : 'bg-white/10 text-white/70'
+            }`}
+          >
+            🖌️ Paint
+          </button>
+          <button
+            type="button"
+            onClick={() => setBrushMode('erase')}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+              brushMode === 'erase' ? 'bg-amber-500 text-black' : 'bg-white/10 text-white/70'
+            }`}
+          >
+            🧹 Erase
+          </button>
+          <div className="flex items-center gap-1.5 px-2 border-l border-white/10">
+            <span className="text-[9px] font-mono text-white/50 uppercase font-bold">Size:</span>
+            <input
+              type="range"
+              min={10}
+              max={80}
+              value={brushSize}
+              onChange={(e) => setBrushSize(parseInt(e.target.value))}
+              className="w-16 h-1 accent-pink-500 cursor-pointer"
+            />
+            <span className="text-[10px] font-mono font-bold text-white/80 tabular-nums">{brushSize}px</span>
+          </div>
+          <button
+            type="button"
+            onClick={clearMaskCanvas}
+            className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors"
+          >
+            ↺ Clear
+          </button>
         </div>
       )}
 
-      <div className={`absolute inset-0 flex items-center justify-center ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
+      {/* Frame shortcuts guide */}
+      {maxFrames > 1 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/65 backdrop-blur-md text-[10px] font-semibold text-white/50 border border-white/10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5 whitespace-nowrap">
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">←/→</span>
+          <span>frame</span>
+          <span className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 font-mono">Space</span>
+          <span>play</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">M</span>
+          <span>lens</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">B</span>
+          <span>brush</span>
+        </div>
+      )}
 
-        {/* Before Image & Bounding Boxes Wrapper.
-
-            Both frames use a single PERSISTENT <img> each (no React `key`, so the
-            element is never remounted on a frame change). Changing an <img>'s src
-            makes the browser keep the previously decoded frame painted until the
-            new one is ready, then swap atomically — so clicking to a new frame
-            never flashes the black container through while the next frame decodes.
-            (Remounting via `key` mounts a fresh, empty <img> that paints blank
-            until load — that blank was the black flicker.) */}
+      <div
+        className={`absolute inset-0 flex items-center justify-center ${
+          interacting ? '' : 'transition-transform duration-75'
+        }`}
+        style={transformStyle}
+      >
         <div className="relative z-10" style={aspectStyle} ref={imageRef}>
+          {/* Base Target Image */}
           <img
             src={beforeSrc}
             alt="Before"
@@ -466,47 +718,101 @@ export default function InteractivePreview({
           />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
-          {/* Swapped "after" overlay (clip-path only in compare mode). Cross-faded
-              between frames via two persistent layers (see CrossfadeImage) — smooth
-              transition on frame/preview changes with no black flash. Falls back to
-              the before frame when no swap is available so it never blanks. Snap the
-              fade short while actively scrubbing so the image doesn't trail the
-              playhead; ease gently on discrete jumps / preview refreshes. */}
-          <div className="absolute inset-0 pointer-events-none z-20"
-               style={{ clipPath: compare ? `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)` : 'none' }}>
+          {/* Swapped Image Overlay with Clip Path */}
+          <div
+            className="absolute inset-0 pointer-events-none z-20"
+            style={{
+              clipPath:
+                compare || isPeekingOriginal
+                  ? `polygon(${currentClipPosition}% 0, 100% 0, 100% 100%, ${currentClipPosition}% 100%)`
+                  : 'none',
+            }}
+          >
             <CrossfadeImage
               src={afterSrc || beforeSrc}
-              fadeMs={isPlaying ? 0 : (scrubbing ? 60 : 200)}
+              fadeMs={isPlaying ? 0 : scrubbing ? 60 : 200}
               className="absolute inset-0 w-full h-full object-contain"
             />
           </div>
 
-          {/* Slider Line & Handle (only when compare) */}
-          {compare && (
-            <div className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_8px_rgba(233,69,96,0.6)] z-40 pointer-events-none" style={{ left: `${sliderPosition}%` }}>
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-black/60 backdrop-blur border border-white/20 rounded-full flex items-center justify-center shadow-[0_4px_15px_rgba(0,0,0,0.5)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
-                   onPointerDown={(e) => { e.stopPropagation(); setIsDraggingSlider(true); handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX); }}>
+          {/* Interactive Mask Paint Canvas Overlay */}
+          {maskBrushActive && (
+            <canvas
+              ref={maskCanvasRef}
+              width={imgDim?.w || 1000}
+              height={imgDim?.h || 600}
+              className="absolute inset-0 w-full h-full object-contain z-35 cursor-crosshair pointer-events-auto"
+            />
+          )}
+
+          {/* Draggable Vertical Compare Slider Handle */}
+          {compare && !isPeekingOriginal && (
+            <div
+              className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_12px_rgba(233,69,96,0.8)] z-40 pointer-events-none"
+              style={{ left: `${sliderPosition}%` }}
+            >
+              <div
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 bg-black/80 backdrop-blur-md border border-white/30 rounded-full flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.7)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  setIsDraggingSlider(true);
+                  handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX);
+                }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setSliderPosition(50);
+                }}
+                title="Drag to compare faces (Double-click to reset to 50%)"
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
               </div>
             </div>
           )}
         </div>
-
       </div>
 
-      {/* Provenance chips sit along the BOTTOM edge: the top corners now belong
-          to the render indicator and the stage read-out, and a label that
-          overlaps the status you are reading is worse than no label. */}
+      {/* Feature 1: Interactive Magnifier Glass Lens Overlay */}
+      {magnifierActive && lensPos.visible && (
+        <div
+          className="absolute w-44 h-44 rounded-full border-2 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.6)] overflow-hidden pointer-events-none z-50 bg-black"
+          style={{
+            left: `${lensPos.x - 88}px`,
+            top: `${lensPos.y - 88}px`,
+          }}
+        >
+          <div
+            className="w-full h-full relative overflow-hidden flex items-center justify-center"
+            style={{
+              transform: 'scale(3.5)',
+              transformOrigin: `${lensPos.relX}% ${lensPos.relY}%`,
+            }}
+          >
+            <img
+              src={afterSrc || beforeSrc}
+              alt="Magnifier lens view"
+              className="w-full h-full object-contain"
+            />
+          </div>
+          <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/80 backdrop-blur border border-cyan-400/40 text-[9px] font-mono font-bold text-cyan-300 tracking-wider">
+            3.5× LENS
+          </span>
+        </div>
+      )}
+
+      {/* Bottom labels */}
       {compare && (
-        <span className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-black/65 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white/70 z-30 pointer-events-none">
-          Before
+        <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white/80 z-30 pointer-events-none border border-white/10 shadow-lg">
+          Before (Target Original)
         </span>
       )}
-      <span className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-[var(--accent)]/85 backdrop-blur text-[10px] font-semibold uppercase tracking-[0.14em] text-white z-30 transition-opacity duration-300 pointer-events-none"
-            style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}>{compare ? 'After' : 'Swapped'}</span>
+      <span
+        className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white z-30 transition-opacity duration-300 pointer-events-none border border-white/20 shadow-lg"
+        style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}
+      >
+        {isPeekingOriginal ? 'Original (Peek)' : compare ? 'After (Swapped)' : 'Swapped Result'}
+      </span>
 
-      {/* HUD control bar overlays */}
       {hudBar()}
     </div>
   );

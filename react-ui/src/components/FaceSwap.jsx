@@ -7,6 +7,7 @@ import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
+import SliderTrackerBar from './faceswap/SliderTrackerBar';
 import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import ProcessingTerminal from './faceswap/ProcessingTerminal';
@@ -69,6 +70,7 @@ export default function FaceSwap({
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
   const [compare, setCompare] = useState(false);
+  const [sliderEffectEnabled, setSliderEffectEnabled] = useState(true);
   const [splitView, setSplitView] = useState(false);
   const [comparingEnhancers, setComparingEnhancers] = useState(false);
   const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(() => {
@@ -547,41 +549,66 @@ export default function FaceSwap({
   // `params` is the settings object to read from: `p` normally, or a grid's
   // `localParams` (p with that grid's one override applied), which reproduces
   // the override in the request for free.
-  const buildPreviewPayload = (params, { index, frame: fr, fake, ...overrides } = {}) => ({
-    index, frame: fr, fake_preview: fake,
-    enhancer: params.selected_enhancer, codeformer_fidelity: num(params.codeformer_fidelity, 0.5),
-    detection: params.face_detection_mode,
-    face_distance: num(params.max_face_distance, 0.85), blend_ratio: num(params.blend_ratio, 0.8),
-    mask_engine: params.mask_engine, clip_text: params.mask_clip_text,
-    no_face_action: params.no_face_action, vr_mode: params.vr_mode, autorotate: params.autorotate_faces,
-    show_mask_offsets: params.show_mask_offsets, restore_original_mouth: params.restore_original_mouth,
-    num_swap_steps: num(params.num_swap_steps, 1), upscale: params.subsample_upscale,
-    use_3d_recon: params.use_3d_recon, use_source_bank: params.use_source_bank,
-    use_frontalization: params.use_frontalization, frontalization_threshold: num(params.frontalization_threshold, 30),
-    jaw_reshape: params.jaw_reshape, jaw_reshape_strength: num(params.jaw_reshape_strength, 0.5),
-    detail_transfer_strength: num(params.detail_transfer_strength, 0),
-    expression_restore_strength: num(params.expression_restore_strength, 0),
-    expression_restore_region: params.expression_restore_region || 'all',
-    swap_model: params.swap_model, default_det_size: params.default_det_size,
-    face_detector_size: params.face_detector_size, face_detector_threshold: params.face_detector_threshold,
-    face_detector_nms: params.face_detector_nms,
-    color_transfer_mode: params.color_transfer_mode, sam2_model_size: params.sam2_model_size,
-    refine_landmarks: params.refine_landmarks, yaw_align: params.yaw_align,
-    rescue_small_faces: params.rescue_small_faces,
-    detector_engine: params.detector_engine,
-    face_mapping: getFaceMappingArray(),
-    mask_top: params.mask_top,
-    mask_bottom: params.mask_bottom,
-    mask_left: params.mask_left,
-    mask_right: params.mask_right,
-    face_mask_blend: params.face_mask_blend,
-    mouth_mask_blend: params.mouth_mask_blend,
-    mouth_top_scale: params.mouth_top_scale,
-    mouth_bottom_scale: params.mouth_bottom_scale,
-    mouth_left_scale: params.mouth_left_scale,
-    mouth_right_scale: params.mouth_right_scale,
-    ...overrides,
-  });
+  const buildPreviewPayload = (params, { index, frame: fr, fake, ...overrides } = {}) => {
+    const activeParams = sliderEffectEnabled ? params : {
+      ...params,
+      blend_ratio: 0.8,
+      detail_transfer_strength: 0,
+      expression_restore_strength: 0,
+      jaw_reshape_strength: 0,
+      stabilize_enhancer_strength: 0,
+      face_mask_blend: 20,
+      max_face_distance: 0.85,
+      num_swap_steps: 1,
+    };
+    return {
+      index, frame: fr, fake_preview: fake,
+      enhancer: activeParams.selected_enhancer, codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
+      detection: activeParams.face_detection_mode,
+      face_distance: num(activeParams.max_face_distance, 0.85), blend_ratio: num(activeParams.blend_ratio, 0.8),
+      mask_engine: activeParams.mask_engine, clip_text: activeParams.mask_clip_text,
+      no_face_action: activeParams.no_face_action, vr_mode: activeParams.vr_mode, autorotate: activeParams.autorotate_faces,
+      show_mask_offsets: activeParams.show_mask_offsets, restore_original_mouth: activeParams.restore_original_mouth,
+      num_swap_steps: num(activeParams.num_swap_steps, 1), upscale: activeParams.subsample_upscale,
+      use_3d_recon: activeParams.use_3d_recon, use_source_bank: activeParams.use_source_bank,
+      use_frontalization: activeParams.use_frontalization, frontalization_threshold: num(activeParams.frontalization_threshold, 30),
+      jaw_reshape: activeParams.jaw_reshape, jaw_reshape_strength: num(activeParams.jaw_reshape_strength, 0.5),
+      detail_transfer_strength: num(activeParams.detail_transfer_strength, 0),
+      expression_restore_strength: num(activeParams.expression_restore_strength, 0),
+      expression_restore_region: activeParams.expression_restore_region || 'all',
+      swap_model: activeParams.swap_model, default_det_size: activeParams.default_det_size,
+      face_detector_size: activeParams.face_detector_size, face_detector_threshold: activeParams.face_detector_threshold,
+      face_detector_nms: activeParams.face_detector_nms,
+      color_transfer_mode: activeParams.color_transfer_mode, sam2_model_size: activeParams.sam2_model_size,
+      refine_landmarks: activeParams.refine_landmarks, yaw_align: activeParams.yaw_align,
+      rescue_small_faces: activeParams.rescue_small_faces,
+      detector_engine: activeParams.detector_engine,
+      face_mapping: getFaceMappingArray(),
+      mask_top: activeParams.mask_top,
+      mask_bottom: activeParams.mask_bottom,
+      mask_left: activeParams.mask_left,
+      mask_right: activeParams.mask_right,
+      face_mask_blend: activeParams.face_mask_blend,
+      mouth_mask_blend: activeParams.mouth_mask_blend,
+      mouth_top_scale: activeParams.mouth_top_scale,
+      mouth_bottom_scale: activeParams.mouth_bottom_scale,
+      mouth_left_scale: activeParams.mouth_left_scale,
+      mouth_right_scale: activeParams.mouth_right_scale,
+      ...overrides,
+    };
+  };
+
+  const resetTrackerSliders = () => {
+    set('blend_ratio', 0.8);
+    set('detail_transfer_strength', 0);
+    set('expression_restore_strength', 0);
+    set('max_face_distance', 0.85);
+    set('face_mask_blend', 20);
+    set('num_swap_steps', 1);
+    set('jaw_reshape_strength', 0.5);
+    set('stabilize_enhancer_strength', 0.5);
+    refreshPreview({ force: true });
+  };
 
   // index/frame are separate cache dimensions, so they are zeroed here rather
   // than being part of the settings signature.
@@ -2970,8 +2997,28 @@ export default function FaceSwap({
                   {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
                 </div>
               </div>
-            ) : previewSrc ? (
-              comparingEnhancers ? (() => {
+            ) : (
+              <div className="space-y-4">
+                {/* Live Slider Tracker Bar positioned directly above the preview box */}
+                <SliderTrackerBar
+                  params={p}
+                  onSetParam={(key, val) => {
+                    set(key, val);
+                  }}
+                  sliderEffectEnabled={sliderEffectEnabled}
+                  onToggleSliderEffect={() => {
+                    setSliderEffectEnabled((v) => {
+                      const next = !v;
+                      refreshPreview({ force: true });
+                      return next;
+                    });
+                  }}
+                  onResetSliders={resetTrackerSliders}
+                  onRefreshPreview={() => refreshPreview({ force: true })}
+                />
+
+                {previewSrc ? (
+                  comparingEnhancers ? (() => {
                 const activeList = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
                 const gridColsClass = activeList.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
                 return (
@@ -3175,6 +3222,14 @@ export default function FaceSwap({
                   splitView={splitView}
                   compare={compare}
                   onToggleCompare={() => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; })}
+                  sliderEffectEnabled={sliderEffectEnabled}
+                  onToggleSliderEffect={() => {
+                    setSliderEffectEnabled((v) => {
+                      const next = !v;
+                      refreshPreview({ force: true });
+                      return next;
+                    });
+                  }}
                   frame={frame}
                   setFrame={setFrame}
                   maxFrames={maxFrames}
@@ -3228,6 +3283,8 @@ export default function FaceSwap({
                 })()}
               </div>
             )}
+          </div>
+        )}
             
             {/* Clip timeline — hidden while running: scrubbing a clip that is
                 being written is meaningless, and the space belongs to the
