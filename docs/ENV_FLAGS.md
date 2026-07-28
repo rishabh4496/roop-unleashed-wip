@@ -19,6 +19,7 @@ Defaults below are what the code falls back to when the variable is unset.
 |------|---------|--------|
 | `ROOP_TRT_POOL` | unset (1) | Pool of N independent TensorRT **swapper** contexts (N≥2) to break single-context serialization. Validated ~+46% video throughput at 2. |
 | `ROOP_DETMASK_POOL` | unset (auto) | Pool of N independent detect/mask sessions (FaceAnalysis + mask engines). Set explicitly (e.g. 2–8) to parallelize detection/masking. |
+| `ROOP_DETECTOR_POOL` | = detmask pool | Independent instances of the standalone detector (retinaface/yunet/yoloface), which otherwise serialise behind a module mutex. Defaults to the detmask pool size so a worker never waits. `retinaface_r50.onnx` is ~104 MB per instance — turn this down before the detmask pool when VRAM is tight. |
 | `ROOP_TRT_WORKSPACE_FRACTION` | ~auto | Fraction of VRAM TensorRT may use as build workspace. Lower if a build OOMs. |
 | `ROOP_TRT_PARTITION_ITERATIONS` | 2000 | TensorRT partition search iterations during engine build. |
 | `ROOP_BATCH_SWAP` | 0 | Batch multiple face crops through one swap inference call (bit-identical). Phase-1 pixel-boost batching. |
@@ -61,6 +62,7 @@ Defaults below are what the code falls back to when the variable is unset.
 
 | Flag | Default | Effect |
 |------|---------|--------|
+| `ROOP_NONFRONTAL_MASK` | `auto` | Which masking path a dense masker (XSeg/XSeg3/occluder/faceparser/clip2seg) takes. `auto` routes by the non-frontal test; `0` always masks in canonical crop space; `1` always masks on the unwarped bounding-box crop. Use `0` to isolate whether a bad profile frame is caused by the mask *routing* or by the swap itself. |
 | `ROOP_OCCLUDER_RAW` | 0 | `1` skips the Face Occluder mask inversion (flip polarity if the mask is inverted). |
 | `ROOP_XSEG3_RAW` | 0 | `1` skips the XSeg3 mask inversion. |
 
@@ -99,5 +101,42 @@ Defaults below are what the code falls back to when the variable is unset.
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `ROOP_PROFILE` | 0 | `1` prints per-stage wall-clock timing (analyze/detect/mask/swap/enhance/…) summed across worker threads. |
+| `ROOP_PROFILE` | 0 | `1` prints per-stage wall-clock timing (analyze/detect/mask/swap/enhance/…) summed across worker threads. Unrelated to `ROOP_YAW_ALIGN`. |
 | `ROOP_DEBUG_MATCH` | unset | Prints identity-matching diagnostics during the swap pass. |
+| `ROOP_DEBUG_ANGLE` | 0 | `1` prints, per face per masker: the yaw/pitch keypoint proxies, the non-frontal verdict, which masking path ran, and what fraction of the canonical crop the unwarped box covers. Noisy on video — use on a single preview frame. |
+
+## Identity tracking
+
+Cosine distances are scipy convention (0..2). A same-person **profile** frame sits
+0.7–1.0 from a frontal one, so these gates are deliberately loose; wrong-person
+matches are rejected by *relative* cross-person comparisons at the call sites,
+not by tightening these absolute cutoffs.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_TRACK_VETO` | 0.85 | Distance beyond which a tracked source is refused for a face (guards ID switches, crossings, bystanders). `0` disables the veto — a tracked source then applies wherever spatial association points. |
+| `ROOP_TRACK_VETO_MARGIN` | 0.15 | Also veto when a *different* selected person explains the face this much better. |
+| `ROOP_TRACK_OVERLAP_FRAC` | 0.15 | Fraction of a track's frames that must overlap an already-assigned track of the same person before it counts as a genuinely concurrent second body rather than an occlusion handoff. |
+| `ROOP_TRACK_TRUEMEAN` | 1 (on) | Identity-lock matches on the true mean embedding. `0` restores the old recency-biased EMA (the "only the first faceset swaps" behaviour). |
+
+## Multi-angle target bank
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_ANGLE_MANUAL_MAX` | 0.90 | Max distance accepted by `/api/target/add_angle` (manual capture). |
+| `ROOP_ANGLE_ACCEPT` | 0.60 | Distance under which `/api/target/auto_angles` accepts a harvested angle. |
+| `ROOP_ANGLE_SEED_MAX` | 0.85 | Max distance for a seed frame in `/api/target/auto_angles`. |
+
+## Face quality (FIQA)
+
+Composite heuristic score used by the Face Manager's quality gate — a weighted
+blend, not a trained network. Weights need not sum to 1; missing components are
+renormalised away.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_FIQA_W_DET` | 0.25 | Weight of the detector confidence term. |
+| `ROOP_FIQA_W_SHARP` | 0.30 | Weight of the sharpness term. |
+| `ROOP_FIQA_W_RES` | 0.20 | Weight of the resolution term. |
+| `ROOP_FIQA_W_POSE` | 0.15 | Weight of the frontality term. |
+| `ROOP_FIQA_W_NORM` | 0.10 | Weight of the embedding-norm term. |
