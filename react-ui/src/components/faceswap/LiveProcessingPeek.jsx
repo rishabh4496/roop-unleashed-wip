@@ -23,8 +23,13 @@ export default function LiveProcessingPeek({
   progressDesc = '',
   paused = false,
 }) {
-  const isLive = !!liveSrc;
-  const activeImage = liveSrc || previewSrc || rawUrl;
+  // /api/live_frame answers 204 when nothing has been published yet, and a
+  // reset between one poll and the fetch it triggered can land exactly there —
+  // which would leave a broken-image icon in the box. Fall back to the still
+  // for that seq instead, and retry naturally when the next seq arrives.
+  const [failedSeq, setFailedSeq] = React.useState('');
+  const isLive = !!liveSrc && liveSrc !== failedSeq;
+  const activeImage = (isLive && liveSrc) || previewSrc || rawUrl;
 
   return (
     <div className="relative group overflow-hidden rounded-2xl border border-white/15 bg-black/60 shadow-xl backdrop-blur-md transition-all duration-300">
@@ -34,6 +39,7 @@ export default function LiveProcessingPeek({
           <img
             src={activeImage}
             alt={isLive ? 'Latest processed frame' : 'Preview still'}
+            onError={() => { if (isLive) setFailedSeq(liveSrc); }}
             className="h-full w-full object-contain transition-all duration-300 transform-gpu"
           />
         ) : (

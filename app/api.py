@@ -157,7 +157,8 @@ _run_stats = {"start": 0.0, "frames_done": 0, "frames_total": 0}
 # regardless of which stage produced it (swap / upscale / interpolate / combine).
 from collections import deque as _deque
 _log_lines = _deque(maxlen=250)
-_log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": "", "status": ""}
+_log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": "", "status": "",
+              "parts_seen": 0, "counter_shapes": set()}
 
 
 # A status line the UI pins and rewrites in place rather than scrolling. Matches
@@ -168,20 +169,40 @@ _log_state = {"last": "", "last_ts": 0.0, "seq": 0, "last_err": "", "status": ""
 # shows, once per frame instead of once.
 _COUNTER_RE = _re.compile(r"\d[\d,]*\s*/\s*\d[\d,]*|\bfps\b|\d+\s*%", _re.I)
 
+# The same line with every number blanked. Two counter updates from the SAME
+# stage share a shape; a different stage does not. That distinction is what
+# keeps the history honest: dropping counter lines outright also dropped the
+# only evidence a stage ever ran, because "Processing frame N / M" is the ONLY
+# thing the swap stage ever says — a video run's history went straight from
+# "Analyzing faces" to "Combining", with the swap itself invisible.
+#
+# Parenthesised numbers are stripped BEFORE blanking because the rate suffix is
+# not always there: tqdm reports "(20.3 FPS)" only once it has a rate, and drops
+# it again on a stall. Without this, that suffix appearing and disappearing
+# reads as the stage starting over and over, and the spam comes straight back.
+_COUNTER_SHAPE_RE = _re.compile(r"\d[\d,.]*")
+_COUNTER_PAREN_RE = _re.compile(r"\s*\([^)]*\d[^)]*\)")
+
 
 def is_counter_line(msg):
     """True for a live counter (frames done / fps / percent) — pinned, not logged."""
     return bool(msg) and bool(_COUNTER_RE.search(msg))
 
 
+def counter_shape(msg):
+    """Identity of a counter line independent of its numbers."""
+    return _COUNTER_SHAPE_RE.sub('#', _COUNTER_PAREN_RE.sub('', msg or ''))
+
+
 def _push_log(msg, force=False, part=None):
     """Append a line to the rolling terminal feed, de-duped.
 
-    Per-frame counters never land here: they are the pinned status line instead
-    (see is_counter_line), so the history holds only things that happened once —
-    stage changes, finalized parts, warnings, errors, done. `force=True` keeps a
-    line even if it looks like a counter (a stage's opening/closing message may
-    legitimately carry a frame count).
+    A counter line (frames done / fps / percent) is kept ONCE — the first time
+    its shape appears, which is the moment that stage started — and every later
+    update of the same shape is dropped, because it is the pinned status line's
+    job to show those. So the history reads as one line per thing that happened:
+    stages beginning, parts finalized, warnings, errors, done. `force=True`
+    keeps a line whatever it looks like.
     """
     import time as _time
     if not msg:
@@ -190,7 +211,16 @@ def _push_log(msg, force=False, part=None):
     if not msg or msg == _log_state["last"]:
         return
     if not force and is_counter_line(msg):
-        return
+        # Kept once per shape per PHASE. The phase ends when something real is
+        # logged (a stage message, a finalized part, an error), which is also
+        # what separates one file from the next in a batch — so file 2's swap
+        # announces itself again rather than being mistaken for file 1's.
+        shape = counter_shape(msg)
+        if shape in _log_state["counter_shapes"]:
+            return
+        _log_state["counter_shapes"].add(shape)
+    else:
+        _log_state["counter_shapes"] = set()
     _log_state["last"] = msg
     _log_state["last_ts"] = _time.time()
     _log_state["seq"] += 1
@@ -1738,7 +1768,7 @@ def _run_swap(payload):
     # Fresh terminal feed for this run.
     _log_lines.clear()
     _log_state.update({"last": "", "last_ts": 0.0, "seq": 0, "last_err": "",
-                       "status": "", "parts_seen": 0})
+                       "status": "", "parts_seen": 0, "counter_shapes": set()})
     # Parts are per-run: clear now rather than waiting for the writer, which is
     # only constructed once encoding starts (and never, for an image job).
     segment_writer.reset_parts()
