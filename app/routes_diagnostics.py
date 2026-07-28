@@ -276,7 +276,10 @@ def get_stage_profile():
     never written in that case, which is why the numbers cost nothing normally.
     """
     try:
-        from roop import ProcessMgr as _pm
+        # The accumulators live in procmgr_runtime (ProcessMgr only re-exports
+        # _PROFILE/_prof/_prof_report from it), so read them at the source —
+        # reaching through ProcessMgr silently returns enabled:false.
+        from roop import procmgr_runtime as _pm
         with _pm._prof_lock:
             times = dict(_pm._prof_times)
             counts = dict(_pm._prof_counts)

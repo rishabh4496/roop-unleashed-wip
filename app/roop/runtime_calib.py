@@ -45,6 +45,12 @@ _SIG_FIELDS = [
     ("mask",              ["mask_engine"]),
     ("stab_face",         ["stabilize_face"]),
     ("stab_enh",          ["stabilize_enhancer"]),
+    # Expression restore and the post-swap AI upscaler are both whole GPU stages
+    # (the restorer alone measured ~34 ms/face). Without them in the signature,
+    # runs with and without them fold into ONE EMA bucket and the estimate drifts
+    # toward a blend of two very different costs.
+    ("expr",              ["expression_restore_strength"]),
+    ("upscale_after",     ["upscale_after_swap"]),
 ]
 
 

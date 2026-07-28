@@ -2070,6 +2070,11 @@ export default function FaceSwap({
           mask_engine: p.mask_engine,
           stabilize_face: p.stabilize_face,
           stabilize_enhancer: p.stabilize_enhancer,
+          // Both are whole GPU stages and part of the calibration signature
+          // (see runtime_calib._SIG_FIELDS) — omitting them here would make the
+          // predicted signature never match the one the completed run records.
+          expression_restore_strength: num(p.expression_restore_strength, 0),
+          upscale_after_swap: p.upscale_after_swap,
         });
         if (!cancelled) setCalibEst(res || null);
       } catch { if (!cancelled) setCalibEst(null); }
@@ -2078,7 +2083,8 @@ export default function FaceSwap({
   }, [progress.processing, estFrames, previewFaces.length, p.swap_model, p.selected_enhancer,
       p.face_detection_mode, p.face_detector_size, p.detector_engine, p.num_swap_steps,
       p.subsample_upscale, p.track_identities, p.temporal_detection, p.mask_engine,
-      p.stabilize_face, p.stabilize_enhancer, targets.length]);
+      p.stabilize_face, p.stabilize_enhancer, p.expression_restore_strength,
+      p.upscale_after_swap, targets.length]);
 
   const heuristicPerFrame = (() => {
     let ms = 45;
