@@ -1,4 +1,3 @@
-import os
 import threading
 import contextlib
 from queue import Queue
@@ -793,12 +792,16 @@ def kps_pose_ratios(kps):
 
 # Opt-in profile alignment (see estimate_norm). Default OFF: it changes the crop
 # geometry — and therefore the swap output — for high-yaw faces.
-PROFILE_ALIGN = os.environ.get('ROOP_PROFILE_ALIGN') == '1'
+#
+# Read live from roop.globals.yaw_align (seeded from the ROOP_YAW_ALIGN env var,
+# overridden per run by the Face Swap toggle) rather than captured here at import
+# time, so flipping the toggle takes effect on the next run without an app
+# restart — the point of an opt-in visual change is being able to A/B it.
 # Engage only on near-profile faces (~70 deg+). Deliberately TIGHTER than the
 # 0.55 gate the masking path uses: the constrained fit disagrees with the plain
 # least-squares fit by up to ~9 deg even at yaw 55, so a looser gate here would
 # visibly change mid-angle faces that already look correct.
-PROFILE_ALIGN_YAW_RATIO = 0.40
+YAW_ALIGN_RATIO = 0.40
 
 
 def _constrained_norm(lmk, dst):
@@ -851,11 +854,11 @@ def _constrained_norm(lmk, dst):
 
 def _maybe_constrained(lmk, dst):
     """_constrained_norm(), but only for near-profile faces and only when the
-    opt-in flag is set. Returns None to mean 'use the normal fit'."""
-    if not PROFILE_ALIGN:
+    opt-in setting is on. Returns None to mean 'use the normal fit'."""
+    if not getattr(roop.globals, 'yaw_align', False):
         return None
     yaw_ratio, _ = kps_pose_ratios(lmk)
-    if yaw_ratio is None or yaw_ratio >= PROFILE_ALIGN_YAW_RATIO:
+    if yaw_ratio is None or yaw_ratio >= YAW_ALIGN_RATIO:
         return None
     return _constrained_norm(np.asarray(lmk, dtype=np.float64),
                              np.asarray(dst, dtype=np.float64))

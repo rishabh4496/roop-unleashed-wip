@@ -41,6 +41,7 @@ const LABELS = {
   upscale_model_after: 'Upscale model',
   interp_after_swap: 'Interpolation',
   refine_landmarks: 'Refine landmarks',
+  yaw_align: 'Profile alignment',
   rescue_small_faces: 'Small-face rescue',
   jaw_reshape: 'Jaw reshape',
   autorotate_faces: 'Autorotate',

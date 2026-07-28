@@ -181,6 +181,11 @@ class Settings:
         self.color_transfer_mode = self.default_get(data, 'color_transfer_mode', 'rct')
         # Detection refinements
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
+        # Profile alignment (see roop.globals.yaw_align). Defaults to whatever
+        # ROOP_YAW_ALIGN says, so the env var still works on a config that has
+        # never had the toggle touched; once it is saved, the saved value wins.
+        self.yaw_align = self.default_get(data, 'yaw_align',
+                                          os.environ.get('ROOP_YAW_ALIGN') == '1')
         # Jaw / chin reshape toward the source face shape
         self.jaw_reshape = self.default_get(data, 'jaw_reshape', False)
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
@@ -284,6 +289,7 @@ class Settings:
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
             'color_transfer_mode': self.color_transfer_mode,
             'refine_landmarks': self.refine_landmarks,
+            'yaw_align': self.yaw_align,
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,

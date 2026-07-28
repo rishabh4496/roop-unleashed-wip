@@ -55,7 +55,7 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_UPSCALE_TRT` | 0 | `1` runs ESRGAN x4 upscalers under TensorRT (**not recommended** — goes all-black under TRT FP16; default forces CUDA/CPU FP32). |
 | `ROOP_UPSCALE_TILE` | 256 | Tile size (px) for AI upscalers; lower if VRAM is tight on heavy ×4 models. |
 | `ROOP_CAS_STRENGTH` | 0.5 | Contrast-Adaptive Sharpening strength for the `fsr` classical upscaler (0 = plain Lanczos). |
-| `ROOP_PROFILE_ALIGN` | 0 | `1` takes the crop rotation for near-profile faces (~70°+ yaw) from the eye→mouth axis instead of the unconstrained 5-point fit. At high yaw the two eyes project to nearly the same point, so the normal fit is ill-conditioned in rotation and absorbs **pitch as in-plane roll** — a head nodding ±25° at 90° yaw swings the crop rotation by ~30°, which reads as rotational wobble. Holds it to <0.5°. Bit-exact no-op when unset; changes swap output at high yaw when set. |
+| `ROOP_YAW_ALIGN` | 0 | Seeds the **Profile alignment (90° faces)** toggle in the Face Swap tab (the toggle overrides it per run, and a saved setting wins once you touch it). Takes the crop rotation for near-profile faces (~70°+ yaw) from the eye→mouth axis instead of the unconstrained 5-point fit. At high yaw the two eyes project to nearly the same point, so the normal fit is ill-conditioned in rotation and absorbs **pitch as in-plane roll** — a head nodding ±25° at 90° yaw swings the crop rotation by ~30°, which reads as rotational wobble. Holds it to <0.5°. Bit-exact no-op when off; changes swap output at high yaw when on. Not to be confused with `ROOP_PROFILE` (stage timing). |
 
 ## Masking convention overrides
 

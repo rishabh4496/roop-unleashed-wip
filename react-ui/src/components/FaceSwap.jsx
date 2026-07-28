@@ -544,7 +544,7 @@ export default function FaceSwap({
     jr: p.jaw_reshape, jrs: p.jaw_reshape_strength, dts: p.detail_transfer_strength,
     ctm: p.color_transfer_mode, s2: p.sam2_model_size,
     cf_fid: p.codeformer_fidelity,
-    rl: p.refine_landmarks, rsf: p.rescue_small_faces, de: p.detector_engine,
+    rl: p.refine_landmarks, ya: p.yaw_align, rsf: p.rescue_small_faces, de: p.detector_engine,
     dds: p.default_det_size,
     fds: p.face_detector_size,
     fdt: p.face_detector_threshold,
@@ -705,7 +705,7 @@ export default function FaceSwap({
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
         color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-        refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+        refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
         detector_engine: p.detector_engine,
         face_mapping: getFaceMappingArray(),
         mask_top: p.mask_top,
@@ -780,7 +780,7 @@ export default function FaceSwap({
         jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
+        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
@@ -830,7 +830,7 @@ export default function FaceSwap({
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
           color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
           detector_engine: p.detector_engine,
           face_mapping: getFaceMappingArray(),
           mask_top: p.mask_top,
@@ -912,7 +912,7 @@ export default function FaceSwap({
         jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
+        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
@@ -959,7 +959,7 @@ export default function FaceSwap({
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
           color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
           detector_engine: p.detector_engine,
           face_mapping: getFaceMappingArray(),
           mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
@@ -1036,7 +1036,7 @@ export default function FaceSwap({
         jr: localParams.jaw_reshape, jrs: localParams.jaw_reshape_strength, dts: localParams.detail_transfer_strength,
         ctm: localParams.color_transfer_mode,
         cf_fid: localParams.codeformer_fidelity,
-        rl: localParams.refine_landmarks, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
+        rl: localParams.refine_landmarks, ya: localParams.yaw_align, rsf: localParams.rescue_small_faces, de: localParams.detector_engine,
         dds: localParams.default_det_size,
         fds: localParams.face_detector_size,
         fdt: localParams.face_detector_threshold,
@@ -1083,7 +1083,7 @@ export default function FaceSwap({
           face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
           face_detector_nms: p.face_detector_nms,
           color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-          refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+          refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
           detector_engine: p.detector_engine,
           face_mapping: getFaceMappingArray(),
           mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
@@ -1170,7 +1170,7 @@ export default function FaceSwap({
         face_detector_size: p.face_detector_size, face_detector_threshold: p.face_detector_threshold,
         face_detector_nms: p.face_detector_nms,
         color_transfer_mode: p.color_transfer_mode, sam2_model_size: p.sam2_model_size,
-        refine_landmarks: p.refine_landmarks, rescue_small_faces: p.rescue_small_faces,
+        refine_landmarks: p.refine_landmarks, yaw_align: p.yaw_align, rescue_small_faces: p.rescue_small_faces,
         detector_engine: p.detector_engine,
         face_mapping: getFaceMappingArray(),
         mask_top: p.mask_top, mask_bottom: p.mask_bottom, mask_left: p.mask_left, mask_right: p.mask_right,
@@ -2503,6 +2503,7 @@ export default function FaceSwap({
             onChange={(v) => set('face_detector_nms', v)}
           />
           <Toggle label="🎯 Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points — more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
+          <Toggle label="↔️ Profile alignment (90° faces)" info="For near-profile faces (~70°+ yaw) only. At that angle both eyes project to almost the same point, so the normal 5-point alignment is ill-conditioned in rotation and starts absorbing head NOD as in-plane roll — a head nodding ±25° at 90° yaw swings the crop rotation by ~30°, which shows up as rotational wobble. This takes the rotation from the eye→mouth axis instead, holding the swing under 0.5°. Frontal and mid-angle faces are completely unaffected. Changes the swap output at high yaw, so A/B it on a profile shot." checked={!!p.yaw_align} onChange={(v) => set('yaw_align', v)} />
           <Toggle label="🔬 Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
