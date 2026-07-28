@@ -19,7 +19,7 @@ export const FACESWAP_DEFAULTS = {
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',
   codeformer_fidelity: 0.5,
-  max_face_distance: 0.66,
+  max_face_distance: 0.75,
   subsample_upscale: '128px',
   upscale_after_swap: true,
   upscale_model_after: 'esrganx2',
