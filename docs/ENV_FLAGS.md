@@ -179,16 +179,27 @@ constraint:
 selected the node is assigned to it and the run fails with *"Only 4-D tensor is
 supported"*. Measured on this project:
 
+TensorRT cannot build those nodes either — its parser reports
+`addGridSample ... nbDims == 4` / `INVALID_NODE` for
+`/dense_motion_network/GridSample` and `/GridSample`. **Those messages are not a
+failure.** onnxruntime partitions just those two nodes to CPU and runs the rest
+on TensorRT:
+
 | provider | warping module | time per face |
 |---|---|---|
-| TensorRT | ✅ works | **~0.33 s** (warm, full restore) |
+| TensorRT (+CPU for 2 nodes) | ✅ works | **~0.25 s** warm |
 | CUDA | ❌ fails outright | — |
-| CPU | ✅ works | ~1.9 s |
+| CPU only | ✅ works | ~1.9 s |
 
 So the processor picks providers for that one session itself: TensorRT if
 available, otherwise CPU, never CUDA. The other three models are ordinary 4-D
-networks and use the normal provider list. With no TensorRT the feature still
-runs, but only sensibly for a single preview frame.
+networks and use the normal provider list.
+
+The parser errors are silenced around session construction. `SessionOptions.
+log_severity_level` does **not** work for this — the messages come from the
+TensorRT logger bridged through onnxruntime's *global* logger — so the global
+severity is raised for the duration of that one session build and restored
+afterwards.
 
 FasterLivePortrait also publishes `warping_spade-fix.onnx`, which swaps the node
 for a custom `GridSample3D` op. That needs a plugin library this project does not

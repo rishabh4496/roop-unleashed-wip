@@ -40,6 +40,7 @@ Models (~537 MB, downloaded on first use) are the FasterLivePortrait ONNX
 exports, which suit this project's onnxruntime/TensorRT stack.
 """
 
+import contextlib
 import os
 import threading
 
@@ -97,6 +98,33 @@ def warping_providers(providers):
                for p in kept):
         kept.append('CPUExecutionProvider')
     return kept
+
+
+@contextlib.contextmanager
+def _quiet_trt_parser():
+    """Silence the TensorRT parser errors this model provokes on purpose.
+
+    TensorRT cannot build the two GridSample nodes either — its builder asserts
+    `addGridSample: input.getDimensions().nbDims == 4` and the parser reports
+    INVALID_NODE for /dense_motion_network/GridSample and /GridSample. That looks
+    exactly like a crash in the terminal but is NOT a failure: onnxruntime
+    partitions those two nodes to the CPU provider and runs everything else on
+    TensorRT. Measured here: 0.25 s warm for the mixed partition versus 1.93 s on
+    CPU alone, so the GPU still does nearly all the work.
+
+    SessionOptions.log_severity_level does NOT suppress them — they come from the
+    TensorRT logger bridged through onnxruntime's GLOBAL logger, not the
+    session's — so the global severity has to be raised instead. The window is
+    kept as narrow as possible: session construction only, which is where the
+    parse happens, and it is restored afterwards even on failure. onnxruntime
+    exposes no getter for the current severity, so it is restored to ORT's own
+    default of 2 (warning).
+    """
+    onnxruntime.set_default_logger_severity(4)      # fatal only
+    try:
+        yield
+    finally:
+        onnxruntime.set_default_logger_severity(2)  # ORT's default: warning
 
 
 # ── pure geometry (no models, unit-tested) ───────────────────────────────────
@@ -216,13 +244,21 @@ class Expression_LivePortrait:
         providers = roop.globals.execution_providers
         warp_providers = warping_providers(providers)
         if warp_providers == ['CPUExecutionProvider']:
-            print("[Expression] No TensorRT provider — the warping module falls back "
-                  "to CPU (~1.9s per face). Fine for a preview, far too slow for video.")
+            print("[Expression] No TensorRT provider — the warping module runs on CPU "
+                  "(~1.9s per face). Fine for a preview, far too slow for video.")
+        else:
+            print("[Expression] Warping module: TensorRT with the two GridSample nodes "
+                  "on CPU (~0.25s per face). TensorRT parser warnings about "
+                  "'addGridSample ... nbDims == 4' are expected and silenced.")
         for key, spec in MODELS.items():
             path = os.path.join(model_dir, spec["file"])
-            self.sessions[key] = onnxruntime.InferenceSession(
-                path, None,
-                providers=warp_providers if key == "warping" else providers)
+            if key == "warping":
+                with _quiet_trt_parser():
+                    self.sessions[key] = onnxruntime.InferenceSession(
+                        path, None, providers=warp_providers)
+            else:
+                self.sessions[key] = onnxruntime.InferenceSession(
+                    path, None, providers=providers)
 
     def Release(self):
         self.sessions = {}
