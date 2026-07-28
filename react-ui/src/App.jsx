@@ -113,6 +113,40 @@ export default function App() {
     }, 1000);
   }, [reportNet]);
 
+  // ── Catch up the moment this view is looked at again ─────────────────────
+  // Switching to the Terminal (or another Pinokio tab) either reloads this
+  // webview or leaves it hidden. If it survives, the browser throttles its
+  // timers hard — a 1 s poll can drop to one a minute in a background tab, and
+  // to nothing at all while occluded. Coming back then showed a progress bar
+  // and a live frame stuck wherever they were when you left, until the next
+  // throttled tick happened to fire.
+  //
+  // So: on every return to visibility, fetch once immediately and make sure the
+  // poll is running. Cheap (one request per switch) and it makes the state on
+  // screen current before the eye lands on it. `pageshow` covers the
+  // back/forward cache, where no visibilitychange fires at all.
+  useEffect(() => {
+    const catchUp = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const pr = await getJSON('/api/progress', { timeout: 8000 });
+        reportNet(true);
+        setProgress(pr);
+        if (pr.processing && !pollRef.current) startPolling();
+      } catch {
+        reportNet(false);
+      }
+    };
+    document.addEventListener('visibilitychange', catchUp);
+    window.addEventListener('focus', catchUp);
+    window.addEventListener('pageshow', catchUp);
+    return () => {
+      document.removeEventListener('visibilitychange', catchUp);
+      window.removeEventListener('focus', catchUp);
+      window.removeEventListener('pageshow', catchUp);
+    };
+  }, [startPolling, reportNet]);
+
   // Heartbeat while offline — reconnects and refreshes core state on recovery.
   useEffect(() => {
     if (!offline) {
@@ -146,11 +180,13 @@ export default function App() {
     const was = prevProcessingRef.current;
     prevProcessingRef.current = progress.processing;
     if (progress.processing && !was) {
-      if (!startTime) setStartTime(Date.now());
+      // started_at is the backend's clock, so a run already in flight when this
+      // view (re)loaded keeps its real elapsed time instead of restarting at 0.
+      if (!startTime) setStartTime(progress.started_at ? progress.started_at * 1000 : Date.now());
     } else if (!progress.processing && was) {
       setStartTime(null);
     }
-  }, [progress.processing, startTime]);
+  }, [progress.processing, progress.started_at, startTime]);
 
   const prevProcessingCelebrationRef = useRef(false);
   useEffect(() => {

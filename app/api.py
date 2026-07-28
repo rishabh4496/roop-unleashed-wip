@@ -2072,6 +2072,11 @@ def get_progress():
     # inlining a base64 still into every poll is what made this expensive.
     return {**_progress, "output": _last_output, "live_frame": "",
             "live_seq": live_preview.seq(),
+            # Epoch seconds the run started, so elapsed/ETA survive a webview
+            # reload (Pinokio reloads it on every tab switch). The UI used to
+            # restart its own clock from zero there, which made a 40-minute run
+            # read as "0s" and the ETA jump.
+            "started_at": float(_run_stats.get("start") or 0.0),
             "log": list(_log_lines), "parts": parts,
             # The counter the console pins and rewrites in place instead of
             # scrolling — `desc` when it IS a counter, else the last one seen.

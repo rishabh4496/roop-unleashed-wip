@@ -787,6 +787,42 @@ export default function FaceSwap({
     notify('Cleared your saved default — Reset now uses factory defaults', 'info');
   };
 
+  // ── View state across a webview reload ───────────────────────────────────
+  // Switching Pinokio tabs (React UI ↔ Terminal, Run ↔ Dev) reloads the
+  // webview, so everything below is a fresh mount. The rehydrate effect below
+  // puts faces, targets and job state back, but two things it did not restore
+  // are exactly the two you look at: the playhead (it forced frame 1) and the
+  // rendered preview (client state, so the box fell back to the raw frame).
+  // Coming back from the terminal therefore looked like the preview had reset.
+  //
+  // sessionStorage, not localStorage: this is "where I was in this session",
+  // and it should not resurrect a stale frame days later.
+  const VIEW_KEY = 'roop_view';
+  const VIEW_IMG_KEY = 'roop_view_preview';
+  const restoredViewRef = useRef(null);
+  useEffect(() => {
+    try {
+      restoredViewRef.current = JSON.parse(sessionStorage.getItem(VIEW_KEY) || 'null');
+    } catch { restoredViewRef.current = null; }
+  }, []);
+
+  // Debounced so scrubbing writes once when it settles, not once per frame.
+  // The image is skipped when it is implausibly large rather than risking a
+  // quota error that would drop the small view entry with it.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        sessionStorage.setItem(VIEW_KEY, JSON.stringify({ target: selTarget, frame }));
+        if (previewSrc && previewSrc.length < 3_000_000) {
+          sessionStorage.setItem(VIEW_IMG_KEY, previewSrc);
+        } else {
+          sessionStorage.removeItem(VIEW_IMG_KEY);
+        }
+      } catch { /* storage blocked or full — the view just won't be restored */ }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [selTarget, frame, previewSrc]);
+
   // ── initial rehydrate ──
   // Pinokio reloads the webview whenever you switch the RUN/DEV/FILES tabs,
   // which remounts this component and wipes its React state. The backend keeps
@@ -803,10 +839,24 @@ export default function FaceSwap({
       const tg = st.targets || [];
       setTargets(tg);
       if (tg.length > 0) {
+        // The BACKEND owns which target is selected — never override it from
+        // storage. The playhead and the rendered preview are client-only, so
+        // they are restored, but only when they belong to that same target and
+        // are still in range; otherwise showing them would be a lie about which
+        // frame you are looking at.
         const sel = st.selected_target_index || 0;
+        const mf = tg[sel]?.frames || 1;
+        const v = restoredViewRef.current;
+        const sameView = v && v.target === sel && v.frame >= 1 && v.frame <= mf;
         setSelTarget(sel);
-        setMaxFrames(tg[sel]?.frames || 1);
-        setFrame(1);
+        setMaxFrames(mf);
+        setFrame(sameView ? v.frame : 1);
+        if (sameView) {
+          try {
+            const img = sessionStorage.getItem(VIEW_IMG_KEY);
+            if (img) setPreviewSrc(img);
+          } catch { /* nothing to restore */ }
+        }
       }
     }).catch(() => {});
 
@@ -815,7 +865,10 @@ export default function FaceSwap({
     getJSON('/api/progress').then((pr) => {
       setProgress(pr);
       if (pr.processing) {
-        if (!startTime) setStartTime(Date.now());
+        // Prefer the backend's own start time: the run has been going since
+        // before this mount, so starting a fresh clock here would report a
+        // long render as a few seconds old and skew the ETA with it.
+        if (!startTime) setStartTime(pr.started_at ? pr.started_at * 1000 : Date.now());
       }
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
