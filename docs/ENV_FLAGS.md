@@ -56,7 +56,34 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_UPSCALE_TRT` | 0 | `1` runs ESRGAN x4 upscalers under TensorRT (**not recommended** — goes all-black under TRT FP16; default forces CUDA/CPU FP32). |
 | `ROOP_UPSCALE_TILE` | 256 | Tile size (px) for AI upscalers; lower if VRAM is tight on heavy ×4 models. |
 | `ROOP_CAS_STRENGTH` | 0.5 | Contrast-Adaptive Sharpening strength for the `fsr` classical upscaler (0 = plain Lanczos). |
-| `ROOP_YAW_ALIGN` | 0 | Seeds the **Profile alignment (90° faces)** toggle in the Face Swap tab (the toggle overrides it per run, and a saved setting wins once you touch it). Takes the crop rotation for near-profile faces (~70°+ yaw) from the eye→mouth axis instead of the unconstrained 5-point fit. At high yaw the two eyes project to nearly the same point, so the normal fit is ill-conditioned in rotation and absorbs **pitch as in-plane roll** — a head nodding ±25° at 90° yaw swings the crop rotation by ~30°, which reads as rotational wobble. Holds it to <0.5°. Bit-exact no-op when off; changes swap output at high yaw when on. Not to be confused with `ROOP_PROFILE` (stage timing). |
+| `ROOP_YAW_ALIGN` | `off` | Seeds the **Profile alignment (90° faces)** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`. Affects near-profile faces (~70°+ yaw) only; frontal and mid-angle faces are bit-identical in every mode. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
+
+### Profile alignment modes
+
+At high yaw the two eyes project to nearly the same point, so fitting the 5
+keypoints to a **frontal** template is ill-conditioned. Measured against the
+project's own 3-D reference head, on a 512 crop:
+
+| | mean fit error @ 0° | @ 90° | crop rotation swing as the head nods ±25° @ 90° |
+|---|---|---|---|
+| `off` | 8 px | 60 px | ~30° |
+| `stabilize` | 8 px | 60 px | **<0.5°** |
+| `pose` | 8 px | **24 px** | **<0.5°** |
+
+- **`stabilize`** keeps the frontal template but takes the rotation from the
+  eye→mouth axis, so pitch stops leaking into in-plane roll. This is a
+  **temporal** fix — it reduces wobble *between* frames and will look identical
+  on a single still, so judge it on video.
+- **`pose`** replaces the template with the reference head projected at the
+  estimated yaw, making the fit well-posed (error drops ~60%, and to ~0 at zero
+  pitch). Face placement barely moves (nose 295.5 → 300.0 px at 90° yaw), so it
+  corrects distortion rather than re-framing.
+
+⚠️ Lower fit error is **not** automatically a better swap. The swap models were
+trained on crops aligned with the same fixed frontal template, so a
+geometrically cleaner profile crop is also slightly off their training
+distribution. `pose` is opt-in for that reason — A/B it on real footage before
+adopting it.
 
 ## Masking convention overrides
 

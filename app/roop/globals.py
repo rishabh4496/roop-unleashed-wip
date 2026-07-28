@@ -1,5 +1,4 @@
-import os as _os
-from settings import Settings
+from settings import Settings, initial_yaw_align
 from typing import List
 
 source_path = None
@@ -52,13 +51,17 @@ color_transfer_mode = 'rct'
 # Alignment refinement: derive the 5 arcface keypoints from the 68-point
 # landmarks (more stable at angles than the detector's raw 5 kps).
 refine_landmarks = False
-# Profile alignment: at near-profile yaw the two eyes project to almost the same
-# point, so the 5-point similarity fit is ill-conditioned in rotation and starts
-# absorbing PITCH as in-plane roll (a head nodding +/-25 deg at 90 deg yaw swings
-# the crop rotation ~30 deg). When on, the rotation is taken from the
-# eye->mouth axis instead. Seeded from ROOP_YAW_ALIGN; the UI toggle overrides it
-# per run. See face_util._constrained_norm.
-yaw_align = _os.environ.get('ROOP_YAW_ALIGN') == '1'
+# Profile alignment mode: 'off' | 'stabilize' | 'pose'.
+# At near-profile yaw the two eyes project to almost the same point, so the
+# 5-point similarity fit against a frontal template is ill-conditioned:
+#   'stabilize' takes the rotation from the eye->mouth axis, which stops pitch
+#               leaking into in-plane roll (a head nodding +/-25 deg at 90 deg
+#               yaw otherwise swings the crop rotation ~30 deg);
+#   'pose'      replaces the template with the reference head projected at the
+#               estimated yaw, which makes the fit well posed (residual -60%).
+# Seeded from ROOP_YAW_ALIGN (1/on/true == 'stabilize', or name a mode);
+# the UI selector overrides it per run. See face_util._maybe_constrained.
+yaw_align = initial_yaw_align()
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
 # geometry). strength 0..1 = amount of the shape difference applied.

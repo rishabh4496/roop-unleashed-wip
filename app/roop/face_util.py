@@ -803,6 +803,99 @@ def kps_pose_ratios(kps):
 # visibly change mid-angle faces that already look correct.
 YAW_ALIGN_RATIO = 0.40
 
+# Three modes, selected by roop.globals.yaw_align:
+#   'off'       — the plain fixed-template least-squares fit (default, unchanged)
+#   'stabilize' — keep the frontal template, but take the rotation from the
+#                 eye->mouth axis so pitch stops leaking into in-plane roll
+#   'pose'      — replace the template itself with the reference head projected
+#                 at the estimated yaw (see _pose_template)
+# Booleans are accepted for backwards compatibility: True == 'stabilize'.
+YAW_ALIGN_MODES = ('off', 'stabilize', 'pose')
+
+
+def _yaw_align_mode():
+    raw = getattr(roop.globals, 'yaw_align', False)
+    if raw is True:
+        return 'stabilize'
+    if not raw:
+        return 'off'
+    mode = str(raw).strip().lower()
+    return mode if mode in YAW_ALIGN_MODES else 'off'
+
+
+# ── Reference head, 5-point ──────────────────────────────────────────────────
+# Derived from face_3d_recon._REF3D_68 rather than duplicated, so the pose code
+# and the 3-D reconstruction code can never drift apart on head shape.
+def _reference_5pt():
+    from roop.face_3d_recon import _REF3D_68
+    ref = np.asarray(_REF3D_68, dtype=np.float64)
+    return np.vstack([
+        ref[36:42].mean(axis=0),   # left eye centre
+        ref[42:48].mean(axis=0),   # right eye centre
+        ref[30],                   # nose tip
+        ref[48],                   # left mouth corner
+        ref[54],                   # right mouth corner
+    ])
+
+
+def _project_reference(yaw_deg):
+    """The reference head's 5 points at a given yaw, orthographic, image axes."""
+    y = np.radians(yaw_deg)
+    rot = np.array([[np.cos(y), 0.0, np.sin(y)],
+                    [0.0, 1.0, 0.0],
+                    [-np.sin(y), 0.0, np.cos(y)]])
+    pts = _reference_5pt() @ rot.T
+    return np.column_stack([pts[:, 0], -pts[:, 1]])
+
+
+def _build_yaw_lookup():
+    """yaw (deg) -> yaw_ratio, so a measured ratio can be inverted back to an
+    angle. Monotonically decreasing, so np.interp needs both arrays reversed."""
+    yaws = np.arange(0.0, 90.5, 0.5)
+    ratios = []
+    for y in yaws:
+        q = _project_reference(y)
+        vert = np.linalg.norm((q[3] + q[4]) / 2.0 - (q[0] + q[1]) / 2.0)
+        ratios.append(np.linalg.norm(q[1] - q[0]) / vert)
+    return yaws, np.asarray(ratios)
+
+
+_LUT_YAWS, _LUT_RATIOS = _build_yaw_lookup()
+
+
+def _yaw_from_ratio(ratio):
+    return float(np.interp(ratio, _LUT_RATIOS[::-1], _LUT_YAWS[::-1]))
+
+
+def _pose_template(yaw_deg, base_dst):
+    """The destination points for a head at `yaw_deg`, placed to match the
+    frontal template's centroid and scale.
+
+    The fixed frontal template asks a 90 deg profile — whose two eyes project to
+    the SAME point — to land on two well-separated template positions. No
+    similarity transform can do that, so the fit settles on a compromise that
+    shears and rotates the face; measured mean residual is 60 px on a 512 crop
+    versus 8 px frontal. Projecting the reference head at the estimated yaw gives
+    a template that is congruent to the input, so the fit becomes well posed
+    (residual -60% at high yaw, and exactly 0 at zero pitch).
+
+    Scale is fixed from the FRONTAL reference, not the posed one, so the face
+    keeps a constant size in the crop as it turns — otherwise the head would
+    appear to zoom during a turn. Measured placement barely moves versus the
+    fixed template (nose 295.5 -> 300.0 px at 90 deg yaw), so this corrects the
+    distortion without re-framing the face.
+    """
+    posed = _project_reference(yaw_deg)
+    frontal = _project_reference(0.0)
+    frontal_vert = np.linalg.norm((frontal[3] + frontal[4]) / 2.0
+                                  - (frontal[0] + frontal[1]) / 2.0)
+    base_vert = np.linalg.norm((base_dst[3] + base_dst[4]) / 2.0
+                               - (base_dst[0] + base_dst[1]) / 2.0)
+    if frontal_vert < 1e-9:
+        return None
+    scaled = posed * (base_vert / frontal_vert)
+    return scaled - scaled.mean(axis=0) + np.asarray(base_dst, np.float64).mean(axis=0)
+
 
 def _constrained_norm(lmk, dst):
     """Similarity transform whose ROTATION is taken from the eye_mid -> mouth_mid
@@ -853,15 +946,32 @@ def _constrained_norm(lmk, dst):
 
 
 def _maybe_constrained(lmk, dst):
-    """_constrained_norm(), but only for near-profile faces and only when the
-    opt-in setting is on. Returns None to mean 'use the normal fit'."""
-    if not getattr(roop.globals, 'yaw_align', False):
+    """Profile-specific alignment for near-profile faces, per the selected mode.
+    Returns None to mean 'use the normal fit' — which is every frontal and
+    mid-angle face, and every face at all when the mode is 'off'."""
+    mode = _yaw_align_mode()
+    if mode == 'off':
         return None
     yaw_ratio, _ = kps_pose_ratios(lmk)
     if yaw_ratio is None or yaw_ratio >= YAW_ALIGN_RATIO:
         return None
-    return _constrained_norm(np.asarray(lmk, dtype=np.float64),
-                             np.asarray(dst, dtype=np.float64))
+
+    lmk = np.asarray(lmk, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+
+    if mode == 'pose':
+        posed = _pose_template(_yaw_from_ratio(yaw_ratio), dst)
+        if posed is None:
+            return None
+        # A pose-matched template is congruent to the input, so the ordinary
+        # least-squares similarity is already well posed — no rotation
+        # constraint needed on top.
+        tform = trans.SimilarityTransform()
+        tform.estimate(lmk, posed)
+        m = tform.params[0:2, :]
+        return m if np.isfinite(m).all() else None
+
+    return _constrained_norm(lmk, dst)
 
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):

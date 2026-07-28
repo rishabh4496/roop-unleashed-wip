@@ -41,6 +41,24 @@ def _enable_tensorrt_runtime():
         os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
 
 _enable_tensorrt_runtime()
+
+
+YAW_ALIGN_MODES = ('off', 'stabilize', 'pose')
+
+
+def initial_yaw_align():
+    """Seed value for the profile-alignment mode, read from ROOP_YAW_ALIGN.
+
+    Accepts a mode name, or a legacy boolean-ish value meaning 'stabilize'.
+    Lives here rather than in roop.globals because globals imports settings, so
+    this is the one place both can reach without a circular import.
+    """
+    raw = (os.environ.get('ROOP_YAW_ALIGN') or '').strip().lower()
+    if raw in YAW_ALIGN_MODES:
+        return raw
+    return 'stabilize' if raw in ('1', 'on', 'true', 'yes') else 'off'
+
+
 class Settings:
     def __init__(self, config_file):
         self.config_file = config_file
@@ -183,9 +201,8 @@ class Settings:
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
         # Profile alignment (see roop.globals.yaw_align). Defaults to whatever
         # ROOP_YAW_ALIGN says, so the env var still works on a config that has
-        # never had the toggle touched; once it is saved, the saved value wins.
-        self.yaw_align = self.default_get(data, 'yaw_align',
-                                          os.environ.get('ROOP_YAW_ALIGN') == '1')
+        # never had the selector touched; once it is saved, the saved value wins.
+        self.yaw_align = self.default_get(data, 'yaw_align', initial_yaw_align())
         # Jaw / chin reshape toward the source face shape
         self.jaw_reshape = self.default_get(data, 'jaw_reshape', False)
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)

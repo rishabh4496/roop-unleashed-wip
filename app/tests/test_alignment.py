@@ -157,6 +157,123 @@ class TestProfileAlignment(YawAlignCase):
                         f"residual grew from {plain:.1f} to {fixed:.1f} px")
 
 
+class TestModeSelection(YawAlignCase):
+    """yaw_align accepts booleans (legacy) and mode names. Anything
+    unrecognised must fall back to 'off' rather than silently enabling a mode
+    that changes render output."""
+
+    def test_normalisation(self):
+        from roop.face_util import _yaw_align_mode
+        for value, expected in (
+            (False, 'off'), (True, 'stabilize'), (None, 'off'), ('', 'off'),
+            ('off', 'off'), ('stabilize', 'stabilize'), ('pose', 'pose'),
+            ('POSE', 'pose'), ('  Pose  ', 'pose'),
+            ('nonsense', 'off'), ('1', 'off'),
+        ):
+            roop.globals.yaw_align = value
+            self.assertEqual(_yaw_align_mode(), expected, f"value={value!r}")
+
+    def test_unknown_mode_is_bit_exact_off(self):
+        kps = project_kps(90, 10)
+        roop.globals.yaw_align = 'off'
+        expected = estimate_norm(kps, 512, "arcface")
+        for value in ('nonsense', '1', 0, None):
+            roop.globals.yaw_align = value
+            np.testing.assert_array_equal(estimate_norm(kps, 512, "arcface"),
+                                          expected, f"value={value!r}")
+
+
+class TestPoseTemplate(YawAlignCase):
+    def setUp(self):
+        super().setUp()
+        roop.globals.yaw_align = 'pose'
+
+    def test_gated_off_for_frontal_and_mid_angles(self):
+        roop.globals.yaw_align = 'off'
+        baseline = {y: estimate_norm(project_kps(y), 512, "arcface")
+                    for y in (0, 15, 30, 45, 55)}
+        roop.globals.yaw_align = 'pose'
+        for yaw, expected in baseline.items():
+            np.testing.assert_array_equal(
+                estimate_norm(project_kps(yaw), 512, "arcface"), expected,
+                f"pose template leaked into yaw={yaw}")
+
+    def test_cuts_the_fit_residual_at_high_yaw(self):
+        """The point of the mode: a template congruent to the input makes the
+        similarity fit well posed instead of a shear/rotation compromise."""
+        for yaw in (75, 85, 90):
+            kps = project_kps(yaw, 20)
+            dst = reference_template(512, "arcface")
+            roop.globals.yaw_align = 'off'
+            plain = fit_residual(estimate_norm(kps, 512, "arcface"), kps, dst)
+            roop.globals.yaw_align = 'pose'
+            posed = estimate_norm(kps, 512, "arcface")
+            # Residual is measured against the POSE template the fit targeted.
+            from roop.face_util import _pose_template, _yaw_from_ratio
+            target = _pose_template(_yaw_from_ratio(kps_pose_ratios(kps)[0]), dst)
+            improved = fit_residual(posed, kps, target)
+            self.assertLess(improved, plain * 0.6,
+                            f"yaw={yaw}: residual {plain:.1f} -> {improved:.1f} px")
+
+    def test_exact_fit_at_zero_pitch(self):
+        """At the pose the template was built for, input and template are
+        congruent, so the residual should collapse to ~0."""
+        from roop.face_util import _pose_template, _yaw_from_ratio
+        dst = reference_template(512, "arcface")
+        for yaw in (60, 75, 90):
+            kps = project_kps(yaw)
+            m = estimate_norm(kps, 512, "arcface")
+            target = _pose_template(_yaw_from_ratio(kps_pose_ratios(kps)[0]), dst)
+            self.assertLess(fit_residual(m, kps, target), 1.0, f"yaw={yaw}")
+
+    def test_face_size_stays_constant_through_a_turn(self):
+        """Scale is taken from the FRONTAL reference so the head does not appear
+        to zoom as it turns."""
+        scales = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0]
+                  for y in (70, 75, 80, 85, 90)]
+        self.assertLess(max(scales) / min(scales), 1.15,
+                        f"crop scale swings through a turn: {scales}")
+
+    def test_output_is_always_finite_and_invertible(self):
+        import cv2
+        for yaw in (70, 80, 90):
+            for pitch in (-30, 0, 30):
+                for roll in (-30, 0, 30):
+                    m = estimate_norm(project_kps(yaw, pitch, roll), 512, "arcface")
+                    self.assertTrue(np.isfinite(m).all())
+                    self.assertGreater(decompose(m)[0], 1e-6)
+                    cv2.invertAffineTransform(m)
+
+
+class TestYawLookup(unittest.TestCase):
+    def test_inverts_accurately_where_it_is_actually_used(self):
+        """Only the near-profile range matters: the pose template is gated to
+        yaw_ratio < YAW_ALIGN_RATIO, i.e. roughly 65 deg and above."""
+        from roop.face_util import _yaw_from_ratio
+        for yaw in (65, 70, 75, 80, 85, 90):
+            ratio = kps_pose_ratios(project_kps(yaw))[0]
+            self.assertLess(ratio, YAW_ALIGN_RATIO)      # confirms it is in range
+            self.assertAlmostEqual(_yaw_from_ratio(ratio), yaw, delta=1.0)
+
+    def test_is_ill_conditioned_near_frontal_by_construction(self):
+        """Eye separation falls off as cos(yaw), so the ratio's derivative
+        vanishes at 0 deg and the inversion cannot be sharp there. Harmless —
+        that range is gated out — but asserted so nobody 'fixes' the lookup or
+        starts trusting it for frontal poses."""
+        from roop.face_util import _yaw_from_ratio
+        error = abs(_yaw_from_ratio(kps_pose_ratios(project_kps(0))[0]) - 0.0)
+        self.assertGreater(error, 1.0, "inversion is now sharp at frontal — if "
+                                       "that is real, this test can go")
+        self.assertLess(error, 10.0)
+
+    def test_clamps_outside_the_table(self):
+        from roop.face_util import _yaw_from_ratio
+        self.assertGreaterEqual(_yaw_from_ratio(-5.0), 0.0)
+        self.assertLessEqual(_yaw_from_ratio(-5.0), 90.0)
+        self.assertGreaterEqual(_yaw_from_ratio(99.0), 0.0)
+        self.assertLessEqual(_yaw_from_ratio(99.0), 90.0)
+
+
 class TestAlignmentIsIllConditionedAtProfile(unittest.TestCase):
     """Records WHY the profile path exists, so the motivation survives even if
     the implementation is rewritten."""
