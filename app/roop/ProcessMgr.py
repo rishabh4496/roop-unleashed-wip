@@ -223,7 +223,7 @@ def reshape_jaw_frame(result, tgt106, src106, tgt_kps, src_kps, strength,
         result[ry0:ry1, rx0:rx1] = warped
         return result
     except Exception as e:
-        print(f"[ProcessMgr] jaw reshape failed: {e}")
+        bar_write(f"[ProcessMgr] jaw reshape failed: {e}")
         return result
 
 
@@ -731,7 +731,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     # unprocessed original frame instead so the output is continuous.
                     err_str = str(exc)
                     if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
-                        print(f'[ProcessMgr] GPU error on {f} — writing original frame: {err_str[:200]}')
+                        bar_write(f'[ProcessMgr] GPU error on {f} — writing original frame: {err_str[:200]}')
                         resimg = temp_frame   # fall back to unmodified frame
                     else:
                         raise   # non-GPU errors propagate normally
@@ -817,7 +817,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 except RuntimeError as exc:
                     err_str = str(exc)
                     if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
-                        print(f'[ProcessMgr] GPU error on video frame {threadindex} — writing original: {err_str[:200]}')
+                        bar_write(f'[ProcessMgr] GPU error on video frame {threadindex} — writing original: {err_str[:200]}')
                         resimg = frame  # fall back to unmodified frame
                     else:
                         # Fatal non-GPU RuntimeError: drain our input queue and post
@@ -1891,8 +1891,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                                         for ti in tis), 3)
                                 except Exception:
                                     _dd[g] = None
-                            print(f"[TRACKFALL] f={frame_idx} best_g={best_g} best_d={best_d:.3f} "
-                                  f"claimed_src={sorted(claimed_sources_in_frame)} thr={threshold} d={_dd}")
+                            bar_write(f"[TRACKFALL] f={frame_idx} best_g={best_g} best_d={best_d:.3f} "
+                                      f"claimed_src={sorted(claimed_sources_in_frame)} thr={threshold} d={_dd}")
 
                         if best_g is not None:
                             src_index = self.options.selected_index if single_person else rank[best_g]
@@ -2229,7 +2229,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             dy = tgt_yaw_deg - _math.degrees(sy)
                             dp = tgt_pitch_deg - _math.degrees(sp)
                             if abs(dy) > 15 or abs(dp) > 15:
-                                print(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
+                                bar_write(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
                         except Exception:
                             pass
 
@@ -2257,7 +2257,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             pass
                         inputface = posed_input
             except Exception as e:
-                print(f"[ProcessMgr] Pose-aware embedding failed: {e}")
+                bar_write(f"[ProcessMgr] Pose-aware embedding failed: {e}")
 
         # ── Option 2: Target frontalization ──────────────────────────────────
         # Warp the aligned crop toward frontal before the swap, then apply
@@ -2278,10 +2278,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     )
                     if M_frontal is not None:
                         aligned_for_swap = frontalized
-                        print(f"[Frontalize] Δyaw={tgt_yaw_deg:+.1f}° Δpitch={tgt_pitch_deg:+.1f}°"
-                              f" — frontalization applied")
+                        bar_write(f"[Frontalize] Δyaw={tgt_yaw_deg:+.1f}° Δpitch={tgt_pitch_deg:+.1f}°"
+                                  f" — frontalization applied")
             except Exception as e:
-                print(f"[ProcessMgr] Frontalization failed: {e}")
+                bar_write(f"[ProcessMgr] Frontalization failed: {e}")
 
         fake_frame = aligned_for_swap
 
@@ -2331,7 +2331,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 try:
                     fake_frame = self.apply_color_transfer(fake_frame, aligned_img)
                 except Exception as e:
-                    print(f"[ProcessMgr] Face color transfer failed: {e}")
+                    bar_write(f"[ProcessMgr] Face color transfer failed: {e}")
                 
                 scale_factor = 0.0
                 # ── Defrontalize after swap (Option 2) ────────────────────────
@@ -2340,7 +2340,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         from roop.face_frontalize import defrontalize_crop
                         fake_frame = defrontalize_crop(fake_frame, M_frontal)
                     except Exception as e:
-                        print(f"[ProcessMgr] Defrontalization failed: {e}")
+                        bar_write(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
                     fake_frame = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
@@ -2398,7 +2398,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 else:
                     fake_frame = _crop
             except Exception as e:
-                print(f"[ProcessMgr] expression restore failed: {e}")
+                bar_write(f"[ProcessMgr] expression restore failed: {e}")
 
         # ── Skin detail transfer ──────────────────────────────────────────────
         # The generator produces smooth 256px skin and the enhancer hallucinates
@@ -2415,7 +2415,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 else:
                     fake_frame = self.apply_detail_transfer(fake_frame, aligned_img, _dt)
             except Exception as e:
-                print(f"[ProcessMgr] Detail transfer failed: {e}")
+                bar_write(f"[ProcessMgr] Detail transfer failed: {e}")
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
@@ -2474,7 +2474,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
                                               orig_enh.astype(np.float32) * c3e).astype(np.uint8)
                 except Exception as e:
-                    print(f"[ProcessMgr] Canonical mask application failed: {e}")
+                    bar_write(f"[ProcessMgr] Canonical mask application failed: {e}")
 
             elif _ref_kps is not None:
                 try:
@@ -2524,7 +2524,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
                                               orig_enh.astype(np.float32) * c3e).astype(np.uint8)
                 except Exception as e:
-                    print(f"[ProcessMgr] Warp-based mask application failed: {e}")
+                    bar_write(f"[ProcessMgr] Warp-based mask application failed: {e}")
 
         upscale = 512
         orig_width = fake_frame.shape[1]

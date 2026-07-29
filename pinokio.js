@@ -6,9 +6,16 @@ module.exports = {
   icon: "icon.png",
   menu: async (kernel, info) => {
     let installed = info.exists("app/env")
+    // start.js is a thin re-export of start_react.js, so EITHER path can be the
+    // one actually running. Resolve which, and use that same path for both
+    // info.local() and the Terminal href — a Terminal button pointing at the
+    // file that is NOT running starts a second copy of the whole stack instead
+    // of showing the running one.
+    let start_react_script = info.running("start_react.js") ? "start_react.js"
+      : (info.running("start.js") ? "start.js" : null)
     let running = {
       install: info.running("install.js"),
-      start_react: info.running("start_react.js") || info.running("start.js"),
+      start_react: start_react_script !== null,
       start_legacy: info.running("start_legacy.js"),
       update: info.running("update.js"),
       reset: info.running("reset.js"),
@@ -25,7 +32,7 @@ module.exports = {
       }]
     } else if (installed) {
       if (running.start_react) {
-        let local = info.local("start_react.js") || info.local("start.js")
+        let local = info.local(start_react_script)
         if (local && local.url) {
           return [{
             default: true,
@@ -50,14 +57,14 @@ module.exports = {
           }, {
             icon: 'fa-solid fa-terminal',
             text: "Terminal",
-            href: "start_react.js",
+            href: start_react_script,
           }]
         } else {
           return [{
             default: true,
             icon: 'fa-solid fa-terminal',
             text: "Terminal",
-            href: "start_react.js",
+            href: start_react_script,
           }]
         }
       } else if (running.start_legacy) {

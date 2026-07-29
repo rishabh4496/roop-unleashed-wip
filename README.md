@@ -257,47 +257,79 @@ roop-unleashed-wip/
 
 ## API Documentation
 
-The backend exposes FastAPI REST endpoints on `http://127.0.0.1:8001` (or `ROOP_API_PORT`).
+The backend (`app/api.py`) exposes FastAPI REST endpoints on `127.0.0.1`, bound to
+`ROOP_API_PORT` — `8001` only when that variable is unset. **Under Pinokio the port is
+assigned dynamically** (`start_react.js` passes `kernel.port()`), so read the actual
+value from the launcher terminal rather than assuming `8001`; the examples below use
+`$ROOP_API_PORT` for that reason.
 
 ### Endpoints
-- `GET /api/progress` — Fetch current job status and progress percentage.
-- `POST /api/start` — Start a face swapping job with the uploaded configuration.
-- `POST /api/stop` — Stop the running job cleanly and finalize output.
-- `POST /api/pause` — Pause processing at the next frame boundary.
+- `GET /api/state` — Full UI state: loaded source facesets, target files, selection.
+- `POST /api/source/add` — Add source face image(s) (multipart upload).
+- `POST /api/target/add` — Add target image/video file(s) (multipart upload).
+- `POST /api/swap` — Start a job over the loaded sources/targets. Body is the run
+  config (JSON object; every key is optional and falls back to the saved settings).
+  Returns `409` if a job is already running, `400` if no target media or no source
+  faces have been added.
+- `GET /api/progress` — Current job status: `processing`, `paused`, `progress` (0-1),
+  `desc`, `error`, plus the rolling `log`, output `parts` and `started_at`.
+- `POST /api/stop` — Abort the running job and finalize a playable output video.
+- `POST /api/pause` — Pause at the next frame boundary (no-op when idle).
 - `POST /api/resume` — Resume a paused job.
+
+There is no `POST /api/start`; starting a job is `POST /api/swap`, and it operates on
+media already registered through `/api/source/add` and `/api/target/add`.
 
 ### Code Examples
 
 #### cURL
 ```bash
-# Check progress
-curl http://127.0.0.1:8001/api/progress
+API=http://127.0.0.1:${ROOP_API_PORT:-8001}
 
-# Stop current job
-curl -X POST http://127.0.0.1:8001/api/stop
+curl -F "files=@face.jpg"  "$API/api/source/add"
+curl -F "files=@clip.mp4"  "$API/api/target/add"
+curl -X POST "$API/api/swap" -H 'Content-Type: application/json' \
+     -d '{"enhancer":"GFPGAN","detection":"All faces"}'
+
+curl "$API/api/progress"
+curl -X POST "$API/api/stop"
 ```
 
 #### JavaScript (Fetch)
 ```javascript
-// Check progress
-const res = await fetch('http://127.0.0.1:8001/api/progress');
+const API = `http://127.0.0.1:${8001}`;   // or the port shown in the launcher terminal
+
+// Start a job over the already-loaded source faces and target media
+await fetch(`${API}/api/swap`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ enhancer: 'GFPGAN', detection: 'All faces' }),
+});
+
+// Poll progress
+const res = await fetch(`${API}/api/progress`);
 const data = await res.json();
 console.log(data.progress, data.desc);
 
-// Stop job
-await fetch('http://127.0.0.1:8001/api/stop', { method: 'POST' });
+// Stop the job (finalizes the video)
+await fetch(`${API}/api/stop`, { method: 'POST' });
 ```
 
 #### Python (Requests)
 ```python
-import requests
+import os, requests
 
-# Check progress
-r = requests.get("http://127.0.0.1:8001/api/progress")
-print(r.json())
+API = f"http://127.0.0.1:{os.environ.get('ROOP_API_PORT', '8001')}"
 
-# Stop job
-requests.post("http://127.0.0.1:8001/api/stop")
+with open("face.jpg", "rb") as f:
+    requests.post(f"{API}/api/source/add", files={"files": f})
+with open("clip.mp4", "rb") as f:
+    requests.post(f"{API}/api/target/add", files={"files": f})
+
+requests.post(f"{API}/api/swap", json={"enhancer": "GFPGAN", "detection": "All faces"})
+
+print(requests.get(f"{API}/api/progress").json())
+requests.post(f"{API}/api/stop")
 ```
 
 ---

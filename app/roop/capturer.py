@@ -390,7 +390,11 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
             _load_animated_webp(video_path)
             if _awebp_frames:
                 idx = max(0, min(len(_awebp_frames) - 1, frame_number - 1))
-                return _awebp_frames[idx]
+                # A COPY, for the same reason _cache_get returns one: _awebp_frames
+                # is a module-level list retained for the whole session, so handing
+                # out its own array lets one caller's overlay (face boxes, mask
+                # outlines) burn permanently into every later read of that frame.
+                return _awebp_frames[idx].copy()
             return None
 
         # `or current_capture is None` matters: release_video() can be called
