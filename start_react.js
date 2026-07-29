@@ -78,7 +78,7 @@ module.exports = async (kernel) => {
             "npm run dev"
           ],
           on: [{
-            "event": "/(http:\\/\\/localhost:[0-9]+)/",
+            "event": "/(http:\\/\\/[a-zA-Z0-9.:]+)/",
             "done": true
           }]
         }

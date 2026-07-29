@@ -8,7 +8,7 @@ module.exports = {
     let installed = info.exists("app/env")
     let running = {
       install: info.running("install.js"),
-      start_react: info.running("start_react.js"),
+      start_react: info.running("start_react.js") || info.running("start.js"),
       start_legacy: info.running("start_legacy.js"),
       update: info.running("update.js"),
       reset: info.running("reset.js"),
@@ -25,7 +25,7 @@ module.exports = {
       }]
     } else if (installed) {
       if (running.start_react) {
-        let local = info.local("start_react.js")
+        let local = info.local("start_react.js") || info.local("start.js")
         if (local && local.url) {
           return [{
             default: true,

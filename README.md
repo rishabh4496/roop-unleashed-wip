@@ -255,6 +255,54 @@ roop-unleashed-wip/
 
 ---
 
+## API Documentation
+
+The backend exposes FastAPI REST endpoints on `http://127.0.0.1:8001` (or `ROOP_API_PORT`).
+
+### Endpoints
+- `GET /api/progress` — Fetch current job status and progress percentage.
+- `POST /api/start` — Start a face swapping job with the uploaded configuration.
+- `POST /api/stop` — Stop the running job cleanly and finalize output.
+- `POST /api/pause` — Pause processing at the next frame boundary.
+- `POST /api/resume` — Resume a paused job.
+
+### Code Examples
+
+#### cURL
+```bash
+# Check progress
+curl http://127.0.0.1:8001/api/progress
+
+# Stop current job
+curl -X POST http://127.0.0.1:8001/api/stop
+```
+
+#### JavaScript (Fetch)
+```javascript
+// Check progress
+const res = await fetch('http://127.0.0.1:8001/api/progress');
+const data = await res.json();
+console.log(data.progress, data.desc);
+
+// Stop job
+await fetch('http://127.0.0.1:8001/api/stop', { method: 'POST' });
+```
+
+#### Python (Requests)
+```python
+import requests
+
+# Check progress
+r = requests.get("http://127.0.0.1:8001/api/progress")
+print(r.json())
+
+# Stop job
+requests.post("http://127.0.0.1:8001/api/stop")
+```
+
+---
+
 ## License
 
 See [app/LICENSE](app/LICENSE).
+
