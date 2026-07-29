@@ -43,6 +43,8 @@ exports, which suit this project's onnxruntime/TensorRT stack.
 import contextlib
 import os
 import threading
+import time
+from collections import defaultdict
 
 import cv2
 import numpy as np
@@ -71,6 +73,65 @@ EYE_INDICES = (11, 13, 15, 16, 18)
 
 INPUT_SIZE = 256          # LivePortrait's native crop size
 NUM_BINS = 66             # head-pose regression bins
+
+
+# ── sub-stage timing (ROOP_EXPR_PROFILE=1) ───────────────────────────────────
+# One restored face costs five session runs plus CPU conversion on both ends,
+# and ROOP_PROFILE only reports the stage as a single 'expression' total. That
+# total says the stage is expensive; it does not say WHICH of the five to
+# attack, and the five are very differently sized (warping_spade is 421 MB and
+# emits 512x512, motion_extractor is 112 MB and runs twice, stitching is 182 KB).
+# So this keeps its own breakdown, off by default and free when off.
+_EXPR_PROFILE = os.environ.get('ROOP_EXPR_PROFILE', '0') == '1'
+_REPORT_EVERY = 200                     # faces between printed summaries
+
+_stage_times = defaultdict(float)
+_stage_calls = defaultdict(int)
+_stage_lock = threading.Lock()
+_faces_done = 0
+
+
+@contextlib.contextmanager
+def _substage(name):
+    if not _EXPR_PROFILE:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        dt = time.perf_counter() - t0
+        with _stage_lock:
+            _stage_times[name] += dt
+            _stage_calls[name] += 1
+
+
+def _maybe_report():
+    """Print the breakdown every _REPORT_EVERY faces.
+
+    Printed through bar_write, never print(): a bare print() mid-render
+    terminates tqdm's line and shreds the progress bar.
+    """
+    global _faces_done
+    if not _EXPR_PROFILE:
+        return
+    with _stage_lock:
+        _faces_done += 1
+        if _faces_done % _REPORT_EVERY:
+            return
+        snapshot = [(k, _stage_times[k], _stage_calls[k]) for k in _stage_times]
+        faces = _faces_done
+    try:
+        from roop.procmgr_runtime import bar_write
+    except Exception:
+        return
+    total = sum(t for _, t, _ in snapshot) or 1.0
+    lines = [f"[Expression] per-stage cost over {faces} restored faces "
+             f"(summed across worker threads):"]
+    for k, t, c in sorted(snapshot, key=lambda x: -x[1]):
+        lines.append(f"    {k:12s} {t:7.2f}s {100 * t / total:5.1f}%  "
+                     f"{c:6d} calls  {1000 * t / max(c, 1):7.2f} ms/call")
+    bar_write("\n".join(lines))
 
 
 def _provider_names(providers):
@@ -386,6 +447,91 @@ class Expression_LivePortrait:
 
     # ── main entry ───────────────────────────────────────────────────────────
 
+    # The stage is split into prepare / infer / finish so the caller can hold the
+    # global GPU lock around `infer` ALONE. Only the five session runs need that
+    # lock; the crop->tensor conversion and the 512x512 float->uint8->BGR->resize
+    # on the way back are pure CPU, and while they sat inside the lock every other
+    # worker thread queued behind them for nothing. The swap path already splits
+    # this way (prepare_crop_frame / p.Run / normalize_swap_frame in ProcessMgr).
+    # Run() below still composes all three, so single-shot callers are unchanged.
+
+    def prepare(self, swapped_bgr: Frame, driving_bgr: Frame):
+        """Both crops -> network inputs. CPU only; safe outside the GPU lock."""
+        if swapped_bgr is None or driving_bgr is None:
+            return None
+        with _substage('cpu_pre'):
+            return _to_input(swapped_bgr), _to_input(driving_bgr)
+
+    def infer(self, prepared, strength: float = 1.0, region: str = "all",
+              use_stitching: bool = True):
+        """The five session runs. Returns the raw network output, or None.
+
+        This is the only part that touches the GPU, so it is the only part the
+        caller has to serialise."""
+        if prepared is None or strength == 0.0:
+            return None
+        src_in, drv_in = prepared
+        try:
+            with self._leased() as sessions:
+                with _substage('appearance'):
+                    feature = self._run(sessions, "appearance", {"img": src_in})[0]
+                with _substage('motion_src'):
+                    p_s, y_s, r_s, t_s, exp_s, scale_s, kp_s = self._motion(sessions, src_in)
+                with _substage('motion_drv'):
+                    _, _, _, _, exp_d, _, _ = self._motion(sessions, drv_in)
+
+                rot_s = get_rotation_matrix(p_s, y_s, r_s)
+                x_s = transform_keypoint(kp_s, exp_s, scale_s, t_s, rot_s)
+                x_d = driving_keypoints(x_s, scale_s, exp_s, exp_d, strength, region)
+
+                if use_stitching and "stitching" in sessions:
+                    with _substage('stitching'):
+                        delta = np.asarray(
+                            self._run(sessions, "stitching",
+                                      {"input": concat_feat(x_s, x_d)})[0],
+                            np.float32)
+                    n = x_d.shape[1]
+                    if delta.size >= n * 3 + 2:
+                        flat = delta.reshape(-1)
+                        x_d = x_d + flat[:n * 3].reshape(1, n, 3)
+                        x_d[:, :, :2] += flat[n * 3:n * 3 + 2].reshape(1, 1, 2)
+
+                with _substage('warping'):
+                    return self._run(sessions, "warping", {"feature_3d": feature,
+                                                           "kp_source": x_s,
+                                                           "kp_driving": x_d})[0]
+        except Exception as e:
+            print(f"[Expression] LivePortrait restore failed: {e}")
+            return None
+
+    def finish(self, raw, swapped_bgr: Frame) -> Frame:
+        """Network output -> BGR crop the size of `swapped_bgr`. CPU only.
+
+        `raw` of None means infer() declined or failed, so the untouched input is
+        returned: an expression tweak must never cost a frame."""
+        if raw is None:
+            return swapped_bgr
+        try:
+            with _substage('cpu_post'):
+                h, w = swapped_bgr.shape[:2]
+                img = np.asarray(raw, np.float32)
+                if img.ndim == 4:
+                    img = img[0]
+                if img.shape[0] in (1, 3):            # CHW -> HWC
+                    img = np.transpose(img, (1, 2, 0))
+                if not np.isfinite(img).all():
+                    return swapped_bgr
+                img = np.clip(img, 0.0, 1.0) * 255.0
+                bgr = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                if bgr.shape[:2] != (h, w):
+                    bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_CUBIC)
+            return bgr
+        except Exception as e:
+            print(f"[Expression] LivePortrait restore failed: {e}")
+            return swapped_bgr
+        finally:
+            _maybe_report()
+
     def Run(self, swapped_bgr: Frame, driving_bgr: Frame, strength: float = 1.0,
             region: str = "all", use_stitching: bool = True) -> Frame:
         """Re-impose `driving_bgr`'s expression onto `swapped_bgr`.
@@ -396,47 +542,6 @@ class Expression_LivePortrait:
         a frame."""
         if strength == 0.0 or swapped_bgr is None or driving_bgr is None:
             return swapped_bgr
-        try:
-            h, w = swapped_bgr.shape[:2]
-            src_in = _to_input(swapped_bgr)
-            drv_in = _to_input(driving_bgr)
-
-            with self._leased() as sessions:
-                feature = self._run(sessions, "appearance", {"img": src_in})[0]
-                p_s, y_s, r_s, t_s, exp_s, scale_s, kp_s = self._motion(sessions, src_in)
-                _, _, _, _, exp_d, _, _ = self._motion(sessions, drv_in)
-
-                rot_s = get_rotation_matrix(p_s, y_s, r_s)
-                x_s = transform_keypoint(kp_s, exp_s, scale_s, t_s, rot_s)
-                x_d = driving_keypoints(x_s, scale_s, exp_s, exp_d, strength, region)
-
-                if use_stitching and "stitching" in sessions:
-                    delta = np.asarray(
-                        self._run(sessions, "stitching",
-                                  {"input": concat_feat(x_s, x_d)})[0],
-                        np.float32)
-                    n = x_d.shape[1]
-                    if delta.size >= n * 3 + 2:
-                        flat = delta.reshape(-1)
-                        x_d = x_d + flat[:n * 3].reshape(1, n, 3)
-                        x_d[:, :, :2] += flat[n * 3:n * 3 + 2].reshape(1, 1, 2)
-
-                out = self._run(sessions, "warping", {"feature_3d": feature,
-                                                      "kp_source": x_s,
-                                                      "kp_driving": x_d})[0]
-
-            img = np.asarray(out, np.float32)
-            if img.ndim == 4:
-                img = img[0]
-            if img.shape[0] in (1, 3):            # CHW -> HWC
-                img = np.transpose(img, (1, 2, 0))
-            if not np.isfinite(img).all():
-                return swapped_bgr
-            img = np.clip(img, 0.0, 1.0) * 255.0
-            bgr = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
-            if bgr.shape[:2] != (h, w):
-                bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_CUBIC)
-            return bgr
-        except Exception as e:
-            print(f"[Expression] LivePortrait restore failed: {e}")
-            return swapped_bgr
+        prepared = self.prepare(swapped_bgr, driving_bgr)
+        raw = self.infer(prepared, strength, region, use_stitching)
+        return self.finish(raw, swapped_bgr)

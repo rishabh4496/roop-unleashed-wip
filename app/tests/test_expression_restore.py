@@ -66,6 +66,56 @@ class TestPoolingContract(unittest.TestCase):
         self.assertFalse(r.pooled)
 
 
+class TestLockSplit(unittest.TestCase):
+    """prepare/infer/finish exist so ProcessMgr can hold the global GPU lock
+    around `infer` alone. The two ends must therefore be GPU-free and must
+    degrade to the untouched crop, because ProcessMgr calls them unconditionally
+    — including on the path where infer() declined or failed inside the lock."""
+
+    def _restorer(self):
+        from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+        return Expression_LivePortrait()
+
+    def test_prepare_needs_no_sessions_and_yields_two_net_inputs(self):
+        from roop.processors.Expression_LivePortrait import INPUT_SIZE
+        r = self._restorer()                       # never Initialize()d: no models
+        crop = np.zeros((512, 512, 3), np.uint8)
+        src, drv = r.prepare(crop, crop)
+        for t in (src, drv):
+            self.assertEqual(t.shape, (1, 3, INPUT_SIZE, INPUT_SIZE))
+            self.assertEqual(t.dtype, np.float32)
+
+    def test_prepare_declines_missing_crops(self):
+        r = self._restorer()
+        self.assertIsNone(r.prepare(None, np.zeros((8, 8, 3), np.uint8)))
+        self.assertIsNone(r.prepare(np.zeros((8, 8, 3), np.uint8), None))
+
+    def test_infer_declines_without_running_anything(self):
+        r = self._restorer()
+        self.assertIsNone(r.infer(None, 1.0))
+        self.assertIsNone(r.infer(("x", "y"), 0.0))   # strength 0 = no-op
+
+    def test_finish_returns_the_input_when_infer_declined(self):
+        r = self._restorer()
+        crop = RNG.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+        out = r.finish(None, crop)
+        np.testing.assert_array_equal(out, crop)
+
+    def test_finish_resizes_the_net_output_back_to_the_crop(self):
+        r = self._restorer()
+        crop = np.zeros((97, 61, 3), np.uint8)        # deliberately not 512
+        raw = RNG.random((1, 3, 512, 512)).astype(np.float32)
+        out = r.finish(raw, crop)
+        self.assertEqual(out.shape, crop.shape)
+
+    def test_non_finite_output_falls_back_to_the_input(self):
+        """A NaN from the warp must cost the expression, never the frame."""
+        r = self._restorer()
+        crop = RNG.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+        raw = np.full((1, 3, 512, 512), np.nan, np.float32)
+        np.testing.assert_array_equal(r.finish(raw, crop), crop)
+
+
 def _kp(n=21):
     return RNG.normal(size=(1, n, 3)).astype(np.float32)
 

@@ -2379,12 +2379,23 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 # need the global lock, and holding it would keep the one stage
                 # that runs single-file while swap/mask/detect all run N-wide.
                 restorer = self._expression_restorer()
-                with _prof('expression'), _gpu_guard(pooled=restorer.pooled):
-                    _region = getattr(roop.globals, 'expression_restore_region', 'all')
-                    if enhanced_frame is not None:
-                        enhanced_frame = restorer.Run(enhanced_frame, aligned_img, _ex, _region)
-                    else:
-                        fake_frame = restorer.Run(fake_frame, aligned_img, _ex, _region)
+                _region = getattr(roop.globals, 'expression_restore_region', 'all')
+                _crop = enhanced_frame if enhanced_frame is not None else fake_frame
+                with _prof('expression'):
+                    # Lock ONLY the session runs. The crop->tensor conversion and
+                    # the 512x512 float->uint8->BGR->resize on the way back are
+                    # pure CPU; holding the global GPU lock through them made
+                    # every other worker thread wait on work that never touched
+                    # the GPU. Same split as the swap path above, which keeps
+                    # prepare_crop_frame / normalize_swap_frame outside the guard.
+                    _prepared = restorer.prepare(_crop, aligned_img)
+                    with _gpu_guard(pooled=restorer.pooled):
+                        _raw = restorer.infer(_prepared, _ex, _region)
+                    _crop = restorer.finish(_raw, _crop)
+                if enhanced_frame is not None:
+                    enhanced_frame = _crop
+                else:
+                    fake_frame = _crop
             except Exception as e:
                 print(f"[ProcessMgr] expression restore failed: {e}")
 
