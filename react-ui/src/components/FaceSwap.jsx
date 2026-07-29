@@ -162,6 +162,37 @@ export default function FaceSwap({
     }
   };
 
+  // ── Render-lite: stop the UI competing with the render for the GPU ─────────
+  // This window is composited by Chromium on the SAME GPU that is running the
+  // swap, and the swap phase sits at ~98% utilisation — so every frame the
+  // compositor paints is taken off the render. The costly parts are the
+  // backdrop-filter blurs (a full readback + blur of whatever is behind each
+  // panel, re-done whenever anything under them changes — and something under
+  // them changes every second, because the progress poll lands) and the
+  // never-ending keyframe animations, which keep the compositor awake at 60 Hz
+  // for a render nobody is watching frame-by-frame.
+  //
+  // Switching to the Terminal makes all of that stop, which is exactly why the
+  // render speeds up there. This makes the UI cost that little while it is on
+  // screen instead. Scoped to `data-render-lite` in index.css, applied only
+  // during a run, and switchable from the dock so the difference can be
+  // measured rather than taken on trust.
+  const [renderLite, setRenderLite] = useState(() => {
+    try { return localStorage.getItem('roop_render_lite') !== '0'; } catch { return true; }
+  });
+  const toggleRenderLite = () => {
+    setRenderLite((on) => {
+      try { localStorage.setItem('roop_render_lite', on ? '0' : '1'); } catch { /* private mode */ }
+      return !on;
+    });
+  };
+  useEffect(() => {
+    const el = document.documentElement;
+    if (progress.processing && renderLite) el.setAttribute('data-render-lite', '');
+    else el.removeAttribute('data-render-lite');
+    return () => el.removeAttribute('data-render-lite');
+  }, [progress.processing, renderLite]);
+
   const prevProcessingRef = useRef(false);
   useEffect(() => {
     if (prevProcessingRef.current && !progress.processing) {
@@ -1870,9 +1901,17 @@ export default function FaceSwap({
   // whole-clip stills stretched behind a narrow window. Debounced because a
   // wheel-zoom emits a burst of view updates and each strip is 12 backend
   // seeks; only the range you settle on gets fetched.
+  //
+  // Skipped outright while a run is in flight. Twelve stills is twelve video
+  // seeks on the backend (a seek is a flat ~125-180 ms whatever the distance),
+  // so re-drawing the strip costs the render up to two seconds of decode it has
+  // to share the machine with — and Pinokio reloads this webview on every tab
+  // switch, so simply looking at the UI mid-run re-paid that each time. The
+  // strip is decoration and the filmstrip is not even on screen during a run;
+  // `progress.processing` is in the deps so it refills once the run ends.
   useEffect(() => {
-    if (targets.length === 0 || maxFrames <= 1) {
-      setStoryboardThumbs([]);
+    if (targets.length === 0 || maxFrames <= 1 || progress.processing) {
+      if (targets.length === 0 || maxFrames <= 1) setStoryboardThumbs([]);
       return;
     }
     let cancelled = false;
@@ -1926,7 +1965,7 @@ export default function FaceSwap({
       }
     }, 220);
     return () => { cancelled = true; clearTimeout(id); };
-  }, [selTarget, maxFrames, targets.length, view.start, view.end]);
+  }, [selTarget, maxFrames, targets.length, view.start, view.end, progress.processing]);
 
   // Release the last strip's blobs when the panel goes away. (storyboardRef is
   // written next to the setState above, so it is always the live list.)
@@ -3279,6 +3318,8 @@ export default function FaceSwap({
                     onCancelJob={stop}
                     desktopAlerts={desktopAlerts}
                     onToggleDesktopAlerts={toggleDesktopAlerts}
+                    renderLite={renderLite}
+                    onToggleRenderLite={toggleRenderLite}
                   />
 
                   {/* Live Processing Frame Peek & Diagnostics */}

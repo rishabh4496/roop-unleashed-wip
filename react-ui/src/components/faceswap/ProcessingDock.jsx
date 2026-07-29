@@ -10,6 +10,12 @@ import React from 'react';
  * opts OUT of Windows EcoQoS and holds a wake lock for the whole run (a render
  * froze outright when the display powered off), and thread count is fixed when
  * a run starts. A control that cannot change anything is worse than no control.
+ *
+ * "Lite UI" is the one that does drive something, and it is not about power: it
+ * drops this window's own GPU cost (backdrop blurs, looping animations) while a
+ * run is in flight, because Chromium composites it on the same GPU the swap is
+ * saturating. Left switchable so the difference can be watched on the FPS trend
+ * rather than believed.
  */
 export default function ProcessingDock({
   paused = false,
@@ -17,6 +23,8 @@ export default function ProcessingDock({
   onCancelJob,
   desktopAlerts = false,
   onToggleDesktopAlerts,
+  renderLite = true,
+  onToggleRenderLite,
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-2xl border border-white/10 bg-neutral-950/70 backdrop-blur-md">
@@ -47,6 +55,22 @@ export default function ProcessingDock({
       </div>
 
       <div className="flex items-center gap-2">
+        {/* Lite UI — drop this window's own GPU cost while the render runs */}
+        <button
+          onClick={onToggleRenderLite}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+            renderLite
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+              : 'bg-white/5 text-neutral-400 border-white/10 hover:text-neutral-200'
+          }`}
+          title={renderLite
+            ? 'Lite UI on — panel blurs and looping animations are off while rendering, so the browser leaves the GPU to the swap'
+            : 'Lite UI off — the full interface is being composited on the same GPU as the render'}
+        >
+          <span>{renderLite ? '🪶' : '✨'}</span>
+          <span className="hidden sm:inline">{renderLite ? 'Lite UI' : 'Full UI'}</span>
+        </button>
+
         {/* Desktop Alert Notification Toggle */}
         <button
           onClick={onToggleDesktopAlerts}

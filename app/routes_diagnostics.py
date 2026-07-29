@@ -232,8 +232,15 @@ def _nvidia_smi_stats():
     expected. Spawning a process is far too expensive per poll, so the result is
     cached for _NVSMI_TTL and the probe disables itself after repeated failures
     (no NVIDIA GPU, driver mismatch) rather than paying the cost forever.
+
+    The TTL has to be LONGER than the UI's poll interval, not shorter. At 2.0 s
+    against a 3 s poll every single poll missed the cache, so the "cache" never
+    once served a request and the HUD cost a process spawn — measured at 55-122
+    ms here, i.e. ~2% of a core, permanently, while a render is competing for
+    that core. 5 s covers the 3 s poll with margin; the figure it shows is a
+    utilisation average anyway, so nothing readable is lost.
     """
-    _NVSMI_TTL = 2.0
+    _NVSMI_TTL = 5.0
     with _nvsmi_lock:
         if _nvsmi_cache["fails"] >= 3:
             return {}
@@ -261,6 +268,42 @@ def _nvidia_smi_stats():
         return {}
     with _nvsmi_lock:
         _nvsmi_cache.update({"t": time.time(), "data": dict(data), "fails": 0})
+    return data
+
+_vram_cache = {"t": 0.0, "data": {}}
+
+_vram_lock = threading.Lock()
+
+def _vram_stats():
+    """GPU name + VRAM, cached.
+
+    `torch.cuda.mem_get_info` is a call into the CUDA driver, and it is issued
+    from the API threadpool while the render threads are saturating that same
+    driver. Serving it fresh on every poll puts a driver round-trip in front of
+    a queue of pending kernels several times a minute for a number that moves
+    slowly; caching it for the same window as nvidia-smi keeps the HUD honest
+    without ever adding a driver call the render has to wait behind.
+    """
+    _TTL = 5.0
+    with _vram_lock:
+        if time.time() - _vram_cache["t"] < _TTL:
+            return dict(_vram_cache["data"])
+    data = {}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            data["gpu"] = torch.cuda.get_device_name(0)
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+                data["vram_total"] = round(total_bytes / (1024 ** 3), 2)
+                data["vram_used"] = round((total_bytes - free_bytes) / (1024 ** 3), 2)
+            except Exception:
+                data["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
+                data["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
+    except Exception:
+        return {}
+    with _vram_lock:
+        _vram_cache.update({"t": time.time(), "data": dict(data)})
     return data
 
 @router.get("/api/system/profile")
@@ -319,19 +362,7 @@ def get_telemetry():
     except Exception:
         pass
 
-    try:
-        import torch
-        if torch.cuda.is_available():
-            telemetry["gpu"] = torch.cuda.get_device_name(0)
-            try:
-                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
-                telemetry["vram_total"] = round(total_bytes / (1024 ** 3), 2)
-                telemetry["vram_used"] = round((total_bytes - free_bytes) / (1024 ** 3), 2)
-            except Exception:
-                telemetry["vram_total"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
-                telemetry["vram_used"] = round(torch.cuda.memory_allocated(0) / (1024 ** 3), 2)
-    except Exception:
-        pass
+    telemetry.update(_vram_stats())
 
     # Free space on the output drive. A long render writes tens of GB of frames
     # and the failure mode when it runs out is losing the whole run at the encode

@@ -704,6 +704,51 @@
   }
 }
 
+/* ── Render-lite ───────────────────────────────────────────────────────────
+   Set on <html> while a swap run is in flight (FaceSwap.jsx, switchable from
+   the processing dock). This window is composited by Chromium on the same GPU
+   the swap is saturating, so whatever the compositor does mid-run is taken
+   straight off the render.
+
+   Two things dominate and both are switched off here.
+
+   backdrop-filter: each blurred panel makes the compositor read back what is
+   behind it and blur it, and it must redo that whenever anything under it
+   changes. Something changes every second during a run — the progress poll
+   lands — so these are not the one-off cost they are while idle.
+
+   The looping animations that drive a PAINT (or worse, a layout) rather than
+   just a compositor transform. Only three of ours do, and they are named
+   explicitly rather than swept up by a blanket `animation: none`, because the
+   rest are transform/opacity — they run entirely on the compositor's existing
+   layers, cost effectively nothing, and are the ones carrying meaning:
+   `animate-spin` and `animate-ping` are how the UI says it is still alive, and
+   freezing those mid-run would make a working render read as a hung one.
+
+     * progress-stripes — background-position, repaints the bar every frame
+       (.progress-bar-animated)
+     * pulse-glow       — box-shadow + border-color, repaints every frame
+       (.preview-glow, .animate-drag-pulse)
+     * scanner-sweep    — animates `top`, so it re-runs LAYOUT every frame
+       (.animate-scanner-sweep)
+
+   Deliberately NOT touched: colour, layout, spacing, borders, one-shot
+   transitions, and every compositor-only animation. The panels go solid
+   instead of translucent and three things stop moving; nothing else changes. */
+html[data-render-lite] *,
+html[data-render-lite] *::before,
+html[data-render-lite] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-render-lite] .progress-bar-animated,
+html[data-render-lite] .preview-glow,
+html[data-render-lite] .animate-drag-pulse,
+html[data-render-lite] .animate-scanner-sweep {
+  animation: none !important;
+}
+
 /* Slim modern scrollbars to match macOS */
 ::-webkit-scrollbar {
   width: 5px;
