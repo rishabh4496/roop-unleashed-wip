@@ -7,8 +7,10 @@ error in the rotation, a strength that does not reduce to a no-op, or a transfer
 that quietly moves the head instead of only the mouth.
 """
 
+import contextlib
 import os
 import sys
+import time
 import unittest
 
 import numpy as np
@@ -24,13 +26,94 @@ from roop.processors.Expression_LivePortrait import (  # noqa: E402
 RNG = np.random.default_rng(11)
 
 
+@contextlib.contextmanager
+def _env(**pairs):
+    """Set env vars for the duration of a test and put them back."""
+    old = {k: os.environ.get(k) for k in pairs}
+    os.environ.update({k: str(v) for k, v in pairs.items()})
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+class _Named:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeSession:
+    """Enough of an InferenceSession to exercise the call plumbing offline.
+
+    Records every image it was fed, so a test can assert WHICH crop reached
+    which model — feeding the target crop where the swapped one belongs applies
+    the expression backwards and still produces a plausible-looking face.
+    """
+
+    def __init__(self, in_names, outputs, out_names=("output",), delay=0.0,
+                 raises=None):
+        self._in = list(in_names)
+        self._out_names = list(out_names)
+        self._outputs = outputs
+        self._delay = delay
+        self._raises = raises
+        self.seen = []
+
+    def get_inputs(self):
+        return [_Named(n) for n in self._in]
+
+    def get_outputs(self):
+        return [_Named(n) for n in self._out_names]
+
+    def run(self, _out, feeds):
+        if self._delay:
+            time.sleep(self._delay)
+        self.seen.append(feeds)
+        if self._raises is not None:
+            raise self._raises
+        return self._outputs
+
+
+def _fake_motion_outputs(tag):
+    """The seven declared outputs, with `tag` written into the translation so a
+    test can tell one motion session's result from another's."""
+    return [np.zeros((1, 66), np.float32),      # pitch
+            np.zeros((1, 66), np.float32),      # yaw
+            np.zeros((1, 66), np.float32),      # roll
+            np.full((1, 3), tag, np.float32),   # t
+            np.zeros((1, 63), np.float32),      # exp
+            np.ones((1, 1), np.float32),        # scale
+            np.zeros((1, 63), np.float32)]      # kp
+
+
+def _fake_sessions(motion2=False, appearance_raises=None, motion2_delay=0.0):
+    s = {
+        "appearance": _FakeSession(["img"], [np.zeros((1, 32, 16, 64, 64), np.float32)],
+                                   raises=appearance_raises),
+        "motion": _FakeSession(["img"], _fake_motion_outputs(1.0)),
+        "stitching": _FakeSession(["input"], [np.zeros((1, 65), np.float32)]),
+        "warping": _FakeSession(["feature_3d", "kp_driving", "kp_source"],
+                                [np.zeros((1, 3, 512, 512), np.float32)],
+                                out_names=["out"]),
+    }
+    if motion2:
+        s["motion2"] = _FakeSession(["img"], _fake_motion_outputs(2.0),
+                                    delay=motion2_delay)
+    return s
+
+
 class TestPoolingContract(unittest.TestCase):
     """How the restorer excludes concurrent threads, without loading models.
 
-    ProcessMgr decides whether to hold the global GPU lock from `pooled`. If
-    those two ever disagree the failure is not a wrong pixel — it is either a
-    stage silently running single-file (the bug this exists to prevent) or two
-    threads sharing one TensorRT context, which corrupts the CUDA context.
+    ProcessMgr decides whether to hold the global GPU lock from
+    `self_excluding`. If those two ever disagree the failure is not a wrong
+    pixel — it is either a stage silently running single-file (the bug this
+    exists to prevent) or two threads sharing one TensorRT context, which
+    corrupts the CUDA context.
     """
 
     def _restorer(self):
@@ -43,6 +126,46 @@ class TestPoolingContract(unittest.TestCase):
         self.assertFalse(r.pooled)
         with r._leased() as sessions:
             self.assertIs(sessions, r.sessions)
+
+    def test_skips_the_global_lock_even_without_a_pool(self):
+        """_leased() is the exclusion, pooled or not — so the global lock is
+        redundant either way, and holding it would serialise this stage against
+        unrelated ones."""
+        r = self._restorer()
+        self.assertFalse(r.pooled)
+        self.assertTrue(r.self_excluding)
+
+    def test_global_lock_can_be_forced_back_on(self):
+        r = self._restorer()
+        with _env(ROOP_EXPR_GLOBAL_LOCK='1'):
+            self.assertFalse(r.self_excluding)
+
+    def test_unpooled_lease_is_exclusive(self):
+        """The property the dropped global lock now rests on: two threads cannot
+        be inside the single session set at the same time."""
+        import threading
+        r = self._restorer()
+        r.sessions = {"warping": object()}
+        overlapped = []
+        inside = threading.Event()
+        released = threading.Event()
+
+        def hold():
+            with r._leased():
+                inside.set()
+                released.wait(2.0)
+
+        t = threading.Thread(target=hold)
+        t.start()
+        self.assertTrue(inside.wait(2.0))
+        second = threading.Thread(
+            target=lambda: overlapped.append(True) if r._lock.acquire(timeout=0.2)
+            else None)
+        second.start()
+        second.join()
+        released.set()
+        t.join()
+        self.assertEqual(overlapped, [], "a second thread entered the lease")
 
     def test_pooled_leases_distinct_sets_and_returns_them(self):
         from roop.session_pool import SessionPool
@@ -114,6 +237,121 @@ class TestLockSplit(unittest.TestCase):
         crop = RNG.integers(0, 255, (64, 64, 3), dtype=np.uint8)
         raw = np.full((1, 3, 512, 512), np.nan, np.float32)
         np.testing.assert_array_equal(r.finish(raw, crop), crop)
+
+
+class TestOverlappedFrontHalf(unittest.TestCase):
+    """appearance / motion(swapped) / motion(target) are issued together.
+
+    Overlapping them must not change WHICH crop reaches which model. The two
+    motion calls are indistinguishable at the type level — both take a 256x256
+    tensor and return the same seven outputs — so a swapped pair produces a
+    perfectly plausible face with the expression applied backwards, which no
+    crash and no shape check would catch.
+    """
+
+    def _restorer(self, sessions, workers=2):
+        import concurrent.futures
+        from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+        r = Expression_LivePortrait()
+        r.sessions = sessions
+        r._exec = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        self.addCleanup(r._exec.shutdown, True)
+        return r
+
+    def _inputs(self):
+        src = np.zeros((1, 3, 256, 256), np.float32)
+        drv = np.ones((1, 3, 256, 256), np.float32)
+        return src, drv
+
+    def test_sequential_and_overlapped_agree(self):
+        src, drv = self._inputs()
+        seq = self._restorer(_fake_sessions())
+        seq._exec = None
+        par = self._restorer(_fake_sessions(motion2=True))
+
+        f_a, m_sa, m_da = seq._front_half(seq.sessions, src, drv)
+        f_b, m_sb, m_db = par._front_half(par.sessions, src, drv)
+
+        np.testing.assert_array_equal(f_a, f_b)
+        for a, b in zip(m_sa, m_sb):
+            np.testing.assert_array_equal(a, b)
+        # Only the driving EXPRESSION is read downstream, and the two motion
+        # sessions hold identical weights, so these must agree too.
+        np.testing.assert_array_equal(m_da[4], m_db[4])
+
+    def test_each_model_gets_the_crop_it_is_supposed_to(self):
+        src, drv = self._inputs()
+        r = self._restorer(_fake_sessions(motion2=True))
+        r._front_half(r.sessions, src, drv)
+        np.testing.assert_array_equal(r.sessions["appearance"].seen[0]["img"], src)
+        np.testing.assert_array_equal(r.sessions["motion"].seen[0]["img"], src)
+        np.testing.assert_array_equal(r.sessions["motion2"].seen[0]["img"], drv)
+
+    def test_without_a_second_motion_session_both_motions_run_in_series(self):
+        """Level 1 costs no extra VRAM: one motion session, used twice."""
+        src, drv = self._inputs()
+        r = self._restorer(_fake_sessions())          # no motion2
+        _, _, m_d = r._front_half(r.sessions, src, drv)
+        self.assertEqual(len(r.sessions["motion"].seen), 2)
+        np.testing.assert_array_equal(r.sessions["motion"].seen[1]["img"], drv)
+        self.assertEqual(m_d[3][0, 0], 1.0)           # came from the one session
+
+    def test_a_failure_still_joins_the_helper_threads(self):
+        """The lease returns the session set to the pool when _front_half exits.
+        A helper thread still running inside it would then hand one TensorRT
+        context to two threads — so every future must be joined, including on
+        the path where another one raised."""
+        src, drv = self._inputs()
+        sessions = _fake_sessions(motion2=True,
+                                  appearance_raises=RuntimeError("boom"),
+                                  motion2_delay=0.05)
+        r = self._restorer(sessions)
+        with self.assertRaises(RuntimeError):
+            r._front_half(sessions, src, drv)
+        self.assertEqual(len(sessions["motion2"].seen), 1,
+                         "returned before the driving motion thread finished")
+
+
+class TestDeviceChaining(unittest.TestCase):
+    """feature_3d stays in GPU memory between the two models that share it."""
+
+    def _restorer(self):
+        from roop.processors.Expression_LivePortrait import Expression_LivePortrait
+        return Expression_LivePortrait()
+
+    def test_off_by_default_until_initialize_proves_both_ends_are_on_a_gpu(self):
+        self.assertFalse(self._restorer()._chain)
+
+    def test_plain_path_feeds_the_warping_inputs_by_name(self):
+        """Positional binding is the documented trap here: warping_spade
+        declares kp_driving BEFORE kp_source."""
+        r = self._restorer()
+        sessions = _fake_sessions()
+        x_s, x_d = _kp(), _kp()
+        r._warp(sessions, np.zeros((1, 32, 16, 64, 64), np.float32), x_s, x_d)
+        feeds = sessions["warping"].seen[0]
+        np.testing.assert_array_equal(feeds["kp_source"], x_s)
+        np.testing.assert_array_equal(feeds["kp_driving"], x_d)
+
+    def test_a_chained_failure_falls_back_and_stays_fallen_back(self):
+        """One bad io_binding must cost neither the face nor the rest of the
+        run: retry it unchained, then stop trying."""
+        r = self._restorer()
+        r.sessions = _fake_sessions()
+        r._chain = True
+        calls = []
+
+        def _once(*a, **k):
+            calls.append(r._chain)
+            if r._chain:
+                raise RuntimeError("no device chaining here")
+            return "restored"
+
+        r._infer_once = _once
+        out = r.infer((np.zeros((1, 3, 256, 256), np.float32),) * 2, 1.0)
+        self.assertEqual(out, "restored")
+        self.assertEqual(calls, [True, False])
+        self.assertFalse(r._chain)
 
 
 def _kp(n=21):

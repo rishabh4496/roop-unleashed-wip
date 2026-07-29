@@ -144,10 +144,32 @@ def detmask_pooling_enabled() -> bool:
 
 
 # Separate, opt-in pool for the LivePortrait expression restorer. It is the only
-# GPU stage still running one-wide behind the global lock while the swapper, mask
-# and detect stages run N-wide, so on a chunk where it is enabled its cost adds
-# almost entirely in series. Measured on an RTX 4070: a 192-frame chunk went
-# 9.00s with expression off to 13.53s with it on, i.e. ~4.5s of serialised work.
+# GPU stage still running one-wide while the swapper, mask and detect stages run
+# N-wide, so on a chunk where it is enabled its cost adds almost entirely in
+# series. Measured on an RTX 4070: a 192-frame chunk went 9.00s with expression
+# off to 13.53s with it on, i.e. ~4.5s of serialised work.
+#
+# This is now the LAST of the serialisation fixes, not the first to reach for.
+# The restorer already (a) holds the GPU lock around its session runs only, not
+# its CPU conversion, (b) skips the global lock entirely, since its own
+# lock/lease is what keeps its contexts exclusive, and (c) overlaps its three
+# independent front-half calls (ROOP_EXPR_PARALLEL). Those cost no VRAM. A pool
+# is what remains for making two whole restores concurrent, and it is the only
+# one that has to be paid for in engines.
+#
+# Measured on an RTX 4070, 100 restores over 4 threads, 256px crops, TRT FP16
+# (all four produce bit-identical pixels):
+#
+#     old: global lock over the whole call   29.2 faces/s   34.23 ms   baseline
+#     (a)+(b)+(c), no pool                   33.3 faces/s   30.06 ms      +14%
+#     ROOP_EXPR_POOL=2                       37.3 faces/s   26.84 ms      +28%   +654 MiB
+#     ROOP_EXPR_POOL=2 + PARALLEL=2          37.8 faces/s   26.44 ms      +29%   +899 MiB
+#
+# Note where that stops. A third slot measured no faster than the second: the
+# stage is GPU-bound, not lock-bound — warping_spade alone is 23.4 ms of the
+# 34 ms (68%), one 421 MB generator producing 512x512, and no amount of
+# concurrency makes the card do that work faster. Scheduling was worth ~29% and
+# that is the ceiling of it; the rest would have to come out of the model.
 #
 # Deliberately NOT auto-tuned by VRAM like the other two. Those pools were sized
 # when the expression models did not exist; adding a second set of them on a card

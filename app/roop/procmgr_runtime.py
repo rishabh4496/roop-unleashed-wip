@@ -190,13 +190,19 @@ def _gpu_guard(pooled=False):
     """Return the GPU lock only when the active provider needs serialising
     (TensorRT); otherwise a no-op context so threads run concurrently.
 
-    `pooled=True` marks a stage that leases from a pool of INDEPENDENT sessions /
-    contexts (the swapper's SessionPool, the FaceAnalysis pool, or a mask
-    SessionPool). Each lease hands one thread its own context, so the work is
-    already safely concurrent and must NOT also take the global lock or it would
-    re-serialise — return a no-op context instead. Callers pass pooled=True only
-    when that pool actually exists, so this is safe regardless of which pool knob
-    (ROOP_TRT_POOL for the swapper, ROOP_DETMASK_POOL for detect/mask) enabled it."""
+    `pooled=True` marks a stage that already guarantees no TensorRT context of
+    its own is entered twice at once — which is the only thing this lock is for.
+    Usually that guarantee comes from leasing out of a pool of INDEPENDENT
+    sessions (the swapper's SessionPool, the FaceAnalysis pool, a mask
+    SessionPool): each lease hands one thread its own context. It can equally
+    come from a stage holding its own private lock over a single session, which
+    is how the expression restorer qualifies without a pool. Either way the work
+    is already safely exclusive and must NOT also take the global lock or it
+    would re-serialise against unrelated stages — return a no-op context instead.
+
+    Callers pass pooled=True only when that guarantee actually holds, so this is
+    safe regardless of which knob (ROOP_TRT_POOL for the swapper,
+    ROOP_DETMASK_POOL for detect/mask) is set."""
     if pooled:
         return contextlib.nullcontext()
     needs_lock = any('tensorrt' in str(p).lower() for p in roop.globals.execution_providers)

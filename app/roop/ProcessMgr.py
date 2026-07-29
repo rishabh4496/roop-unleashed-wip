@@ -2389,7 +2389,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     # the GPU. Same split as the swap path above, which keeps
                     # prepare_crop_frame / normalize_swap_frame outside the guard.
                     _prepared = restorer.prepare(_crop, aligned_img)
-                    with _gpu_guard(pooled=restorer.pooled):
+                    with _gpu_guard(pooled=restorer.self_excluding):
                         _raw = restorer.infer(_prepared, _ex, _region)
                     _crop = restorer.finish(_raw, _crop)
                 if enhanced_frame is not None:
