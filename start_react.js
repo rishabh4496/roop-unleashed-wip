@@ -19,14 +19,13 @@ module.exports = async (kernel) => {
             // thread recovers most of the idle-thread imbalance (25-59% of chunk
             // time on static splits) for ~+19% warm-up recompute. See ProcessMgr.
             ROOP_STAB_BLOCKS_PER_THREAD: "2",
-            // Expression restore was the only GPU stage still running one-wide
-            // behind the global lock. Two independent TensorRT contexts measured
-            // 28.7 -> 39.2 faces/sec (+37%) for +660MB VRAM; 3 and 4 are slower
-            // than 2, so the GPU is saturated there. Output is bit-exact.
-            // Costs ~660MB on top of the 4/4 swapper+detmask pools — if a render
-            // OOMs or thrashes rebuilding engines, drop this or set
-            // ROOP_TRT_POOL to 3. See docs/ENV_FLAGS.md.
-            ROOP_EXPR_POOL: "2",
+            // ROOP_EXPR_POOL is deliberately NOT set here. It used to be pinned
+            // to "2" — measured +28% on the expression stage for +654MB — but
+            // this file ships to every install, and forcing two extra restorer
+            // contexts on a card too small for even the swapper pool is how you
+            // turn a benchmark into an OOM. session_pool._auto_expression_pool()
+            // now picks it from the machine's own VRAM (12GB+ still gets 2).
+            // Set ROOP_EXPR_POOL here only to override that on THIS machine.
             // Diagnostic for wrong-face swaps: prints [TRACKASSIGN] once per
             // track (which person each track was bound to, and at what cosine
             // distance) and [TRACKMATCH] per face per frame (chosen track,

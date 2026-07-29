@@ -171,13 +171,30 @@ def detmask_pooling_enabled() -> bool:
 # concurrency makes the card do that work faster. Scheduling was worth ~29% and
 # that is the ceiling of it; the rest would have to come out of the model.
 #
-# Deliberately NOT auto-tuned by VRAM like the other two. Those pools were sized
-# when the expression models did not exist; adding a second set of them on a card
-# already running 4 swapper + 4 detmask instances can exhaust it (a 12GB 4070
-# measured 1.0GB free mid-render). So this defaults to 0 — set ROOP_EXPR_POOL=2
-# only if there is headroom, and expect to trade it against ROOP_TRT_POOL.
+# VRAM-tiered like the other two, and for the same reason: a fixed value is
+# wrong on somebody else's card. This started as a hardcoded ROOP_EXPR_POOL=2 in
+# start_react.js, which is tracked and ships to every install — so a 6GB card,
+# where _auto_pool_defaults deliberately turns the other two pools OFF because
+# extra engines OOM or thrash below 1fps, would still have been handed two extra
+# restorer contexts. Tiering it puts that decision back on the machine running
+# it.
+#
+#     < 11.5 GB   -> 0   single context; the measured +28% is not worth being
+#                        the allocation that pushes a mid-size card into an
+#                        engine-rebuild thrash, and these are the LARGEST models
+#                        of any pool here (~537 MB of weights per slot).
+#     >= 11.5 GB  -> 2   the configuration measured above. 3 was no faster.
+#
+# The boundary is 11.5 for the same reason as _auto_pool_defaults': a nominal
+# 12GB card reports ~11.99GB. Costs nothing on a card that never enables
+# expression restore — ProcessMgr builds the restorer lazily, only once a run
+# actually asks for a non-zero strength. ROOP_EXPR_POOL overrides either way.
+def _auto_expression_pool() -> int:
+    return 2 if _detect_vram_gb() >= 11.5 else 0
+
+
 def expression_pool_size() -> int:
-    return _resolve('ROOP_EXPR_POOL', 0)
+    return _resolve('ROOP_EXPR_POOL', _auto_expression_pool())
 
 
 def expression_pooling_enabled() -> bool:
