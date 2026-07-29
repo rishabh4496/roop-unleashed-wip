@@ -8,11 +8,15 @@ the ones worth pinning:
   * a publish never costs more than a throttle check unless the interval elapsed;
   * what is stored is small (downscaled + JPEG), so the API hands back bytes;
   * a bad frame can never raise into the render;
-  * a new run starts blank rather than showing the previous run's last frame.
+  * a new run starts blank rather than showing the previous run's last frame;
+  * an unwatched run drops to a slow cadence but never stops — `seq` is the
+    UI's cache key, so freezing it would leave a returning tab with no way to
+    ever notice a new frame.
 """
 
 import os
 import sys
+import time
 import unittest
 
 import cv2
@@ -87,6 +91,53 @@ class LivePreviewTest(unittest.TestCase):
         lp.reset()
         self.assertEqual(lp.seq(), 0)
         self.assertIsNone(lp.snapshot()[0])
+
+    # ── watched-gating ───────────────────────────────────────────────────────
+    # The pipeline has no idea whether the Pinokio tab is on screen; the only
+    # evidence of a viewer is that something fetched the frame. These pin the
+    # three states that follow from that, without sleeping through them.
+
+    def _age_last_publish_by(self, secs):
+        """Pretend the previous publish happened `secs` ago."""
+        lp._state['t'] = time.time() - secs
+
+    def test_unwatched_skips_the_watched_cadence(self):
+        """No reader: an interval that WOULD publish for a viewer must not."""
+        self._age_last_publish_by(lp._INTERVAL + 0.01)
+        lp._state['fetched'] = 0.0
+        lp.publish(_frame(w=640, h=360))
+        self.assertEqual(lp.seq(), 0, 'encoded a frame nobody had asked for')
+
+    def test_a_reader_restores_the_watched_cadence(self):
+        self._age_last_publish_by(lp._INTERVAL + 0.01)
+        lp.note_fetch()
+        lp.publish(_frame(w=640, h=360))
+        self.assertEqual(lp.seq(), 1)
+
+    def test_a_stale_reader_does_not_count(self):
+        """Watching has to expire, or one fetch would hold the fast cadence
+        open for the rest of the run."""
+        self._age_last_publish_by(lp._INTERVAL + 0.01)
+        lp._state['fetched'] = time.time() - (lp._WATCH_TTL + 0.01)
+        lp.publish(_frame(w=640, h=360))
+        self.assertEqual(lp.seq(), 0)
+
+    def test_unwatched_still_publishes_eventually(self):
+        """The gate must never latch. `seq` is the UI's cache key, so if it
+        stopped moving a tab coming back would have nothing to refetch and the
+        preview would stay dead for the rest of the run."""
+        self._age_last_publish_by(lp._IDLE_INTERVAL + 0.01)
+        lp._state['fetched'] = 0.0
+        lp.publish(_frame(w=640, h=360))
+        self.assertEqual(lp.seq(), 1, 'unwatched publishing latched off')
+
+    def test_idle_cadence_is_the_slower_one(self):
+        self.assertGreaterEqual(lp._IDLE_INTERVAL, lp._INTERVAL)
+
+    def test_reset_forgets_the_reader(self):
+        lp.note_fetch()
+        lp.reset()
+        self.assertEqual(lp._state['fetched'], 0.0)
 
     def test_seq_is_what_the_ui_keys_on(self):
         """It must advance once per published frame, so the <img> URL changes."""

@@ -2273,6 +2273,11 @@ def live_frame(seq: int = 0):
     exists. 204 while nothing has been published (before the first frame, or
     with ROOP_LIVE_PREVIEW=0), which the UI reads as "show the still instead".
     """
+    # Tells the pipeline someone is actually watching. Without a reader the
+    # publish drops to a slow keep-alive cadence, so a run with this tab hidden
+    # (or Pinokio parked on the Terminal) stops encoding frames for nobody.
+    # Noted even on the 204 path — asking and getting nothing is still watching.
+    live_preview.note_fetch()
     data, cur_seq, size = live_preview.snapshot()
     if not data:
         return Response(status_code=204)

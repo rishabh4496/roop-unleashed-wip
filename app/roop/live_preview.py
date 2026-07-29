@@ -21,11 +21,25 @@ This does the same job for a fixed, tiny budget:
     nothing extra and the API thread never touches a numpy array (no lock held
     across an encode, no copy needed for thread safety).
 
-Measured shape of the work (this machine, 40 iterations): resize plus imencode
-is 3.7 ms per publish from 1080p and 5.3 ms from 4K, twice a second — about 1%
-of one thread, and OpenCV releases the GIL for both. The frame it produces is
-20-33 KB, i.e. under 70 KB/s over loopback. Set ROOP_LIVE_PREVIEW=0 to switch
-it off entirely (publish becomes a bare return).
+  * WATCHED-GATED — the full cadence only runs while someone is actually
+    fetching the result. Nothing about a hidden Pinokio tab stops the pipeline,
+    so this used to encode a frame twice a second for a browser that had not
+    asked for one since the run started. See _INTERVAL vs _IDLE_INTERVAL below.
+
+Measured shape of the work (this machine): resize plus imencode is 3.7 ms per
+publish from 1080p (median of 30; p90 8.1) and 6.8 ms from 4K, twice a second —
+about 0.7% of one thread, and OpenCV releases the GIL for both. A frame that
+does NOT publish costs 0.27 us, so the per-frame tax on the swap path is
+nothing. The frame it produces is 20-33 KB, i.e. under 70 KB/s over loopback.
+Set ROOP_LIVE_PREVIEW=0 to switch it off entirely (publish becomes a bare
+return).
+
+For the avoidance of a wrong conclusion: these numbers are why the live preview
+is NOT the reason a render goes faster with the Pinokio Terminal on screen. The
+cost above is paid whether or not anyone is looking, so it cannot produce a
+difference between the two. That difference is on the browser's side of the
+loopback — chiefly the backdrop-filter panels layered over this image, which
+each re-blur when it changes. See `data-render-lite` in react-ui/src/index.css.
 """
 
 import os
@@ -56,16 +70,43 @@ try:
 except ValueError:
     _QUALITY = 88
 
+# Cadence when nobody is fetching the result, and how long after a fetch we go
+# on believing someone is there.
+#
+# This is NOT simply "stop publishing when unwatched", because the UI only
+# refetches when `seq` changes (it is the image URL's cache key) — so a gate
+# that froze `seq` would have no way to notice a viewer coming back, and the
+# preview would stay dead for the rest of the run. Publishing slowly instead
+# keeps `seq` moving, so a returning tab picks a frame up on its next progress
+# poll, at ~1/25th the cost of the watched cadence.
+try:
+    _IDLE_INTERVAL = max(_INTERVAL, float(os.environ.get('ROOP_LIVE_PREVIEW_IDLE_MS', '3000')) / 1000.0)
+except ValueError:
+    _IDLE_INTERVAL = 3.0
+
+_WATCH_TTL = 4.0
+
 _lock = threading.Lock()
 # jpeg: encoded bytes, seq: bumped on every publish (the UI's cache key),
-# t: last publish time (throttle), size: source frame size for the caption.
-_state = {'jpeg': None, 'seq': 0, 't': 0.0, 'size': (0, 0)}
+# t: last publish time (throttle), size: source frame size for the caption,
+# fetched: last time anyone read the result (0 = nobody ever has).
+_state = {'jpeg': None, 'seq': 0, 't': 0.0, 'size': (0, 0), 'fetched': 0.0}
 
 
 def reset():
     """Drop the previous run's frame so a new run never shows a stale one."""
     with _lock:
-        _state.update({'jpeg': None, 'seq': 0, 't': 0.0, 'size': (0, 0)})
+        _state.update({'jpeg': None, 'seq': 0, 't': 0.0, 'size': (0, 0), 'fetched': 0.0})
+
+
+def note_fetch():
+    """Record that something read the live frame — called by /api/live_frame.
+
+    Deliberately a bare timestamp write rather than a counter or a viewer set:
+    the only question publish() asks is "has anyone looked recently", and the
+    answer must cost nothing to record on a request that runs during a render.
+    """
+    _state['fetched'] = time.time()
 
 
 def enabled():
@@ -80,8 +121,12 @@ def publish(frame):
     now = time.time()
     # Read without the lock: a torn read here can only mean one extra (or one
     # skipped) publish, and both are harmless. Taking the lock per frame would
-    # put every worker thread through a mutex for a preview.
-    if now - _state['t'] < _INTERVAL:
+    # put every worker thread through a mutex for a preview. (Measured: eight
+    # threads released together onto an expired throttle still produce one
+    # encode, because the `_state['t']` write lands before any of them reaches
+    # the resize — but the design does not depend on that.)
+    watched = (now - _state['fetched']) < _WATCH_TTL
+    if now - _state['t'] < (_INTERVAL if watched else _IDLE_INTERVAL):
         return
     _state['t'] = now
     try:
