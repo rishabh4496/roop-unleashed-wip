@@ -10,7 +10,14 @@ function CrossfadeImage({ src, className, style, fadeMs = 200, onLoad }) {
     setLayers((s) => {
       if (src === s[s.front]) return s;
       const back = s.front === 'a' ? 'b' : 'a';
-      if (src === s[back]) return s;
+      // The back layer is ALREADY showing this exact image — stepping back onto
+      // a frame whose render is still cached puts the previous src back. An
+      // <img> whose src is re-assigned to what it already holds fires no load
+      // event, so the promote below would never run: the stage stayed on the
+      // other frame while the playhead said otherwise, and stepping between two
+      // frames looked like the picture was flicking back and forth at random.
+      // It is loaded, so promote it here instead of waiting for a load.
+      if (src === s[back]) return { ...s, front: back };
       return { ...s, [back]: src };
     });
   }, [src]);

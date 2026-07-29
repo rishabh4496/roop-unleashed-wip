@@ -11,15 +11,21 @@ This does the same job for a fixed, tiny budget:
 
   * THROTTLED — at most one frame every ROOP_LIVE_PREVIEW_MS (default 500), so
     the cost does not scale with frame rate. At 20 fps that is 1 frame in 10.
-  * DOWNSCALED — to ROOP_LIVE_PREVIEW_WIDTH (default 480), which is more than
-    the box can show, before anything else touches it.
+  * DOWNSCALED — to ROOP_LIVE_PREVIEW_WIDTH (default 960) before anything else
+    touches it. The first version used 480 on the reasoning that it was "more
+    than the box can show", which is only true at devicePixelRatio 1: the box is
+    ~480 CSS px wide, so on the HiDPI displays these renders are watched on it
+    was being stretched 2x and looked heavily pixelated. 960 covers a 2x box
+    with nothing to spare, which is why it is the default rather than more.
   * ENCODED ONCE — to JPEG here rather than per HTTP poll, so N pollers cost
     nothing extra and the API thread never touches a numpy array (no lock held
     across an encode, no copy needed for thread safety).
 
-Measured shape of the work: resize 1080p→480 plus imencode is ~3 ms, twice a
-second — under 0.1% of one thread, and OpenCV releases the GIL for both. Set
-ROOP_LIVE_PREVIEW=0 to switch it off entirely (publish becomes a bare return).
+Measured shape of the work (this machine, 40 iterations): resize plus imencode
+is 3.7 ms per publish from 1080p and 5.3 ms from 4K, twice a second — about 1%
+of one thread, and OpenCV releases the GIL for both. The frame it produces is
+20-33 KB, i.e. under 70 KB/s over loopback. Set ROOP_LIVE_PREVIEW=0 to switch
+it off entirely (publish becomes a bare return).
 """
 
 import os
@@ -37,9 +43,18 @@ except ValueError:
     _INTERVAL = 0.5
 
 try:
-    _MAX_W = max(160, int(os.environ.get('ROOP_LIVE_PREVIEW_WIDTH', '480')))
+    _MAX_W = max(160, int(os.environ.get('ROOP_LIVE_PREVIEW_WIDTH', '960')))
 except ValueError:
-    _MAX_W = 480
+    _MAX_W = 960
+
+# JPEG quality for that frame. 72 is a web-photo default and shows its blocking
+# on the flat skin the swap is judged on; 88 costs ~1.5x the bytes of a frame
+# that is already tiny and is what stops the live view looking worse than the
+# render it is reporting on.
+try:
+    _QUALITY = min(100, max(40, int(os.environ.get('ROOP_LIVE_PREVIEW_QUALITY', '88'))))
+except ValueError:
+    _QUALITY = 88
 
 _lock = threading.Lock()
 # jpeg: encoded bytes, seq: bumped on every publish (the UI's cache key),
@@ -77,7 +92,7 @@ def publish(frame):
                                interpolation=cv2.INTER_AREA)
         else:
             small = frame
-        ok, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+        ok, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), _QUALITY])
         if not ok:
             return
         data = np.asarray(buf).tobytes()

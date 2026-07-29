@@ -66,6 +66,11 @@ export default function FaceSwap({
   const [frame, setFrame] = useState(1);
   const [maxFrames, setMaxFrames] = useState(1);
   const [previewSrc, setPreviewSrc] = useState('');
+  // Which view `previewSrc` was actually rendered for, as `${index}_${frame}`.
+  // A render lags the playhead by however long the swap takes, so without this
+  // the stage had no way to tell "the swap for the frame you are looking at"
+  // from "the swap for the frame you just left" and happily showed the latter.
+  const [previewFor, setPreviewFor] = useState('');
   const [previewFaces, setPreviewFaces] = useState([]);
   const [previewPersonIds, setPreviewPersonIds] = useState([]);
   const [previewKps, setPreviewKps] = useState([]);
@@ -875,7 +880,7 @@ export default function FaceSwap({
         setSelTarget(sel);
         setMaxFrames(mf);
         setFrame(sameView ? v.frame : 1);
-        if (sameView && v.image) setPreviewSrc(v.image);
+        if (sameView && v.image) { setPreviewSrc(v.image); setPreviewFor(`${sel}_${v.frame}`); }
       }
     }).catch(() => {});
 
@@ -894,8 +899,8 @@ export default function FaceSwap({
   }, []);
 
   const refreshPreview = async (opts = {}) => {
-    if (targets.length === 0) { setPreviewSrc(''); return; }
-    
+    if (targets.length === 0) { setPreviewSrc(''); setPreviewFor(''); return; }
+
     const idx = opts.index ?? selTarget;
     const fr = opts.frame ?? frame;
     const fake = opts.fake ?? fakePreview;
@@ -917,6 +922,7 @@ export default function FaceSwap({
         setPreviewPersonIds(cached.personIds || []);
         setPreviewKps(cached.kps || []);
         setPreviewSrc(cached.image);
+        setPreviewFor(`${idx}_${fr}`);
         return;
       }
     } else {
@@ -945,6 +951,7 @@ export default function FaceSwap({
       setPreviewPersonIds(res.person_ids || []);
       setPreviewKps(res.kps || []);
       setPreviewSrc(res.image || '');
+      setPreviewFor(res.image ? `${idx}_${fr}` : '');
       if (res.image) {
         setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], kps: res.kps || [], image: res.image });
       }
@@ -1378,7 +1385,7 @@ export default function FaceSwap({
     setTargets(res.targets);
     const newSel = res.selected_target_index || 0;
     setSelTarget(newSel);
-    if (res.targets.length === 0) { setPreviewSrc(''); setMaxFrames(1); }
+    if (res.targets.length === 0) { setPreviewSrc(''); setPreviewFor(''); setMaxFrames(1); }
     else { setMaxFrames(res.targets[newSel]?.frames || 1); setFrame(1); }
   };
 
@@ -1564,6 +1571,37 @@ export default function FaceSwap({
   // Until the first frame of a new target has loaded there is nothing better to
   // show, so fall through to the request URL rather than blanking the box.
   const rawUrl = loadedRawUrl || rawReqUrl;
+
+  // Does the raw frame currently DECODED belong to the view we are looking at?
+  // Read the identity out of the URL rather than comparing it to rawReqUrl:
+  // settling after a drag drops the &width=960 scrub parameter, so a straight
+  // string compare calls the just-loaded frame stale and sends the stage back
+  // to the frame before it.
+  const rawIsCurrent = useMemo(() => {
+    const m = /[?&]index=(\d+)&frame=(\d+)/.exec(loadedRawUrl || '');
+    return !!m && Number(m[1]) === selTarget && Number(m[2]) === frame;
+  }, [loadedRawUrl, selTarget, frame]);
+
+  // What the stage's "after" layer shows, in strict preference order. The rule
+  // this encodes is that the picture may only ever move FORWARD onto the frame
+  // the playhead is on — never back onto one already left. Stepping used to
+  // show the previous frame's swap (previewSrc lags by a whole render) and then
+  // jump forward once the new one landed, which read as the image flicking
+  // between two frames.
+  const stageAfterSrc = (() => {
+    if (isPlaying && bufferedSrc) return bufferedSrc;             // buffered player owns it
+    // Mid-drag there is no render for most frames and none is coming; the
+    // freshest decoded raw frame is what keeps a scrub feeling continuous.
+    if (scrubbingNow) return getCachedPreview(selTarget, frame)?.image || rawUrl;
+    if (previewSrc && previewFor === `${selTarget}_${frame}`) return previewSrc;
+    const cached = getCachedPreview(selTarget, frame)?.image;
+    if (cached) return cached;
+    if (rawIsCurrent) return loadedRawUrl;   // right frame, not swapped yet
+    // The new frame has not decoded yet either: hold whatever is already up
+    // rather than blanking or bouncing. It is replaced the moment either of
+    // the two branches above can answer.
+    return previewSrc || rawUrl;
+  })();
 
   // Keep a detached pop-out monitor in sync. It used to receive exactly one
   // frame — the one it was opened with — because nothing ever called
@@ -2936,7 +2974,7 @@ export default function FaceSwap({
             )}
             {targets.length > 0 && (
               <div className="pt-2 border-t border-white/5 flex justify-end">
-                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setTargetNames([]); setTargetFacesInfo([]); setFaceMapping({}); setPreviewSrc(''); }}>Clear targets</Button>
+                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setTargetNames([]); setTargetFacesInfo([]); setFaceMapping({}); setPreviewSrc(''); setPreviewFor(''); }}>Clear targets</Button>
               </div>
             )}
           </Section>
@@ -3522,7 +3560,7 @@ export default function FaceSwap({
                   />
                   <InteractivePreview
                     beforeSrc={(isPlaying && bufferedSrc) ? bufferedSrc : rawUrl}
-                    afterSrc={(!isScrubbing && !isPlaying) ? previewSrc : ((isPlaying && bufferedSrc) ? bufferedSrc : (getCachedPreview(selTarget, frame)?.image || rawUrl))}
+                    afterSrc={stageAfterSrc}
                     scrubbing={scrubbingNow}
                     onMaskChange={applyManualMask}
                     maskApplied={!!manualMask}

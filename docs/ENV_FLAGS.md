@@ -45,9 +45,10 @@ Defaults below are what the code falls back to when the variable is unset.
 | `ROOP_ENCODER_PRESET` | model default | CPU x264/x265 preset (e.g. `faster`) — lossless encode speedup at fixed CRF. |
 | `ROOP_RESUME` | 1 (on) | Crash-resume: write segments every chunk + manifest so an interrupted run continues. `0` disables. |
 | `ROOP_RESUME_CHUNK` | 1000 | Frames per resume segment (min 50). Also the granularity of the console's part tabs and of the "✓ part N written" lines. |
-| `ROOP_LIVE_PREVIEW` | 1 (on) | Publish the most recent processed frame for the processing box's live view (`/api/live_frame`). Throttled and downscaled, so unlike the per-frame full-frame copy this replaced, the cost does not scale with frame rate — measured 1.7 ms per publish on 1080p, i.e. ~3.4 ms per second of wall clock. `0` disables it and the box falls back to the last rendered preview still. |
+| `ROOP_LIVE_PREVIEW` | 1 (on) | Publish the most recent processed frame for the processing box's live view (`/api/live_frame`). Throttled and downscaled, so unlike the per-frame full-frame copy this replaced, the cost does not scale with frame rate — measured 3.7 ms per publish on 1080p and 5.3 ms on 4K, i.e. ~1% of one thread at the default interval. `0` disables it and the box falls back to the last rendered preview still. |
 | `ROOP_LIVE_PREVIEW_MS` | 500 | Minimum gap between published live frames. Lower is smoother and proportionally more expensive; a publish inside the gap costs one clock read. |
-| `ROOP_LIVE_PREVIEW_WIDTH` | 480 | Width the live frame is downscaled to before encoding (min 160). |
+| `ROOP_LIVE_PREVIEW_WIDTH` | 960 | Width the live frame is downscaled to before encoding (min 160). 960 rather than the box's ~480 CSS px because that box is 2x on a HiDPI display, where a 480px frame is visibly pixelated. |
+| `ROOP_LIVE_PREVIEW_QUALITY` | 88 | JPEG quality of the live frame (40-100). Lower shows blocking on flat skin, which makes the live view look worse than the render it reports on. |
 | `ROOP_RESUME_KEEP` | 0 (off) | Keep the segment parts + manifest after a deliberate **Stop** so that run can be resumed later. Off = Stop merges the parts into one finished output and deletes them. Crash-resume is unaffected either way. |
 
 ## Terminal progress output
