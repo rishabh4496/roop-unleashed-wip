@@ -92,6 +92,23 @@ _stage_lock = threading.Lock()
 _faces_done = 0
 
 
+def _say(msg):
+    """Terminal output that will not shred the progress bar.
+
+    Everything this module prints happens INSIDE a render: the restorer is built
+    lazily on the first face (ProcessMgr._expression_restorer), and the failure
+    paths fire per face. A bare print() lands in the middle of tqdm's rewritten
+    line and terminates it, turning one bar into a line per frame. Imported
+    lazily so the processor stays importable without ProcessMgr's runtime, and
+    degrading to print() if that ever fails — a status line has no business
+    killing a render."""
+    try:
+        from roop.procmgr_runtime import bar_write
+        bar_write(msg)
+    except Exception:
+        print(msg)
+
+
 @contextlib.contextmanager
 def _substage(name):
     if not _EXPR_PROFILE:
@@ -440,16 +457,16 @@ class Expression_LivePortrait:
             # Nothing 5-D survives the rewrite, so the normal provider list
             # applies — including CUDA, which the stock model has to exclude.
             warp_providers = providers
-            print("[Expression] Warping module: fully on the GPU — the two 5-D "
+            _say("[Expression] Warping module: fully on the GPU — the two 5-D "
                   "GridSample nodes were rewritten into TRT-native ops, so there "
                   "is no CPU partition.")
         else:
             warp_providers = warping_providers(providers)
             if warp_providers == ['CPUExecutionProvider']:
-                print("[Expression] No TensorRT provider — the warping module runs on CPU "
+                _say("[Expression] No TensorRT provider — the warping module runs on CPU "
                       "(~1.9s per face). Fine for a preview, far too slow for video.")
             else:
-                print("[Expression] Warping module: TensorRT with the two GridSample nodes "
+                _say("[Expression] Warping module: TensorRT with the two GridSample nodes "
                       "on CPU (~0.25s per face). TensorRT parser warnings about "
                       "'addGridSample ... nbDims == 4' are expected and silenced.")
 
@@ -482,7 +499,7 @@ class Expression_LivePortrait:
         # the contexts themselves are not thread-safe, only distinct ones are.
         size = expression_pool_size()
         if size >= 2:
-            print(f"[Expression] Session pool: {size} instances "
+            _say(f"[Expression] Session pool: {size} instances "
                   f"(~{size}x the VRAM of one restorer; ROOP_EXPR_POOL={size}).")
             self.pool = SessionPool(build_sessions, size)
             self.sessions = self.pool._items[0]
@@ -499,7 +516,7 @@ class Expression_LivePortrait:
             and _has_gpu_provider(self.sessions["appearance"].get_providers())
             and _has_gpu_provider(self.sessions["warping"].get_providers()))
         if self._chain:
-            print("[Expression] feature_3d stays on the GPU between the "
+            _say("[Expression] feature_3d stays on the GPU between the "
                   "appearance extractor and the warping module "
                   "(ROOP_EXPR_IOBINDING=0 to disable).")
 
@@ -510,7 +527,7 @@ class Expression_LivePortrait:
             self._exec = concurrent.futures.ThreadPoolExecutor(
                 max_workers=2 * max(1, size),
                 thread_name_prefix="expr")
-            print(f"[Expression] Overlapping the independent front-half calls "
+            _say(f"[Expression] Overlapping the independent front-half calls "
                   f"(ROOP_EXPR_PARALLEL={parallel}"
                   f"{'; second motion session built' if parallel >= 2 else ''}).")
 
@@ -680,13 +697,13 @@ class Expression_LivePortrait:
             # before chaining existed, so it cannot fail for the same reason.
             if self._chain:
                 self._chain = False
-                print(f"[Expression] device-chained feature_3d failed ({e}); "
+                _say(f"[Expression] device-chained feature_3d failed ({e}); "
                       f"falling back to host round-trip for the rest of the run.")
                 try:
                     return self._infer_once(prepared, strength, region, use_stitching)
                 except Exception as e2:
                     e = e2
-            print(f"[Expression] LivePortrait restore failed: {e}")
+            _say(f"[Expression] LivePortrait restore failed: {e}")
             return None
 
     def _infer_once(self, prepared, strength, region, use_stitching):
@@ -738,7 +755,7 @@ class Expression_LivePortrait:
                     bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_CUBIC)
             return bgr
         except Exception as e:
-            print(f"[Expression] LivePortrait restore failed: {e}")
+            _say(f"[Expression] LivePortrait restore failed: {e}")
             return swapped_bgr
         finally:
             _maybe_report()

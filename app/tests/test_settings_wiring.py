@@ -195,5 +195,55 @@ class TestSettingsPersistence(unittest.TestCase):
             self.assertIn(field, saved, f"{field} is loaded but never saved")
 
 
+class TestPerfKnobWiring(unittest.TestCase):
+    """The env-backed 'Advanced performance' knobs, which have a LONGER chain
+    than the render settings above and no other test covering them.
+
+    A perf knob reaches the code through five places, and missing any one fails
+    silently in a different way: Settings.jsx (invisible), Settings.__init__
+    (never reaches the UI, since GET returns CFG.__dict__), save() (resets on
+    restart), run.py (saved but never applied — the worst, because the UI shows
+    the value the run is not using), and finally the env var the consumer reads.
+    """
+
+    def _jsx_perf_keys(self):
+        src = (REPO / "react-ui" / "src" / "components" / "Settings.jsx").read_text(encoding="utf-8")
+        return set(re.findall(r"set\('(perf_[a-z_0-9]+)'", src))
+
+    def _settings_source(self):
+        return (REPO / "app" / "settings.py").read_text(encoding="utf-8")
+
+    def test_every_ui_perf_knob_is_loaded_and_saved(self):
+        src = self._settings_source()
+        saved = set(re.findall(r"'(perf_[a-z_0-9]+)':\s*self\.", src))
+        keys = self._jsx_perf_keys()
+        self.assertTrue(keys, "no perf knobs found in Settings.jsx — regex stale?")
+        for key in sorted(keys):
+            self.assertRegex(src, rf"self\.{key}\s*=\s*self\.default_get\(",
+                             f"{key} is in the UI but not loaded by Settings.__init__")
+            self.assertIn(key, saved, f"{key} is loaded but never written by save()")
+
+    def test_every_ui_perf_knob_reaches_an_env_var(self):
+        """run.py is what turns a config value into the env var the consumer
+        reads; a knob missing here saves cleanly and does nothing."""
+        run_src = (REPO / "app" / "run.py").read_text(encoding="utf-8")
+        for key in sorted(self._jsx_perf_keys()):
+            # Two shapes: _set(VAR, cfg.get(key)) for free-form values, and the
+            # (var, key) tuple loop for the auto/on/off tri-states.
+            self.assertTrue(
+                re.search(rf"_set\('([A-Z_]+)',\s*cfg\.get\('{key}'\)\)", run_src)
+                or re.search(rf"'{key}'\)", run_src),
+                f"{key} is in the UI but run.py never maps it to an env var")
+
+    def test_the_expression_pool_knob_is_wired_end_to_end(self):
+        """The most recently added one, and the one whose absence prompted this
+        test: it must land on the exact env var session_pool reads."""
+        self.assertIn("perf_expr_pool", self._jsx_perf_keys())
+        self.assertIn("_set('ROOP_EXPR_POOL', cfg.get('perf_expr_pool'))",
+                      (REPO / "app" / "run.py").read_text(encoding="utf-8"))
+        self.assertIn("ROOP_EXPR_POOL",
+                      (REPO / "app" / "roop" / "session_pool.py").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

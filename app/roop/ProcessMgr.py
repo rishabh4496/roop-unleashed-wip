@@ -2374,10 +2374,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         _ex = float(getattr(roop.globals, 'expression_restore_strength', 0.0) or 0.0)
         if _ex > 0.0:
             try:
-                # Built before the guard so its pooled-ness can decide the guard:
-                # with a pool of independent TensorRT contexts this stage does not
-                # need the global lock, and holding it would keep the one stage
-                # that runs single-file while swap/mask/detect all run N-wide.
+                # Built before the guard because the restorer decides the guard:
+                # self_excluding is true when it already keeps its own TensorRT
+                # contexts exclusive (a slot lease when pooled, its own lock when
+                # not), which is the only thing the global lock is for. Taking it
+                # anyway would serialise this stage against unrelated ones.
                 restorer = self._expression_restorer()
                 _region = getattr(roop.globals, 'expression_restore_region', 'all')
                 _crop = enhanced_frame if enhanced_frame is not None else fake_frame
