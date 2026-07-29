@@ -224,6 +224,10 @@ class Settings:
         # behind a per-file probe with automatic cv2 fallback; off disables.
         self.perf_nvdec = self.default_get(data, 'perf_nvdec', 'auto')
         self.perf_detmask_pool = self.default_get(data, 'perf_detmask_pool', 'auto')
+        # Expression restorer contexts. 'auto' is VRAM-tiered (0 below 11.5GB,
+        # else 2). Worth raising to 3 only when the STAGE TIMING breakdown shows
+        # 'expression' needing more concurrent threads than the pool has slots.
+        self.perf_expr_pool = self.default_get(data, 'perf_expr_pool', 'auto')
         self.perf_encoder_preset = self.default_get(data, 'perf_encoder_preset', 'auto')
         self.perf_profile = self.default_get(data, 'perf_profile', 'auto')       # auto|on|off
         self.perf_batch_swap = self.default_get(data, 'perf_batch_swap', 'auto')  # auto|on|off
@@ -322,6 +326,7 @@ class Settings:
             'perf_trt_pool': self.perf_trt_pool,
             'perf_nvdec': self.perf_nvdec,
             'perf_detmask_pool': self.perf_detmask_pool,
+            'perf_expr_pool': self.perf_expr_pool,
             'perf_encoder_preset': self.perf_encoder_preset,
             'perf_profile': self.perf_profile,
             'perf_batch_swap': self.perf_batch_swap,
