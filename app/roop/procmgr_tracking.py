@@ -24,7 +24,7 @@ import roop.globals
 from roop import session_pool
 from roop.face_util import get_all_faces, analysis_pooled
 from roop.utilities import compute_cosine_distance
-from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC, ChunkedProgress, bar_write
+from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC, ChunkedProgress, bar_write, publish_eta
 
 
 class TrackingMixin:
@@ -406,6 +406,10 @@ class TrackingMixin:
                 # Drive the UI progress bar so the pre-pass isn't a silent black box.
                 if self.progress_gradio is not None and (idx % 10 == 0 or idx == 1):
                     tot = frame_count or idx
+                    # The pre-pass is minutes long and has its own rate, so it
+                    # publishes its own ETA too — otherwise the UI would show a
+                    # stale swap-stage figure through the whole of it.
+                    publish_eta(pbar)
                     self.progress_gradio((idx, tot), desc=desc,
                                          total=tot, unit='frames')
                 if frame_count and idx >= frame_count:

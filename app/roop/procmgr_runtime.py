@@ -327,6 +327,11 @@ class ChunkedProgress(tqdm):
         self._max_gap = _progress_max_gap()
         self._last_n = 0
         self._last_t = time.perf_counter()
+        # The rate the last emitted chunk line divided by. Kept so the web UI
+        # can report the same "N left" this bar last printed (see publish_eta);
+        # tqdm's own smoothed rate is not usable here, because the bar never
+        # redraws and so the EMA it comes from is never updated.
+        self._last_rate = None
 
     # perf_counter, not time(): time() has ~15 ms granularity on Windows, so a
     # chunk that goes by quickly measures as having taken exactly zero seconds
@@ -362,6 +367,7 @@ class ChunkedProgress(tqdm):
             rate = (self.n / elapsed) if elapsed > 0 else None
         self._last_n = self.n
         self._last_t = now
+        self._last_rate = rate          # what the web UI's ETA must divide by
         try:
             print(self._chunk_line(rate), flush=True)
         except Exception:
@@ -393,6 +399,82 @@ class ChunkedProgress(tqdm):
         if self.postfix:
             bits.append(str(self.postfix))
         return f"{COLOR_ACCENT}{head}{COLOR_RESET}  ·  " + "  ·  ".join(bits)
+
+
+# ── The terminal's ETA, shared with the web UI ───────────────────────────────
+# The web UI used to estimate "time left" itself, as
+# elapsed * (1 - fraction) / fraction. That is only right if the whole run has
+# been going at the rate the finished part went at — and it has not: a run
+# spends minutes on model loads, TensorRT engine builds and the temporal
+# pre-pass before the swap loop starts, and every one of those seconds is
+# charged against a frame counter that was still at zero. Observed on a real
+# run: 12m47s elapsed, 7,233 of 44,755 frames, 22.5 fps. The bar says 37,522
+# frames / 22.5 = 28 minutes left. The old formula said 66, because ~7 of those
+# 12 minutes were setup it silently assumed would keep recurring.
+#
+# So the UI no longer estimates. The bar publishes the number it is displaying
+# and the UI shows that, which is the only way for the two to agree by
+# construction rather than by coincidence.
+_eta_state = {"seconds": None, "t": 0.0}
+
+
+def _bar_eta_seconds(bar):
+    """Seconds remaining as the TERMINAL is currently rendering them, or None.
+
+    Two display paths, two answers, and this has to give whichever one is on
+    screen (see ChunkedProgress):
+
+      * chunked — the printed line divides by that chunk's own rate, so reuse
+        the rate the last chunk printed. Between chunks the count keeps falling
+        against that rate, so the UI counts down smoothly and lands exactly on
+        the terminal's figure each time a new chunk prints.
+      * bar — mirror tqdm.format_meter: the smoothed rate from format_dict,
+        falling back to the lifetime average exactly as tqdm does when the EMA
+        has nothing in it yet.
+    """
+    try:
+        d = bar.format_dict
+        n = int(d.get("n") or 0)
+        total = int(d.get("total") or 0)
+        if not total or n >= total:
+            return None
+        rate = getattr(bar, "_last_rate", None) if getattr(bar, "_chunked", False) else d.get("rate")
+        if not rate:
+            elapsed = d.get("elapsed") or 0
+            rate = (n / elapsed) if (elapsed > 0 and n > 0) else None
+        if not rate:
+            return None
+        return (total - n) / rate
+    except Exception:
+        return None                     # an ETA must never break a render
+
+
+def publish_eta(bar):
+    """Offer the current bar's remaining time to the web UI. Called per frame,
+    so it does no work beyond the arithmetic above."""
+    secs = _bar_eta_seconds(bar)
+    if secs is None:
+        return
+    _eta_state["seconds"] = secs
+    _eta_state["t"] = time.time()
+
+
+def reset_eta():
+    _eta_state.update({"seconds": None, "t": 0.0})
+
+
+def eta_seconds(max_age=15.0):
+    """The published ETA, or None if no bar has reported recently.
+
+    Stale values are dropped rather than shown: between stages (encoding,
+    muxing) nothing is updating a frame counter, and an ETA frozen at whatever
+    the last stage happened to be saying is worse than none — the UI falls back
+    to its own estimate, which at least still moves.
+    """
+    secs = _eta_state["seconds"]
+    if secs is None or (time.time() - _eta_state["t"]) > max_age:
+        return None
+    return secs
 
 
 def bar_write(msg):

@@ -18,7 +18,7 @@ from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -1445,6 +1445,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             rate = progress.format_dict.get('rate', 0.0) if hasattr(progress, 'format_dict') else 0.0
             fps_str = f" ({rate:.1f} FPS)" if rate and rate > 0 else ""
             desc = f"Processing frame {n} / {total}{fps_str}"
+            # Hand the web UI the remaining time THIS bar is showing, rather
+            # than leaving it to extrapolate from the run fraction — which
+            # charges model loads and the pre-pass to the swap rate and comes
+            # out more than twice too high. Not routed through progress_gradio:
+            # that shim is gradio.Progress-compatible and the legacy Gradio UI
+            # still passes a real one, which would reject an extra kwarg.
+            _publish_eta(progress)
             self.progress_gradio((n, total), desc=desc, total=total, unit='frames')
 
 

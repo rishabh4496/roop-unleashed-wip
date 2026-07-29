@@ -49,6 +49,7 @@ from roop.capturer import get_video_frame, get_video_frame_total, get_image_fram
 from roop.ProcessEntry import ProcessEntry
 from roop import segment_writer
 from roop import live_preview
+from roop import procmgr_runtime as _procmgr_runtime
 import ui.globals as ui_globals
 
 app = FastAPI()
@@ -1924,6 +1925,9 @@ def _run_swap(payload):
     # Likewise the live frame — otherwise a new run opens showing the last
     # frame of the previous one.
     live_preview.reset()
+    # And the previous run's "time left", so this one's opening seconds fall back
+    # to the UI's own estimate rather than inheriting a finished run's figure.
+    _procmgr_runtime.reset_eta()
     _push_log("▶ Starting job…", force=True)
     _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
     _run_stats.update({"start": time.time(), "frames_done": 0, "frames_total": 0})
@@ -2251,6 +2255,10 @@ def get_progress():
     # inlining a base64 still into every poll is what made this expensive.
     return {**_progress, "output": _last_output, "live_frame": "",
             "live_seq": live_preview.seq(),
+            # Seconds remaining as the TERMINAL's progress bar is showing them.
+            # None between stages (nothing is counting frames during encode/mux)
+            # and during start-up, where the UI falls back to its own estimate.
+            "eta_s": _procmgr_runtime.eta_seconds(),
             # Epoch seconds the run started, so elapsed/ETA survive a webview
             # reload (Pinokio reloads it on every tab switch). The UI used to
             # restart its own clock from zero there, which made a 40-minute run

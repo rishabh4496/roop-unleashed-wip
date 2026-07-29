@@ -1585,7 +1585,24 @@ export default function FaceSwap({
   const prog = progress.progress || 0;
 
   const elapsedMs = progress.processing && startTime ? Date.now() - startTime : 0;
-  const etaMs = progress.processing && prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0;
+
+  // "Time left" comes from the terminal's own progress bar (`eta_s`), so the two
+  // agree by construction. It is not derived here any more:
+  // elapsed * (1 - prog) / prog assumes the whole run so far went at the rate
+  // the finished frames went at, and it did not — model loads, TensorRT engine
+  // builds and the temporal pre-pass all bill minutes against a frame counter
+  // still sitting at zero, then get extrapolated over the remaining 84%. On a
+  // real run (12m47s in, 7,233/44,755 frames, 22.5 fps) the bar said 28 minutes
+  // and this formula said 66.
+  //
+  // The old formula stays as the fallback for the windows where no bar is
+  // counting frames — start-up, and the encode/mux tail — because a rough
+  // number that moves beats a blank. `eta_s` is null in exactly those windows.
+  const etaMs = progress.processing
+    ? (typeof progress.eta_s === 'number' && progress.eta_s > 0
+        ? progress.eta_s * 1000
+        : (prog > 0.01 ? (elapsedMs * (1 - prog)) / prog : 0))
+    : 0;
   // While actively scrubbing the timeline (or playing back) each frame is a
   // fresh server fetch, so request a lightweight downscaled frame — a full-res
   // HD/4K JPEG per frame makes dragging feel sluggish. Snap back to full
