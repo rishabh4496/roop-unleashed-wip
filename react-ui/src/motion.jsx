@@ -64,7 +64,7 @@ export const viewTransition = {
 
 // Drop-in staggered container. Children should be <Reveal> (or any motion
 // element with the fadeUp variants and no own initial/animate).
-export const Stagger = ({ children, className = '', amount = 0.12, ...rest }) => (
+export const Stagger = ({ children, className = '', ...rest }) => (
   <motion.div
     className={className}
     variants={staggerParent}

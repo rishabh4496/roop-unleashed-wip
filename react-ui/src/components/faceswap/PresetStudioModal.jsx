@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from '../../motion';
+import { motion } from '../../motion';
 
 /**
  * PresetStudioModal

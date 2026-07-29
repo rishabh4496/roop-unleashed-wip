@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, spring } from '../motion';
 
@@ -35,16 +35,24 @@ export function ConfirmHost() {
     return () => { _emit = null; };
   }, []);
 
-  const close = (value) => {
+  const close = useCallback((value) => {
     if (dialog) dialog.resolve(value);
     setDialog(null);
-  };
-  const onConfirm = () => close(dialog?.kind === 'prompt' ? text : true);
-  const onCancel = () => close(dialog?.kind === 'prompt' ? null : false);
+  }, [dialog]);
+  const onConfirm = useCallback(
+    () => close(dialog?.kind === 'prompt' ? text : true),
+    [close, dialog?.kind, text],
+  );
+  const onCancel = useCallback(
+    () => close(dialog?.kind === 'prompt' ? null : false),
+    [close, dialog?.kind],
+  );
 
   // Focus the input (prompt) for immediate typing; Esc cancels, Enter confirms.
   useEffect(() => {
-    if (dialog?.kind === 'prompt') setTimeout(() => inputRef.current?.select(), 30);
+    if (dialog?.kind !== 'prompt') return undefined;
+    const timer = setTimeout(() => inputRef.current?.select(), 30);
+    return () => clearTimeout(timer);
   }, [dialog]);
   useEffect(() => {
     if (!dialog) return;
@@ -54,7 +62,7 @@ export function ConfirmHost() {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [dialog, text]);
+  }, [dialog, onCancel, onConfirm]);
 
   const danger = dialog?.danger;
 

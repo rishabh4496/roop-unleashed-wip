@@ -63,13 +63,14 @@ export default function ProcessingTerminal({
 
   const errorCount = useMemo(() => log.filter((l) => isError(l.msg)).length, [log]);
   const activePart = typeof tab === 'number' ? parts.find((p) => p.index === tab) : null;
+  const lastShownSeq = shown.length ? shown[shown.length - 1].seq : null;
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     if (nearBottom) bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [shown.length, shown[shown.length - 1]?.seq, tab]);
+  }, [shown.length, lastShownSeq, tab]);
 
   const handleCopy = () => {
     // Copy what is on screen — a part tab is how you hand over the log for the

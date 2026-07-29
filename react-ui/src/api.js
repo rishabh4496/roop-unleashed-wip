@@ -24,8 +24,16 @@ const withDeadline = (opts = {}) => {
   if (!opts.timeout) return { signal: opts.signal, done: () => {} };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new Error('Request timed out')), opts.timeout);
-  opts.signal?.addEventListener('abort', () => ctrl.abort(opts.signal.reason), { once: true });
-  return { signal: ctrl.signal, done: () => clearTimeout(timer) };
+  const abortFromCaller = () => ctrl.abort(opts.signal.reason);
+  if (opts.signal?.aborted) abortFromCaller();
+  else opts.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  return {
+    signal: ctrl.signal,
+    done: () => {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', abortFromCaller);
+    },
+  };
 };
 
 export const getJSON = (path, opts = {}) => {
