@@ -77,6 +77,14 @@ export default function Gallery({ notify, setSettings, setTab }) {
       await postJSON('/api/output/delete', { name });
       notify(`Deleted ${name}`);
       setFiles((prev) => prev.filter((f) => f.name !== name));
+      // Drop it from the selection too, or the bulk count keeps counting a
+      // file that is already gone and the next bulk delete 404s on it.
+      setSelectedFiles((prev) => {
+        if (!prev.has(name)) return prev;
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
     } catch (e) {
       notify(e.message, 'error');
     }
@@ -92,7 +100,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
   };
 
   const toggleSelectAll = () => {
-    if (selectedFiles.size === filteredFiles.length && filteredFiles.length > 0) {
+    if (selectedVisible.length === filteredFiles.length && filteredFiles.length > 0) {
       setSelectedFiles(new Set());
     } else {
       setSelectedFiles(new Set(filteredFiles.map((f) => f.name)));
@@ -100,7 +108,11 @@ export default function Gallery({ notify, setSettings, setTab }) {
   };
 
   const bulkDelete = async () => {
-    const list = Array.from(selectedFiles);
+    // Only ever the files the user can currently SEE. The selection survives a
+    // change of filter or search, so acting on the raw set would delete files
+    // that scrolled out of view under a filter — with a count that did not
+    // match what is on screen.
+    const list = [...selectedVisible];
     if (list.length === 0) return;
     if (!(await confirmDialog({
       title: `Delete ${list.length} output files?`,
@@ -109,18 +121,26 @@ export default function Gallery({ notify, setSettings, setTab }) {
       danger: true
     }))) return;
 
-    let deletedCount = 0;
+    const deleted = [];
+    const failed = [];
     for (const name of list) {
       try {
         await postJSON('/api/output/delete', { name });
-        deletedCount++;
+        deleted.push(name);
       } catch (e) {
+        failed.push(name);
         notify(`Failed to delete ${name}: ${e.message}`, 'error');
       }
     }
-    notify(`Deleted ${deletedCount} files`);
-    setFiles((prev) => prev.filter((f) => !selectedFiles.has(f.name)));
-    setSelectedFiles(new Set());
+    // A file that failed to delete is still there — it has to stay on screen,
+    // and stay selected, or the only sign of the failure is a toast that fades.
+    const gone = new Set(deleted);
+    setFiles((prev) => prev.filter((f) => !gone.has(f.name)));
+    setSelectedFiles((prev) => new Set([...prev].filter((n) => !gone.has(n))));
+    if (deleted.length) {
+      notify(`Deleted ${deleted.length} file${deleted.length === 1 ? '' : 's'}`
+             + (failed.length ? ` · ${failed.length} could not be deleted` : ''));
+    }
   };
 
   const reuseAsTarget = async (name) => {
@@ -181,6 +201,13 @@ export default function Gallery({ notify, setSettings, setTab }) {
   });
 
   const totalSize = filteredFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+
+  // What "selected" means everywhere in this view: selected AND on screen.
+  const selectedVisible = filteredFiles
+    .filter((f) => selectedFiles.has(f.name))
+    .map((f) => f.name);
+  const allVisibleSelected =
+    filteredFiles.length > 0 && selectedVisible.length === filteredFiles.length;
 
   const getFormatDate = (timestamp) => {
     try {
@@ -296,15 +323,15 @@ export default function Gallery({ notify, setSettings, setTab }) {
               onClick={toggleSelectAll}
               className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 text-[10px] font-semibold transition-colors"
             >
-              {selectedFiles.size === filteredFiles.length && filteredFiles.length > 0 ? 'Deselect All' : 'Select All'}
+              {allVisibleSelected ? 'Deselect All' : 'Select All'}
             </button>
-            {selectedFiles.size > 0 && (
+            {selectedVisible.length > 0 && (
               <button
                 type="button"
                 onClick={bulkDelete}
                 className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-[10px] font-bold transition-all animate-fade-in flex items-center gap-1"
               >
-                <span>🗑️ Delete Selected ({selectedFiles.size})</span>
+                <span>🗑️ Delete Selected ({selectedVisible.length})</span>
               </button>
             )}
           </div>
@@ -364,7 +391,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                     <th className="p-3 w-10 text-center">
                       <input
                         type="checkbox"
-                        checked={selectedFiles.size === filteredFiles.length && filteredFiles.length > 0}
+                        checked={allVisibleSelected}
                         onChange={toggleSelectAll}
                         className="rounded accent-[var(--accent)] cursor-pointer"
                       />

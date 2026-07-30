@@ -128,12 +128,28 @@ export default function InteractivePreview({
     }
   };
 
-  // Auto-swipe animation effect
+  // Auto-swipe animation.
+  //
+  // Runs in both slider and blend mode — sliderPosition drives the wipe in one
+  // and the crossfade in the other, and the Auto button is offered in both, so
+  // gating the loop to 'slider' alone left the button lit and doing nothing.
+  // Only 'diff' has nothing for it to move, and there the button is hidden.
+  //
+  // Suspended whenever the page is hidden or a render is in flight: this ticks
+  // React state 60x a second, and the swap already wants every frame of GPU it
+  // can get (see the render-lite mode in FaceSwap/index.css).
+  const autoSwipeRuns = autoSwipe && compare && compareMode !== 'diff';
   useEffect(() => {
-    if (!autoSwipe || !compare || compareMode !== 'slider') return;
+    if (!autoSwipeRuns) return;
     let animId;
     let startTime;
     const animate = (time) => {
+      if (document.hidden
+          || document.documentElement.hasAttribute('data-render-lite')) {
+        startTime = undefined;          // resume from the current phase, no jump
+        animId = requestAnimationFrame(animate);
+        return;
+      }
       if (!startTime) startTime = time;
       const elapsed = (time - startTime) / 1000;
       const pos = 50 + 40 * Math.sin(elapsed * (Math.PI * 2 / 2.5));
@@ -142,7 +158,7 @@ export default function InteractivePreview({
     };
     animId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animId);
-  }, [autoSwipe, compare, compareMode]);
+  }, [autoSwipeRuns]);
 
   useEffect(() => {
     const handleMouseUp = () => {
@@ -194,13 +210,15 @@ export default function InteractivePreview({
         setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'));
       } else if (e.key.toLowerCase() === 'o' && compare) {
         setCompareMode((m) => (m === 'blend' ? 'slider' : 'blend'));
-      } else if (e.key.toLowerCase() === 'a' && compare) {
+      } else if (e.key.toLowerCase() === 'a' && compare && compareMode !== 'diff') {
+        // Same condition the Auto button renders under — a shortcut that
+        // silently flips hidden state is worse than one that does nothing.
         setAutoSwipe((a) => !a);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onToggleCompare, compare]);
+  }, [onToggleCompare, compare, compareMode]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -912,6 +930,16 @@ export default function InteractivePreview({
           <span>lens</span>
           <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">B</span>
           <span>brush</span>
+          {compare && (
+            <>
+              <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">O</span>
+              <span>blend</span>
+              <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">H</span>
+              <span>axis</span>
+              <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">A</span>
+              <span>auto</span>
+            </>
+          )}
         </div>
       )}
 

@@ -399,8 +399,7 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     """
     import base64 as _b64
     import cv2 as _cv2
-    from roop.face_util import (get_first_face, align_crop, rotate_anticlockwise,
-                                rotate_clockwise, face_rotation_action,
+    from roop.face_util import (get_first_face, align_crop, face_rotation_action,
                                 rotation_improves_upright)
 
     if frame_bgr is None:
@@ -418,11 +417,11 @@ def get_face_crop_from_frame(frame_bgr) -> str:
             offs = int(max(x1 - x0, y1 - y0) * 0.25)
             x0m = max(0, x0 - offs); y0m = max(0, y0 - offs)
             x1m = min(frame.shape[1], x1 + offs); y1m = min(frame.shape[0], y1 + offs)
-            cut = frame[y0m:y1m, x0m:x1m]
-            if action == "rotate_anticlockwise":
-                cut = rotate_anticlockwise(cut)
-            else:
-                cut = rotate_clockwise(cut)
+            # Share the processor's own turn table rather than an if/else here:
+            # the old `else` branch quietly turned clockwise for anything that
+            # was not anticlockwise, so a third action would have shown the user
+            # a crop the render never produces.
+            cut = ProcessMgr.apply_rotation(frame[y0m:y1m, x0m:x1m], action)
             rotface = get_first_face(cut)
             if (rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None
                     and rotation_improves_upright(face, rotface)):

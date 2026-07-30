@@ -463,6 +463,9 @@ def _unrotate_face_coords(face, orig_w, orig_h, angle):
         elif angle == "anticlockwise":
             unrot[..., 0] = orig_w - 1.0 - pts[..., 1]
             unrot[..., 1] = pts[..., 0]
+        elif angle == "180":
+            unrot[..., 0] = orig_w - 1.0 - pts[..., 0]
+            unrot[..., 1] = orig_h - 1.0 - pts[..., 1]
         return unrot
 
     x1, y1, x2, y2 = face.bbox
@@ -486,22 +489,25 @@ def _unrotate_face_coords(face, orig_w, orig_h, angle):
 
 
 def _rescue_rotated(frame: Frame):
-    """Retry detection on 90° rotated frame variants when standard orientation detection finds no faces."""
+    """Retry detection on rotated frame variants when the upright pass finds nothing.
+
+    All THREE turns are tried, not just the quarter ones. A detector that misses
+    a face on its side misses an inverted one too, and neither quarter turn
+    reaches it — both leave an upside-down face lying sideways, which is the
+    orientation the pass already failed on. The half turn is the only one that
+    presents it upright, so leaving it out means an inverted face in an
+    otherwise empty frame is simply never found.
+    """
     try:
         h, w = frame.shape[:2]
-        rot_cw = rotate_clockwise(frame)
-        faces = _detect_faces_raw(rot_cw)
-        if faces:
-            for f in faces:
-                _unrotate_face_coords(f, w, h, "clockwise")
-            return faces
-
-        rot_acw = rotate_anticlockwise(frame)
-        faces = _detect_faces_raw(rot_acw)
-        if faces:
-            for f in faces:
-                _unrotate_face_coords(f, w, h, "anticlockwise")
-            return faces
+        for angle, rotated in (("clockwise", rotate_clockwise),
+                               ("anticlockwise", rotate_anticlockwise),
+                               ("180", rotate_image_180)):
+            faces = _detect_faces_raw(rotated(frame))
+            if faces:
+                for f in faces:
+                    _unrotate_face_coords(f, w, h, angle)
+                return faces
     except Exception:
         pass
     return None
@@ -769,10 +775,18 @@ def rotate_image_180(image):
 # UPPER stays at the true break-even 135 and deliberately does NOT inherit that
 # margin.  Nothing near 135 deg is at risk of being an upright face, so the
 # only thing a margin buys there is lost recall — and it is expensive: a face
-# at 120 deg is 90 deg better off for being turned.  Past 135 a single 90 deg
-# turn cannot get within 45 deg of upright, so declining is correct.
+# at 120 deg is 90 deg better off for being turned.
+#
+# Past UPPER a 90 deg turn no longer helps — but a 180 deg one does, and that
+# is what the band above it is for.  An inverted face is exactly the case a
+# quarter turn cannot reach: at 165 deg either quarter turn leaves it at 75,
+# still on its side, while a half turn puts it at -15.  The two branches meet
+# without a seam because at exactly 135 deg they are equivalent (both land the
+# face at 45), so which side of the boundary a noisy reading falls on does not
+# matter.  Nor can the half turn misfire on an upright face: reaching 135 deg
+# of measured tilt would take 135 deg of error against a 9.1 deg axis.
 FACE_ROLL_LOWER = 54.5          # vs the 9.1 deg worst-case axis error
-FACE_ROLL_UPPER = 135.0         # beyond this a 90 deg turn no longer helps
+FACE_ROLL_UPPER = 135.0         # above this a quarter turn stops helping and a half turn starts
 
 
 def face_down_axis(face):
@@ -808,16 +822,19 @@ def _action_for_down_axis(dx, dy):
     Verified against the shipped rotate helpers rather than reasoned about: the
     forward point map of np.rot90 sends a direction (dx, dy) to (dy, -dx), so a
     chin pointing image-left (-x) is stood upright by rotate_anticlockwise, and
-    a chin pointing image-right (+x) by rotate_clockwise.
+    a chin pointing image-right (+x) by rotate_clockwise.  A chin pointing back
+    UP the frame is an inverted face, which only a half turn reaches.
     """
     tilt = float(np.degrees(np.arctan2(dx, dy)))
-    if not (FACE_ROLL_LOWER <= abs(tilt) <= FACE_ROLL_UPPER):
+    if abs(tilt) < FACE_ROLL_LOWER:
         return None
+    if abs(tilt) > FACE_ROLL_UPPER:
+        return "rotate_180"
     return "rotate_anticlockwise" if tilt < 0 else "rotate_clockwise"
 
 
 def face_rotation_action(face, frame_shape=None):
-    """Return 'rotate_clockwise' / 'rotate_anticlockwise' / None for *face*.
+    """Return 'rotate_clockwise' / 'rotate_anticlockwise' / 'rotate_180' / None.
 
     Single source of truth: ProcessMgr (render) and core (the Frame Editor crop
     preview) both call this, so the render and the preview can never disagree

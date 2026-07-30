@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { postJSON } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, Button } from './ui';
+import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
 
 // A Section that participates in the settings search: with a query active it
@@ -39,22 +39,16 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-        <div className="relative flex-1 max-w-md">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search settings… (e.g. thread, nvenc, codec)"
-            aria-label="Search settings"
-            className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="primary" onClick={apply}>💾 Apply Settings</Button>
-          <Button variant="secondary" onClick={cleanTemp}>🧹 Clean loaded media</Button>
-        </div>
+      <div className="relative max-w-md">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search settings… (e.g. thread, nvenc, codec)"
+          aria-label="Search settings"
+          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
+        />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
         <FilterSection title="Server" query={query}>
@@ -140,12 +134,9 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         </FilterSection>
       </div>
 
-      <div className="flex flex-wrap gap-3 pt-2">
-        <Button variant="primary" onClick={apply}>💾 Apply Settings</Button>
-        <Button variant="secondary" onClick={cleanTemp}>🧹 Clean loaded media</Button>
-      </div>
-
-      {/* Floating Sticky Action Dock */}
+      {/* Floating Sticky Action Dock — the ONLY place these two actions live.
+          The dock follows the page, so a second static copy at the bottom (and
+          a third in the header) just gave the same button three times. */}
       <div className="sticky bottom-6 right-6 z-40 flex justify-end pointer-events-none">
         <div className="pointer-events-auto flex items-center gap-2 p-2 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 shadow-2xl">
           <button

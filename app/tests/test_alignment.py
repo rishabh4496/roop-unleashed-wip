@@ -327,6 +327,42 @@ class TestRotatedFaceHandling(unittest.TestCase):
         self.assertAlmostEqual(float(face.kps[0][0]), 700.0, places=4)
         self.assertAlmostEqual(float(face.kps[0][1]), 200.0, places=4)
 
+    def test_every_rescue_angle_round_trips_through_the_real_helpers(self):
+        """The two tests above check hand-worked numbers, which is how an angle
+        can be added with an un-map that was never exercised. This one asks the
+        shipped rotate helper where a pixel actually WENT, then requires the
+        un-rotation to bring it back -- so a new angle cannot ship half-wired."""
+        from roop.face_util import _unrotate_face_coords, _rescue_rotated
+        from roop.ProcessMgr import ProcessMgr
+        from insightface.app.common import Face
+        import inspect
+
+        h, w = 13, 9
+        marker = np.zeros((h, w), dtype=np.int32)
+        for y in range(h):
+            for x in range(w):
+                marker[y, x] = y * w + x
+
+        angles = {"clockwise": "rotate_clockwise",
+                  "anticlockwise": "rotate_anticlockwise",
+                  "180": "rotate_180"}
+        # Whatever the rescue tries, it must be un-mapped here.
+        src = inspect.getsource(_rescue_rotated)
+        for name in angles:
+            self.assertIn(f'"{name}"', src, f"{name} is not part of the rescue")
+
+        for name, action in angles.items():
+            turned = ProcessMgr.apply_rotation(marker, action)
+            for (sy, sx) in ((0, 0), (4, 7), (h - 1, w - 2)):
+                ty, tx = [int(v) for v in np.argwhere(turned == marker[sy, sx])[0]]
+                face = Face(bbox=np.array([tx, ty, tx + 1, ty + 1], dtype=np.float32),
+                            kps=np.array([[tx, ty]], dtype=np.float32))
+                _unrotate_face_coords(face, w, h, name)
+                self.assertAlmostEqual(float(face.kps[0][0]), sx, places=4,
+                                       msg=f"{name}: x came back wrong")
+                self.assertAlmostEqual(float(face.kps[0][1]), sy, places=4,
+                                       msg=f"{name}: y came back wrong")
+
 
 class RotationActionCase(unittest.TestCase):
     """The orientation call is only ever asserted through its CONSEQUENCE: does
@@ -350,14 +386,13 @@ class RotationActionCase(unittest.TestCase):
     @staticmethod
     def _rotate_dir(action, vec):
         """Push a direction through the SHIPPED rotate helper's real point map."""
-        from roop.face_util import rotate_clockwise, rotate_anticlockwise
+        from roop.ProcessMgr import ProcessMgr
         h, w = 9, 7
         img = np.zeros((h, w, 3), dtype=np.int32)
         for y in range(h):
             for x in range(w):
                 img[y, x] = (x, y, 0)
-        out = (rotate_anticlockwise if action == "rotate_anticlockwise"
-               else rotate_clockwise)(img)
+        out = ProcessMgr.apply_rotation(img, action)
         pos = {}
         for iy in range(out.shape[0]):
             for ix in range(out.shape[1]):
@@ -403,17 +438,41 @@ class TestRotationStandsTheFaceUp(RotationActionCase):
                             abs(face_roll_tilt(self._face(kps))),
                             f"roll={roll} got no more upright")
 
-    def test_near_upside_down_is_deliberately_declined(self):
-        """Past 135 deg a single 90 deg turn cannot land within 45 deg of
-        upright, so declining is the correct answer, not an oversight -- the
-        swap simply proceeds unrotated."""
+    def test_inverted_faces_get_the_half_turn_a_quarter_turn_cannot_do(self):
+        """The case a quarter turn cannot reach. An upside-down face is 90 deg
+        off upright after EITHER quarter turn -- still lying on its side -- so
+        it needs the half turn, and it must actually be offered one rather than
+        declined."""
         from roop.face_util import face_rotation_action
-        for roll in (-180, -170, -160, 160, 170, 180):
-            self.assertIsNone(
-                face_rotation_action(self._face(project_kps(0, 0, roll)),
-                                     (512, 512)),
-                f"tried to fix a near-inverted face with a 90 deg turn "
-                f"at roll={roll}")
+        for roll in (-180, -170, -160, -150, -140, 140, 150, 160, 170, 180):
+            kps = project_kps(0, 0, roll)
+            action = face_rotation_action(self._face(kps), (512, 512))
+            self.assertEqual(action, "rotate_180",
+                             f"roll={roll} was not treated as inverted")
+            self.assertLess(self._tilt_after(action, kps), 45.0,
+                            f"roll={roll}: the half turn left it off upright")
+
+    def test_a_half_turn_is_never_offered_to_an_upright_face(self):
+        """Reaching the inverted band takes 135 deg of error against a 9.1 deg
+        axis, so no pose of an upright head may land there."""
+        from roop.face_util import face_rotation_action
+        for yaw in (0, 30, 45, 60, 75, 90):
+            for pitch in (-30, -15, 0, 15, 30):
+                for roll in (-40, -20, 0, 20, 40):
+                    self.assertNotEqual(
+                        face_rotation_action(
+                            self._face(project_kps(yaw, pitch, roll)), (512, 512)),
+                        "rotate_180",
+                        f"upside-down call at yaw={yaw} pitch={pitch} roll={roll}")
+
+    def test_the_two_branches_meet_without_a_seam(self):
+        """At the boundary the quarter and half turns are equivalent -- both
+        land the face at 45 deg -- so a noisy reading either side of 135 costs
+        nothing. That is why the upper edge carries no safety margin."""
+        from roop.face_util import FACE_ROLL_UPPER
+        kps = project_kps(0, 0, FACE_ROLL_UPPER)
+        self.assertAlmostEqual(self._tilt_after("rotate_clockwise", kps),
+                               self._tilt_after("rotate_180", kps), places=3)
 
     def test_the_two_edges_are_not_symmetric(self):
         """The lower edge carries a safety margin over 45 deg because a false

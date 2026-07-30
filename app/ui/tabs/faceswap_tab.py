@@ -744,30 +744,20 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     import base64 as _b64
     import cv2 as _cv2
     import numpy as _np
-    from roop.face_util import get_first_face, get_all_faces, align_crop, rotate_anticlockwise, rotate_clockwise
+    from roop.face_util import (get_first_face, get_all_faces, align_crop,
+                                face_rotation_action)
+    from roop.ProcessMgr import ProcessMgr
     import roop.globals
 
     if faceset_index is None:
         faceset_index = SELECTED_INPUT_FACE_INDEX
 
     def _rotation_action(face, frame):
-        """Mirror ProcessMgr.rotation_action — returns direction string or None."""
-        bbox_w = face.bbox[2] - face.bbox[0]
-        bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w <= bbox_h:
-            return None  # upright face — no rotation needed
-        # Horizontal face: use chin/forehead landmarks to pick direction
-        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
-            forehead_x = face.landmark_2d_106[72][0]
-            chin_x     = face.landmark_2d_106[0][0]
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            if forehead_x < chin_x:
-                return "rotate_clockwise"
-        # Landmark fallback: use bbox centre vs frame centre
-        fh, fw = frame.shape[:2]
-        bbox_cx = face.bbox[0] + bbox_w / 2.0
-        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
+        """Orientation call, delegated. This editor paints on the canonical crop
+        the processor works in, so it has to ask the same question the same way
+        — it kept a private copy of an older heuristic and the two could return
+        different answers for the same face."""
+        return face_rotation_action(face, frame.shape[:2])
 
     def _cutout(frame, x0, y0, x1, y1):
         x0 = max(0, int(x0)); y0 = max(0, int(y0))
@@ -817,7 +807,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                 x0, y0, x1, y1 = face.bbox.astype(int)
                 offs = int(max(x1 - x0, y1 - y0) * 0.25)
                 cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-                rot = rotate_anticlockwise(cut) if action == "rotate_anticlockwise" else rotate_clockwise(cut)
+                rot = ProcessMgr.apply_rotation(cut, action)
                 rotface = get_first_face(rot)
                 if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
                     # Capture loop variables explicitly so the closure is correct.
@@ -826,8 +816,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                                  __offs=_offs, __act=_act):
                         c = _cutout(swp, __x0 - __offs, __y0 - __offs,
                                         __x1 + __offs, __y1 + __offs)
-                        return rotate_anticlockwise(c) if __act == "rotate_anticlockwise" \
-                               else rotate_clockwise(c)
+                        return ProcessMgr.apply_rotation(c, __act)
                     return rot, rotface.kps, _swap_fn
         # No rotation — identity transform for the swap frame too.
         return frame, face.kps, lambda swp: swp

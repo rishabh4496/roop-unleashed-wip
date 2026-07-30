@@ -6,7 +6,7 @@ import psutil
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, analysis_pooled
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
@@ -2032,15 +2032,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         return face_rotation_action(original_face, frame.shape[:2])
 
 
-    def auto_rotate_frame(self, original_face, frame:Frame):
-        target_face = original_face
-        original_frame = frame
-        rotation_action = self.rotation_action(original_face, frame)
+    @staticmethod
+    def apply_rotation(frame:Frame, rotation_action):
+        """Turn *frame* by whichever rotation the orientation call asked for."""
         if rotation_action == "rotate_anticlockwise":
-            frame = rotate_anticlockwise(frame)
-        elif rotation_action == "rotate_clockwise":
-            frame = rotate_clockwise(frame)
-        return target_face, frame, rotation_action
+            return rotate_anticlockwise(frame)
+        if rotation_action == "rotate_clockwise":
+            return rotate_clockwise(frame)
+        if rotation_action == "rotate_180":
+            return rotate_image_180(frame)
+        return frame
 
 
     def auto_unrotate_frame(self, frame:Frame, rotation_action):
@@ -2048,6 +2049,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             return rotate_clockwise(frame)
         elif rotation_action == "rotate_clockwise":
             return rotate_anticlockwise(frame)
+        elif rotation_action == "rotate_180":
+            return rotate_image_180(frame)     # its own inverse
         return frame
 
 
@@ -2077,10 +2080,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 height = endY - startY
                 offs = int(max(width, height) * 0.25)
                 rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
-                if rotation_action == "rotate_anticlockwise":
-                    rotcutframe = rotate_anticlockwise(rotcutframe)
-                elif rotation_action == "rotate_clockwise":
-                    rotcutframe = rotate_clockwise(rotcutframe)
+                rotcutframe = self.apply_rotation(rotcutframe, rotation_action)
                 rotface = get_first_face(rotcutframe)
                 # Only commit to the rotation if re-detection confirms it left
                 # the face MORE upright. Without this the orientation heuristic
