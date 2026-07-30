@@ -113,6 +113,12 @@ export default function InteractivePreview({
 
   const [imgDim, setImgDim] = useState(null);
 
+  // The 50/50 split branch returns early and renders neither the lens overlay
+  // nor the mask canvas, so offering their buttons (or their shortcuts) there
+  // just lit up an "active" badge for a tool that could not do anything.
+  // Declared up here because the keydown effect below lists it as a dependency.
+  const splitMode = compare && splitView;
+
   const handleSliderMove = (clientX, clientY) => {
     const target = imageRef.current || containerRef.current;
     if (!target) return;
@@ -143,16 +149,21 @@ export default function InteractivePreview({
     if (!autoSwipeRuns) return;
     let animId;
     let startTime;
+    let phase = 0;                      // seconds into the oscillation
     const animate = (time) => {
       if (document.hidden
           || document.documentElement.hasAttribute('data-render-lite')) {
-        startTime = undefined;          // resume from the current phase, no jump
+        startTime = undefined;          // hold here
         animId = requestAnimationFrame(animate);
         return;
       }
-      if (!startTime) startTime = time;
-      const elapsed = (time - startTime) / 1000;
-      const pos = 50 + 40 * Math.sin(elapsed * (Math.PI * 2 / 2.5));
+      // Re-anchor the clock to the phase we were holding at. Clearing startTime
+      // alone restarted `elapsed` from 0, i.e. sin(0) — so resuming snapped the
+      // wipe back to the 50% midpoint from wherever it had stopped, which is
+      // the jump this branch exists to avoid.
+      if (startTime === undefined) startTime = time - phase * 1000;
+      phase = (time - startTime) / 1000;
+      const pos = 50 + 40 * Math.sin(phase * (Math.PI * 2 / 2.5));
       setSliderPosition(pos);
       animId = requestAnimationFrame(animate);
     };
@@ -182,11 +193,30 @@ export default function InteractivePreview({
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
+  // Stage-local shortcuts.
+  //
+  // Every letter here has to be one NOTHING ELSE already owns, because these
+  // listeners all sit on `window` and preventDefault() does not stop a sibling
+  // listener — both handlers run. Three of the keys this stage used to take were
+  // already spoken for, and the collisions were live:
+  //   C — FaceSwap toggles compare, and this called onToggleCompare, which is
+  //       the SAME setter. Two updater calls in one event flip it and flip it
+  //       back, so the app's documented compare shortcut did nothing at all
+  //       whenever this stage was mounted (i.e. the normal preview).
+  //   M — Timeline sets a marker at the playhead (and the shortcuts HUD
+  //       documents it as such); pressing it also toggled the lens.
+  //   H — FaceSwap opens the shortcuts HUD; pressing it also flipped the split
+  //       axis underneath the HUD that had just appeared.
+  // So C is left to its owner (the HUD button still toggles compare), and the
+  // lens/axis moved to free keys: G for the glass, X for the axis.
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
-      // Bare keys only. Without this, Ctrl/Cmd+C hit the 'c' branch below and
-      // its preventDefault() swallowed the copy — the same for Ctrl+M/Ctrl+B.
+      // Same modal guard the app's other two keydown handlers use — without it
+      // these fired on the stage behind an open confirm dialog.
+      if (document.querySelector('[role="dialog"]')) return;
+      // Bare keys only. Without this, Ctrl/Cmd+B hit the 'b' branch below and
+      // its preventDefault() swallowed the browser's own shortcut.
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       if (e.key === '=' || e.key === '+') {
@@ -199,18 +229,15 @@ export default function InteractivePreview({
           if (nz === 1) setPan({ x: 0, y: 0 });
           return nz;
         });
-      } else if (e.key.toLowerCase() === 'c' && onToggleCompare) {
-        e.preventDefault();
-        onToggleCompare();
-      } else if (e.key.toLowerCase() === 'm') {
+      } else if (e.key.toLowerCase() === 'g' && !splitMode) {
         setMagnifierActive((m) => !m);
-      } else if (e.key.toLowerCase() === 'b') {
+      } else if (e.key.toLowerCase() === 'b' && !splitMode) {
         setMaskBrushActive((b) => !b);
-      } else if (e.key.toLowerCase() === 'h' && compare) {
+      } else if (e.key.toLowerCase() === 'x' && compare && !splitMode) {
         setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'));
-      } else if (e.key.toLowerCase() === 'o' && compare) {
+      } else if (e.key.toLowerCase() === 'o' && compare && !splitMode) {
         setCompareMode((m) => (m === 'blend' ? 'slider' : 'blend'));
-      } else if (e.key.toLowerCase() === 'a' && compare && compareMode !== 'diff') {
+      } else if (e.key.toLowerCase() === 'a' && compare && !splitMode && compareMode !== 'diff') {
         // Same condition the Auto button renders under — a shortcut that
         // silently flips hidden state is worse than one that does nothing.
         setAutoSwipe((a) => !a);
@@ -218,7 +245,7 @@ export default function InteractivePreview({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onToggleCompare, compare, compareMode]);
+  }, [compare, compareMode, splitMode]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -472,11 +499,6 @@ export default function InteractivePreview({
       return nz;
     });
 
-  // The 50/50 split branch returns early and renders neither the lens overlay
-  // nor the mask canvas, so offering their buttons there just lit up an "active"
-  // badge for a tool that could not do anything.
-  const splitMode = compare && splitView;
-
   // Main HUD Control Bar inside Preview Box
   const hudBar = () => (
     <div className="absolute inset-x-0 bottom-0 z-50 flex justify-center p-3 pointer-events-none">
@@ -572,7 +594,7 @@ export default function InteractivePreview({
         {!splitMode && (
         <button
           onClick={() => setMagnifierActive((m) => !m)}
-          title="Toggle interactive 3.5× Magnifier Glass Lens (M)"
+          title="Toggle interactive 3.5× Magnifier Glass Lens (G)"
           className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
             magnifierActive
               ? 'text-cyan-300 bg-cyan-500/20 border border-cyan-400/40 shadow-[0_0_10px_rgba(6,182,212,0.3)]'
@@ -809,7 +831,7 @@ export default function InteractivePreview({
                 type="button"
                 onClick={() => setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'))}
                 className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white/80 transition-all flex items-center gap-1"
-                title="Toggle Split Direction: Vertical vs Horizontal (H)"
+                title="Toggle Split Direction: Vertical vs Horizontal (X)"
               >
                 {compareDir === 'vertical' ? '↔ Vert' : '↕ Horiz'}
               </button>
@@ -926,7 +948,7 @@ export default function InteractivePreview({
           <span>frame</span>
           <span className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 font-mono">Space</span>
           <span>play</span>
-          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">M</span>
+          <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">G</span>
           <span>lens</span>
           <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">B</span>
           <span>brush</span>
@@ -934,7 +956,7 @@ export default function InteractivePreview({
             <>
               <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">O</span>
               <span>blend</span>
-              <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">H</span>
+              <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">X</span>
               <span>axis</span>
               <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">A</span>
               <span>auto</span>

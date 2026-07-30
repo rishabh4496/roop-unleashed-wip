@@ -84,6 +84,17 @@ class Frame_Upscale():
             elif self.prev_type == "nomos8k_x4":
                 model_path = resolve_relative_path('../models/Frame/nomos8k_sc_x4.onnx')
                 self.scale = 4
+            else:
+                # An unrecognised subtype used to leave model_path unbound, so
+                # the next line raised NameError — which reads like a broken
+                # install rather than "that model name is not one of ours". It
+                # reaches here from a saved preset or run-history entry naming a
+                # model this build no longer ships. Say so, and fall back to the
+                # same default the preview route uses.
+                print(f"[Upscale] unknown upscaler '{self.prev_type}' — falling back to esrganx2.")
+                self.prev_type = "esrganx2"
+                model_path = resolve_relative_path('../models/Frame/real_esrgan_x2.onnx')
+                self.scale = 2
 
             self.model_upscale = onnxruntime.InferenceSession(model_path, None, providers=_upscale_providers())
             self.model_inputs = self.model_upscale.get_inputs()

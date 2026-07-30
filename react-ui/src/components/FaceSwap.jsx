@@ -3963,6 +3963,14 @@ export default function FaceSwap({
                 <div className="flex items-center justify-between"><span className="text-white/60">Zoom In / Out</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">+ / -</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Toggle Comparison</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">C</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Toggle Split View</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">S</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Blend / slider mode</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">O</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Split axis</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">X</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Auto-swipe</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">A</kbd></div>
+              </div>
+              <div className="space-y-2.5">
+                <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Preview Tools</h4>
+                <div className="flex items-center justify-between"><span className="text-white/60">Magnifier lens</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">G</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Mask brush</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">B</kbd></div>
               </div>
               <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Queue & Process</h4>

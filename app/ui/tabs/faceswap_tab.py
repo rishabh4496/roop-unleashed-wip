@@ -745,7 +745,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     import cv2 as _cv2
     import numpy as _np
     from roop.face_util import (get_first_face, get_all_faces, align_crop,
-                                face_rotation_action)
+                                face_rotation_action, rotation_improves_upright)
     from roop.ProcessMgr import ProcessMgr
     import roop.globals
 
@@ -809,7 +809,15 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                 cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
                 rot = ProcessMgr.apply_rotation(cut, action)
                 rotface = get_first_face(rot)
-                if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
+                # The outcome gate matters as much as the heuristic. ProcessMgr
+                # and the React frame editor both commit to a rotation only when
+                # re-detection confirms it left the face MORE upright, and drop
+                # back to the unrotated crop otherwise. Sharing the orientation
+                # call but not this check still let the editor paint on a crop
+                # the render never produces — which is the disagreement the
+                # shared call was introduced to end.
+                if (rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None
+                        and rotation_improves_upright(face, rotface)):
                     # Capture loop variables explicitly so the closure is correct.
                     _x0, _y0, _x1, _y1, _offs, _act = x0, y0, x1, y1, offs, action
                     def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,

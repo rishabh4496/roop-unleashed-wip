@@ -60,7 +60,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <TextInput label="Faceset library folder" info="Where saved facesets live. Blank = app/facesets. Point at a cloud folder (OneDrive/Dropbox/Google Drive) to sync facesets across devices." value={p.faceset_library_path || ''} onChange={(v) => set('faceset_library_path', v)} placeholder="e.g. C:\Users\you\OneDrive\roop-facesets" />
         </FilterSection>
 
-        <FilterSection title="Appearance" query={query}>
+        {/* "Theme" belongs in the title: the search matches on a child's label
+            or info, and this section's children are a bare heading and the
+            gallery — neither carries one, so under the old title searching for
+            the most obvious word for this control hid it. */}
+        <FilterSection title="Appearance & Theme" query={query}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-medium text-white/70">Interface Theme</span>
             <span className="text-[10px] text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>

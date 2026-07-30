@@ -99,12 +99,19 @@ export default function Gallery({ notify, setSettings, setTab }) {
     });
   };
 
+  // Acts on the VISIBLE rows only, in both directions. Replacing the whole set
+  // contradicted the rest of this view: the selection deliberately survives a
+  // change of filter or search, so selecting all under one filter used to throw
+  // away everything picked under another — and "Deselect All" wiped selections
+  // that were not even on screen.
   const toggleSelectAll = () => {
-    if (selectedVisible.length === filteredFiles.length && filteredFiles.length > 0) {
-      setSelectedFiles(new Set());
-    } else {
-      setSelectedFiles(new Set(filteredFiles.map((f) => f.name)));
-    }
+    const visible = filteredFiles.map((f) => f.name);
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visible.forEach((n) => next.delete(n));
+      else visible.forEach((n) => next.add(n));
+      return next;
+    });
   };
 
   const bulkDelete = async () => {

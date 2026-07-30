@@ -588,6 +588,37 @@ class TestRotationActionIsSharedNotDuplicated(unittest.TestCase):
         self.assertNotIn("def _rotation_action", src)
         self.assertIn("face_rotation_action", src)
 
+    def test_every_caller_also_applies_the_outcome_gate(self):
+        """Agreeing on the heuristic is only half of it.
+
+        Every one of these three re-detects on the turned crop and commits to the
+        rotation only if the face came out MORE upright — otherwise it falls back
+        to the unrotated crop. A caller that shares `face_rotation_action` but
+        skips `rotation_improves_upright` still ends up in a different coordinate
+        space from the render on exactly the frames the gate rejects, which is
+        the disagreement sharing the call was meant to end. The Gradio mask
+        editor shipped in precisely that state.
+        """
+        import inspect
+        import os
+        import roop.core
+        from roop.ProcessMgr import ProcessMgr
+
+        sources = {
+            "ProcessMgr.process_face": inspect.getsource(ProcessMgr.process_face),
+            "core.get_face_crop_from_frame":
+                inspect.getsource(roop.core.get_face_crop_from_frame),
+        }
+        # Read rather than import: this module pulls in the whole Gradio UI.
+        tab = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "ui", "tabs", "faceswap_tab.py")
+        with open(tab, encoding="utf-8") as fh:
+            sources["ui/tabs/faceswap_tab.py"] = fh.read()
+
+        for where, src in sources.items():
+            self.assertIn("rotation_improves_upright", src,
+                          f"{where} turns the frame without checking the result")
+
 
 if __name__ == "__main__":
     unittest.main()
