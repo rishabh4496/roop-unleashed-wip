@@ -405,20 +405,36 @@ def get_face_crop_from_frame(frame_bgr) -> str:
         return ""
 
     def _rotation_action(face, frame):
+        # 1. Primary check: 5-keypoints roll vector (eye midpoint to nose)
+        kps = getattr(face, 'kps', None)
+        if kps is not None and len(kps) >= 3:
+            mx = (kps[0][0] + kps[1][0]) / 2.0
+            my = (kps[0][1] + kps[1][1]) / 2.0
+            vx = kps[2][0] - mx
+            vy = kps[2][1] - my
+            if abs(vx) > abs(vy):
+                return "rotate_anticlockwise" if vx > 0 else "rotate_clockwise"
+
+        # 2. Secondary check: 106 landmarks forehead vs chin orientation
+        lm106 = getattr(face, 'landmark_2d_106', None)
+        if lm106 is not None and len(lm106) > 72:
+            forehead_x = lm106[72][0]
+            forehead_y = lm106[72][1]
+            chin_x = lm106[0][0]
+            chin_y = lm106[0][1]
+            dx = forehead_x - chin_x
+            dy = forehead_y - chin_y
+            if abs(dx) > abs(dy):
+                return "rotate_anticlockwise" if chin_x < forehead_x else "rotate_clockwise"
+
+        # 3. Fallback check: Bounding box aspect ratio
         bbox_w = face.bbox[2] - face.bbox[0]
         bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w <= bbox_h:
-            return None
-        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
-            forehead_x = face.landmark_2d_106[72][0]
-            chin_x     = face.landmark_2d_106[0][0]
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            if forehead_x < chin_x:
-                return "rotate_clockwise"
-        fh, fw = frame.shape[:2]
-        bbox_cx = face.bbox[0] + bbox_w / 2.0
-        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
+        if bbox_w > 1.1 * bbox_h:
+            fh, fw = frame.shape[:2]
+            bbox_cx = face.bbox[0] + bbox_w / 2.0
+            return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
+        return None
 
     face = get_first_face(frame_bgr)
     if face is None or not hasattr(face, 'kps') or face.kps is None:

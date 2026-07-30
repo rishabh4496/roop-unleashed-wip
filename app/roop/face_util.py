@@ -452,9 +452,64 @@ def _rescue_padded(frame: Frame):
     return None
 
 
+def _unrotate_face_coords(face, orig_w, orig_h, angle):
+    """Map face bbox, kps, and landmarks back from a rotated canvas to original frame space."""
+    def unrot_pts(pts):
+        pts = np.asarray(pts, dtype=np.float32)
+        unrot = np.zeros_like(pts)
+        if angle == "clockwise":
+            unrot[..., 0] = pts[..., 1]
+            unrot[..., 1] = orig_h - 1.0 - pts[..., 0]
+        elif angle == "anticlockwise":
+            unrot[..., 0] = orig_w - 1.0 - pts[..., 1]
+            unrot[..., 1] = pts[..., 0]
+        return unrot
+
+    x1, y1, x2, y2 = face.bbox
+    corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    unrot_corners = unrot_pts(corners)
+    face.bbox = np.array([
+        unrot_corners[:, 0].min(),
+        unrot_corners[:, 1].min(),
+        unrot_corners[:, 0].max(),
+        unrot_corners[:, 1].max()
+    ], dtype=np.float32)
+
+    if getattr(face, 'kps', None) is not None:
+        face.kps = unrot_pts(face.kps)
+    if getattr(face, 'landmark_2d_106', None) is not None:
+        face.landmark_2d_106 = unrot_pts(face.landmark_2d_106)
+    if getattr(face, 'landmark_3d_68', None) is not None:
+        lm = np.asarray(face.landmark_3d_68, dtype=np.float32)
+        lm[:, :2] = unrot_pts(lm[:, :2])
+        face.landmark_3d_68 = lm
+
+
+def _rescue_rotated(frame: Frame):
+    """Retry detection on 90° rotated frame variants when standard orientation detection finds no faces."""
+    try:
+        h, w = frame.shape[:2]
+        rot_cw = rotate_clockwise(frame)
+        faces = _detect_faces_raw(rot_cw)
+        if faces:
+            for f in faces:
+                _unrotate_face_coords(f, w, h, "clockwise")
+            return faces
+
+        rot_acw = rotate_anticlockwise(frame)
+        faces = _detect_faces_raw(rot_acw)
+        if faces:
+            for f in faces:
+                _unrotate_face_coords(f, w, h, "anticlockwise")
+            return faces
+    except Exception:
+        pass
+    return None
+
+
 def _detect_faces(frame):
     """Run the selected detector engine and return raw Face objects (unsorted).
-    Applies small-face (upscale), close-up scale (downscale), and clipped boundary (padded) rescues."""
+    Applies small-face (upscale), close-up scale (downscale), clipped boundary (padded), and rotated face rescues."""
     faces = _detect_faces_raw(frame)
     if not faces:
         # 1. Small-face rescue
@@ -466,6 +521,9 @@ def _detect_faces(frame):
         # 3. Boundary padding rescue
         if not faces:
             faces = _rescue_padded(frame)
+        # 4. Rotated face rescue
+        if not faces:
+            faces = _rescue_rotated(frame)
 
     if faces and getattr(roop.globals, 'refine_landmarks', False):
         for f in faces:

@@ -299,5 +299,66 @@ class TestAlignmentIsIllConditionedAtProfile(unittest.TestCase):
         self.assertGreater(profile, frontal * 4)
 
 
+
+class TestRotatedFaceHandling(unittest.TestCase):
+    def test_unrotate_face_coords_clockwise(self):
+        from roop.face_util import _unrotate_face_coords
+        from insightface.app.common import Face
+
+        face = Face(
+            bbox=np.array([799.0, 700.0, 899.0, 800.0], dtype=np.float32),
+            kps=np.array([[799.0, 700.0]], dtype=np.float32)
+        )
+        orig_w, orig_h = 800, 1000
+        _unrotate_face_coords(face, orig_w, orig_h, "clockwise")
+        self.assertAlmostEqual(float(face.kps[0][0]), 700.0, places=4)
+        self.assertAlmostEqual(float(face.kps[0][1]), 200.0, places=4)
+
+    def test_unrotate_face_coords_anticlockwise(self):
+        from roop.face_util import _unrotate_face_coords
+        from insightface.app.common import Face
+
+        face = Face(
+            bbox=np.array([200.0, 99.0, 300.0, 199.0], dtype=np.float32),
+            kps=np.array([[200.0, 99.0]], dtype=np.float32)
+        )
+        orig_w, orig_h = 800, 1000
+        _unrotate_face_coords(face, orig_w, orig_h, "anticlockwise")
+        self.assertAlmostEqual(float(face.kps[0][0]), 700.0, places=4)
+        self.assertAlmostEqual(float(face.kps[0][1]), 200.0, places=4)
+
+    def test_rotation_action_90deg_clockwise_roll(self):
+        from roop.ProcessMgr import ProcessMgr
+        from insightface.app.common import Face
+
+        mgr = ProcessMgr(None)
+        # Head lying on right cheek (nose points right)
+        # Left eye: (100, 100), Right eye: (100, 150), Nose: (130, 125)
+        # mx = 100, my = 125 -> vx = 30, vy = 0 (vx > |vy| -> rotate_anticlockwise)
+        face = Face(
+            bbox=np.array([80, 80, 160, 160], dtype=np.float32),
+            kps=np.array([[100, 100], [100, 150], [130, 125], [90, 100], [90, 150]], dtype=np.float32)
+        )
+        dummy_frame = np.zeros((400, 400, 3), dtype=np.uint8)
+        action = mgr.rotation_action(face, dummy_frame)
+        self.assertEqual(action, "rotate_anticlockwise")
+
+    def test_rotation_action_90deg_anticlockwise_roll(self):
+        from roop.ProcessMgr import ProcessMgr
+        from insightface.app.common import Face
+
+        mgr = ProcessMgr(None)
+        # Head lying on left cheek (nose points left)
+        # Left eye: (100, 150), Right eye: (100, 100), Nose: (70, 125)
+        # mx = 100, my = 125 -> vx = -30, vy = 0 (-vx > |vy| -> rotate_clockwise)
+        face = Face(
+            bbox=np.array([60, 80, 140, 160], dtype=np.float32),
+            kps=np.array([[100, 150], [100, 100], [70, 125], [90, 150], [90, 100]], dtype=np.float32)
+        )
+        dummy_frame = np.zeros((400, 400, 3), dtype=np.uint8)
+        action = mgr.rotation_action(face, dummy_frame)
+        self.assertEqual(action, "rotate_clockwise")
+
+
 if __name__ == "__main__":
     unittest.main()
