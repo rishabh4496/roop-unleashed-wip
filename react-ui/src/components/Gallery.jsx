@@ -10,6 +10,8 @@ export default function Gallery({ notify, setSettings, setTab }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all'); // 'all', 'video', 'image'
   const [sortBy, setSortBy] = useState('new'); // 'new' | 'old' | 'big' | 'name'
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
+  const [selectedFiles, setSelectedFiles] = useState(new Set());
   const [busyFile, setBusyFile] = useState(''); // tracking loading reuse actions
   // Run-history entries keyed by output basename → "how was this file made?"
   const [historyByName, setHistoryByName] = useState({});
@@ -78,6 +80,47 @@ export default function Gallery({ notify, setSettings, setTab }) {
     } catch (e) {
       notify(e.message, 'error');
     }
+  };
+
+  const toggleSelect = (name) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedFiles.size === filteredFiles.length && filteredFiles.length > 0) {
+      setSelectedFiles(new Set());
+    } else {
+      setSelectedFiles(new Set(filteredFiles.map((f) => f.name)));
+    }
+  };
+
+  const bulkDelete = async () => {
+    const list = Array.from(selectedFiles);
+    if (list.length === 0) return;
+    if (!(await confirmDialog({
+      title: `Delete ${list.length} output files?`,
+      message: `Permanently delete ${list.length} selected files from the output directory?`,
+      confirmLabel: `Delete ${list.length} files`,
+      danger: true
+    }))) return;
+
+    let deletedCount = 0;
+    for (const name of list) {
+      try {
+        await postJSON('/api/output/delete', { name });
+        deletedCount++;
+      } catch (e) {
+        notify(`Failed to delete ${name}: ${e.message}`, 'error');
+      }
+    }
+    notify(`Deleted ${deletedCount} files`);
+    setFiles((prev) => prev.filter((f) => !selectedFiles.has(f.name)));
+    setSelectedFiles(new Set());
   };
 
   const reuseAsTarget = async (name) => {
@@ -183,7 +226,30 @@ export default function Gallery({ notify, setSettings, setTab }) {
             className="w-full px-3 py-2 rounded-xl glass-input text-white text-sm focus:outline-none"
           />
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 bg-black/20 p-1 rounded-xl border border-white/5">
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewMode === 'grid' ? 'bg-[var(--accent)] text-white shadow' : 'text-white/60 hover:text-white'
+              }`}
+              title="Grid View"
+            >
+              🖼️ Grid
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewMode === 'list' ? 'bg-[var(--accent)] text-white shadow' : 'text-white/60 hover:text-white'
+              }`}
+              title="List View"
+            >
+              ☰ List
+            </button>
+          </div>
+
           <div className="flex gap-1.5 bg-black/20 p-1 rounded-xl border border-white/5">
             {['all', 'video', 'image'].map((t) => (
               <button
@@ -199,6 +265,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
               </button>
             ))}
           </div>
+
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
@@ -214,11 +281,33 @@ export default function Gallery({ notify, setSettings, setTab }) {
       </Card>
 
       {!loading && files.length > 0 && (
-        <div className="flex items-center gap-2 text-[11px] text-white/40 -mt-2 px-1">
-          <span className="font-bold text-white/60">{filteredFiles.length}</span> shown
-          {filteredFiles.length !== files.length && <span>of {files.length}</span>}
-          <span className="text-white/20">·</span>
-          <span className="font-bold text-white/60">{fmtSize(totalSize)}</span> total
+        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-white/40 -mt-2 px-1">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-white/60">{filteredFiles.length}</span> shown
+            {filteredFiles.length !== files.length && <span>of {files.length}</span>}
+            <span className="text-white/20">·</span>
+            <span className="font-bold text-white/60">{fmtSize(totalSize)}</span> total
+          </div>
+
+          {/* Bulk Selection Actions */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 text-[10px] font-semibold transition-colors"
+            >
+              {selectedFiles.size === filteredFiles.length && filteredFiles.length > 0 ? 'Deselect All' : 'Select All'}
+            </button>
+            {selectedFiles.size > 0 && (
+              <button
+                type="button"
+                onClick={bulkDelete}
+                className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-[10px] font-bold transition-all animate-fade-in flex items-center gap-1"
+              >
+                <span>🗑️ Delete Selected ({selectedFiles.size})</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -230,7 +319,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
         </div>
       )}
 
-      {/* Grid view */}
+      {/* Empty state */}
       {!loading && filteredFiles.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-white/10 rounded-2xl">
           <span className="text-4xl mb-2">📁</span>
@@ -238,36 +327,142 @@ export default function Gallery({ notify, setSettings, setTab }) {
         </div>
       )}
 
+      {/* Grid or List view */}
       {!loading && filteredFiles.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {filteredFiles.map((file) => {
-            const absolutePath = `${outputPath}/${file.name}`;
-            const srcUrl = fileUrl(absolutePath);
+        viewMode === 'grid' ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {filteredFiles.map((file) => {
+              const absolutePath = `${outputPath}/${file.name}`;
+              const srcUrl = fileUrl(absolutePath);
 
-            return (
-              <VideoHoverCard
-                key={file.name}
-                file={file}
-                srcUrl={srcUrl}
-                dateStr={getFormatDate(file.mtime)}
-                sizeStr={fmtSize(file.size)}
-                onDelete={() => deleteFile(file.name)}
-                onReveal={() => revealFile(file.name)}
-                onReuseTarget={() => reuseAsTarget(file.name)}
-                onReuseSource={() => reuseAsSource(file.name)}
-                historyEntry={historyByName[file.name]}
-                onLoadSettings={loadRunSettings}
-                isBusy={busyFile === file.name}
-              />
-            );
-          })}
-        </div>
+              return (
+                <VideoHoverCard
+                  key={file.name}
+                  file={file}
+                  srcUrl={srcUrl}
+                  dateStr={getFormatDate(file.mtime)}
+                  sizeStr={fmtSize(file.size)}
+                  onDelete={() => deleteFile(file.name)}
+                  onReveal={() => revealFile(file.name)}
+                  onReuseTarget={() => reuseAsTarget(file.name)}
+                  onReuseSource={() => reuseAsSource(file.name)}
+                  historyEntry={historyByName[file.name]}
+                  onLoadSettings={loadRunSettings}
+                  isBusy={busyFile === file.name}
+                  isSelected={selectedFiles.has(file.name)}
+                  onToggleSelect={() => toggleSelect(file.name)}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-2xl glass-panel border border-white/10 overflow-hidden shadow-2xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-white/80 border-collapse">
+                <thead>
+                  <tr className="border-b border-white/10 bg-black/40 text-white/40 uppercase font-mono text-[9px] tracking-wider">
+                    <th className="p-3 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedFiles.size === filteredFiles.length && filteredFiles.length > 0}
+                        onChange={toggleSelectAll}
+                        className="rounded accent-[var(--accent)] cursor-pointer"
+                      />
+                    </th>
+                    <th className="p-3">File</th>
+                    <th className="p-3">Type</th>
+                    <th className="p-3">Size</th>
+                    <th className="p-3">Date</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {filteredFiles.map((file) => {
+                    const absolutePath = `${outputPath}/${file.name}`;
+                    const srcUrl = fileUrl(absolutePath);
+                    const isSel = selectedFiles.has(file.name);
+                    const historyEntry = historyByName[file.name];
+                    return (
+                      <tr key={file.name} className={`hover:bg-white/[0.04] transition-colors ${isSel ? 'bg-[var(--accent)]/10' : ''}`}>
+                        <td className="p-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            onChange={() => toggleSelect(file.name)}
+                            className="rounded accent-[var(--accent)] cursor-pointer"
+                          />
+                        </td>
+                        <td className="p-3 font-semibold text-white/90 truncate max-w-xs flex items-center gap-2">
+                          <span className="text-base shrink-0">{file.kind === 'video' ? '🎬' : '🖼️'}</span>
+                          <a href={srcUrl} target="_blank" rel="noreferrer" className="hover:text-[var(--accent)] truncate" title={file.name}>
+                            {file.name}
+                          </a>
+                        </td>
+                        <td className="p-3 text-white/50 font-mono text-[10px] uppercase">{file.kind}</td>
+                        <td className="p-3 text-white/60 font-mono text-[11px] tabular-nums">{fmtSize(file.size)}</td>
+                        <td className="p-3 text-white/50 text-[11px] whitespace-nowrap">{getFormatDate(file.mtime)}</td>
+                        <td className="p-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {historyEntry && (
+                              <button
+                                type="button"
+                                onClick={() => loadRunSettings(historyEntry)}
+                                className="px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[10px] font-bold"
+                                title="Re-apply run settings"
+                              >
+                                ⚙️ Preset
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => reuseAsTarget(file.name)}
+                              disabled={busyFile === file.name}
+                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-[10px] font-bold"
+                              title="Reuse as Target"
+                            >
+                              🎯 Target
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => reuseAsSource(file.name)}
+                              disabled={busyFile === file.name}
+                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-[10px] font-bold"
+                              title="Extract Face as Source"
+                            >
+                              👤 Source
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => revealFile(file.name)}
+                              className="p-1 rounded bg-white/5 hover:bg-white/15 text-white/70"
+                              title="Reveal File"
+                            >
+                              📁
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteFile(file.name)}
+                              className="p-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400"
+                              title="Delete File"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
       )}
     </div>
   );
 }
 
-function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, historyEntry, onLoadSettings, isBusy }) {
+function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, onReuseTarget, onReuseSource, historyEntry, onLoadSettings, isBusy, isSelected, onToggleSelect }) {
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef(null);
   const cardRef = useRef(null);
@@ -303,12 +498,25 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
 
   return (
     <Card
-      className="tap overflow-hidden border border-white/5 flex flex-col group/card hover:border-[#E94560]/40 hover:shadow-[0_12px_36px_rgba(233,69,96,0.15)]"
+      className={`tap overflow-hidden border flex flex-col group/card transition-all ${
+        isSelected ? 'border-[var(--accent)] bg-[var(--accent)]/5 shadow-[0_0_20px_rgba(233,69,96,0.2)]' : 'border-white/5 hover:border-[#E94560]/40 hover:shadow-[0_12px_36px_rgba(233,69,96,0.15)]'
+      }`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       {/* File preview box */}
       <div ref={cardRef} className="relative aspect-video bg-black/45 flex items-center justify-center overflow-hidden border-b border-white/5 shrink-0 select-none">
+        {onToggleSelect && (
+          <div className="absolute top-2 left-2 z-20">
+            <input
+              type="checkbox"
+              checked={!!isSelected}
+              onChange={onToggleSelect}
+              className="h-4 w-4 rounded accent-[var(--accent)] cursor-pointer shadow-lg"
+              title="Select file"
+            />
+          </div>
+        )}
         {isVideo ? (
           inView ? (
           <video

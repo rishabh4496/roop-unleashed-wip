@@ -83,6 +83,9 @@ export default function InteractivePreview({
   maskApplied = false,
 }) {
   const [sliderPosition, setSliderPosition] = useState(50);
+  const [compareMode, setCompareMode] = useState('slider'); // 'slider' | 'blend' | 'diff'
+  const [compareDir, setCompareDir] = useState('vertical'); // 'vertical' | 'horizontal'
+  const [autoSwipe, setAutoSwipe] = useState(false);
   const containerRef = useRef(null);
   const imageRef = useRef(null);
   const maskCanvasRef = useRef(null);
@@ -110,14 +113,36 @@ export default function InteractivePreview({
 
   const [imgDim, setImgDim] = useState(null);
 
-  const handleSliderMove = (clientX) => {
+  const handleSliderMove = (clientX, clientY) => {
     const target = imageRef.current || containerRef.current;
     if (!target) return;
     const rect = target.getBoundingClientRect();
-    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-    const percent = Math.max(0, Math.min((x / rect.width) * 100, 100));
-    setSliderPosition(percent);
+    if (compareDir === 'horizontal' && clientY !== undefined) {
+      const y = Math.max(0, Math.min(clientY - rect.top, rect.height));
+      const percent = Math.max(0, Math.min((y / rect.height) * 100, 100));
+      setSliderPosition(percent);
+    } else if (clientX !== undefined) {
+      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+      const percent = Math.max(0, Math.min((x / rect.width) * 100, 100));
+      setSliderPosition(percent);
+    }
   };
+
+  // Auto-swipe animation effect
+  useEffect(() => {
+    if (!autoSwipe || !compare || compareMode !== 'slider') return;
+    let animId;
+    let startTime;
+    const animate = (time) => {
+      if (!startTime) startTime = time;
+      const elapsed = (time - startTime) / 1000;
+      const pos = 50 + 40 * Math.sin(elapsed * (Math.PI * 2 / 2.5));
+      setSliderPosition(pos);
+      animId = requestAnimationFrame(animate);
+    };
+    animId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animId);
+  }, [autoSwipe, compare, compareMode]);
 
   useEffect(() => {
     const handleMouseUp = () => {
@@ -165,11 +190,17 @@ export default function InteractivePreview({
         setMagnifierActive((m) => !m);
       } else if (e.key.toLowerCase() === 'b') {
         setMaskBrushActive((b) => !b);
+      } else if (e.key.toLowerCase() === 'h' && compare) {
+        setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'));
+      } else if (e.key.toLowerCase() === 'o' && compare) {
+        setCompareMode((m) => (m === 'blend' ? 'slider' : 'blend'));
+      } else if (e.key.toLowerCase() === 'a' && compare) {
+        setAutoSwipe((a) => !a);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onToggleCompare]);
+  }, [onToggleCompare, compare]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -248,7 +279,7 @@ export default function InteractivePreview({
       const p = pendingRef.current;
       if (!p) return;
       if (isDraggingSlider) {
-        handleSliderMove(p.cx);
+        handleSliderMove(p.cx, p.cy);
       } else if (isPanning && zoom > 1) {
         setPan({ x: p.cx - startPan.x, y: p.cy - startPan.y });
       }
@@ -719,6 +750,100 @@ export default function InteractivePreview({
 
       {stageInfo()}
 
+      {/* Compare Mode Toolbar Controls Overlay */}
+      {compare && !splitMode && !maskBrushActive && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/85 backdrop-blur-md border border-white/15 shadow-2xl animate-fade-in">
+          <button
+            type="button"
+            onClick={() => setCompareMode('slider')}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+              compareMode === 'slider' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
+            }`}
+            title="Split Slider mode"
+          >
+            ✂️ Split
+          </button>
+          <button
+            type="button"
+            onClick={() => setCompareMode('blend')}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+              compareMode === 'blend' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
+            }`}
+            title="Opacity Blend mode (O)"
+          >
+            🌓 Blend
+          </button>
+          <button
+            type="button"
+            onClick={() => setCompareMode('diff')}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+              compareMode === 'diff' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
+            }`}
+            title="Difference Map mode"
+          >
+            ⚡ Diff
+          </button>
+
+          {compareMode === 'slider' && (
+            <>
+              <span className="w-px h-4 bg-white/15 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'))}
+                className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white/80 transition-all flex items-center gap-1"
+                title="Toggle Split Direction: Vertical vs Horizontal (H)"
+              >
+                {compareDir === 'vertical' ? '↔ Vert' : '↕ Horiz'}
+              </button>
+            </>
+          )}
+
+          {compareMode !== 'diff' && (
+            <>
+              <span className="w-px h-4 bg-white/15 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setSliderPosition(25)}
+                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                  sliderPosition === 25 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
+                }`}
+              >
+                25%
+              </button>
+              <button
+                type="button"
+                onClick={() => setSliderPosition(50)}
+                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                  sliderPosition === 50 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
+                }`}
+              >
+                50%
+              </button>
+              <button
+                type="button"
+                onClick={() => setSliderPosition(75)}
+                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                  sliderPosition === 75 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
+                }`}
+              >
+                75%
+              </button>
+              <span className="w-px h-4 bg-white/15 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setAutoSwipe((a) => !a)}
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                  autoSwipe ? 'bg-emerald-500 text-black shadow-md font-extrabold animate-pulse' : 'bg-white/10 text-white/70 hover:text-white'
+                }`}
+                title="Toggle Auto-Swipe oscillation loop (A)"
+              >
+                {autoSwipe ? '⏸️ Auto' : '▶️ Auto'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Mask Brush Toolbar Controls Overlay */}
       {maskBrushActive && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/85 backdrop-blur-md border border-white/15 shadow-2xl">
@@ -807,15 +932,22 @@ export default function InteractivePreview({
           />
           <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
 
-          {/* Swapped Image Overlay with Clip Path */}
+          {/* Swapped Image Overlay with Multi-Mode Comparison Styling */}
           <div
             className="absolute inset-0 pointer-events-none z-20"
-            style={{
-              clipPath:
-                compare || isPeekingOriginal
-                  ? `polygon(${currentClipPosition}% 0, 100% 0, 100% 100%, ${currentClipPosition}% 100%)`
-                  : 'none',
-            }}
+            style={
+              isPeekingOriginal
+                ? { opacity: 0 }
+                : !compare
+                ? { opacity: 1 }
+                : compareMode === 'blend'
+                ? { opacity: sliderPosition / 100 }
+                : compareMode === 'diff'
+                ? { mixBlendMode: 'difference', opacity: 1 }
+                : compareDir === 'horizontal'
+                ? { clipPath: `polygon(0 ${currentClipPosition}%, 100% ${currentClipPosition}%, 100% 100%, 0 100%)` }
+                : { clipPath: `polygon(${currentClipPosition}% 0, 100% 0, 100% 100%, ${currentClipPosition}% 100%)` }
+            }
           >
             <CrossfadeImage
               src={afterSrc || beforeSrc}
@@ -824,12 +956,7 @@ export default function InteractivePreview({
             />
           </div>
 
-          {/* Interactive Mask Paint Canvas Overlay.
-              Mounted for as long as the media dimensions are known, NOT only
-              while the brush is active: a canvas loses its bitmap when it
-              unmounts (and again whenever its width/height attributes are
-              re-assigned), so gating it on maskBrushActive silently threw the
-              painting away every time the tool was toggled off. */}
+          {/* Interactive Mask Paint Canvas Overlay */}
           {imgDim && (
             <>
               <canvas
@@ -853,29 +980,53 @@ export default function InteractivePreview({
             </>
           )}
 
-          {/* Draggable Vertical Compare Slider Handle */}
-          {compare && !isPeekingOriginal && (
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_12px_rgba(233,69,96,0.8)] z-40 pointer-events-none"
-              style={{ left: `${sliderPosition}%` }}
-            >
+          {/* Draggable Vertical or Horizontal Compare Slider Handle */}
+          {compare && !isPeekingOriginal && compareMode === 'slider' && (
+            compareDir === 'vertical' ? (
               <div
-                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 bg-black/80 backdrop-blur-md border border-white/30 rounded-full flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.7)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setIsDraggingSlider(true);
-                  handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX);
-                }}
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  setSliderPosition(50);
-                }}
-                title="Drag to compare faces (Double-click to reset to 50%)"
+                className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_12px_rgba(233,69,96,0.8)] z-40 pointer-events-none"
+                style={{ left: `${sliderPosition}%` }}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                <div
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 bg-black/80 backdrop-blur-md border border-white/30 rounded-full flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.7)] transition-transform duration-200 group-hover:scale-110 cursor-ew-resize pointer-events-auto"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setIsDraggingSlider(true);
+                    handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX, e.clientY ?? e.touches?.[0]?.clientY);
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setSliderPosition(50);
+                  }}
+                  title="Drag left/right to compare faces (Double-click to reset to 50%)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="rotate-180 ml-0.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div
+                className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-[var(--accent)] via-white to-[var(--accent)] shadow-[0_0_12px_rgba(233,69,96,0.8)] z-40 pointer-events-none"
+                style={{ top: `${sliderPosition}%` }}
+              >
+                <div
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 bg-black/80 backdrop-blur-md border border-white/30 rounded-full flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.7)] transition-transform duration-200 group-hover:scale-110 cursor-ns-resize pointer-events-auto"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setIsDraggingSlider(true);
+                    handleSliderMove(e.clientX ?? e.touches?.[0]?.clientX, e.clientY ?? e.touches?.[0]?.clientY);
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setSliderPosition(50);
+                  }}
+                  title="Drag up/down to compare faces (Double-click to reset to 50%)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="-mt-0.5 rotate-90"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="-mb-0.5 -rotate-90"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                </div>
+              </div>
+            )
           )}
         </div>
       </div>

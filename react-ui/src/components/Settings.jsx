@@ -39,16 +39,22 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
   return (
     <div className="space-y-6">
-      <div className="relative max-w-md">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search settings… (e.g. thread, nvenc, codec)"
-          aria-label="Search settings"
-          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
-        />
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+        <div className="relative flex-1 max-w-md">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings… (e.g. thread, nvenc, codec)"
+            aria-label="Search settings"
+            className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="primary" onClick={apply}>💾 Apply Settings</Button>
+          <Button variant="secondary" onClick={cleanTemp}>🧹 Clean loaded media</Button>
+        </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
         <FilterSection title="Server" query={query}>
@@ -134,9 +140,30 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         </FilterSection>
       </div>
 
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-3 pt-2">
         <Button variant="primary" onClick={apply}>💾 Apply Settings</Button>
         <Button variant="secondary" onClick={cleanTemp}>🧹 Clean loaded media</Button>
+      </div>
+
+      {/* Floating Sticky Action Dock */}
+      <div className="sticky bottom-6 right-6 z-40 flex justify-end pointer-events-none">
+        <div className="pointer-events-auto flex items-center gap-2 p-2 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 shadow-2xl">
+          <button
+            type="button"
+            onClick={apply}
+            className="px-4 py-2 rounded-xl bg-[var(--accent)] hover:brightness-110 text-white font-bold text-xs shadow-lg transition-transform active:scale-95 flex items-center gap-1.5"
+          >
+            💾 Apply Settings
+          </button>
+          <button
+            type="button"
+            onClick={cleanTemp}
+            className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 font-bold text-xs transition-colors"
+            title="Clean loaded media"
+          >
+            🧹 Clean
+          </button>
+        </div>
       </div>
     </div>
   );
