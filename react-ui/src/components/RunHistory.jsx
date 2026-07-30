@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getJSON, postJSON, fileUrl } from '../api';
 import { Button, Card } from './ui';
 import { confirmDialog } from './confirm';
+import { LABELS, CHIP_KEYS, fmtDur, fmtVal, primitives, diffSettings } from './settingsDiff';
 
 /**
  * Run History — a browsable record of every completed swap.
@@ -15,57 +16,8 @@ import { confirmDialog } from './confirm';
  * settings can be re-loaded straight back into the Face Swap tab.
  */
 
-// Canonical settings keys → short human labels. Anything not listed still shows
-// in the diff under its raw key; this map just gives the common ones nice names
-// and drives the at-a-glance chip row on each card.
-const LABELS = {
-  swap_model: 'Swapper',
-  selected_enhancer: 'Enhancer',
-  face_detection_mode: 'Detection',
-  mask_engine: 'Mask',
-  max_threads: 'Threads',
-  subsample_upscale: 'Pixel boost',
-  video_swapping_method: 'Method',
-  output_method: 'Output',
-  blend_ratio: 'Blend',
-  max_face_distance: 'Face distance',
-  detector_engine: 'Detector',
-  color_transfer_mode: 'Color transfer',
-  codeformer_fidelity: 'CodeFormer fidelity',
-  face_detector_size: 'Detector size',
-  face_detector_threshold: 'Detector threshold',
-  num_swap_steps: 'Swap steps',
-  track_identities: 'Identity tracking',
-  temporal_detection: 'Temporal detection',
-  upscale_after_swap: 'AI upscale pass',
-  upscale_model_after: 'Upscale model',
-  interp_after_swap: 'Interpolation',
-  refine_landmarks: 'Refine landmarks',
-  yaw_align: 'Profile alignment',
-  rescue_small_faces: 'Small-face rescue',
-  jaw_reshape: 'Jaw reshape',
-  autorotate_faces: 'Autorotate',
-  vr_mode: 'VR mode',
-};
-
-// The handful of settings that most define what a run looked like, shown as
-// chips on the card. Missing/empty ones are skipped so the row stays tight.
-const CHIP_KEYS = ['swap_model', 'selected_enhancer', 'face_detection_mode',
-                   'mask_engine', 'subsample_upscale', 'max_threads'];
-
-// Keys that are noise in a side-by-side diff (paths, per-run junk, huge blobs).
-const DIFF_SKIP = new Set(['selected_theme', 'output_path', 'source_path',
-                           'target_path', 'clear_output', 'output_show_video']);
-
-const fmtDur = (s) => {
-  if (!s || s <= 0) return null;
-  s = Math.round(s);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
-  if (m > 0) return `${m}m ${String(sec).padStart(2, '0')}s`;
-  return `${sec}s`;
-};
-
+// The settings vocabulary (labels, chip keys, diff) is shared with the Outputs
+// tab's A/B comparison — see components/settingsDiff.js.
 const fmtRel = (t) => {
   const d = (Date.now() - t * 1000) / 1000;
   if (d < 60) return 'just now';
@@ -74,25 +26,6 @@ const fmtRel = (t) => {
   const days = Math.floor(d / 86400);
   if (days < 7) return `${days}d ago`;
   return new Date(t * 1000).toLocaleDateString();
-};
-
-const fmtVal = (v) => {
-  if (v === true) return 'on';
-  if (v === false) return 'off';
-  if (v === null || v === undefined || v === '') return '—';
-  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(2);
-  return String(v);
-};
-
-// Primitive-only view of a run's settings, for chips + diffing. Objects/arrays
-// (e.g. face_mapping) are not comparable at a glance, so they're dropped.
-const primitives = (settings) => {
-  const out = {};
-  Object.entries(settings || {}).forEach(([k, v]) => {
-    if (DIFF_SKIP.has(k)) return;
-    if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) out[k] = v;
-  });
-  return out;
 };
 
 export default function RunHistory({ notify, setSettings, setTab }) {
@@ -390,14 +323,7 @@ function ComparePanel({ a, b, onClear, onLoad }) {
   // Field-by-field diff: the union of primitive keys across both runs, split
   // into those that differ (the interesting part) and those that match.
   const { changed, same } = useMemo(() => {
-    const pa = primitives(a.settings), pb = primitives(b.settings);
-    const keys = Array.from(new Set([...Object.keys(pa), ...Object.keys(pb)])).sort();
-    const changed = [], same = [];
-    keys.forEach((k) => {
-      const va = pa[k], vb = pb[k];
-      (fmtVal(va) === fmtVal(vb) ? same : changed).push({ k, va, vb });
-    });
-    return { changed, same };
+    return diffSettings(a.settings, b.settings);
   }, [a, b]);
 
   const [showSame, setShowSame] = useState(false);

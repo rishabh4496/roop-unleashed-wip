@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { getJSON, postJSON, postFiles, fileUrl } from '../api';
 import { Button, Card } from './ui';
 import { confirmDialog } from './confirm';
+import OutputCompare from './OutputCompare';
 
 export default function Gallery({ notify, setSettings, setTab }) {
   const [files, setFiles] = useState([]);
@@ -15,6 +16,10 @@ export default function Gallery({ notify, setSettings, setTab }) {
   const [busyFile, setBusyFile] = useState(''); // tracking loading reuse actions
   // Run-history entries keyed by output basename → "how was this file made?"
   const [historyByName, setHistoryByName] = useState({});
+  // The two files being compared, as [nameA, nameB]. Driven from the same
+  // selection the bulk actions use, so "pick two, compare them" needs no
+  // separate mode to enter.
+  const [comparePair, setComparePair] = useState(null);
 
   const fetchOutputs = async () => {
     setLoading(true);
@@ -332,6 +337,16 @@ export default function Gallery({ notify, setSettings, setTab }) {
             >
               {allVisibleSelected ? 'Deselect All' : 'Select All'}
             </button>
+            {selectedVisible.length === 2 && (
+              <button
+                type="button"
+                onClick={() => setComparePair([...selectedVisible])}
+                className="px-2.5 py-1 rounded bg-[var(--accent)]/20 hover:bg-[var(--accent)]/30 border border-[var(--accent)]/40 text-white text-[10px] font-bold transition-all animate-fade-in flex items-center gap-1"
+                title="Compare these two renders side by side"
+              >
+                <span>🔍 Compare A/B</span>
+              </button>
+            )}
             {selectedVisible.length > 0 && (
               <button
                 type="button"
@@ -492,6 +507,27 @@ export default function Gallery({ notify, setSettings, setTab }) {
           </div>
         )
       )}
+
+      {comparePair && (() => {
+        // Resolve by name each render: a delete or a refresh while the viewer is
+        // open must close it rather than leave it pointing at a missing file.
+        const [aName, bName] = comparePair;
+        const a = files.find((f) => f.name === aName);
+        const b = files.find((f) => f.name === bName);
+        if (!a || !b) { setComparePair(null); return null; }
+        return (
+          <OutputCompare
+            a={a}
+            b={b}
+            aUrl={fileUrl(`${outputPath}/${a.name}`)}
+            bUrl={fileUrl(`${outputPath}/${b.name}`)}
+            historyA={historyByName[a.name]}
+            historyB={historyByName[b.name]}
+            onSwap={() => setComparePair([bName, aName])}
+            onClose={() => setComparePair(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
