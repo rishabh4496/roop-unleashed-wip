@@ -53,6 +53,11 @@ class QueueTestBase(unittest.TestCase):
         q.list_files_process = self.entries
         q._stop_current = lambda: None
         q._run_swap = self._fake_run
+        # Reset the output-recording hooks too: a test that installs them must
+        # not leak into the next one, which would then assert against a stale
+        # fake rather than the module's real default.
+        q._snapshot_outputs = None
+        q._outputs_since = None
 
     def tearDown(self):
         q._queue["running"] = False
@@ -229,6 +234,48 @@ class Runner(QueueTestBase):
         self._add("a.mp4")
         q._queue["jobs"][0]["status"] = "finished"
         self.assertEqual(q.queue_start().status_code, 400)
+
+
+class Segments(QueueTestBase):
+    def test_each_job_records_the_files_it_produced(self):
+        """The join needs to know which outputs belong to which segment; guessing
+        from filenames would break the moment the output template changes."""
+        self.entries.append(_Entry("/media/a.mp4"))
+        made = ["/out/a_0001.mp4"]
+        q._snapshot_outputs = lambda: {}
+        q._outputs_since = lambda _before: made
+        self._add("a.mp4", frame_start=1, frame_end=50)
+        self._drain()
+        self.assertEqual(q._snapshot()["jobs"][0]["outputs"], made)
+
+    def test_join_refuses_fewer_than_two_segments(self):
+        self._add("a.mp4")
+        job = q._snapshot()["jobs"][0]
+        q._find(job["id"])["outputs"] = ["/out/only.mp4"]
+        self.assertEqual(q.queue_join({"ids": [job["id"]]}).status_code, 400)
+
+    def test_join_refuses_mixed_formats(self):
+        """A concat stream-copy across formats produces a file that plays wrong
+        or not at all — better to say so than to hand back a broken render."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="join_")
+        paths = [os.path.join(d, "a.mp4"), os.path.join(d, "b.mkv")]
+        for p in paths:
+            open(p, "wb").close()
+        self._add("a.mp4"); self._add("a.mp4")
+        jobs = q._snapshot()["jobs"]
+        for job, p in zip(jobs, paths):
+            q._find(job["id"])["outputs"] = [p]
+        res = q.queue_join({"ids": [j["id"] for j in jobs]})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("different formats", res.body.decode())
+
+    def test_join_ignores_outputs_that_no_longer_exist(self):
+        self._add("a.mp4"); self._add("a.mp4")
+        jobs = q._snapshot()["jobs"]
+        q._find(jobs[0]["id"])["outputs"] = ["/gone/one.mp4"]
+        q._find(jobs[1]["id"])["outputs"] = ["/gone/two.mp4"]
+        self.assertEqual(q.queue_join({"ids": [j["id"] for j in jobs]}).status_code, 400)
 
 
 class ConsoleOutput(QueueTestBase):

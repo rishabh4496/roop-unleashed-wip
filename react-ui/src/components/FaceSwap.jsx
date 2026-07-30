@@ -9,6 +9,8 @@ import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
 import useQueue from './faceswap/useQueue';
 import QueuePanel from './faceswap/QueuePanel';
+import useSegments from './faceswap/useSegments';
+import SegmentBar from './faceswap/SegmentBar';
 import SliderTrackerBar from './faceswap/SliderTrackerBar';
 import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
@@ -299,6 +301,11 @@ export default function FaceSwap({
   // switch or a closed window no longer throws the batch away mid-render.
   const queue = useQueue({ notify });
 
+  // Named frame ranges on the current clip, persisted per target. Declared
+  // beside the queue because that is what consumes them: each segment becomes
+  // one queued job (see queueSegments below).
+  const segments = useSegments(targets[selTarget]?.name || String(selTarget), maxFrames);
+
   // Pasted Files Dialog State
   const [pastedFiles, setPastedFiles] = useState(null);
 
@@ -453,6 +460,55 @@ export default function FaceSwap({
   };
 
   const startQueue = () => queue.start();
+
+  // ── Segments ─────────────────────────────────────────────────────────────
+  // One run renders one range, because the trim lives on the target entry
+  // rather than in the swap payload. So N ranges = N queued jobs, each of which
+  // sets its own trim just before it dispatches, and an optional join at the
+  // end to hand back a single file.
+  const queueSegments = async () => {
+    if (targets.length === 0 || sourceFaces.length === 0) {
+      notify('Load a target and a source face first', 'error');
+      return;
+    }
+    if (segments.segments.length === 0) return;
+    const payload = buildSwapPayload();
+    const name = targets[selTarget]?.name || '';
+    await queue.addMany(segments.segments.map((s, i) => ({
+      target_name: name,
+      source_index: selSource,
+      source_name: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected face',
+      label: `${name} — segment ${i + 1}`,
+      payload,
+      frame_start: s.start,
+      frame_end: s.end,
+    })));
+    notify(`Queued ${segments.segments.length} segment${segments.segments.length === 1 ? '' : 's'} of "${name}"`);
+  };
+
+  // Finished segment jobs for THIS target, in timeline order — the join has to
+  // concatenate them in clip order, not in the order they happened to render.
+  const joinableJobs = React.useMemo(() => {
+    const name = targets[selTarget]?.name;
+    if (!name) return [];
+    return queue.jobs
+      .filter((j) => j.target_name === name && j.status === 'finished'
+                     && j.frame_start != null && (j.outputs || []).length > 0)
+      .sort((a, b) => a.frame_start - b.frame_start);
+  }, [queue.jobs, targets, selTarget]);
+
+  const joinSegments = async () => {
+    try {
+      const res = await postJSON('/api/queue/join', { ids: joinableJobs.map((j) => j.id) });
+      notify(`Joined ${res.segments} segments into ${res.name}`, 'success');
+    } catch (e) { notify(e.message, 'error'); }
+  };
+
+  const jumpToSegment = (s) => {
+    setFrameMarkerVal('start', s.start);
+    setFrameMarkerVal('end', s.end);
+    setFrame(s.start);
+  };
 
   // Custom Timeline and Playback States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -3587,6 +3643,24 @@ export default function FaceSwap({
                   setPlaybackRate={setPlaybackRate}
                   thumbUrl={(f) => `${API}/api/target/preview?index=${selTarget}&frame=${f}&width=384`}
                   targetKey={targets[selTarget]?.name || String(selTarget)}
+                  segments={segments.segments}
+                  onSegmentClick={jumpToSegment}
+                />
+                <SegmentBar
+                  segments={segments.segments}
+                  fps={targets[selTarget]?.fps || 25}
+                  maxFrames={maxFrames}
+                  startFrame={startFrame}
+                  endFrame={endFrame}
+                  onAdd={segments.add}
+                  onRemove={segments.remove}
+                  onClear={segments.clear}
+                  onJump={jumpToSegment}
+                  onQueueAll={queueSegments}
+                  onJoin={joinSegments}
+                  joinable={joinableJobs.length}
+                  coveredFrames={segments.coveredFrames()}
+                  busy={progress.processing}
                 />
               </div>
             )}

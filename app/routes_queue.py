@@ -53,6 +53,8 @@ _progress = None            # the live run's progress dict
 list_files_process = None   # loaded target ProcessEntry list
 _run_swap = None            # api.py's blocking single-run entry point
 _stop_current = None        # api.py's stop_swap(), to abort the in-flight job
+_snapshot_outputs = None    # post_swap._snapshot_output_mtimes
+_outputs_since = None       # post_swap._outputs_since
 
 QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.json")
 
@@ -292,7 +294,15 @@ def _run_one(job):
     payload["target_index"] = idx
     _progress.update({"processing": True, "paused": False, "progress": 0.0,
                       "desc": "Starting queued job…", "error": ""})
+    # Which files THIS job produces — recorded so a set of segment jobs can be
+    # joined back into one clip afterwards without guessing from filenames.
+    before = _snapshot_outputs() if _snapshot_outputs else None
     _run_swap(payload)          # blocking; clears processing in its own finally
+    if before is not None and _outputs_since:
+        try:
+            job["outputs"] = list(_outputs_since(before))
+        except Exception:
+            job["outputs"] = []
 
     if _progress.get("error"):
         return "failed", str(_progress["error"])
@@ -406,6 +416,73 @@ def queue_resume():
         roop_globals.pause = False
         _progress["paused"] = False
     return _snapshot()
+
+
+@router.post("/api/queue/join")
+def queue_join(payload: dict = Body(...)):
+    """Concatenate the outputs of several finished jobs into one file.
+
+    This is what makes multi-segment rendering a single deliverable rather than
+    N clips: each segment is its own run (the trim range lives on the target,
+    so it has to be), and this puts them back together in the order given.
+
+    Stream copy, via the concat demuxer. That is safe precisely BECAUSE the
+    segments came from one source through one settings set — same codec, same
+    resolution, same rate — which is the one case concat-copy is reliable in. A
+    copy that fails is reported rather than silently re-encoded: re-encoding
+    would quietly halve the quality of a finished render.
+    """
+    import subprocess
+    from roop.ffmpeg_writer import FFMPEG_BINARY
+
+    ids = [str(i) for i in (payload.get("ids") or [])]
+    with _lock:
+        jobs = [j for j in (_find(i) for i in ids) if j is not None]
+    files = [f for job in jobs for f in (job.get("outputs") or []) if os.path.exists(f)]
+    if len(files) < 2:
+        return JSONResponse(status_code=400, content={
+            "message": "need at least two finished segment outputs to join"})
+
+    exts = {os.path.splitext(f)[1].lower() for f in files}
+    if len(exts) > 1:
+        return JSONResponse(status_code=400, content={
+            "message": f"segments have different formats ({', '.join(sorted(exts))}) "
+                       f"— re-render them with one output format"})
+
+    out_dir = os.path.dirname(files[0])
+    ext = exts.pop()
+    stem = str(payload.get("name") or "").strip() or (
+        os.path.splitext(os.path.basename(files[0]))[0] + "_joined")
+    stem = os.path.basename(stem)                       # never escape the output dir
+    dest = os.path.join(out_dir, stem + ext)
+    n = 1
+    while os.path.exists(dest):                         # never overwrite a render
+        dest = os.path.join(out_dir, f"{stem}_{n}{ext}")
+        n += 1
+
+    listing = os.path.join(out_dir, f".concat_{uuid.uuid4().hex[:8]}.txt")
+    try:
+        with open(listing, "w", encoding="utf-8") as fh:
+            for f in files:
+                # The concat demuxer takes a quoted path with ' escaped.
+                fh.write("file '%s'\n" % f.replace("'", r"'\''"))
+        cmd = [FFMPEG_BINARY, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
+               "-i", listing, "-c", "copy", dest]
+        kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, **kwargs)
+        if proc.returncode != 0 or not os.path.exists(dest):
+            return JSONResponse(status_code=500, content={
+                "message": f"ffmpeg concat failed (exit {proc.returncode}) — see the terminal log"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        try:
+            os.remove(listing)
+        except OSError:
+            pass
+
+    _say(f"[Queue] joined {len(files)} segment(s) -> {os.path.basename(dest)}")
+    return {"path": dest, "name": os.path.basename(dest), "segments": len(files)}
 
 
 @router.post("/api/queue/stop")

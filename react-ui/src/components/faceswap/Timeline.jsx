@@ -227,6 +227,8 @@ export default function Timeline({
   targetKey = '',
   view,
   setView,
+  segments = [],
+  onSegmentClick,
 }) {
   // ── View window ───────────────────────────────────────────────────────────
   // The track shows [view.start, view.end] rather than the whole clip. `pctOf`
@@ -566,6 +568,28 @@ export default function Timeline({
             <span key={m} className="absolute inset-y-0 w-px bg-amber-300/45 z-10 pointer-events-none"
                   style={{ left: `${pctOf(m)}%` }} />
           ))}
+
+          {/* Segment bands. Drawn as a thin strip along the bottom rather than a
+              full-height tint so several of them stay readable over the
+              filmstrip, and so they never compete with the In/Out shading that
+              says what THIS run will render. Clipped to the visible window. */}
+          {segments.map((s, i) => {
+            const from = Math.max(s.start, vStart);
+            const to = Math.min(s.end, vEnd);
+            if (to < from) return null;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onSegmentClick?.(s); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="absolute bottom-0 h-1.5 z-20 rounded-sm bg-[var(--accent)]/75 hover:bg-[var(--accent)] border-x border-black/40 transition-colors"
+                style={{ left: `${pctOf(from)}%`, width: `${Math.max(0.4, pctOf(to) - pctOf(from))}%` }}
+                title={`Segment ${i + 1}: frames ${s.start}–${s.end}`}
+                aria-label={`Segment ${i + 1}, frames ${s.start} to ${s.end}`}
+              />
+            );
+          })}
 
           {/* Hover line */}
           {hoverFrame !== null && (

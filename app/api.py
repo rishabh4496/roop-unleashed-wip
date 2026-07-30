@@ -2590,6 +2590,8 @@ _routes_queue._progress = _progress
 _routes_queue.list_files_process = list_files_process
 _routes_queue._run_swap = _run_swap
 _routes_queue._stop_current = stop_swap
+_routes_queue._snapshot_outputs = _snapshot_output_mtimes
+_routes_queue._outputs_since = _outputs_since
 _routes_queue.load()
 
 # Helpers that left with their route groups but are still called by code that
