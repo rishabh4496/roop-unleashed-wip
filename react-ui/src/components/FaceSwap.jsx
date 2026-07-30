@@ -2733,16 +2733,16 @@ export default function FaceSwap({
             )}
             <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
               <Button size="xs" variant="secondary" onClick={exportProfiles}>📤 Export Presets</Button>
-              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
+              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
                 📥 Import Presets
-                <input type="file" accept=".json" onChange={importProfiles} className="hidden" />
+                <input type="file" accept=".json" onChange={importProfiles} className="sr-only" />
               </label>
             </div>
             <div className="flex flex-wrap gap-2 mt-2">
               <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">🔗 Share Recipe</Button>
-              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95">
+              <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
                 📂 Load Recipe
-                <input type="file" accept=".json" onChange={importRecipe} className="hidden" />
+                <input type="file" accept=".json" onChange={importRecipe} className="sr-only" />
               </label>
             </div>
             <p className="text-[10px] text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>

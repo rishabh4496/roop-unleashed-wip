@@ -222,9 +222,9 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                             </span>
                           )}
                           <span className="flex items-center gap-1.5 text-[11px] text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
-                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
-                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
+                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" aria-label={`Rename faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
+                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" aria-label={`Export faceset ${e.name}`} href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
+                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" aria-label={`Delete faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
                           </span>
                         </div>
                       ))}

@@ -106,11 +106,11 @@ export default function Extras({ notify, registerFileListener }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
         <Section title="Input & transform">
-          <label className="block cursor-pointer">
+          <label className="block cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
             <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60 mb-4">
               📁 {fileName || 'Pick an image or video'}
             </div>
-            <input type="file" accept="image/*,video/*" onChange={onPick} className="hidden" />
+            <input type="file" accept="image/*,video/*" onChange={onPick} className="sr-only" />
           </label>
 
           {file && fileUrlSrc && (

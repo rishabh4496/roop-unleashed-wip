@@ -75,6 +75,7 @@ export default function FloatingActionDock({
               : 'text-neutral-300 hover:bg-white/10 hover:text-white'
           }`}
           title="Generate instant preview frame"
+          aria-label="Generate instant preview frame"
         >
           <span>👁️</span>
           <span>{previewing ? 'Rendering...' : 'Preview'}</span>

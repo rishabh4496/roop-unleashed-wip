@@ -80,6 +80,8 @@ export default function ProcessingDock({
               : 'bg-white/5 text-neutral-400 border-white/10 hover:text-neutral-200'
           }`}
           title="Send desktop alert notification when job finishes"
+          aria-pressed={desktopAlerts}
+          aria-label="Desktop alerts when the job finishes"
         >
           <span>🔔</span>
           <span className="hidden sm:inline">{desktopAlerts ? 'Alerts On' : 'Desktop Alerts'}</span>

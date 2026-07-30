@@ -172,13 +172,13 @@ export default function FaceManager({ notify, registerFileListener }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
         <Section title="Add faces">
-          <label className="block cursor-pointer">
+          <label className="block cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
             <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60">📁 Add images / videos</div>
-            <input type="file" accept="image/*,video/*" multiple onChange={onAddFiles} className="hidden" />
+            <input type="file" accept="image/*,video/*" multiple onChange={onAddFiles} className="sr-only" />
           </label>
-          <label className="block cursor-pointer">
+          <label className="block cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
             <div className="px-4 py-3 rounded-lg border border-white/10 hover:border-white/30 text-center text-sm text-white/50">Load existing faceset (.fsz)</div>
-            <input type="file" accept=".fsz" onChange={onLoadFaceset} className="hidden" />
+            <input type="file" accept=".fsz" onChange={onLoadFaceset} className="sr-only" />
           </label>
           {video && (
             <div className="space-y-2">

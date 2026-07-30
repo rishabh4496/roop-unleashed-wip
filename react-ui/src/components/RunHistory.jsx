@@ -354,7 +354,8 @@ function ComparePanel({ a, b, onClear, onLoad }) {
           <Head e={b} side="Run B" />
         </div>
         <button type="button" onClick={onClear}
-                className="shrink-0 text-white/40 hover:text-white text-lg leading-none px-1" title="Close comparison">✕</button>
+                className="shrink-0 text-white/40 hover:text-white text-lg leading-none px-1"
+                title="Close comparison" aria-label="Close comparison">✕</button>
       </div>
 
       {/* Speed delta */}

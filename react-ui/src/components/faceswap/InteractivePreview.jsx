@@ -509,6 +509,7 @@ export default function InteractivePreview({
           disabled={zoom <= 1}
           className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
           title="Zoom out (−)"
+          aria-label="Zoom out"
         >
           −
         </button>
@@ -520,6 +521,7 @@ export default function InteractivePreview({
               : 'hud-glass-button'
           }`}
           title="Reset to fit"
+          aria-label="Reset zoom to fit"
         >
           {zoom > 1 ? `${zoom.toFixed(1)}×` : 'FIT'}
         </button>
@@ -528,6 +530,7 @@ export default function InteractivePreview({
           disabled={zoom >= ZOOM_MAX}
           className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
           title="Zoom in (+)"
+          aria-label="Zoom in"
         >
           +
         </button>
@@ -535,6 +538,7 @@ export default function InteractivePreview({
           onClick={zoomToActual}
           className="px-2 h-7 rounded-lg text-[10px] font-bold hud-glass-button"
           title="Zoom 1:1"
+          aria-label="Zoom to actual pixel size"
         >
           1:1
         </button>
@@ -545,6 +549,8 @@ export default function InteractivePreview({
         <button
           onClick={() => setShowBoxes((b) => !b)}
           title="Show detected face boxes"
+          aria-pressed={showBoxes}
+          aria-label="Show detected face boxes"
           className={`px-2 h-7 rounded-lg text-[10px] font-bold ${
             showBoxes
               ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
@@ -640,7 +646,8 @@ export default function InteractivePreview({
         {isVideo && (
           <>
             <span className="w-px h-5 bg-white/10 mx-1" />
-            <button onClick={() => stepFrame(-1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Previous frame (←)">
+            <button onClick={() => stepFrame(-1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button"
+                    title="Previous frame (←)" aria-label="Previous frame">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
             </button>
             <button
@@ -649,6 +656,7 @@ export default function InteractivePreview({
                 isPlaying ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20' : 'hud-glass-button'
               }`}
               title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
@@ -656,7 +664,8 @@ export default function InteractivePreview({
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               )}
             </button>
-            <button onClick={() => stepFrame(1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Next frame (→)">
+            <button onClick={() => stepFrame(1)} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button"
+                    title="Next frame (→)" aria-label="Next frame">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
             </button>
             <span className="px-1 text-[10px] font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
@@ -668,7 +677,8 @@ export default function InteractivePreview({
         <span className="w-px h-5 bg-white/10 mx-1" />
 
         {/* Fullscreen Button */}
-        <button onClick={triggerFullscreen} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button" title="Toggle fullscreen">
+        <button onClick={triggerFullscreen} className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button"
+                title="Toggle fullscreen" aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>
           {isFullscreen ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
           ) : (

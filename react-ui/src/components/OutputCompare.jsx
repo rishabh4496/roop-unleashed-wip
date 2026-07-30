@@ -112,20 +112,31 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
     };
   }, [isVideo, aUrl, bUrl]);
 
+  // Keys are handled ON THE DIALOG, not on window. A modal's shortcuts belong to
+  // the modal: bound to window they would fire for whatever is behind it too,
+  // and Escape/Space are already spoken for by the Face Swap tab. Focus is moved
+  // into the dialog on open so the handler receives keys immediately (and so a
+  // keyboard user is not left navigating the page underneath).
+  const dialogRef = useRef(null);
   useEffect(() => {
-    const onKey = (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
-      if (e.key === 'Escape') { onClose(); return; }
-      if (e.key === ' ' && isVideo) {
-        e.preventDefault();
-        const va = aRef.current;
-        if (!va) return;
-        if (va.paused) va.play().catch(() => {}); else va.pause();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, isVideo]);
+    const el = dialogRef.current;
+    const restore = document.activeElement;
+    el?.focus();
+    return () => { if (restore instanceof HTMLElement) restore.focus(); };
+  }, []);
+
+  const onDialogKeyDown = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
+    if (e.key !== ' ' || !isVideo) return;
+    // Space on a focused button is that button's own activation, not ours.
+    const tag = e.target?.tagName;
+    if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const va = aRef.current;
+    if (!va) return;
+    if (va.paused) va.play().catch(() => {}); else va.pause();
+  };
 
   const move = (clientX) => {
     const box = boxRef.current?.getBoundingClientRect();
@@ -152,7 +163,10 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
 
   return (
     <div
-      className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+      ref={dialogRef}
+      tabIndex={-1}
+      onKeyDown={onDialogKeyDown}
+      className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 outline-none"
       role="dialog"
       aria-modal="true"
       aria-label={`Comparing ${a.name} with ${b.name}`}

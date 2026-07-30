@@ -50,7 +50,8 @@ export const Section = ({ title, action, children, className = '', collapsible =
       {title && (
         <div className={`flex items-center justify-between gap-3 ${showBody ? 'mb-4' : 'mb-0'}`}>
           {collapsible ? (
-            <button type="button" onClick={() => setOpen((o) => !o)} className="flex items-center gap-2 min-w-0 group/sec">
+            <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+                    className="flex items-center gap-2 min-w-0 group/sec">
               {marker}
               <span className={`${label} group-hover/sec:text-white/60 transition-colors`}>{title}</span>
               <svg className={`w-3 h-3 text-white/30 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 6l6 6-6 6" /></svg>
@@ -83,15 +84,31 @@ export const Section = ({ title, action, children, className = '', collapsible =
   );
 };
 
-// Shared "?" hover-tooltip badge. shrink-0 so it never wraps to its own line,
-// and stays pinned to the top of a multi-line label.
+// Shared "?" tooltip badge. shrink-0 so it never wraps to its own line, and
+// stays pinned to the top of a multi-line label.
+//
+// A real <button>, not a decorative span: these carry the only explanation of
+// what a setting does, and on a hover-only span that text was unreachable by
+// keyboard and invisible to a screen reader. Now it is tabbable, opens on focus
+// as well as hover, and the text itself is the accessible name — so it is read
+// out rather than announced as an unlabelled "?".
 export const InfoBadge = ({ info }) => (
-  <div className="relative group inline-flex items-center shrink-0 mt-0.5">
-    <span className="text-[10px] text-white/30 hover:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition">?</span>
-    <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left">
+  <span className="relative group inline-flex items-center shrink-0 mt-0.5">
+    <button
+      type="button"
+      aria-label={typeof info === 'string' ? info : 'More information'}
+      onClick={(e) => e.preventDefault()}
+      className="text-[10px] text-white/30 hover:text-white/60 focus-visible:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition"
+    >
+      ?
+    </button>
+    <span
+      role="tooltip"
+      className="absolute bottom-full right-0 mb-2 hidden group-hover:block group-focus-within:block tooltip-content z-50 w-max max-w-xs p-3 rounded-xl bg-black/95 backdrop-blur-lg border border-white/10 shadow-2xl text-xs text-white/70 whitespace-normal leading-relaxed pointer-events-none text-left"
+    >
       {info}
-    </div>
-  </div>
+    </span>
+  </span>
 );
 
 export const Field = ({ label, info, children }) => (
@@ -136,24 +153,36 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
   </Field>
 );
 
+// The checkbox is `sr-only`, NOT `hidden`. Tailwind's `hidden` is display:none,
+// which takes an element out of the tab order entirely — and since the visible
+// switch is a div, that left every toggle in the app (most of Settings, most of
+// the Face Swap panel) impossible to reach or operate from the keyboard at all.
+// sr-only keeps it invisible but focusable, and `peer` carries its focus state
+// out to the switch so the ring lands on the thing the eye is looking at.
 export const Toggle = ({ label, info, checked, onChange }) => (
   <label className="flex items-start justify-between gap-3 w-full text-left cursor-pointer group/toggle select-none">
+    <input
+      type="checkbox"
+      className="sr-only peer"
+      checked={!!checked}
+      onChange={(e) => onChange(e.target.checked)}
+    />
     <span className="flex items-start gap-1.5 min-w-0 flex-1">
       <span className="text-[13px] font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
       {info && <InfoBadge info={info} />}
     </span>
-    <motion.div
+    <motion.span
+      aria-hidden
       whileTap={{ scale: 0.9 }}
       transition={spring.snappy}
-      className={`relative shrink-0 mt-0.5 w-10 h-[22px] rounded-full transition-colors duration-200 border ${checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-white/[0.06] border-white/10 group-hover/toggle:border-white/20'}`}
+      className={`relative block shrink-0 mt-0.5 w-10 h-[22px] rounded-full transition-colors duration-200 border peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--accent)] ${checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-white/[0.06] border-white/10 group-hover/toggle:border-white/20'}`}
     >
       <motion.span
         className="absolute top-[2px] left-[2px] w-[16px] h-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)]"
         animate={{ x: checked ? 18 : 0 }}
         transition={spring.bouncy}
       />
-    </motion.div>
-    <input type="checkbox" className="hidden" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </motion.span>
   </label>
 );
 
@@ -238,6 +267,15 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                 className={`group relative ${vertical ? 'flex items-center gap-3 p-2' : 'aspect-square'} rounded-xl overflow-hidden border-2 transition-colors duration-200 cursor-pointer ${draggable ? 'active:cursor-grabbing' : ''} ${selected === i ? (vertical ? 'bg-white/5' : 'ring-2 ring-[var(--accent)]/30') : 'hover:border-white/30'}`}
                 style={{ borderColor: selected === i ? (color || 'var(--accent)') : (color ? `${color}66` : 'transparent') }}
                 onClick={() => onSelect(i)}
+                // Selecting a face is the primary action of this whole panel and
+                // it lived on a bare div: no tab stop, no role, no key handling.
+                role="button"
+                tabIndex={0}
+                aria-pressed={selected === i}
+                aria-label={person != null ? `Person ${person + 1}, face ${i + 1}` : `Face ${i + 1}`}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(i); }
+                }}
               >
                 {vertical ? (
                   <>
@@ -259,6 +297,8 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
+                        title="Remove this face"
+                        aria-label={`Remove face ${i + 1}`}
                         className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[var(--accent-hover)] hover:text-white hover:scale-110 active:scale-90 flex items-center justify-center"
                       >✕</button>
                     )}
@@ -283,6 +323,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                       <button
                         type="button"
                         title="Remove this face"
+                        aria-label={`Remove face ${i + 1}`}
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
                         className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
                       >✕</button>
@@ -379,7 +420,16 @@ export const Toasts = ({ toasts = [], onDismiss }) => (
           exit={{ opacity: 0, x: 24, scale: 0.95 }}
           transition={spring.bouncy}
           onClick={() => onDismiss?.(t.id)}
+          // Dismissal was click-only on a div. The message itself is announced
+          // through App's aria-live region either way, so this is about being
+          // able to clear a stack of them without a mouse.
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDismiss?.(t.id); }
+          }}
           title="Dismiss"
+          aria-label={`Dismiss notification: ${t.message}`}
           className="pointer-events-auto cursor-pointer px-4 py-3 rounded-xl shadow-2xl bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px] max-w-sm"
         >
           <span className="text-lg shrink-0">{toastIcon(t.type)}</span>

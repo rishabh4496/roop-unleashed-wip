@@ -125,7 +125,10 @@ export default function PresetStudioModal({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close preset studio"
+            title="Close"
             className="flex items-center justify-center h-8 w-8 rounded-full bg-white/5 border border-white/10 text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
           >
             ✕
@@ -209,9 +212,9 @@ export default function PresetStudioModal({
                 >
                   📤 Export
                 </button>
-                <label className="cursor-pointer px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all">
+                <label className="cursor-pointer px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
                   📥 Import
-                  <input type="file" accept=".json" onChange={onImportRecipe} className="hidden" />
+                  <input type="file" accept=".json" onChange={onImportRecipe} className="sr-only" />
                 </label>
               </div>
 
