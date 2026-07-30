@@ -381,7 +381,7 @@ class TestRotationStandsTheFaceUp(RotationActionCase):
         rotation must leave it within 45 deg of upright -- not upside down."""
         from roop.face_util import face_rotation_action
         acted = 0
-        for roll in (-110, -100, -90, -80, -70, 70, 80, 90, 100, 110):
+        for roll in (-120, -100, -90, -80, -70, 70, 80, 90, 100, 120):
             for yaw in (0, 45, 90):
                 kps = project_kps(yaw, 0, roll)
                 action = face_rotation_action(self._face(kps), (512, 512))
@@ -404,16 +404,32 @@ class TestRotationStandsTheFaceUp(RotationActionCase):
                             f"roll={roll} got no more upright")
 
     def test_near_upside_down_is_deliberately_declined(self):
-        """A 90 deg turn cannot rescue a face that is nearly inverted -- it
-        would land 45-90 deg off. Declining is the correct answer here, not an
-        oversight, and the swap simply proceeds unrotated."""
+        """Past 135 deg a single 90 deg turn cannot land within 45 deg of
+        upright, so declining is the correct answer, not an oversight -- the
+        swap simply proceeds unrotated."""
         from roop.face_util import face_rotation_action
-        for roll in (-180, -160, 160, 180):
+        for roll in (-180, -170, -160, 160, 170, 180):
             self.assertIsNone(
                 face_rotation_action(self._face(project_kps(0, 0, roll)),
                                      (512, 512)),
                 f"tried to fix a near-inverted face with a 90 deg turn "
                 f"at roll={roll}")
+
+    def test_the_two_edges_are_not_symmetric(self):
+        """The lower edge carries a safety margin over 45 deg because a false
+        positive there corrupts an upright face; the upper edge must NOT
+        inherit it, because nothing near 135 deg risks being upright and the
+        margin would only cost recall -- a face at 120 deg is 90 deg better off
+        for being turned."""
+        from roop.face_util import (face_rotation_action,
+                                    FACE_ROLL_LOWER, FACE_ROLL_UPPER)
+        self.assertGreater(FACE_ROLL_LOWER, 45.0)
+        self.assertEqual(FACE_ROLL_UPPER, 135.0)
+        for roll in (115, 120, 125, 130, -115, -120, -125, -130):
+            kps = project_kps(0, 0, roll)
+            action = face_rotation_action(self._face(kps), (512, 512))
+            self.assertIsNotNone(action, f"declined a rescuable roll={roll}")
+            self.assertLess(self._tilt_after(action, kps), 45.0)
 
 
 class TestRotationLeavesUprightFacesAlone(RotationActionCase):

@@ -753,18 +753,26 @@ def rotate_image_180(image):
 # sits on the head's vertical midline and barely moves — it is the only one of
 # the three that stays honest, so it is what is used.
 #
-# Turning the frame 90 deg only helps once the face is more than half-way over,
-# so the natural boundary is 45 deg (|dx| > |dy|).  MARGIN pushes it out past
-# that, because the two failure directions are not symmetric: declining to
-# rotate a sideways face merely forgoes an improvement, while rotating an
-# upright one corrupts the crop the swap is built from.
+# A 90 deg turn of the frame lands the face within 45 deg of upright exactly
+# when its roll is between 45 and 135 deg — that is the honest break-even band,
+# and the two edges of it want different treatment.
 #
-# 1.4 is not a guess — swept against the same synthetic head.  It is the first
-# value with ZERO false positives over the full yaw 0-90 / pitch +-30 grid at
-# every roll up to 44 deg, and it still fires on every face in the 70-110 deg
-# sideways band.  Below it the axis error stacks onto real roll and upright
-# faces start getting turned; above it costs recall for nothing.
-FACE_ROLL_MARGIN = 1.4          # ~54.5 deg, vs the 9.1 deg worst-case axis error
+# LOWER is pushed out from 45 to 54.5 because the failure directions are not
+# symmetric there: declining to rotate a sideways face merely forgoes an
+# improvement, while rotating an upright one corrupts the crop the swap is
+# built from.  54.5 is not a guess — swept against the same synthetic head, it
+# is the first value with ZERO false positives over the full yaw 0-90 /
+# pitch +-30 grid at every roll up to 44 deg, while still firing on every face
+# in the 70-110 deg band.  Below it the 9.1 deg axis error stacks onto real
+# roll and upright faces start getting turned.
+#
+# UPPER stays at the true break-even 135 and deliberately does NOT inherit that
+# margin.  Nothing near 135 deg is at risk of being an upright face, so the
+# only thing a margin buys there is lost recall — and it is expensive: a face
+# at 120 deg is 90 deg better off for being turned.  Past 135 a single 90 deg
+# turn cannot get within 45 deg of upright, so declining is correct.
+FACE_ROLL_LOWER = 54.5          # vs the 9.1 deg worst-case axis error
+FACE_ROLL_UPPER = 135.0         # beyond this a 90 deg turn no longer helps
 
 
 def face_down_axis(face):
@@ -802,9 +810,10 @@ def _action_for_down_axis(dx, dy):
     chin pointing image-left (-x) is stood upright by rotate_anticlockwise, and
     a chin pointing image-right (+x) by rotate_clockwise.
     """
-    if abs(dx) <= FACE_ROLL_MARGIN * abs(dy):
+    tilt = float(np.degrees(np.arctan2(dx, dy)))
+    if not (FACE_ROLL_LOWER <= abs(tilt) <= FACE_ROLL_UPPER):
         return None
-    return "rotate_anticlockwise" if dx < 0 else "rotate_clockwise"
+    return "rotate_anticlockwise" if tilt < 0 else "rotate_clockwise"
 
 
 def face_rotation_action(face, frame_shape=None):
