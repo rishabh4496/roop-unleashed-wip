@@ -7,6 +7,8 @@ import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
 import InteractivePreview from './faceswap/InteractivePreview';
+import useQueue from './faceswap/useQueue';
+import QueuePanel from './faceswap/QueuePanel';
 import SliderTrackerBar from './faceswap/SliderTrackerBar';
 import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
@@ -292,11 +294,10 @@ export default function FaceSwap({
 
   // Drag and drop overlay state removed (managed globally by App.jsx)
 
-  // Batch Queue Manager
-  const [queue, setQueue] = useState([]);
-  const [currentQueueIndex, setCurrentQueueIndex] = useState(null);
-  const [isQueueRunning, setIsQueueRunning] = useState(false);
-  const [queuePaused, setQueuePaused] = useState(false);
+  // Batch queue. The list and the runner both live on the server now
+  // (app/routes_queue.py); this is a view onto them, so a reload, a Pinokio tab
+  // switch or a closed window no longer throws the batch away mid-render.
+  const queue = useQueue({ notify });
 
   // Pasted Files Dialog State
   const [pastedFiles, setPastedFiles] = useState(null);
@@ -401,175 +402,57 @@ export default function FaceSwap({
     });
   }, [registerFileListener]);
 
-  // Add current target, source, and settings to the queue
-  const addToQueue = () => {
-    if (targets.length === 0) {
-      notify('Load target media first', 'error');
-      return;
-    }
-    const newJob = {
-      id: Date.now() + Math.random().toString(36).substr(2, 9),
-      targetIndex: selTarget,
-      targetName: targets[selTarget]?.name || 'Unknown',
-      sourceIndex: selSource,
-      sourceName: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected Face',
-      params: { ...p },
-      faceMapping: getFaceMappingArray(),
-      status: 'Pending'
+  // ── The one place a /api/swap body is built ──────────────────────────────
+  // start() posts this directly; a queued job stores it verbatim and the server
+  // replays it (app/routes_queue.py). One builder rather than two means a new
+  // setting cannot reach a hand-started run and miss a queued one — which is
+  // exactly what the queue's private copy of this list used to do.
+  // `target_index` is deliberately absent: the queue resolves it from the target
+  // NAME at dispatch time, because a stored index goes stale as soon as a target
+  // is removed and the job then renders a different file than the one it names.
+  const buildSwapPayload = (params = p) => {
+    const sp = withSliderBypass(params);
+    return {
+      ...sp,
+      enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
+      output_method: sp.output_method, video_method: sp.video_swapping_method,
+      upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
+      sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
+      autorotate: sp.autorotate_faces,
+      face_distance: num(sp.max_face_distance, 0.75), blend_ratio: num(sp.blend_ratio, 0.8),
+      num_swap_steps: num(sp.num_swap_steps, 1),
+      face_mapping: getFaceMappingArray(),
+      imagemask: maskJson,
     };
-    setQueue((prev) => [...prev, newJob]);
-    notify(`Added "${newJob.targetName}" to Batch Queue`);
   };
 
-  const removeFromQueue = (id) => {
-    setQueue((prev) => prev.filter(job => job.id !== id));
+  // Describe the current setup as a queue job. `extra` carries a segment
+  // (frame_start/frame_end) when one range of several is being queued.
+  const currentJob = (extra = {}) => ({
+    target_name: targets[selTarget]?.name || '',
+    source_index: selSource,
+    source_name: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected face',
+    payload: buildSwapPayload(),
+    ...extra,
+  });
+
+  const addToQueue = async () => {
+    if (targets.length === 0) { notify('Load target media first', 'error'); return; }
+    if (sourceFaces.length === 0) { notify('Add a source face first', 'error'); return; }
+    const job = currentJob();
+    if (await queue.add(job)) notify(`Added "${job.target_name}" to the batch queue`);
   };
 
-  const clearQueue = () => {
-    setQueue([]);
-    setIsQueueRunning(false);
-    setQueuePaused(false);
-    setCurrentQueueIndex(null);
+  // Put a queued job's settings back into the editor so it can be adjusted and
+  // re-queued (or the queued one updated in place).
+  const loadJobSettings = (job) => {
+    if (!job?.payload) return;
+    setSettings((s) => ({ ...(s || {}), ...job.payload }));
+    const idx = targets.findIndex((t) => t.name === job.target_name);
+    if (idx >= 0) selectTarget(idx);
   };
 
-  const startQueue = async () => {
-    if (queue.length === 0) {
-      notify('Queue is empty', 'error');
-      return;
-    }
-    setQueuePaused(false);
-    setIsQueueRunning(true);
-    setCurrentQueueIndex(0);
-  };
-
-  // Pause the whole queue: pause the job that's currently swapping (backend
-  // honours roop_globals.pause in ProcessMgr) and hold off dispatching the next
-  // job until resumed. The runner effect below bails out while queuePaused.
-  const pauseQueue = async () => {
-    setQueuePaused(true);
-    try {
-      if (progress.processing && !progress.paused) {
-        await postJSON('/api/pause', {});
-        setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
-      }
-      notify('Queue paused', 'info');
-    } catch (e) { notify(e.message, 'error'); }
-  };
-
-  const resumeQueue = async () => {
-    setQueuePaused(false);
-    try {
-      if (progress.processing && progress.paused) {
-        await postJSON('/api/resume', {});
-        setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
-      }
-      notify('Queue resumed');
-    } catch (e) { notify(e.message, 'error'); }
-  };
-
-  // Stop the queue: halt further dispatch and never leave the current job frozen
-  // in a paused state (resume the backend so it can finish under run-bar control).
-  const stopQueue = async () => {
-    setIsQueueRunning(false);
-    setQueuePaused(false);
-    if (progress.processing && progress.paused) {
-      try { await postJSON('/api/resume', {}); } catch { /* ignore */ }
-      setProgress((pr) => ({ ...pr, paused: false }));
-    }
-  };
-
-  // Queue Runner State Machine
-  /* eslint-disable react-hooks/exhaustive-deps -- intentional: queue state machine reads latest state each tick without re-subscribing on every dep change */
-  useEffect(() => {
-    if (!isQueueRunning || currentQueueIndex === null) return;
-    // Hold dispatch while the queue is paused — don't start the next job.
-    if (queuePaused) return;
-
-    if (currentQueueIndex >= queue.length) {
-      setIsQueueRunning(false);
-      setCurrentQueueIndex(null);
-      notify('All batch queue jobs finished!', 'success');
-      return;
-    }
-
-    const job = queue[currentQueueIndex];
-    // Skip jobs that already reached a terminal state (e.g. re-running a queue
-    // with some Finished/Failed items). A 'Running' job — which is what we see
-    // when this effect re-fires on resume — must NOT be re-dispatched or skipped;
-    // the progress-monitor effect below advances it once it truly finishes.
-    if (job.status === 'Finished' || job.status === 'Failed') {
-      setCurrentQueueIndex((idx) => idx + 1);
-      return;
-    }
-    if (job.status === 'Running') return;
-
-    const executeJob = async () => {
-      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Running' } : j));
-
-      // Resolve the target by NAME at run time — stored indices go stale when
-      // targets are removed after the job was queued, which made a queued job
-      // silently swap the wrong file.
-      const resolvedIndex = targets.findIndex(t => t.name === job.targetName);
-      if (resolvedIndex === -1) {
-        notify(`Job "${job.targetName}" skipped: target no longer loaded`, 'error');
-        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
-        setCurrentQueueIndex((idx) => idx + 1);
-        return;
-      }
-
-      try {
-        await postJSON('/api/target/select', { index: resolvedIndex });
-        setSelTarget(resolvedIndex);
-        
-        await postJSON('/api/source/select', { index: job.sourceIndex });
-        setSelSource(job.sourceIndex);
-
-        await postJSON('/api/settings', job.params);
-        setSettings(job.params);
-        
-        await postJSON('/api/swap', {
-          ...job.params,
-          enhancer: job.params.selected_enhancer,
-          detection: job.params.face_detection_mode,
-          output_method: job.params.output_method,
-          video_method: job.params.video_swapping_method,
-          upscale: job.params.subsample_upscale,
-          mask_engine: job.params.mask_engine,
-          clip_text: job.params.mask_clip_text,
-          sam2_model_size: job.params.sam2_model_size,
-          track_identities: job.params.track_identities,
-          autorotate: job.params.autorotate_faces,
-          face_distance: num(job.params.max_face_distance, 0.75),
-          blend_ratio: num(job.params.blend_ratio, 0.8),
-          num_swap_steps: num(job.params.num_swap_steps, 1),
-          face_mapping: job.faceMapping || [],
-          target_index: resolvedIndex,
-        });
-
-        setStartTime(Date.now());
-        setProgress({ processing: true, paused: false, progress: 0, desc: 'Starting queue job…', output: null });
-      } catch (e) {
-        notify(`Job "${job.targetName}" failed to start: ${e.message}`, 'error');
-        setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: 'Failed' } : j));
-        setCurrentQueueIndex((idx) => idx + 1);
-      }
-    };
-    executeJob();
-  }, [isQueueRunning, currentQueueIndex, queuePaused]);
-
-  // Monitor job progress to move to next queue item
-  useEffect(() => {
-    if (!isQueueRunning || currentQueueIndex === null) return;
-    const job = queue[currentQueueIndex];
-    if (!job || job.status !== 'Running') return;
-
-    if (!progress.processing) {
-      const isFailed = progress.error || (progress.desc && progress.desc.toLowerCase().includes('fail'));
-      setQueue((prev) => prev.map(j => j.id === job.id ? { ...j, status: isFailed ? 'Failed' : 'Finished' } : j));
-      setCurrentQueueIndex((idx) => idx + 1);
-    }
-  }, [progress.processing]);
-  /* eslint-enable react-hooks/exhaustive-deps */
+  const startQueue = () => queue.start();
 
   // Custom Timeline and Playback States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1391,21 +1274,14 @@ export default function FaceSwap({
       const newTargets = newTargetsList.slice(beforeCount);
       const newVideos = newTargets.filter(t => t.frames > 1);
       if (newVideos.length > 1) {
-        const jobs = newVideos.map((t, idx) => {
-          const absoluteIndex = beforeCount + newTargets.indexOf(t);
-          return {
-            id: Date.now() + Math.random().toString(36).substr(2, 9) + '_' + idx,
-            targetIndex: absoluteIndex,
-            targetName: t.name || 'Unknown',
-            sourceIndex: selSource,
-            sourceName: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected Face',
-            params: { ...p },
-            faceMapping: getFaceMappingArray(),
-            status: 'Pending'
-          };
-        });
-        setQueue((prev) => [...prev, ...jobs]);
-        notify(`Automatically queued ${jobs.length} uploaded videos`, 'success');
+        const payload = buildSwapPayload();
+        await queue.addMany(newVideos.map((t) => ({
+          target_name: t.name || '',
+          source_index: selSource,
+          source_name: sourceFaces[selSource] ? `Face ${selSource + 1}` : 'Selected face',
+          payload,
+        })));
+        notify(`Automatically queued ${newVideos.length} uploaded videos`, 'success');
       }
     } catch (err) { notify(err.message, 'error'); }
     finally { setUploadingTgt(false); }
@@ -1533,20 +1409,8 @@ export default function FaceSwap({
   // ── start / stop ──
   const start = async () => {
     try {
-      const sp = withSliderBypass(p);
       await postJSON('/api/settings', p);            // persist CFG
-      await postJSON('/api/swap', {
-        ...sp,
-        enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
-        output_method: sp.output_method, video_method: sp.video_swapping_method,
-        upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
-        sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
-        autorotate: sp.autorotate_faces,
-        face_distance: num(sp.max_face_distance, 0.75), blend_ratio: num(sp.blend_ratio, 0.8),
-        num_swap_steps: num(sp.num_swap_steps, 1),
-        face_mapping: getFaceMappingArray(),
-        imagemask: maskJson,
-      });
+      await postJSON('/api/swap', buildSwapPayload());
       setStartTime(Date.now());
       // Ask for desktop-notification permission so we can ping on completion if
       // the tab is backgrounded (no-op if already decided).
@@ -2323,8 +2187,8 @@ export default function FaceSwap({
       // Swapping execution: Ctrl + Enter
       if (e.key === 'Enter' && e.ctrlKey) {
         e.preventDefault();
-        if (isQueueRunning) return;
-        if (queue.length > 0) {
+        if (queue.running) return;
+        if (queue.pending.length > 0) {
           startQueue();
         } else {
           start();
@@ -2352,8 +2216,8 @@ export default function FaceSwap({
     isPlaying,
     compare,
     splitView,
-    queue,
-    isQueueRunning,
+    queue.running,
+    queue.pending.length,
     setFrame,
     setIsPlaying,
     setCompare,
@@ -2370,7 +2234,7 @@ export default function FaceSwap({
   // A ref keeps the handler map fresh without re-subscribing every render.
   const cmdRef = useRef({});
   cmdRef.current = {
-    start: () => { if (isQueueRunning) return; if (queue.length > 0) startQueue(); else start(); },
+    start: () => { if (queue.running) return; if (queue.pending.length > 0) startQueue(); else start(); },
     stop,
     queue: addToQueue,
     compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; }),
@@ -2973,18 +2837,23 @@ export default function FaceSwap({
             ) : (
               <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                 {targets.map((t, i) => {
-                  const job = queue.find(j => j.targetName === t.name);
+                  // Show the most advanced state any queued job for this file
+                  // reached — with segments, one target can carry several jobs.
+                  const jobs = queue.jobs.filter(j => j.target_name === t.name);
+                  const job = jobs.find(j => j.status === 'running')
+                    || jobs.find(j => j.status === 'failed' || j.status === 'stopped')
+                    || jobs.find(j => j.status === 'finished');
                   let statusLabel = null;
                   let badgeColor = '';
                   if (job) {
-                    if (job.status === 'Running') {
+                    if (job.status === 'running') {
                       statusLabel = 'Running';
                       badgeColor = 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 animate-pulse';
-                    } else if (job.status === 'Finished') {
+                    } else if (job.status === 'finished') {
                       statusLabel = 'Finished';
                       badgeColor = 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
-                    } else if (job.status === 'Failed') {
-                      statusLabel = 'Failed';
+                    } else {
+                      statusLabel = job.status === 'stopped' ? 'Stopped' : 'Failed';
                       badgeColor = 'text-red-400 border-red-500/30 bg-red-500/10';
                     }
                   }
@@ -3831,64 +3700,14 @@ export default function FaceSwap({
               because then this holds the only controls that stop the QUEUE
               rather than just the current job, and hiding them would let the
               next job start after a Stop. */}
-          <div className={progress.processing && !isQueueRunning ? 'hidden' : ''}>
-          <Section title="Batch Swapping Queue">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
-              <div className="text-xs text-white/50">
-                {queue.length === 0
-                  ? 'No jobs in queue. Configure settings & click "Add current to queue".'
-                  : `${queue.length} jobs queued · ${queue.filter(j => j.status === 'Finished').length} finished`}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={addToQueue} disabled={targets.length === 0 || sourceFaces.length === 0}>➕ Add current to queue</Button>
-                {queue.length > 0 && (
-                  <>
-                    {isQueueRunning ? (
-                      <>
-                        <Button size="sm" variant="secondary" onClick={queuePaused ? resumeQueue : pauseQueue}>
-                          {queuePaused ? '▶ Resume queue' : '⏸ Pause queue'}
-                        </Button>
-                        <Button size="sm" variant="stop" onClick={stopQueue}>⏹ Stop queue</Button>
-                      </>
-                    ) : (
-                      <Button size="sm" variant="primary" onClick={startQueue}>▶ Start queue</Button>
-                    )}
-                    <Button size="sm" variant="ghost" className="text-red-400" onClick={clearQueue}>Clear</Button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {queue.length > 0 && (
-              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                {queue.map((job, idx) => {
-                  const statusColors = {
-                    Pending: 'text-white/60 bg-white/5 border-white/5',
-                    Running: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.2)]',
-                    Paused: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
-                    Finished: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
-                    Failed: 'text-red-400 bg-red-500/10 border-red-500/30',
-                  };
-                  // Show the in-flight job as "Paused" while the queue is held.
-                  const displayStatus = (queuePaused && job.status === 'Running') ? 'Paused' : job.status;
-                  return (
-                    <div key={job.id} className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs border ${statusColors[displayStatus] || 'text-white bg-white/5'}`}>
-                      <div className="flex-1 min-w-0 pr-3">
-                        <span className="font-semibold text-white block truncate">{idx + 1}. {job.targetName}</span>
-                        <span className="opacity-75 text-[10px] block truncate">Source: {job.sourceName} · Enhancer: {job.params.selected_enhancer || 'None'}</span>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">{displayStatus}</span>
-                        {!isQueueRunning && (
-                          <button onClick={() => removeFromQueue(job.id)} className="text-white/40 hover:text-red-400 font-bold" title="Remove job">✕</button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Section>
+          <div className={progress.processing && !queue.running ? 'hidden' : ''}>
+            <QueuePanel
+              q={queue}
+              onAddCurrent={addToQueue}
+              onLoadJobSettings={loadJobSettings}
+              canAdd={targets.length > 0 && sourceFaces.length > 0}
+              notify={notify}
+            />
           </div>
 
           <Section title="Output settings & renders" className={progress.processing ? 'hidden' : ''}>

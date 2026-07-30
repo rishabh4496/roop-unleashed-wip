@@ -2565,10 +2565,12 @@ import routes_diagnostics as _routes_diagnostics
 import routes_livecam as _routes_livecam
 import routes_quality as _routes_quality
 import routes_extras as _routes_extras
+import routes_queue as _routes_queue
 app.include_router(_routes_diagnostics.router)
 app.include_router(_routes_livecam.router)
 app.include_router(_routes_quality.router)
 app.include_router(_routes_extras.router)
+app.include_router(_routes_queue.router)
 
 # Shared objects the route modules read. All are mutated in place and never
 # rebound here, so these bind one object rather than copying a value.
@@ -2580,6 +2582,15 @@ _routes_quality._last_output = _last_output
 _routes_extras._FRAME_COLORIZERS = _FRAME_COLORIZERS
 _routes_extras._FRAME_FILTERS = _FRAME_FILTERS
 _routes_extras._FRAME_UPSCALERS = _FRAME_UPSCALERS
+# The queue runner drives the same single-run entry point the /api/swap handler
+# does, so a queued job and a hand-started one are the identical code path.
+# _run_swap and stop_swap are functions defined in this module (never rebound),
+# so binding them here is a stable reference, not a copied value.
+_routes_queue._progress = _progress
+_routes_queue.list_files_process = list_files_process
+_routes_queue._run_swap = _run_swap
+_routes_queue._stop_current = stop_swap
+_routes_queue.load()
 
 # Helpers that left with their route groups but are still called by code that
 # stayed here. Imported at the bottom rather than the top because these modules
