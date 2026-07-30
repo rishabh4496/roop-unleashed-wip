@@ -399,42 +399,12 @@ def get_face_crop_from_frame(frame_bgr) -> str:
     """
     import base64 as _b64
     import cv2 as _cv2
-    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
+    from roop.face_util import (get_first_face, align_crop, rotate_anticlockwise,
+                                rotate_clockwise, face_rotation_action,
+                                rotation_improves_upright)
 
     if frame_bgr is None:
         return ""
-
-    def _rotation_action(face, frame):
-        # 1. Primary check: 5-keypoints roll vector (eye midpoint to nose)
-        kps = getattr(face, 'kps', None)
-        if kps is not None and len(kps) >= 3:
-            mx = (kps[0][0] + kps[1][0]) / 2.0
-            my = (kps[0][1] + kps[1][1]) / 2.0
-            vx = kps[2][0] - mx
-            vy = kps[2][1] - my
-            if abs(vx) > abs(vy):
-                return "rotate_anticlockwise" if vx > 0 else "rotate_clockwise"
-
-        # 2. Secondary check: 106 landmarks forehead vs chin orientation
-        lm106 = getattr(face, 'landmark_2d_106', None)
-        if lm106 is not None and len(lm106) > 72:
-            forehead_x = lm106[72][0]
-            forehead_y = lm106[72][1]
-            chin_x = lm106[0][0]
-            chin_y = lm106[0][1]
-            dx = forehead_x - chin_x
-            dy = forehead_y - chin_y
-            if abs(dx) > abs(dy):
-                return "rotate_anticlockwise" if chin_x < forehead_x else "rotate_clockwise"
-
-        # 3. Fallback check: Bounding box aspect ratio
-        bbox_w = face.bbox[2] - face.bbox[0]
-        bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w > 1.1 * bbox_h:
-            fh, fw = frame.shape[:2]
-            bbox_cx = face.bbox[0] + bbox_w / 2.0
-            return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
-        return None
 
     face = get_first_face(frame_bgr)
     if face is None or not hasattr(face, 'kps') or face.kps is None:
@@ -442,7 +412,7 @@ def get_face_crop_from_frame(frame_bgr) -> str:
 
     frame = frame_bgr.copy()
     if roop.globals.autorotate_faces:
-        action = _rotation_action(face, frame)
+        action = face_rotation_action(face, frame.shape[:2])
         if action is not None:
             x0, y0, x1, y1 = face.bbox.astype(int)
             offs = int(max(x1 - x0, y1 - y0) * 0.25)
@@ -454,7 +424,8 @@ def get_face_crop_from_frame(frame_bgr) -> str:
             else:
                 cut = rotate_clockwise(cut)
             rotface = get_first_face(cut)
-            if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
+            if (rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None
+                    and rotation_improves_upright(face, rotface)):
                 face  = rotface
                 frame = cut
 

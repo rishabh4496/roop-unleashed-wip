@@ -731,6 +731,135 @@ def rotate_image_180(image):
     return np.rot90(image, 2)
 
 
+# ── In-plane roll detection (autorotate_faces) ───────────────────────────────
+#
+# The decision "is this face lying on its side, and which way do I turn the
+# frame to stand it up?" rests entirely on estimating the face's DOWN axis
+# (eyes -> chin) in image space.  Which landmarks that axis is built from
+# matters far more than it looks, because an out-of-plane turn (yaw) shears
+# every candidate axis sideways and so masquerades as in-plane roll.
+#
+# Measured over a yaw 0-90 / pitch +-30 sweep of the project's own reference
+# head (tests/facegeom.py), with the head held perfectly upright — so every
+# reading below is pure error:
+#
+#     eye-midpoint -> NOSE TIP     up to 45.7 deg   unusable
+#     eye-line perpendicular       up to 90.0 deg   unusable
+#     eye-midpoint -> MOUTH-mid    up to  9.1 deg   good
+#
+# The nose tip protrudes along +z, so turning the head swings it sideways
+# almost as much as a real 45 deg roll would.  The eye line collapses to zero
+# length at full profile and its direction becomes noise.  The mouth midpoint
+# sits on the head's vertical midline and barely moves — it is the only one of
+# the three that stays honest, so it is what is used.
+#
+# Turning the frame 90 deg only helps once the face is more than half-way over,
+# so the natural boundary is 45 deg (|dx| > |dy|).  MARGIN pushes it out past
+# that, because the two failure directions are not symmetric: declining to
+# rotate a sideways face merely forgoes an improvement, while rotating an
+# upright one corrupts the crop the swap is built from.
+#
+# 1.4 is not a guess — swept against the same synthetic head.  It is the first
+# value with ZERO false positives over the full yaw 0-90 / pitch +-30 grid at
+# every roll up to 44 deg, and it still fires on every face in the 70-110 deg
+# sideways band.  Below it the axis error stacks onto real roll and upright
+# faces start getting turned; above it costs recall for nothing.
+FACE_ROLL_MARGIN = 1.4          # ~54.5 deg, vs the 9.1 deg worst-case axis error
+
+
+def face_down_axis(face):
+    """The face's chin direction as (dx, dy) in image space, or None.
+
+    Built from the 5 detector keypoints, which every detector engine emits
+    (align_crop already depends on them), so this works where the 106-point
+    landmarks are unavailable.
+    """
+    kps = getattr(face, 'kps', None)
+    if kps is None or len(kps) < 5:
+        return None
+    kps = np.asarray(kps, dtype=np.float32)
+    eye_mid = (kps[0] + kps[1]) / 2.0
+    mouth_mid = (kps[3] + kps[4]) / 2.0
+    axis = mouth_mid - eye_mid
+    if not np.isfinite(axis).all() or float(np.hypot(axis[0], axis[1])) < 1e-3:
+        return None
+    return float(axis[0]), float(axis[1])
+
+
+def face_roll_tilt(face):
+    """In-plane tilt of *face* in degrees, or None. 0 = upright, +-180 = upside down."""
+    axis = face_down_axis(face)
+    if axis is None:
+        return None
+    return float(np.degrees(np.arctan2(axis[0], axis[1])))
+
+
+def _action_for_down_axis(dx, dy):
+    """Which way to turn the FRAME so a face whose chin points (dx, dy) stands up.
+
+    Verified against the shipped rotate helpers rather than reasoned about: the
+    forward point map of np.rot90 sends a direction (dx, dy) to (dy, -dx), so a
+    chin pointing image-left (-x) is stood upright by rotate_anticlockwise, and
+    a chin pointing image-right (+x) by rotate_clockwise.
+    """
+    if abs(dx) <= FACE_ROLL_MARGIN * abs(dy):
+        return None
+    return "rotate_anticlockwise" if dx < 0 else "rotate_clockwise"
+
+
+def face_rotation_action(face, frame_shape=None):
+    """Return 'rotate_clockwise' / 'rotate_anticlockwise' / None for *face*.
+
+    Single source of truth: ProcessMgr (render) and core (the Frame Editor crop
+    preview) both call this, so the render and the preview can never disagree
+    about orientation.
+    """
+    # 1. Keypoint midline — measured worst-case error 9.1 deg under any pose.
+    axis = face_down_axis(face)
+    if axis is not None:
+        action = _action_for_down_axis(*axis)
+        if action is not None:
+            return action
+        return None     # a trustworthy axis said "upright"; do not second-guess it
+
+    # 2. 106-point midline, when the detector supplies it but keypoints are
+    #    degenerate. forehead[72] -> chin[0] is the same midline measurement.
+    lm106 = getattr(face, 'landmark_2d_106', None)
+    if lm106 is not None and len(lm106) > 72:
+        action = _action_for_down_axis(float(lm106[0][0]) - float(lm106[72][0]),
+                                       float(lm106[0][1]) - float(lm106[72][1]))
+        if action is not None:
+            return action
+        return None
+
+    # 3. Last resort: a bbox wider than it is tall means a face on its side, but
+    #    carries no sign, so guess from which half of the frame it sits in.
+    if frame_shape is None:
+        return None
+    bbox_w = float(face.bbox[2]) - float(face.bbox[0])
+    bbox_h = float(face.bbox[3]) - float(face.bbox[1])
+    if bbox_w > 1.1 * bbox_h:
+        width = frame_shape[1]
+        bbox_cx = float(face.bbox[0]) + bbox_w / 2.0
+        return "rotate_anticlockwise" if bbox_cx >= width / 2.0 else "rotate_clockwise"
+    return None
+
+
+def rotation_improves_upright(before_face, after_face):
+    """True when re-detecting on the rotated frame actually stood the face up.
+
+    The orientation call is a heuristic on noisy landmarks; this is the check
+    that makes acting on it safe. A rotation that left the face no more upright
+    than it started (or stood it on its head) is rejected, so a bad call costs
+    an unrotated swap instead of a corrupted one.
+    """
+    before = face_roll_tilt(before_face)
+    after = face_roll_tilt(after_face)
+    if before is None or after is None:
+        return True     # nothing to judge with; keep the pre-existing behaviour
+    return abs(after) < abs(before) - 5.0
+
+
 # alignment code from insightface https://github.com/deepinsight/insightface/blob/master/python-package/insightface/utils/face_align.py
 
 arcface_dst = np.array(

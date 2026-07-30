@@ -7,6 +7,7 @@ import psutil
 from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, analysis_pooled
+from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -2028,41 +2029,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
 
 
     def rotation_action(self, original_face:Face, frame:Frame):
-        (height, width) = frame.shape[:2]
-
-        # 1. Primary check: 5-keypoints roll vector (eye midpoint to nose)
-        kps = getattr(original_face, 'kps', None)
-        if kps is not None and len(kps) >= 3:
-            mx = (kps[0][0] + kps[1][0]) / 2.0
-            my = (kps[0][1] + kps[1][1]) / 2.0
-            vx = kps[2][0] - mx
-            vy = kps[2][1] - my
-            # In OpenCV coordinate space (Y down), vy > 0 means nose points down (upright face).
-            # If |vx| > |vy|, the face is rotated 90 degrees sideways.
-            if abs(vx) > abs(vy):
-                return "rotate_anticlockwise" if vx > 0 else "rotate_clockwise"
-
-        # 2. Secondary check: 106 landmarks forehead vs chin orientation
-        lm106 = getattr(original_face, 'landmark_2d_106', None)
-        if lm106 is not None and len(lm106) > 72:
-            forehead_x = lm106[72][0]
-            forehead_y = lm106[72][1]
-            chin_x = lm106[0][0]
-            chin_y = lm106[0][1]
-            dx = forehead_x - chin_x
-            dy = forehead_y - chin_y
-            if abs(dx) > abs(dy):
-                return "rotate_anticlockwise" if chin_x < forehead_x else "rotate_clockwise"
-
-        # 3. Fallback check: Bounding box aspect ratio
-        bounding_box_width = original_face.bbox[2] - original_face.bbox[0]
-        bounding_box_height = original_face.bbox[3] - original_face.bbox[1]
-        if bounding_box_width > 1.1 * bounding_box_height:
-            center_x = width // 2.0
-            bbox_center_x = original_face.bbox[0] + (bounding_box_width // 2.0)
-            return "rotate_anticlockwise" if bbox_center_x >= center_x else "rotate_clockwise"
-
-        return None
+        return face_rotation_action(original_face, frame.shape[:2])
 
 
     def auto_rotate_frame(self, original_face, frame:Frame):
@@ -2115,7 +2082,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 elif rotation_action == "rotate_clockwise":
                     rotcutframe = rotate_clockwise(rotcutframe)
                 rotface = get_first_face(rotcutframe)
-                if rotface is None:
+                # Only commit to the rotation if re-detection confirms it left
+                # the face MORE upright. Without this the orientation heuristic
+                # gets the last word, and a wrong call feeds the swapper an
+                # upside-down crop -- an unrecognisable face, not a rough one.
+                if rotface is None or not rotation_improves_upright(target_face, rotface):
                     rotation_action = None
                 else:
                     saved_frame = frame.copy()

@@ -327,37 +327,191 @@ class TestRotatedFaceHandling(unittest.TestCase):
         self.assertAlmostEqual(float(face.kps[0][0]), 700.0, places=4)
         self.assertAlmostEqual(float(face.kps[0][1]), 200.0, places=4)
 
-    def test_rotation_action_90deg_clockwise_roll(self):
-        from roop.ProcessMgr import ProcessMgr
+
+class RotationActionCase(unittest.TestCase):
+    """The orientation call is only ever asserted through its CONSEQUENCE: does
+    turning the frame that way actually stand the face up?
+
+    Asserting the returned string against a hand-worked convention is what let
+    a sign inversion ship -- the test agreed with the code because it was
+    derived from it. So these tests apply the project's real rotate helpers and
+    measure the face afterwards.
+    """
+
+    @staticmethod
+    def _face(kps):
         from insightface.app.common import Face
+        kps = np.asarray(kps, dtype=np.float32)
+        return Face(bbox=np.array([kps[:, 0].min(), kps[:, 1].min(),
+                                   kps[:, 0].max(), kps[:, 1].max()],
+                                  dtype=np.float32),
+                    kps=kps)
 
-        mgr = ProcessMgr(None)
-        # Head lying on right cheek (nose points right)
-        # Left eye: (100, 100), Right eye: (100, 150), Nose: (130, 125)
-        # mx = 100, my = 125 -> vx = 30, vy = 0 (vx > |vy| -> rotate_anticlockwise)
-        face = Face(
-            bbox=np.array([80, 80, 160, 160], dtype=np.float32),
-            kps=np.array([[100, 100], [100, 150], [130, 125], [90, 100], [90, 150]], dtype=np.float32)
-        )
-        dummy_frame = np.zeros((400, 400, 3), dtype=np.uint8)
-        action = mgr.rotation_action(face, dummy_frame)
-        self.assertEqual(action, "rotate_anticlockwise")
+    @staticmethod
+    def _rotate_dir(action, vec):
+        """Push a direction through the SHIPPED rotate helper's real point map."""
+        from roop.face_util import rotate_clockwise, rotate_anticlockwise
+        h, w = 9, 7
+        img = np.zeros((h, w, 3), dtype=np.int32)
+        for y in range(h):
+            for x in range(w):
+                img[y, x] = (x, y, 0)
+        out = (rotate_anticlockwise if action == "rotate_anticlockwise"
+               else rotate_clockwise)(img)
+        pos = {}
+        for iy in range(out.shape[0]):
+            for ix in range(out.shape[1]):
+                pos[(int(out[iy, ix, 0]), int(out[iy, ix, 1]))] = np.array([ix, iy])
+        origin = pos[(3, 4)]
+        ex, ey = pos[(4, 4)] - origin, pos[(3, 5)] - origin
+        return vec[0] * ex + vec[1] * ey
 
-    def test_rotation_action_90deg_anticlockwise_roll(self):
-        from roop.ProcessMgr import ProcessMgr
+    def _tilt_after(self, action, kps):
+        """Tilt of the face's down axis once the frame is turned, in degrees."""
+        from roop.face_util import face_down_axis
+        axis = np.array(face_down_axis(self._face(kps)))
+        axis /= np.linalg.norm(axis)
+        moved = self._rotate_dir(action, axis)
+        return abs(float(np.degrees(np.arctan2(moved[0], moved[1]))))
+
+
+class TestRotationStandsTheFaceUp(RotationActionCase):
+    def test_rolled_faces_end_up_upright(self):
+        """A face lying on its side must be offered a rotation, and that
+        rotation must leave it within 45 deg of upright -- not upside down."""
+        from roop.face_util import face_rotation_action
+        acted = 0
+        for roll in (-110, -100, -90, -80, -70, 70, 80, 90, 100, 110):
+            for yaw in (0, 45, 90):
+                kps = project_kps(yaw, 0, roll)
+                action = face_rotation_action(self._face(kps), (512, 512))
+                self.assertIsNotNone(
+                    action, f"no rotation offered at roll={roll} yaw={yaw}")
+                tilt = self._tilt_after(action, kps)
+                self.assertLess(tilt, 45.0,
+                                f"roll={roll} yaw={yaw}: {action} left the face "
+                                f"{tilt:.1f} deg off upright")
+                acted += 1
+        self.assertEqual(acted, 30)
+
+    def test_rotation_strictly_improves_uprightness(self):
+        from roop.face_util import face_roll_tilt, face_rotation_action
+        for roll in (-110, -90, -70, 70, 90, 110):
+            kps = project_kps(0, 0, roll)
+            action = face_rotation_action(self._face(kps), (512, 512))
+            self.assertLess(self._tilt_after(action, kps),
+                            abs(face_roll_tilt(self._face(kps))),
+                            f"roll={roll} got no more upright")
+
+    def test_near_upside_down_is_deliberately_declined(self):
+        """A 90 deg turn cannot rescue a face that is nearly inverted -- it
+        would land 45-90 deg off. Declining is the correct answer here, not an
+        oversight, and the swap simply proceeds unrotated."""
+        from roop.face_util import face_rotation_action
+        for roll in (-180, -160, 160, 180):
+            self.assertIsNone(
+                face_rotation_action(self._face(project_kps(0, 0, roll)),
+                                     (512, 512)),
+                f"tried to fix a near-inverted face with a 90 deg turn "
+                f"at roll={roll}")
+
+
+class TestRotationLeavesUprightFacesAlone(RotationActionCase):
+    def test_no_rotation_for_any_upright_pose(self):
+        """The regression that made this file necessary: an upright head that is
+        merely TURNED must never be treated as a head lying on its side."""
+        from roop.face_util import face_rotation_action
+        for yaw in (0, 15, 30, 45, 50, 60, 70, 75, 80, 85, 90):
+            for pitch in (-30, -15, 0, 15, 30):
+                kps = project_kps(yaw, pitch, 0)
+                self.assertIsNone(
+                    face_rotation_action(self._face(kps), (512, 512)),
+                    f"upright face rotated at yaw={yaw} pitch={pitch}")
+
+    def test_small_and_mid_roll_is_left_alone(self):
+        """Below the boundary a 90 deg turn would make things worse. Swept over
+        the full pose grid, because it is yaw stacking onto real roll that
+        pushes a merely-tilted head over the line."""
+        from roop.face_util import face_rotation_action
+        for roll in (-44, -40, -30, -15, 0, 15, 30, 40, 44):
+            for yaw in (0, 15, 30, 45, 60, 75, 90):
+                for pitch in (-30, 0, 30):
+                    self.assertIsNone(
+                        face_rotation_action(
+                            self._face(project_kps(yaw, pitch, roll)), (512, 512)),
+                        f"rotated at roll={roll} yaw={yaw} pitch={pitch}")
+
+    def test_the_axis_it_uses_is_the_yaw_robust_one(self):
+        """Guards the actual finding behind the fix. The nose tip swings up to
+        ~45 deg under a turn of a perfectly upright head -- indistinguishable
+        from real roll -- while the mouth midline stays under ~10 deg. If a
+        future edit reaches for the nose again, this fails."""
+        from roop.face_util import face_down_axis
+        worst_used, worst_nose = 0.0, 0.0
+        for yaw in (0, 30, 50, 60, 70, 80, 90):
+            for pitch in (-30, -15, 0, 15, 30):
+                kps = project_kps(yaw, pitch, 0)
+                ax = face_down_axis(self._face(kps))
+                worst_used = max(worst_used,
+                                 abs(np.degrees(np.arctan2(ax[0], ax[1]))))
+                nose = kps[2] - (kps[0] + kps[1]) / 2.0
+                worst_nose = max(worst_nose,
+                                 abs(np.degrees(np.arctan2(nose[0], nose[1]))))
+        self.assertLess(worst_used, 12.0,
+                        f"axis in use lies by {worst_used:.1f} deg under yaw")
+        self.assertGreater(worst_nose, 40.0,
+                           "nose axis no longer misbehaves -- re-check the note "
+                           "in face_util if this ever fails")
+
+
+class TestRotationVerificationGuard(unittest.TestCase):
+    """rotation_improves_upright is the backstop that keeps a wrong orientation
+    call cheap: it rejects the rotation instead of swapping an upside-down crop."""
+
+    @staticmethod
+    def _face_at(roll):
         from insightface.app.common import Face
+        kps = project_kps(0, 0, roll)
+        return Face(bbox=np.array([0, 0, 1, 1], dtype=np.float32), kps=kps)
 
-        mgr = ProcessMgr(None)
-        # Head lying on left cheek (nose points left)
-        # Left eye: (100, 150), Right eye: (100, 100), Nose: (70, 125)
-        # mx = 100, my = 125 -> vx = -30, vy = 0 (-vx > |vy| -> rotate_clockwise)
-        face = Face(
-            bbox=np.array([60, 80, 140, 160], dtype=np.float32),
-            kps=np.array([[100, 150], [100, 100], [70, 125], [90, 150], [90, 100]], dtype=np.float32)
-        )
-        dummy_frame = np.zeros((400, 400, 3), dtype=np.uint8)
-        action = mgr.rotation_action(face, dummy_frame)
-        self.assertEqual(action, "rotate_clockwise")
+    def test_accepts_a_rotation_that_stood_the_face_up(self):
+        from roop.face_util import rotation_improves_upright
+        self.assertTrue(rotation_improves_upright(self._face_at(90),
+                                                  self._face_at(3)))
+
+    def test_rejects_an_inverted_rotation(self):
+        from roop.face_util import rotation_improves_upright
+        self.assertFalse(rotation_improves_upright(self._face_at(90),
+                                                   self._face_at(179)))
+
+    def test_rejects_a_rotation_that_changed_nothing(self):
+        from roop.face_util import rotation_improves_upright
+        self.assertFalse(rotation_improves_upright(self._face_at(90),
+                                                   self._face_at(88)))
+
+    def test_passes_through_when_there_is_nothing_to_judge(self):
+        from insightface.app.common import Face
+        from roop.face_util import rotation_improves_upright
+        blind = Face(bbox=np.array([0, 0, 1, 1], dtype=np.float32), kps=None)
+        self.assertTrue(rotation_improves_upright(blind, self._face_at(0)))
+
+
+class TestRotationActionIsSharedNotDuplicated(unittest.TestCase):
+    """Render and Frame-Editor preview must agree on orientation; they did not
+    while each kept its own copy of the heuristic."""
+
+    def test_processmgr_delegates_to_face_util(self):
+        import inspect
+        from roop.ProcessMgr import ProcessMgr
+        self.assertIn("face_rotation_action",
+                      inspect.getsource(ProcessMgr.rotation_action))
+
+    def test_core_has_no_private_copy(self):
+        import inspect
+        import roop.core
+        src = inspect.getsource(roop.core.get_face_crop_from_frame)
+        self.assertNotIn("def _rotation_action", src)
+        self.assertIn("face_rotation_action", src)
 
 
 if __name__ == "__main__":
