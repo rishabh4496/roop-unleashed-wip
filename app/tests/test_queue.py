@@ -278,6 +278,41 @@ class Segments(QueueTestBase):
         self.assertEqual(q.queue_join({"ids": [j["id"] for j in jobs]}).status_code, 400)
 
 
+class RunnerLifetime(QueueTestBase):
+    def test_a_superseded_runner_retires_instead_of_dispatching(self):
+        """Stop → Start must not leave two runners walking one queue.
+
+        The window is real rather than theoretical. queue_stop only sets flags
+        and returns, and _run_swap clears _progress['processing'] in its own
+        finally — so while the previous runner is still alive finishing its
+        bookkeeping (an _outputs_since listdir and a queue.json write), BOTH of
+        queue_start's guards already pass: nothing is 'running' and nothing is
+        'processing'. A new runner starts legitimately. The old one then comes
+        round its loop, sees running=True again, and takes the NEXT pending job
+        — two renders into one output directory through one set of ProcessMgr
+        globals. The generation token is what retires it.
+        """
+        self._add("a.mp4")
+        self._add("b.mp4")
+        q._queue["running"] = True          # a new batch is live…
+        q._generation += 1                  # …started by somebody else
+        q._loop(q._generation - 1)          # the old thread comes round its loop
+        self.assertEqual(self.ran, [],
+                         "a superseded runner dispatched into the new batch")
+        self.assertEqual([j["status"] for j in q._snapshot()["jobs"]],
+                         ["pending", "pending"])
+
+    def test_the_current_runner_is_not_retired_by_its_own_token(self):
+        """Guard the guard: if the token comparison were inverted or the
+        generation bumped anywhere else, every batch would exit immediately and
+        the queue would look like it silently refused to run."""
+        self.entries.append(_Entry("a.mp4"))
+        self._add("a.mp4")
+        self._drain()
+        self.assertEqual(len(self.ran), 1, "the live runner dispatched nothing")
+        self.assertEqual(q._snapshot()["jobs"][0]["status"], "finished")
+
+
 class ConsoleOutput(QueueTestBase):
     def test_a_non_ascii_message_cannot_raise_out_of_the_runner(self):
         """This is not hypothetical: a '->' arrow in the completion line raised

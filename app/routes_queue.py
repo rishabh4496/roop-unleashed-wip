@@ -65,6 +65,10 @@ DONE = ("finished", "failed", "stopped")
 _lock = threading.RLock()
 _queue = {"jobs": [], "running": False, "paused": False, "current": None}
 _runner = None
+# Bumped by every queue_start. A runner only keeps going while its own token is
+# still the current one, so a thread that outlives the batch it was started for
+# retires instead of dispatching into the next one — see _loop.
+_generation = 0
 
 
 # ── Persistence ──────────────────────────────────────────────────────────────
@@ -328,10 +332,22 @@ def _say(msg):
         pass
 
 
-def _loop():
+def _loop(gen):
+    """Run jobs until the queue empties or is stopped.
+
+    `gen` is this runner's generation token. Stop → Start opens a window where a
+    second runner is legitimately started while this one is still alive: Stop
+    only sets flags and returns, and `_run_swap` clears `_progress[processing]`
+    in its own `finally` — so by the time this thread reaches the bookkeeping
+    below, both of queue_start's guards ("not running", "nothing else
+    processing") already pass. Without the token this thread would then come
+    round the loop, see running=True again, and dispatch the NEXT pending job
+    alongside the new runner: two renders into one output directory, through one
+    set of ProcessMgr globals.
+    """
     while True:
         with _lock:
-            if not _queue["running"]:
+            if not _queue["running"] or gen != _generation:
                 break
             if _queue["paused"]:
                 job = None
@@ -379,7 +395,7 @@ def _loop():
 
 @router.post("/api/queue/start")
 def queue_start():
-    global _runner
+    global _runner, _generation
     with _lock:
         if _queue["running"]:
             return _snapshot()
@@ -391,7 +407,9 @@ def queue_start():
                                 content={"message": "a single run is already processing"})
         _queue["running"] = True
         _queue["paused"] = False
-    _runner = threading.Thread(target=_loop, name="queue-runner", daemon=True)
+        _generation += 1
+        gen = _generation
+    _runner = threading.Thread(target=_loop, args=(gen,), name="queue-runner", daemon=True)
     _runner.start()
     return _snapshot()
 

@@ -82,6 +82,10 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
 
   const isVideo = a.kind === 'video' && b.kind === 'video';
   const mixed = a.kind !== b.kind;
+  // Which of the two stage layouts is mounted. They are separate subtrees, so
+  // crossing this boundary destroys both <video> elements and builds new ones —
+  // which is why the sync effect below has to re-run on it.
+  const sideBySide = mode === 'side' || mixed;
 
   const { changed } = useMemo(
     () => diffSettings(historyA?.settings, historyB?.settings),
@@ -91,10 +95,21 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
   // Keep B on A's clock. Re-synced on every play/pause and whenever A seeks —
   // decoders start at slightly different speeds, so a one-off sync at load time
   // is visibly out by the end of a long clip.
+  //
+  // `sideBySide` is a dependency because switching stage layout REPLACES both
+  // video elements: the refs come back pointing at the new nodes while these
+  // listeners stay bound to the detached old ones. B then stops following A —
+  // and `playing` freezes with it, since that flag is set from A's play/pause
+  // events — which loses the shared clock that is this whole view's reason to
+  // exist, silently, the first time anyone tries the other mode.
   useEffect(() => {
     if (!isVideo) return undefined;
     const va = aRef.current, vb = bRef.current;
     if (!va || !vb) return undefined;
+    // Layouts swap while A is playing; carry that over rather than stranding
+    // the new B paused behind a playing A.
+    setPlaying(!va.paused);
+    if (!va.paused) vb.play().catch(() => {});
     const sync = () => {
       if (Math.abs(vb.currentTime - va.currentTime) > 0.06) vb.currentTime = va.currentTime;
     };
@@ -110,7 +125,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
       va.removeEventListener('seeked', sync);
       va.removeEventListener('timeupdate', sync);
     };
-  }, [isVideo, aUrl, bUrl]);
+  }, [isVideo, aUrl, bUrl, sideBySide]);
 
   // Keys are handled ON THE DIALOG, not on window. A modal's shortcuts belong to
   // the modal: bound to window they would fire for whatever is behind it too,
@@ -241,7 +256,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
               onClick={() => {
                 const va = aRef.current;
                 if (!va) return;
-        if (va.paused) va.play().catch(() => {}); else va.pause();
+                if (va.paused) va.play().catch(() => {}); else va.pause();
               }}
             >
               {playing ? '⏸ Pause both' : '▶ Play both'}
@@ -250,7 +265,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
         </div>
 
         {/* Stage */}
-        {mode === 'side' || mixed ? (
+        {sideBySide ? (
           <div className="grid grid-cols-2 gap-2">
             {[[a, aUrl, aRef], [b, bUrl, bRef]].map(([f, url, r], i) => (
               <div key={i} className="relative bg-black/60 rounded-xl overflow-hidden border border-white/10">

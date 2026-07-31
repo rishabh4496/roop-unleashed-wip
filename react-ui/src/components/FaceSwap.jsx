@@ -2086,20 +2086,14 @@ export default function FaceSwap({
       await postJSON('/api/target/set_frame', { which: 'start', frame: previewStart });
       await postJSON('/api/target/set_frame', { which: 'end', frame: previewEnd });
 
-      // Start the swap with current settings
-      const sp = withSliderBypass(p);
+      // Start the swap with current settings. Through the SAME builder the real
+      // run and the queue use — this was a hand-copied second version of that
+      // object, so a setting added to one reached a full render and a queued job
+      // but silently missed the preview, which is the one place the difference
+      // is hardest to notice.
       await postJSON('/api/settings', p);
       await postJSON('/api/swap', {
-        ...sp,
-        enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
-        output_method: sp.output_method, video_method: sp.video_swapping_method,
-        upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
-        sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
-        autorotate: sp.autorotate_faces,
-        face_distance: num(sp.max_face_distance, 0.75), blend_ratio: num(sp.blend_ratio, 0.8),
-        num_swap_steps: num(sp.num_swap_steps, 1),
-        face_mapping: getFaceMappingArray(),
-        imagemask: maskJson,
+        ...buildSwapPayload(),
         target_index: selTarget,
         // Quick 5s preview clip: skip the heavy post-swap AI upscale so the
         // preview stays fast (the real render still upscales).

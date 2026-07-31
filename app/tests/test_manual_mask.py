@@ -111,9 +111,26 @@ class TestMaskWiring(unittest.TestCase):
         self.assertIn('"kps": kps_list', src)
 
     def test_frontend_sends_imagemask_everywhere_it_renders(self):
+        """Every render path must carry the brush mask.
+
+        This counted three literal `imagemask: maskJson` occurrences — one per
+        payload built by hand. The two swap payloads are now one builder, so the
+        count is 2 and a count is the wrong measure anyway: it passes just as
+        happily if a third call site is added that forgets the mask. Assert the
+        structure instead — the preview builder spells it out, and EVERY
+        /api/swap body goes through buildSwapPayload, which spells it out once.
+        """
         src = FACESWAP_JSX.read_text(encoding="utf-8")
-        # once in buildPreviewPayload + both /api/swap call sites
-        self.assertGreaterEqual(src.count("imagemask: maskJson"), 3)
+        # The preview path and the swap builder each state it literally.
+        self.assertIn("imagemask: maskJson", src)
+        builder = re.search(r"const buildSwapPayload = .*?\n  \};", src, re.S)
+        self.assertIsNotNone(builder, "buildSwapPayload must exist")
+        self.assertIn("imagemask: maskJson", builder.group(0),
+                      "the shared swap payload builder must forward the brush mask")
+        # …and no /api/swap call may hand-roll a body around it.
+        for body in re.findall(r"postJSON\(\s*'/api/swap'\s*,\s*(.*?)\)\s*;", src, re.S):
+            self.assertIn("buildSwapPayload()", body,
+                          f"an /api/swap call bypasses the shared builder: {body[:120]}")
 
     def test_export_canvas_is_white(self):
         src = PREVIEW_JSX.read_text(encoding="utf-8")

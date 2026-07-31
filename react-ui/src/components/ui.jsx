@@ -273,7 +273,14 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                 tabIndex={0}
                 aria-pressed={selected === i}
                 aria-label={person != null ? `Person ${person + 1}, face ${i + 1}` : `Face ${i + 1}`}
+                // Only when the tile ITSELF has focus. The Remove button is a
+                // descendant, so its Enter/Space bubble up here: unguarded, this
+                // handler selected the face instead of removing it (Space —
+                // preventDefault suppresses the button's own activation) or as
+                // well as removing it (Enter). stopPropagation on the button's
+                // onClick cannot help; that is a different event.
                 onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
                   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(i); }
                 }}
               >
@@ -325,7 +332,10 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                         title="Remove this face"
                         aria-label={`Remove face ${i + 1}`}
                         onClick={(e) => { e.stopPropagation(); onRemove(i); }}
-                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
+                        // focus-visible as well as group-hover: this is a real
+                        // tab stop, and opacity-0 alone left a keyboard user
+                        // focused on a control they could not see.
+                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
                       >✕</button>
                     )}
                   </>
