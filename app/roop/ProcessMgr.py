@@ -1493,12 +1493,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         elif roop.globals.no_face_action == eNoFaceAction.USE_ORIGINAL_FRAME:
             self._publish_live(frame)
             return frame
-        if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME:
+        # Both skip policies drop the frame. SKIP_FRAME_IF_DISSIMILAR had no
+        # branch of its own here, so it fell through to the retry below: picking
+        # "Skip Frame if no similar face" silently behaved as "Retry rotated" on
+        # every frame where NOTHING was swapped — which is precisely the case
+        # the setting exists to decide, and it paid a second full detection pass
+        # per frame to do the opposite of what was asked. (The partially swapped
+        # case — some sources matched, some did not — is handled above, under
+        # num_swapped > 0.)
+        if roop.globals.no_face_action in (eNoFaceAction.SKIP_FRAME,
+                                           eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR):
             return None
-        else:
-            ret = self.retry_rotated(frame)
-            self._publish_live(ret)
-            return ret
+        ret = self.retry_rotated(frame)
+        self._publish_live(ret)
+        return ret
 
     def retry_rotated(self, frame):
         copyframe = frame.copy()

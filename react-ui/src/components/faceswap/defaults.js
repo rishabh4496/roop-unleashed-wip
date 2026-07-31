@@ -15,6 +15,11 @@ export const FACESWAP_DEFAULTS = {
   face_detector_threshold: 0.7,
   face_detector_nms: 0.4,
   refine_landmarks: true,
+  // Profile alignment sits in the same alignment group as the two settings
+  // either side of it and was the last Face Swap control missing here, so
+  // "Reset defaults" restored its neighbours and silently left this one at
+  // whatever it was — the same gap expression_restore_strength had below.
+  yaw_align: 'off',
   rescue_small_faces: true,
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',
