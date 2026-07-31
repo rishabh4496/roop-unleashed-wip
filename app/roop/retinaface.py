@@ -243,23 +243,15 @@ _detector_lock = threading.Lock()   # guards pool CONSTRUCTION only
 def _pool_size():
     """One detector instance per concurrent detect worker.
 
-    These calls come from the FaceAnalysis/detmask worker threads, so matching
-    that pool means a worker never waits for a detector. ROOP_DETECTOR_POOL
-    overrides when VRAM is tight — retinaface_r50.onnx is ~104MB per instance,
-    so this is the knob to turn down before the detmask pool itself.
+    The rule now lives in session_pool.detector_pool_size() because yunet and
+    yoloface need the identical thing — three copies of it would drift, and the
+    three engines have to answer to the same ROOP_DETECTOR_POOL.
     """
-    raw = os.environ.get('ROOP_DETECTOR_POOL')
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
     try:
         from roop import session_pool
-        n = session_pool.detmask_pool_size()
+        return session_pool.detector_pool_size()
     except Exception:
-        n = 1
-    return max(1, n)
+        return 1
 
 
 def _build_one(model_type, model_path, providers, file):

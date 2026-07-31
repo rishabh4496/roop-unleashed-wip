@@ -14,6 +14,8 @@ original by the resize ratio.
 
 import os
 import threading
+from contextlib import contextmanager
+from queue import Queue
 
 import cv2
 import numpy as np
@@ -24,8 +26,8 @@ from roop.utilities import resolve_relative_path, conditional_download
 
 _YOLO_URL = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/yoloface_8n.onnx"
 
-_detector = None
-_detector_lock = threading.Lock()
+_pool = None                        # {'items': [...], 'q': Queue}
+_detector_lock = threading.Lock()   # guards pool CONSTRUCTION only
 
 
 def _nms(boxes, scores, iou_thresh=0.4):
@@ -59,10 +61,12 @@ class YoloFaceDetector:
         so = onnxruntime.SessionOptions()
         self.session = onnxruntime.InferenceSession(model_path, so, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        # A single session shared across worker threads → guard run() so
-        # concurrent detect calls don't corrupt the context. Detection is the
-        # cheap stage for yoloface_8n, so serialising it is acceptable.
-        self._lock = threading.Lock()
+        # No lock: each instance is leased to one thread for the length of a
+        # call (see lease_detector). The old shared-session mutex assumed
+        # detection was the cheap stage, which stopped being true for the
+        # temporal pre-pass — there detection is ~85% of the work, and the
+        # measured cost of the same pattern on retinaface was a constant 17.4ms
+        # serial section at every pool width, with the GPU at ~51%.
 
     def detect(self, frame, det_size=640, det_thresh=0.5):
         h0, w0 = frame.shape[:2]
@@ -73,8 +77,7 @@ class YoloFaceDetector:
         canvas[:rh, :rw, :] = resized
         blob = ((canvas.astype(np.float32) - 127.5) / 128.0).transpose(2, 0, 1)[np.newaxis]
 
-        with self._lock:
-            out = self.session.run(None, {self.input_name: blob})[0]
+        out = self.session.run(None, {self.input_name: blob})[0]
 
         det = np.squeeze(out).T                     # (N, 20)
         if det.ndim != 2 or det.shape[1] < 20:
@@ -110,23 +113,63 @@ class YoloFaceDetector:
         return bboxes, kps.astype(np.float32)
 
 
-def get_detector():
-    """Lazily build the shared YOLOFace detector, honouring force_cpu and the
-    current execution providers."""
-    global _detector
-    if _detector is not None:
-        return _detector
+def _ensure_pool():
+    """Lazily build the detector pool, honouring force_cpu and the current
+    execution providers. yoloface_8n.onnx is ~9MB, so N instances are cheap."""
+    global _pool
+    if _pool is not None:
+        return _pool
     with _detector_lock:
-        if _detector is None:
-            if roop.globals.CFG.force_cpu:
-                providers = ["CPUExecutionProvider"]
-            else:
-                providers = roop.globals.execution_providers
-            _detector = YoloFaceDetector(providers)
-    return _detector
+        if _pool is not None:
+            return _pool
+        if roop.globals.CFG is not None and roop.globals.CFG.force_cpu:
+            providers = ["CPUExecutionProvider"]
+        else:
+            providers = roop.globals.execution_providers
+        try:
+            from roop import session_pool
+            n = session_pool.detector_pool_size()
+        except Exception:
+            n = 1
+        items = [YoloFaceDetector(providers) for _ in range(n)]
+        q = Queue()
+        for det in items:
+            q.put(det)
+        _pool = {'items': items, 'q': q}
+        if n > 1:
+            print(f'[YOLOFace] pool of {n} instances — detection runs '
+                  f'{n}-way concurrent (lock-free).')
+    return _pool
+
+
+@contextmanager
+def lease_detector():
+    """Lease one detector for a single detect call. The queue blocks once all N
+    are out, capping concurrency at the pool size — which is what makes each
+    session's exclusive ownership true without a mutex."""
+    pool = _ensure_pool()
+    det = pool['q'].get()
+    try:
+        yield det
+    finally:
+        pool['q'].put(det)
+
+
+def get_detector():
+    """A detector instance, NOT leased — for callers that only read static
+    attributes. Concurrent detect calls must go through detect()."""
+    return _ensure_pool()['items'][0]
+
+
+def detect(frame, det_size=640, det_thresh=0.5):
+    """Run detection; returns (bboxes (N,5) incl. score, kpss (N,5,2)) in
+    original frame coordinates — the same contract as retinaface.detect and
+    yunet.detect. Module-level so all three hybrid engines are called alike."""
+    with lease_detector() as det:
+        return det.detect(frame, det_size=det_size, det_thresh=det_thresh)
 
 
 def release_detector():
-    global _detector
+    global _pool
     with _detector_lock:
-        _detector = None
+        _pool = None

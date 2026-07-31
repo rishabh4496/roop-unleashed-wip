@@ -315,11 +315,12 @@ def _hybrid_detector_faces(frame, fa, bboxes, kpss):
 
 
 def _hybrid_yolo_faces(frame, fa):
-    from roop.yoloface import get_detector
-    det = get_detector()
+    # Module-level detect(), not get_detector().detect(): the instance has to be
+    # LEASED for the call, or concurrent workers share one ORT session again.
+    from roop import yoloface
     det_size = _desired_det_size()[0]
     det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
-    bboxes, kpss = det.detect(frame, det_size=det_size, det_thresh=det_thresh)
+    bboxes, kpss = yoloface.detect(frame, det_size=det_size, det_thresh=det_thresh)
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 

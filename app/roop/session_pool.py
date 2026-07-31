@@ -143,6 +143,30 @@ def detmask_pooling_enabled() -> bool:
     return detmask_pool_size() >= 2
 
 
+def detector_pool_size() -> int:
+    """How many independent instances of the SELECTED detector to build.
+
+    The hybrid engines (retinaface / yoloface / yunet) bring their own detector
+    and only borrow buffalo_l's aux models, so widening ROOP_DETMASK_POOL alone
+    parallelises the aux models while the detector itself stays single-file. One
+    instance per detect worker is what actually removes that serialisation.
+
+    ROOP_DETECTOR_POOL overrides, and is the knob to turn DOWN first when VRAM is
+    tight: retinaface_r50.onnx is ~104MB per instance (yoloface_8n is ~9MB and
+    yunet ~350KB, so those are close to free).
+    """
+    raw = os.environ.get('ROOP_DETECTOR_POOL')
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    try:
+        return max(1, detmask_pool_size())
+    except Exception:
+        return 1
+
+
 # Separate, opt-in pool for the LivePortrait expression restorer. It is the only
 # GPU stage still running one-wide while the swapper, mask and detect stages run
 # N-wide, so on a chunk where it is enabled its cost adds almost entirely in
