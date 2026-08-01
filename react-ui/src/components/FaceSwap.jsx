@@ -33,7 +33,8 @@ import useRenderLite from './faceswap/useRenderLite';
 import useLiveCam from './faceswap/useLiveCam';
 import useClipAdvisor, { ADVISOR_LABELS, fmtAdviceVal } from './faceswap/useClipAdvisor';
 import useRuntimeEstimate from './faceswap/useRuntimeEstimate';
-import { FACESWAP_DEFAULTS } from './faceswap/defaults';
+import useUserDefaults from './faceswap/useUserDefaults';
+import useViewPersistence from './faceswap/useViewPersistence';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
 
@@ -684,106 +685,17 @@ export default function FaceSwap({
     notify(`Applied ${name} preset`, 'info');
   };
 
-  // User-defined default: a snapshot of the Face Swap tab settings the user
-  // clicked "Save as default" on, kept in localStorage so it survives reloads.
-  // Only ever holds FACESWAP_DEFAULTS keys, so it can never capture or restore
-  // global/Settings-tab settings. null until the user saves one.
-  const USER_DEFAULTS_KEY = 'roop_faceswap_user_defaults';
-  const [userDefaults, setUserDefaults] = useState(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(USER_DEFAULTS_KEY) || 'null');
-      return raw && typeof raw === 'object' ? raw : null;
-    } catch { return null; }
-  });
-
-  // Snapshot the current Face Swap tab settings as the user's new default.
-  // Restricted to the FACESWAP_DEFAULTS key set so we never bake a global
-  // setting into the tab default.
-  const saveAsDefault = () => {
-    const snapshot = {};
-    for (const k of Object.keys(FACESWAP_DEFAULTS)) {
-      snapshot[k] = p[k] !== undefined ? p[k] : FACESWAP_DEFAULTS[k];
-    }
-    try { localStorage.setItem(USER_DEFAULTS_KEY, JSON.stringify(snapshot)); } catch { /* storage blocked — non-fatal */ }
-    setUserDefaults(snapshot);
-    notify('Saved current settings as your default', 'info');
-  };
-
-  // Restore every Face Swap tab setting to the user's saved default if they
-  // have one, otherwise the baked-in factory defaults (faceswap/defaults.js).
-  // Persist immediately so the backend CFG matches even if the user never runs
-  // a preview/swap afterwards.
-  const resetToDefaults = () => {
-    const target = userDefaults || FACESWAP_DEFAULTS;
-    setSettings((s) => ({ ...s, ...target }));
-    postJSON('/api/settings', target).catch(() => { /* backend offline — will persist on next run */ });
-    notify(userDefaults ? 'Restored your saved default' : 'Face Swap settings reset to factory defaults', 'info');
-  };
-
-  // Forget the user's saved default so "Reset" falls back to factory defaults.
-  const clearUserDefault = () => {
-    try { localStorage.removeItem(USER_DEFAULTS_KEY); } catch { /* non-fatal */ }
-    setUserDefaults(null);
-    notify('Cleared your saved default — Reset now uses factory defaults', 'info');
-  };
+  // The user's own "Save as default" snapshot, and the resets that read it.
+  // See faceswap/useUserDefaults.
+  const { userDefaults, saveAsDefault, resetToDefaults, clearUserDefault } =
+    useUserDefaults({ settings: p, setSettings, notify });
 
   // ── View state across a webview reload ───────────────────────────────────
-  // Switching Pinokio tabs (React UI ↔ Terminal, Run ↔ Dev) reloads the
-  // webview, so everything below is a fresh mount. The rehydrate effect below
-  // puts faces, targets and job state back, but two things it did not restore
-  // are exactly the two you look at: the playhead (it forced frame 1) and the
-  // rendered preview (client state, so the box fell back to the raw frame).
-  // Coming back from the terminal therefore looked like the preview had reset.
-  //
-  // localStorage with a TTL rather than sessionStorage: sessionStorage belongs
-  // to a browsing context, and if Pinokio recreates the webview instead of
-  // reloading it there is nothing left to restore from. The TTL is what
-  // sessionStorage was buying — a view from days ago is not "where I was".
-  const VIEW_KEY = 'roop_view';
-  const VIEW_IMG_KEY = 'roop_view_preview';
-  const VIEW_TTL_MS = 30 * 60 * 1000;
-  // Read BOTH halves at mount, before anything can overwrite them. The image
-  // has to be captured here rather than looked up later in the rehydrate
-  // callback: the writer below is on a 400 ms debounce, so a slow /api/state
-  // would let it run first — with previewSrc still empty — and clear the very
-  // entry the callback was about to read.
-  const restoredViewRef = useRef(null);
-  useEffect(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null');
-      const fresh = v && typeof v === 'object' && Date.now() - (v.t || 0) < VIEW_TTL_MS;
-      restoredViewRef.current = fresh
-        ? { ...v, image: localStorage.getItem(VIEW_IMG_KEY) || '' }
-        : null;
-      if (!fresh) localStorage.removeItem(VIEW_IMG_KEY);   // don't hoard a stale frame
-    } catch { restoredViewRef.current = null; }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Debounced so scrubbing writes once when it settles, not once per frame.
-  // The image is skipped when it is implausibly large rather than risking a
-  // quota error that would drop the small view entry with it.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        // Image FIRST, and dropped outright if it cannot be written. If the
-        // view entry were written first and the image then hit the quota, the
-        // previous frame's image would still be sitting there — and the restore
-        // would pair it with this frame, showing the wrong picture under a
-        // frame number that says otherwise. No image is fine; a mismatched one
-        // is not.
-        if (previewSrc && previewSrc.length < 3_000_000) {
-          try { localStorage.setItem(VIEW_IMG_KEY, previewSrc); }
-          catch { localStorage.removeItem(VIEW_IMG_KEY); }
-        } else {
-          localStorage.removeItem(VIEW_IMG_KEY);
-        }
-        localStorage.setItem(VIEW_KEY, JSON.stringify({ target: selTarget, frame, t: Date.now() }));
-      } catch { /* storage blocked — the view just won't be restored */ }
-    }, 400);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selTarget, frame, previewSrc]);
+  // Where you were looking (target, playhead, rendered frame), remembered
+  // across the webview reload a Pinokio tab switch causes. Captured at mount
+  // and read once by the rehydrate effect below — see
+  // faceswap/useViewPersistence.
+  const restoredViewRef = useViewPersistence({ selTarget, frame, previewSrc });
 
   // ── initial rehydrate ──
   // Pinokio reloads the webview whenever you switch the RUN/DEV/FILES tabs,
