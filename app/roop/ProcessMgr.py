@@ -835,7 +835,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
 
     def process_videoframes(self, threadindex, progress) -> None:
         while True:
-            item = self.frames_queue[threadindex].get()
+            # Bounded, because a sentinel is not guaranteed to arrive.
+            # _post_sentinels gives up after its deadline when nothing is
+            # draining — which is right, it must not park the reader forever —
+            # but an unbounded get here would then turn that into a hung worker
+            # and a main thread waiting on as_completed for good. A cleared
+            # `processing` flag is treated as end-of-stream, same as a sentinel.
+            item = None
+            while True:
+                try:
+                    item = self.frames_queue[threadindex].get(timeout=0.5)
+                    break
+                except _QueueEmpty:
+                    if not roop.globals.processing:
+                        break
             if item is None:
                 self.processing_threads -= 1
                 self.processed_queue[threadindex].put((False, None))
@@ -1427,10 +1440,24 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             break
                 if not roop.globals.processing:
                     break
-            try:
-                prefetch_q.put(None, timeout=5)  # sentinel: always attempted
-            except _QueueFull:
-                pass
+            # The sentinel is how the consumer learns the stream ended, so it must
+            # be DELIVERED, not merely attempted. A bounded attempt that gives up
+            # is worse than a blocking one: the reader exits, and the consumer
+            # waits on an end-of-stream that will never arrive. That is a
+            # guaranteed hang traded for a conditional one — measured, on a
+            # 2400-frame clip, after the queue stayed full for the timeout while
+            # the tail chunks were still being processed.
+            #
+            # Retrying forever is safe here precisely because the consumer is the
+            # one draining this queue: it frees a slot every chunk. `processing`
+            # going false is the only way out, which is what cancel sets.
+            while True:
+                try:
+                    prefetch_q.put(None, timeout=0.5)
+                    break
+                except _QueueFull:
+                    if not roop.globals.processing:
+                        break
 
         rt = Thread(target=_reader, name='stab_reader', daemon=True)
         rt.start()
