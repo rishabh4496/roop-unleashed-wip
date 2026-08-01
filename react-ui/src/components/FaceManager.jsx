@@ -152,7 +152,7 @@ export default function FaceManager({ notify, registerFileListener }) {
             >
               {DETECTORS.map((d) => <option key={d.id} value={d.id} className="bg-[#121420]">{d.label}</option>)}
             </select>
-            <span className="mt-1 block text-[11px] text-white/35">Engine used to find & align faces on add / cut.</span>
+            <span className="mt-1 block text-mini text-white/35">Engine used to find & align faces on add / cut.</span>
           </label>
           <div>
             <Toggle
@@ -165,7 +165,7 @@ export default function FaceManager({ notify, registerFileListener }) {
           <div>
             <Slider label="Quality gate" info={`keep ≥ ${Math.round(threshold * 100)}%`}
                     min={0} max={1} step={0.05} value={threshold} onChange={setThreshold} />
-            <span className="mt-1 block text-[11px] text-white/35">Faces below this score are dimmed; “Drop below gate” removes them.</span>
+            <span className="mt-1 block text-mini text-white/35">Faces below this score are dimmed; “Drop below gate” removes them.</span>
           </div>
         </div>
       </Section>
@@ -194,7 +194,7 @@ export default function FaceManager({ notify, registerFileListener }) {
         <Section title="Faces in faceset">
           {/* Stats + quality gate summary */}
           {stats && (
-            <div className="flex items-center gap-2 text-[11px] text-white/45 mb-2 flex-wrap">
+            <div className="flex items-center gap-2 text-mini text-white/45 mb-2 flex-wrap">
               <span><span className="font-bold text-white/70">{faces.length}</span> face{faces.length === 1 ? '' : 's'}</span>
               <span className="text-white/20">·</span>
               <span>avg quality <span className={`font-bold ${TONE[scoreTone(stats.avg)].text}`}>{Math.round(stats.avg * 100)}%</span></span>
@@ -258,12 +258,12 @@ function FaceQualityGrid({ faces, scores, meta, threshold, selected, onSelect })
           >
             <img src={src} alt={`face ${i + 1}`} className="w-full h-full object-cover" />
             {has && (
-              <span className={`absolute top-1 left-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold tabular-nums ${tone.bg} ${tone.text} backdrop-blur-sm`}>
+              <span className={`absolute top-1 left-1 px-1.5 py-0.5 rounded-md text-nano font-bold tabular-nums ${tone.bg} ${tone.text} backdrop-blur-sm`}>
                 {Math.round(s * 100)}%
               </span>
             )}
             {dropped && (
-              <span className="absolute bottom-1 left-1 right-1 text-center text-[8px] font-bold uppercase tracking-wide text-red-300 bg-red-950/70 rounded py-0.5">
+              <span className="absolute bottom-1 left-1 right-1 text-center text-nano font-bold uppercase tracking-wide text-red-300 bg-red-950/70 rounded py-0.5">
                 below gate
               </span>
             )}

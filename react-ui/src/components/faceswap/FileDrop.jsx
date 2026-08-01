@@ -45,7 +45,7 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint 
             </motion.div>
             <div className="text-left">
               <span className={`text-xs font-bold tracking-wide block ${drag ? 'text-[var(--accent)]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
-              {!drag && hint && <span className="block text-[10px] text-white/40 mt-0.5">{hint}</span>}
+              {!drag && hint && <span className="block text-micro text-white/40 mt-0.5">{hint}</span>}
             </div>
           </div>
         )}

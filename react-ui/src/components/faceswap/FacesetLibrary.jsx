@@ -128,12 +128,12 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-3.5 py-2.5 text-left select-none rounded-t-xl hover:bg-white/[0.02] transition-colors"
       >
-        <span className="font-semibold text-[10px] uppercase tracking-[0.14em] text-white/50">
+        <span className="font-semibold text-micro uppercase tracking-[0.14em] text-white/50">
           📚 Faceset library
         </span>
         <span className="flex items-center gap-2">
           {entries.length > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-white/[0.04] text-[10px] text-white/50 border border-white/5">
+            <span className="px-2 py-0.5 rounded-full bg-white/[0.04] text-micro text-white/50 border border-white/5">
               {entries.length}
             </span>
           )}
@@ -155,14 +155,14 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
           </div>
 
           {entries.length === 0 ? (
-            <p className="text-[11px] text-white/35 leading-relaxed">
+            <p className="text-mini text-white/35 leading-relaxed">
               No saved facesets yet. Select a source face above and hit
               <span className="text-white/55"> Save selected face</span> to keep it here — it survives
               restarts, so you never re-upload. Set the folder to a cloud drive in Settings to sync across devices.
             </p>
           ) : (
             <div>
-              <div className="text-[10px] uppercase tracking-[0.12em] text-white/40 mb-1.5">Load a faceset</div>
+              <div className="text-micro uppercase tracking-[0.12em] text-white/40 mb-1.5">Load a faceset</div>
               <div className="relative" ref={pickerRef}>
                 {/* Closed dropdown box (mirrors the Select control) */}
                 <button
@@ -172,7 +172,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <Thumb e={selected} size="w-6 h-6" />
-                    <span className={`truncate text-[12px] ${selected ? 'text-white/85' : 'text-white/35'}`}>
+                    <span className={`truncate text-note ${selected ? 'text-white/85' : 'text-white/35'}`}>
                       {selected ? selected.name : 'Select a faceset…'}
                     </span>
                   </span>
@@ -191,13 +191,13 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                           value={filter}
                           onChange={(ev) => setFilter(ev.target.value)}
                           placeholder={`Search ${entries.length} facesets…`}
-                          className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none"
+                          className="w-full bg-black/40 border border-white/10 focus:border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 text-mini text-white/80 placeholder-white/25 outline-none"
                         />
                       </div>
                     )}
                     <div className="max-h-60 overflow-y-auto py-1 [scrollbar-width:thin]">
                       {shown.length === 0 ? (
-                        <p className="text-[11px] text-white/30 py-2 text-center">No match for “{filter}”.</p>
+                        <p className="text-mini text-white/30 py-2 text-center">No match for “{filter}”.</p>
                       ) : shown.map((e) => (
                         <div
                           key={e.filename}
@@ -213,15 +213,15 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                               onChange={(ev) => setRenameVal(ev.target.value)}
                               onBlur={() => commitRename(e)}
                               onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') commitRename(e); if (ev.key === 'Escape') cancelRename(); }}
-                              className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-[11px] text-white/90 outline-none"
+                              className="flex-1 min-w-0 bg-black/50 border border-[var(--accent)]/40 rounded px-1.5 py-0.5 text-mini text-white/90 outline-none"
                             />
                           ) : (
-                            <span className="flex-1 min-w-0 truncate text-[12px] text-white/80" title={e.name}>
+                            <span className="flex-1 min-w-0 truncate text-note text-white/80" title={e.name}>
                               {e.name}
                               {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
                             </span>
                           )}
-                          <span className="flex items-center gap-1.5 text-[11px] text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <span className="flex items-center gap-1.5 text-mini text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button type="button" className="hover:text-white/80 transition-colors" title="Rename" aria-label={`Rename faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
                             <a className="hover:text-white/80 transition-colors" title="Export .fsz" aria-label={`Export faceset ${e.name}`} href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
                             <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" aria-label={`Delete faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>

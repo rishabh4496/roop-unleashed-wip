@@ -52,9 +52,9 @@ function Media({ file, url, mediaRef, className, style, onMeta }) {
 function Label({ side, file, entry }) {
   return (
     <div className="min-w-0">
-      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{side}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{side}</div>
       <div className="text-sm font-semibold text-white/85 truncate" title={file.name}>{file.name}</div>
-      <div className="text-[10px] font-mono text-white/40 truncate">
+      <div className="text-micro font-mono text-white/40 truncate">
         {entry?.duration_s > 0 && <>{fmtDur(entry.duration_s)} · </>}
         {entry?.fps > 0 && <span className="text-emerald-400/80">{entry.fps.toFixed(1)} fps · </span>}
         {entry?.settings?.swap_model || '—'}
@@ -213,7 +213,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
         </div>
 
         {mixed && (
-          <p className="text-[11px] text-amber-300/80 m-0">
+          <p className="text-mini text-amber-300/80 m-0">
             One of these is a video and the other an image — only side-by-side is meaningful here.
           </p>
         )}
@@ -227,7 +227,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
               disabled={mixed && m.id !== 'side'}
               title={m.hint}
               aria-pressed={mode === m.id}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all disabled:opacity-25 ${
+              className={`px-2.5 py-1 rounded-lg text-mini font-bold transition-all disabled:opacity-25 ${
                 mode === m.id ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
               }`}
             >
@@ -245,7 +245,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
                 className="w-36 accent-[var(--accent)] cursor-pointer"
                 aria-label={mode === 'slider' ? 'Wipe position' : 'Blend amount'}
               />
-              <span className="text-[10px] font-mono tabular-nums text-white/50 w-9">{Math.round(pos)}%</span>
+              <span className="text-micro font-mono tabular-nums text-white/50 w-9">{Math.round(pos)}%</span>
             </div>
           )}
           {isVideo && (
@@ -270,7 +270,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
             {[[a, aUrl, aRef], [b, bUrl, bRef]].map(([f, url, r], i) => (
               <div key={i} className="relative bg-black/60 rounded-xl overflow-hidden border border-white/10">
                 <Media file={f} url={url} mediaRef={r} className="w-full max-h-[58vh] object-contain" />
-                <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/75 text-[10px] font-bold text-white/80">
+                <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/75 text-micro font-bold text-white/80">
                   {i === 0 ? 'A' : 'B'}
                 </span>
               </div>
@@ -296,34 +296,34 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
                 className="absolute inset-y-0 w-0.5 bg-gradient-to-b from-[var(--accent)] via-white to-[var(--accent)] z-10 pointer-events-none"
                 style={{ left: `${pos}%` }}
               >
-                <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/80 border border-white/30 grid place-items-center text-[10px] text-white/70">
+                <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/80 border border-white/30 grid place-items-center text-micro text-white/70">
                   ⇄
                 </span>
               </div>
             )}
-            <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/75 text-[10px] font-bold text-white/80 z-10">A</span>
-            <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-[var(--accent)]/90 text-[10px] font-bold text-white z-10">B</span>
+            <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/75 text-micro font-bold text-white/80 z-10">A</span>
+            <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-[var(--accent)]/90 text-micro font-bold text-white z-10">B</span>
           </div>
         )}
 
         {/* What was different about them */}
         <div>
-          <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35 mb-1.5">
+          <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/35 mb-1.5">
             {historyA && historyB
               ? `${changed.length} setting${changed.length === 1 ? '' : 's'} differ`
               : 'Settings'}
           </div>
           {!historyA || !historyB ? (
-            <p className="text-[12px] text-white/40 m-0">
+            <p className="text-note text-white/40 m-0">
               No run-history entry for {!historyA ? a.name : b.name} — it was rendered before
               history was recorded, or by another install.
             </p>
           ) : changed.length === 0 ? (
-            <p className="text-[12px] text-white/40 m-0">These two were rendered with identical settings.</p>
+            <p className="text-note text-white/40 m-0">These two were rendered with identical settings.</p>
           ) : (
             <div className="rounded-lg border border-white/[0.07] overflow-hidden divide-y divide-white/[0.05]">
               {changed.map(({ k, va, vb }) => (
-                <div key={k} className="grid grid-cols-[1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11px] font-mono items-baseline">
+                <div key={k} className="grid grid-cols-[1fr_1fr_1fr] gap-2 px-3 py-1.5 text-mini font-mono items-baseline">
                   <span className="text-white/40 truncate" title={k}>{LABELS[k] || k}</span>
                   <span className="text-amber-300/80 truncate text-right">{fmtVal(va)}</span>
                   <span className="text-emerald-300/80 truncate text-right">{fmtVal(vb)}</span>

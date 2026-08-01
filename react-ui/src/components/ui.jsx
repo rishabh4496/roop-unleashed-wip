@@ -44,7 +44,7 @@ export const Section = ({ title, action, children, className = '', collapsible =
   const [open, setOpen] = useState(defaultOpen);
   const showBody = !collapsible || open;
   const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
-  const label = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40';
+  const label = 'text-mini font-semibold uppercase tracking-[0.14em] text-white/40';
   return (
     <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover}>
       {title && (
@@ -98,7 +98,7 @@ export const InfoBadge = ({ info }) => (
       type="button"
       aria-label={typeof info === 'string' ? info : 'More information'}
       onClick={(e) => e.preventDefault()}
-      className="text-[10px] text-white/30 hover:text-white/60 focus-visible:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition"
+      className="text-micro text-white/30 hover:text-white/60 focus-visible:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition"
     >
       ?
     </button>
@@ -126,7 +126,7 @@ export const Select = ({ label, info, value, onChange, options = [] }) => (
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none cursor-pointer"
+      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none cursor-pointer"
     >
       {options.map((o) => {
         // Accept plain strings (value === label) or {value, label} objects.
@@ -168,7 +168,7 @@ export const Toggle = ({ label, info, checked, onChange }) => (
       onChange={(e) => onChange(e.target.checked)}
     />
     <span className="flex items-start gap-1.5 min-w-0 flex-1">
-      <span className="text-[13px] font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
+      <span className="text-compact font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
       {info && <InfoBadge info={info} />}
     </span>
     <motion.span
@@ -193,7 +193,7 @@ export const TextInput = ({ label, info, value, onChange, placeholder, type = 't
       value={value ?? ''}
       placeholder={placeholder}
       onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
-      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
+      className="w-full px-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none placeholder:text-white/25"
     />
   </Field>
 );
@@ -206,8 +206,8 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
     ghost: 'bg-transparent hover:bg-white/[0.06] text-white/55 hover:text-white',
   };
   const sizes = {
-    sm: 'px-3 py-1.5 text-[11px] tracking-wide rounded-lg',
-    md: 'px-4 py-2.5 text-[13px] tracking-wide rounded-xl',
+    sm: 'px-3 py-1.5 text-mini tracking-wide rounded-lg',
+    md: 'px-4 py-2.5 text-compact tracking-wide rounded-xl',
     lg: 'px-6 py-3.5 text-sm tracking-wide rounded-xl',
   };
   return (
@@ -233,7 +233,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
       <div className="flex items-center gap-2 mb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-white/40">{title}</span>
         {faces.length > 0 && (
-          <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[10px] text-white/60 tabular-nums">
+          <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-micro text-white/60 tabular-nums">
             {faces.length}{personCount > 1 ? ` · ${personCount} people` : ''}
           </span>
         )}
@@ -318,12 +318,12 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                       <div className="w-full h-full grid place-items-center bg-white/[0.04] text-white/25 text-lg">?</div>
                     )}
                     {hasMultiFaces && (
-                      <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-[8px] font-bold text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
+                      <span className="absolute top-1 left-1 px-1 py-0.5 rounded bg-black/75 backdrop-blur text-nano font-bold text-[var(--accent)] border border-[var(--accent)]/30 shadow-md pointer-events-none select-none">
                         {itemInfo.count}F
                       </span>
                     )}
                     {person != null && (
-                      <span className="absolute bottom-1 left-1 px-1.5 rounded-md text-[9px] font-bold leading-tight text-white shadow-sm"
+                      <span className="absolute bottom-1 left-1 px-1.5 rounded-md text-nano font-bold leading-tight text-white shadow-sm"
                         style={{ backgroundColor: color }}>P{person + 1}</span>
                     )}
                     {onRemove && (

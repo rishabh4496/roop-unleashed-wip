@@ -157,7 +157,7 @@ export default function PresetStudioModal({
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-bold text-white">{recipe.title}</span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase bg-white/10 border border-white/15 text-white/90">
+                      <span className="px-2 py-0.5 rounded-full text-micro font-bold tracking-wider uppercase bg-white/10 border border-white/15 text-white/90">
                         {recipe.badge}
                       </span>
                     </div>
@@ -190,7 +190,7 @@ export default function PresetStudioModal({
                   <span className="font-semibold text-white/80">{key}</span>
                   <div className="flex items-center gap-2 text-right">
                     {isDifferent && (
-                      <span className="line-through text-neutral-500 text-[10px]">
+                      <span className="line-through text-neutral-500 text-micro">
                         {String(activeVal ?? 'off')}
                       </span>
                     )}

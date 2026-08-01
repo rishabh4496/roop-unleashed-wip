@@ -43,7 +43,7 @@ export default function SegmentBar({
   return (
     <div className="mt-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-white/40 mr-1">
+        <span className="text-micro font-bold uppercase tracking-wider text-white/40 mr-1">
           Segments
         </span>
 
@@ -77,7 +77,7 @@ export default function SegmentBar({
       </div>
 
       {segments.length === 0 ? (
-        <p className="text-[11px] text-white/35 mt-1.5 mb-0">
+        <p className="text-mini text-white/35 mt-1.5 mb-0">
           Mark In/Out on the timeline and add it here to swap only the parts you need.
           Each segment renders as its own queued job; join them afterwards for one file.
         </p>
@@ -86,7 +86,7 @@ export default function SegmentBar({
           <ul className="flex flex-wrap gap-1.5 mt-2 list-none m-0 p-0">
             {segments.map((s, i) => (
               <li key={s.id}>
-                <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 pl-2 pr-1 py-1 text-[10px] font-mono text-white/80">
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 pl-2 pr-1 py-1 text-micro font-mono text-white/80">
                   <button
                     type="button"
                     onClick={() => onJump(s)}
@@ -110,7 +110,7 @@ export default function SegmentBar({
               </li>
             ))}
           </ul>
-          <p className="text-[10px] text-white/35 mt-1.5 mb-0 tabular-nums">
+          <p className="text-micro text-white/35 mt-1.5 mb-0 tabular-nums">
             {coveredFrames.toLocaleString()} of {maxFrames.toLocaleString()} frames
             {maxFrames > 0 && ` (${Math.round((coveredFrames / maxFrames) * 100)}% of the clip)`}
             {' — the rest is not rendered.'}

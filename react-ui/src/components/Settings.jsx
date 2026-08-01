@@ -47,7 +47,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search settings… (e.g. thread, nvenc, codec)"
           aria-label="Search settings"
-          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25"
+          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none placeholder:text-white/25"
         />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
@@ -67,7 +67,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         <FilterSection title="Appearance & Theme" query={query}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-medium text-white/70">Interface Theme</span>
-            <span className="text-[10px] text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>
+            <span className="text-micro text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>
           </div>
           <ThemeGallery value={p.selected_theme} onChange={(v) => { set('selected_theme', v); postJSON('/api/settings', { selected_theme: v }).catch(() => {}); }} />
         </FilterSection>

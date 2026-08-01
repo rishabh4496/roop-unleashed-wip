@@ -452,11 +452,11 @@ export default function InteractivePreview({
           onPointerDown={clickable ? (e) => e.stopPropagation() : undefined}
           onClick={clickable ? (e) => { e.stopPropagation(); onSelectPerson(i); } : undefined}
         >
-          <span className="absolute -top-6 left-0 bg-[var(--accent)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
+          <span className="absolute -top-6 left-0 bg-[var(--accent)] text-white text-micro font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
             Person {label}
           </span>
           {clickable && (
-            <span className="absolute left-1/2 -translate-x-1/2 -bottom-6 opacity-0 group-hover/face:opacity-100 transition-opacity bg-black/80 backdrop-blur text-[var(--accent)] text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none">
+            <span className="absolute left-1/2 -translate-x-1/2 -bottom-6 opacity-0 group-hover/face:opacity-100 transition-opacity bg-black/80 backdrop-blur text-[var(--accent)] text-nano font-bold px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none">
               ＋ Add to targets
             </span>
           )}
@@ -515,7 +515,7 @@ export default function InteractivePreview({
         </button>
         <button
           onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
-          className={`px-2 h-7 rounded-lg text-[10px] font-bold font-mono tabular-nums ${
+          className={`px-2 h-7 rounded-lg text-micro font-bold font-mono tabular-nums ${
             zoom > 1
               ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
               : 'hud-glass-button'
@@ -536,7 +536,7 @@ export default function InteractivePreview({
         </button>
         <button
           onClick={zoomToActual}
-          className="px-2 h-7 rounded-lg text-[10px] font-bold hud-glass-button"
+          className="px-2 h-7 rounded-lg text-micro font-bold hud-glass-button"
           title="Zoom 1:1"
           aria-label="Zoom to actual pixel size"
         >
@@ -551,7 +551,7 @@ export default function InteractivePreview({
           title="Show detected face boxes"
           aria-pressed={showBoxes}
           aria-label="Show detected face boxes"
-          className={`px-2 h-7 rounded-lg text-[10px] font-bold ${
+          className={`px-2 h-7 rounded-lg text-micro font-bold ${
             showBoxes
               ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
               : 'hud-glass-button'
@@ -566,14 +566,14 @@ export default function InteractivePreview({
           <button
             onClick={() => onToggleCompare()}
             title="Toggle Compare Swap Faces (C)"
-            className={`px-2.5 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-all duration-200 ${
+            className={`px-2.5 h-7 rounded-lg text-micro font-bold flex items-center gap-1.5 transition-all duration-200 ${
               compare
                 ? 'text-white bg-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)] border border-white/20'
                 : 'hud-glass-button text-white/80 hover:text-white'
             }`}
           >
             <span>🎭 Compare Faces</span>
-            {compare && <span className="text-[9px] bg-black/40 px-1 rounded font-mono">{Math.round(sliderPosition)}%</span>}
+            {compare && <span className="text-nano bg-black/40 px-1 rounded font-mono">{Math.round(sliderPosition)}%</span>}
           </button>
         )}
 
@@ -585,7 +585,7 @@ export default function InteractivePreview({
           onTouchStart={() => setIsPeekingOriginal(true)}
           onTouchEnd={() => setIsPeekingOriginal(false)}
           title="Press and hold to view original target image"
-          className={`px-2 h-7 rounded-lg text-[10px] font-bold transition-all duration-200 select-none ${
+          className={`px-2 h-7 rounded-lg text-micro font-bold transition-all duration-200 select-none ${
             isPeekingOriginal
               ? 'bg-amber-500 text-black border border-amber-300 font-extrabold shadow-[0_0_10px_rgba(245,158,11,0.5)]'
               : 'hud-glass-button text-white/70'
@@ -601,7 +601,7 @@ export default function InteractivePreview({
         <button
           onClick={() => setMagnifierActive((m) => !m)}
           title="Toggle interactive 3.5× Magnifier Glass Lens (G)"
-          className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+          className={`px-2 h-7 rounded-lg text-micro font-bold flex items-center gap-1 transition-colors ${
             magnifierActive
               ? 'text-cyan-300 bg-cyan-500/20 border border-cyan-400/40 shadow-[0_0_10px_rgba(6,182,212,0.3)]'
               : 'hud-glass-button text-white/70'
@@ -616,7 +616,7 @@ export default function InteractivePreview({
         <button
           onClick={() => setMaskBrushActive((b) => !b)}
           title="Toggle interactive Face Mask Brush tool (B)"
-          className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+          className={`px-2 h-7 rounded-lg text-micro font-bold flex items-center gap-1 transition-colors ${
             maskBrushActive
               ? 'text-pink-300 bg-pink-500/20 border border-pink-400/40 shadow-[0_0_10px_rgba(236,72,153,0.3)]'
               : 'hud-glass-button text-white/70'
@@ -631,7 +631,7 @@ export default function InteractivePreview({
           <button
             onClick={() => onToggleSliderEffect()}
             title="Toggle Slider Effects ON/OFF"
-            className={`px-2 h-7 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+            className={`px-2 h-7 rounded-lg text-micro font-bold flex items-center gap-1 transition-colors ${
               sliderEffectEnabled
                 ? 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/30'
                 : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
@@ -668,7 +668,7 @@ export default function InteractivePreview({
                     title="Next frame (→)" aria-label="Next frame">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>
             </button>
-            <span className="px-1 text-[10px] font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
+            <span className="px-1 text-micro font-bold font-mono text-white/55 tabular-nums whitespace-nowrap">
               {frame.toLocaleString()}<span className="opacity-40">/{maxFrames.toLocaleString()}</span>
             </span>
           </>
@@ -693,27 +693,27 @@ export default function InteractivePreview({
   const stageInfo = () => (
     <div className="absolute top-3 left-3 z-40 flex items-center gap-2 pointer-events-none">
       {imgDim && (
-        <span className="rounded-lg bg-black/75 backdrop-blur-md px-2.5 py-1 font-mono text-[10px] tabular-nums text-white/80 border border-white/10 shadow-lg">
+        <span className="rounded-lg bg-black/75 backdrop-blur-md px-2.5 py-1 font-mono text-micro tabular-nums text-white/80 border border-white/10 shadow-lg">
           {imgDim.w}×{imgDim.h}
         </span>
       )}
       {zoom > 1 && (
-        <span className="rounded-lg bg-[var(--accent)]/90 backdrop-blur-md px-2.5 py-1 font-mono text-[10px] font-bold tabular-nums text-white shadow-lg">
+        <span className="rounded-lg bg-[var(--accent)]/90 backdrop-blur-md px-2.5 py-1 font-mono text-micro font-bold tabular-nums text-white shadow-lg">
           {zoom.toFixed(1)}×
         </span>
       )}
       {compare && (
-        <span className="rounded-lg bg-[var(--accent)] text-white backdrop-blur-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider shadow-lg border border-white/20 animate-pulse">
+        <span className="rounded-lg bg-[var(--accent)] text-white backdrop-blur-md px-2.5 py-1 text-micro font-bold uppercase tracking-wider shadow-lg border border-white/20 animate-pulse">
           Compare Active
         </span>
       )}
       {magnifierActive && !splitMode && (
-        <span className="rounded-lg bg-cyan-500/20 text-cyan-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-cyan-400/30">
+        <span className="rounded-lg bg-cyan-500/20 text-cyan-300 backdrop-blur-md px-2 py-1 text-nano font-bold uppercase tracking-wider border border-cyan-400/30">
           🔍 Magnifier Lens (3.5×)
         </span>
       )}
       {maskBrushActive && !splitMode && (
-        <span className="rounded-lg bg-pink-500/20 text-pink-300 backdrop-blur-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider border border-pink-400/30">
+        <span className="rounded-lg bg-pink-500/20 text-pink-300 backdrop-blur-md px-2 py-1 text-nano font-bold uppercase tracking-wider border border-pink-400/30">
           🖌️ Mask Brush Active ({brushMode})
         </span>
       )}
@@ -745,7 +745,7 @@ export default function InteractivePreview({
               />
               <div className="absolute inset-0 pointer-events-none">{faceBoxes}</div>
             </div>
-            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white/80 border border-white/10">
+            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-micro font-bold uppercase tracking-[0.14em] text-white/80 border border-white/10">
               Before (Target Original)
             </span>
           </div>
@@ -757,7 +757,7 @@ export default function InteractivePreview({
                 className="w-full h-full object-contain pointer-events-none"
               />
             </div>
-            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white border border-white/20 shadow-lg">
+            <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-micro font-bold uppercase tracking-[0.14em] text-white border border-white/20 shadow-lg">
               {isPeekingOriginal ? 'Original (Peek)' : 'After (Swapped)'}
             </span>
           </div>
@@ -791,7 +791,7 @@ export default function InteractivePreview({
       {previewing && <AIScannerOverlay />}
       {previewing && (
         <div className="absolute top-4 right-3 z-50">
-          <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/80 backdrop-blur-md text-[11px] font-semibold text-white/90 tabular-nums border border-white/10 shadow-2xl">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/80 backdrop-blur-md text-mini font-semibold text-white/90 tabular-nums border border-white/10 shadow-2xl">
             <span className="h-3 w-3 rounded-full border-2 border-white/25 border-t-[var(--accent)] animate-spin" />
             Rendering {previewSecs}s
           </div>
@@ -806,7 +806,7 @@ export default function InteractivePreview({
           <button
             type="button"
             onClick={() => setCompareMode('slider')}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-all ${
               compareMode === 'slider' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
             }`}
             title="Split Slider mode"
@@ -816,7 +816,7 @@ export default function InteractivePreview({
           <button
             type="button"
             onClick={() => setCompareMode('blend')}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-all ${
               compareMode === 'blend' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
             }`}
             title="Opacity Blend mode (O)"
@@ -826,7 +826,7 @@ export default function InteractivePreview({
           <button
             type="button"
             onClick={() => setCompareMode('diff')}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-all ${
               compareMode === 'diff' ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
             }`}
             title="Difference Map mode"
@@ -840,7 +840,7 @@ export default function InteractivePreview({
               <button
                 type="button"
                 onClick={() => setCompareDir((d) => (d === 'vertical' ? 'horizontal' : 'vertical'))}
-                className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white/80 transition-all flex items-center gap-1"
+                className="px-2 py-1 rounded-lg text-micro font-bold bg-white/10 hover:bg-white/20 text-white/80 transition-all flex items-center gap-1"
                 title="Toggle Split Direction: Vertical vs Horizontal (X)"
               >
                 {compareDir === 'vertical' ? '↔ Vert' : '↕ Horiz'}
@@ -854,7 +854,7 @@ export default function InteractivePreview({
               <button
                 type="button"
                 onClick={() => setSliderPosition(25)}
-                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
                   sliderPosition === 25 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
                 }`}
               >
@@ -863,7 +863,7 @@ export default function InteractivePreview({
               <button
                 type="button"
                 onClick={() => setSliderPosition(50)}
-                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
                   sliderPosition === 50 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
                 }`}
               >
@@ -872,7 +872,7 @@ export default function InteractivePreview({
               <button
                 type="button"
                 onClick={() => setSliderPosition(75)}
-                className={`px-1.5 py-1 rounded text-[9px] font-mono font-bold ${
+                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
                   sliderPosition === 75 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
                 }`}
               >
@@ -882,7 +882,7 @@ export default function InteractivePreview({
               <button
                 type="button"
                 onClick={() => setAutoSwipe((a) => !a)}
-                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                className={`px-2 py-1 rounded-lg text-micro font-bold transition-all flex items-center gap-1 ${
                   autoSwipe ? 'bg-emerald-500 text-black shadow-md font-extrabold animate-pulse' : 'bg-white/10 text-white/70 hover:text-white'
                 }`}
                 title="Toggle Auto-Swipe oscillation loop (A)"
@@ -900,7 +900,7 @@ export default function InteractivePreview({
           <button
             type="button"
             onClick={() => setBrushMode('paint')}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+            className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-colors ${
               brushMode === 'paint' ? 'bg-pink-500 text-white' : 'bg-white/10 text-white/70'
             }`}
           >
@@ -909,14 +909,14 @@ export default function InteractivePreview({
           <button
             type="button"
             onClick={() => setBrushMode('erase')}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+            className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-colors ${
               brushMode === 'erase' ? 'bg-amber-500 text-black' : 'bg-white/10 text-white/70'
             }`}
           >
             🧹 Erase
           </button>
           <div className="flex items-center gap-1.5 px-2 border-l border-white/10">
-            <span className="text-[9px] font-mono text-white/50 uppercase font-bold">Size:</span>
+            <span className="text-nano font-mono text-white/50 uppercase font-bold">Size:</span>
             <input
               type="range"
               min={10}
@@ -925,12 +925,12 @@ export default function InteractivePreview({
               onChange={(e) => setBrushSize(parseInt(e.target.value))}
               className="w-16 h-1 accent-pink-500 cursor-pointer"
             />
-            <span className="text-[10px] font-mono font-bold text-white/80 tabular-nums">{brushSize}px</span>
+            <span className="text-micro font-mono font-bold text-white/80 tabular-nums">{brushSize}px</span>
           </div>
           <button
             type="button"
             onClick={clearMaskCanvas}
-            className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors"
+            className="px-2 py-1 rounded-lg text-micro font-bold bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors"
           >
             ↺ Clear
           </button>
@@ -938,7 +938,7 @@ export default function InteractivePreview({
             <button
               type="button"
               onClick={commitMask}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg text-micro font-bold transition-colors ${
                 maskApplied
                   ? 'bg-emerald-500 text-black'
                   : 'bg-[var(--accent)] text-white hover:brightness-110'
@@ -953,7 +953,7 @@ export default function InteractivePreview({
 
       {/* Frame shortcuts guide */}
       {maxFrames > 1 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/65 backdrop-blur-md text-[10px] font-semibold text-white/50 border border-white/10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5 whitespace-nowrap">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-lg bg-black/65 backdrop-blur-md text-micro font-semibold text-white/50 border border-white/10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-center gap-1.5 whitespace-nowrap">
           <span className="bg-white/10 px-1 py-0.5 rounded text-white/80 font-mono">←/→</span>
           <span>frame</span>
           <span className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 font-mono">Space</span>
@@ -1120,7 +1120,7 @@ export default function InteractivePreview({
           {/* Crosshair so the exact sampled pixel is unambiguous */}
           <span className="absolute left-1/2 top-1/2 w-4 h-px -translate-x-1/2 -translate-y-1/2 bg-cyan-300/70" />
           <span className="absolute left-1/2 top-1/2 h-4 w-px -translate-x-1/2 -translate-y-1/2 bg-cyan-300/70" />
-          <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/80 backdrop-blur border border-cyan-400/40 text-[9px] font-mono font-bold text-cyan-300 tracking-wider">
+          <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/80 backdrop-blur border border-cyan-400/40 text-nano font-mono font-bold text-cyan-300 tracking-wider">
             {(LENS_ZOOM * zoom).toFixed(1)}× LENS
           </span>
         </div>
@@ -1128,12 +1128,12 @@ export default function InteractivePreview({
 
       {/* Bottom labels */}
       {compare && (
-        <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white/80 z-30 pointer-events-none border border-white/10 shadow-lg">
+        <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-micro font-bold uppercase tracking-[0.14em] text-white/80 z-30 pointer-events-none border border-white/10 shadow-lg">
           Before (Target Original)
         </span>
       )}
       <span
-        className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-[10px] font-bold uppercase tracking-[0.14em] text-white z-30 transition-opacity duration-300 pointer-events-none border border-white/20 shadow-lg"
+        className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg bg-[var(--accent)]/90 backdrop-blur-md text-micro font-bold uppercase tracking-[0.14em] text-white z-30 transition-opacity duration-300 pointer-events-none border border-white/20 shadow-lg"
         style={{ opacity: compare && sliderPosition > 85 ? 0 : 1 }}
       >
         {isPeekingOriginal ? 'Original (Peek)' : compare ? 'After (Swapped)' : 'Swapped Result'}

@@ -92,7 +92,7 @@ export default function FloatingActionDock({
           >
             <span>{currentMode.label.split(' ')[0]}</span>
             <span className="hidden sm:inline">{currentMode.label.split(' ').slice(1).join(' ')}</span>
-            <span className="text-[10px] opacity-60">▼</span>
+            <span className="text-micro opacity-60">▼</span>
           </button>
 
           <AnimatePresence>
@@ -103,7 +103,7 @@ export default function FloatingActionDock({
                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
                 className="absolute bottom-full left-0 mb-3 w-56 rounded-2xl border border-white/15 bg-neutral-900/95 p-2 shadow-2xl backdrop-blur-2xl"
               >
-                <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                <div className="px-3 py-1.5 text-micro font-bold uppercase tracking-wider text-neutral-400">
                   Workspace Layout Mode
                 </div>
                 <div className="space-y-1">
@@ -121,7 +121,7 @@ export default function FloatingActionDock({
                       }`}
                     >
                       <div className="text-xs">{mode.label}</div>
-                      <div className="text-[10px] text-neutral-400">{mode.desc}</div>
+                      <div className="text-micro text-neutral-400">{mode.desc}</div>
                     </button>
                   ))}
                 </div>

@@ -84,7 +84,7 @@ export default function ProcessingTerminal({
   };
 
   const chip = (active) =>
-    `px-2 py-0.5 rounded text-[9px] font-semibold transition-all whitespace-nowrap ${
+    `px-2 py-0.5 rounded text-nano font-semibold transition-all whitespace-nowrap ${
       active
         ? 'bg-indigo-600/40 text-indigo-200 border border-indigo-500/50'
         : 'text-neutral-400 border border-transparent hover:text-white hover:bg-white/5'
@@ -110,7 +110,7 @@ export default function ProcessingTerminal({
             <button onClick={() => setTab('all')} className={chip(tab === 'all')} title="Everything this run printed">
               All
             </button>
-            <span className="shrink-0 px-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">
+            <span className="shrink-0 px-1 text-nano font-semibold uppercase tracking-[0.14em] text-white/30">
               {parts.length ? `${parts.length} part${parts.length > 1 ? 's' : ''}` : 'no parts yet'}
             </span>
             {errorCount > 0 && (
@@ -138,13 +138,13 @@ export default function ProcessingTerminal({
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handleCopy}
-            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all active:scale-95"
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-micro font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all active:scale-95"
             title={typeof tab === 'number' ? `Copy part ${tab}'s log` : 'Copy the log shown'}
           >
             <span>{copied ? '✓ Copied!' : '📋 Copy'}</span>
           </button>
 
-          <span className="flex items-center gap-1.5 text-[10px] text-white/40">
+          <span className="flex items-center gap-1.5 text-micro text-white/40">
             <span className={`h-1.5 w-1.5 rounded-full ${paused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
             {paused ? 'paused' : 'live'}
           </span>
@@ -153,7 +153,7 @@ export default function ProcessingTerminal({
 
       {/* Selected part's header — what this chapter covers */}
       {activePart && (
-        <div className="shrink-0 px-3 py-1 border-b border-white/[0.06] bg-white/[0.02] text-[10px] text-white/45 flex items-center gap-2">
+        <div className="shrink-0 px-3 py-1 border-b border-white/[0.06] bg-white/[0.02] text-micro text-white/45 flex items-center gap-2">
           <span className="text-white/70 font-semibold">part {activePart.index}</span>
           <span>·</span>
           <span>frames {fmtN(activePart.first)}–{fmtN(activePart.last)}</span>
@@ -167,7 +167,7 @@ export default function ProcessingTerminal({
       )}
 
       {/* Scrolling log body */}
-      <div ref={scrollRef} className={`selectable ${bodyClass} min-h-0 overflow-y-auto px-3 py-2 text-[11px] leading-relaxed scroll-smooth`}>
+      <div ref={scrollRef} className={`selectable ${bodyClass} min-h-0 overflow-y-auto px-3 py-2 text-mini leading-relaxed scroll-smooth`}>
         {shown.length === 0 ? (
           <div className="text-white/30 italic">
             {log.length === 0 ? 'waiting for output…' : 'nothing logged for this part yet…'}
@@ -185,7 +185,7 @@ export default function ProcessingTerminal({
       </div>
 
       {/* Pinned status line — rewritten in place, never scrolled into history */}
-      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-t border-white/10 bg-white/[0.03] text-[11px]">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-t border-white/10 bg-white/[0.03] text-mini">
         <span className="text-white/25">›</span>
         <span className="truncate tabular-nums text-white/80">{statusLine || (paused ? 'paused' : 'idle')}</span>
         <span className="ml-auto inline-block h-3.5 w-2 shrink-0 bg-[var(--accent)]/80 animate-pulse" />

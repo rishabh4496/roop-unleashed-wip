@@ -320,7 +320,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
       </Card>
 
       {!loading && files.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-white/40 -mt-2 px-1">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-mini text-white/40 -mt-2 px-1">
           <div className="flex items-center gap-2">
             <span className="font-bold text-white/60">{filteredFiles.length}</span> shown
             {filteredFiles.length !== files.length && <span>of {files.length}</span>}
@@ -333,7 +333,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
             <button
               type="button"
               onClick={toggleSelectAll}
-              className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 text-[10px] font-semibold transition-colors"
+              className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 text-micro font-semibold transition-colors"
             >
               {allVisibleSelected ? 'Deselect All' : 'Select All'}
             </button>
@@ -341,7 +341,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
               <button
                 type="button"
                 onClick={() => setComparePair([...selectedVisible])}
-                className="px-2.5 py-1 rounded bg-[var(--accent)]/20 hover:bg-[var(--accent)]/30 border border-[var(--accent)]/40 text-white text-[10px] font-bold transition-all animate-fade-in flex items-center gap-1"
+                className="px-2.5 py-1 rounded bg-[var(--accent)]/20 hover:bg-[var(--accent)]/30 border border-[var(--accent)]/40 text-white text-micro font-bold transition-all animate-fade-in flex items-center gap-1"
                 title="Compare these two renders side by side"
               >
                 <span>🔍 Compare A/B</span>
@@ -351,7 +351,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
               <button
                 type="button"
                 onClick={bulkDelete}
-                className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-[10px] font-bold transition-all animate-fade-in flex items-center gap-1"
+                className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-micro font-bold transition-all animate-fade-in flex items-center gap-1"
               >
                 <span>🗑️ Delete Selected ({selectedVisible.length})</span>
               </button>
@@ -409,7 +409,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-white/80 border-collapse">
                 <thead>
-                  <tr className="border-b border-white/10 bg-black/40 text-white/40 uppercase font-mono text-[9px] tracking-wider">
+                  <tr className="border-b border-white/10 bg-black/40 text-white/40 uppercase font-mono text-nano tracking-wider">
                     <th className="p-3 w-10 text-center">
                       <input
                         type="checkbox"
@@ -447,16 +447,16 @@ export default function Gallery({ notify, setSettings, setTab }) {
                             {file.name}
                           </a>
                         </td>
-                        <td className="p-3 text-white/50 font-mono text-[10px] uppercase">{file.kind}</td>
-                        <td className="p-3 text-white/60 font-mono text-[11px] tabular-nums">{fmtSize(file.size)}</td>
-                        <td className="p-3 text-white/50 text-[11px] whitespace-nowrap">{getFormatDate(file.mtime)}</td>
+                        <td className="p-3 text-white/50 font-mono text-micro uppercase">{file.kind}</td>
+                        <td className="p-3 text-white/60 font-mono text-mini tabular-nums">{fmtSize(file.size)}</td>
+                        <td className="p-3 text-white/50 text-mini whitespace-nowrap">{getFormatDate(file.mtime)}</td>
                         <td className="p-3 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             {historyEntry && (
                               <button
                                 type="button"
                                 onClick={() => loadRunSettings(historyEntry)}
-                                className="px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[10px] font-bold"
+                                className="px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-micro font-bold"
                                 title="Re-apply run settings"
                               >
                                 ⚙️ Preset
@@ -466,7 +466,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                               type="button"
                               onClick={() => reuseAsTarget(file.name)}
                               disabled={busyFile === file.name}
-                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-[10px] font-bold"
+                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-micro font-bold"
                               title="Reuse as Target"
                             >
                               🎯 Target
@@ -475,7 +475,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                               type="button"
                               onClick={() => reuseAsSource(file.name)}
                               disabled={busyFile === file.name}
-                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-[10px] font-bold"
+                              className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-micro font-bold"
                               title="Extract Face as Source"
                             >
                               👤 Source
@@ -612,7 +612,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
 
         {/* Video badge */}
         {isVideo && (
-          <span className="absolute top-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-semibold text-white tracking-wider pointer-events-none z-10 flex items-center gap-1 border border-white/5">
+          <span className="absolute top-2 right-2 bg-black/70 px-2 py-0.5 rounded text-micro font-semibold text-white tracking-wider pointer-events-none z-10 flex items-center gap-1 border border-white/5">
             🎬 Video
           </span>
         )}
@@ -684,17 +684,17 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
           >
             {file.name}
           </h4>
-          <span className="text-[10px] font-mono text-white/40 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+          <span className="text-micro font-mono text-white/40 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
         </div>
         <div className="flex justify-between items-center shrink-0">
-          <span className="text-[10px] uppercase font-semibold tracking-wider text-[var(--accent)]/80">
+          <span className="text-micro uppercase font-semibold tracking-wider text-[var(--accent)]/80">
             {file.kind}
           </span>
           <button
             type="button"
             onClick={onDelete}
             disabled={isBusy}
-            className="text-[11px] font-bold text-white/30 hover:text-red-400 cursor-pointer transition-colors"
+            className="text-mini font-bold text-white/30 hover:text-red-400 cursor-pointer transition-colors"
           >
             🗑️ Delete
           </button>

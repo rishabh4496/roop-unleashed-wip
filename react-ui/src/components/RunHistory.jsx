@@ -205,15 +205,15 @@ export default function RunHistory({ notify, setSettings, setTab }) {
 function Sum({ label, value, tone = 'text-white/85' }) {
   return (
     <div className="px-4 py-2.5 min-w-0">
-      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{label}</div>
-      <div className={`font-mono text-[15px] font-bold tabular-nums truncate ${tone}`}>{value}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{label}</div>
+      <div className={`font-mono text-lead font-bold tabular-nums truncate ${tone}`}>{value}</div>
     </div>
   );
 }
 
 function Chip({ k, v }) {
   return (
-    <span className="inline-flex items-baseline gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.07] text-[10px]">
+    <span className="inline-flex items-baseline gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.07] text-micro">
       <span className="text-white/35">{LABELS[k] || k}</span>
       <span className="font-semibold text-white/70">{fmtVal(v)}</span>
     </span>
@@ -257,13 +257,13 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
                   {outputs[0] || 'run'}
                 </span>
                 {outputs.length > 1 && (
-                  <span className="text-[10px] text-white/40">+{outputs.length - 1} more</span>
+                  <span className="text-micro text-white/40">+{outputs.length - 1} more</span>
                 )}
                 {allDeleted && (
-                  <span className="text-[9px] uppercase tracking-wide text-amber-400/70 border border-amber-400/20 rounded px-1 py-0.5">file removed</span>
+                  <span className="text-nano uppercase tracking-wide text-amber-400/70 border border-amber-400/20 rounded px-1 py-0.5">file removed</span>
                 )}
               </div>
-              <div className="mt-0.5 flex items-center gap-2 text-[11px] text-white/40 font-mono">
+              <div className="mt-0.5 flex items-center gap-2 text-mini text-white/40 font-mono">
                 <span title={new Date(entry.time * 1000).toLocaleString()}>{fmtRel(entry.time)}</span>
                 {entry.duration_s > 0 && (<><span className="text-white/15">·</span><span>{fmtDur(entry.duration_s)}</span></>)}
                 {entry.fps > 0 && (
@@ -280,7 +280,7 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
           {/* Setting chips */}
           <div className="mt-2 flex flex-wrap gap-1.5">
             {chips.length ? chips.map((k) => <Chip key={k} k={k} v={p[k]} />)
-              : <span className="text-[11px] text-white/25">no settings recorded</span>}
+              : <span className="text-mini text-white/25">no settings recorded</span>}
           </div>
 
           {/* Actions */}
@@ -290,7 +290,7 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
               onClick={onToggleCompare}
               disabled={compareFull}
               title={compareFull ? 'Two runs already selected — clear one first' : 'Select this run to compare'}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors disabled:opacity-30 ${
+              className={`px-2.5 py-1 rounded-lg text-mini font-semibold border transition-colors disabled:opacity-30 ${
                 selected
                   ? 'bg-[var(--accent)]/20 border-[var(--accent)]/40 text-[var(--accent)]'
                   : 'bg-white/[0.04] border-white/10 text-white/55 hover:text-white hover:border-white/20'
@@ -299,17 +299,17 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
               {selected ? '✓ Comparing' : '⇄ Compare'}
             </button>
             <button type="button" onClick={onLoad}
-                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
+                    className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
               ↻ Load settings
             </button>
             {liveName && (
               <button type="button" onClick={() => onReveal(liveName)}
-                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
+                      className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
                 📁 Reveal
               </button>
             )}
             <button type="button" onClick={onDelete}
-                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/[0.02] border border-white/5 text-white/35 hover:text-red-300 hover:border-red-500/30 transition-colors ml-auto">
+                    className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.02] border border-white/5 text-white/35 hover:text-red-300 hover:border-red-500/30 transition-colors ml-auto">
               Remove
             </button>
           </div>
@@ -330,17 +330,17 @@ function ComparePanel({ a, b, onClear, onLoad }) {
 
   const Head = ({ e, side }) => (
     <div className="min-w-0">
-      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{side}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{side}</div>
       <div className="font-semibold text-white/85 text-sm truncate" title={(e.outputs || []).join(', ')}>
         {(e.outputs || [])[0] || 'run'}
       </div>
-      <div className="mt-0.5 flex items-center gap-2 text-[10px] font-mono text-white/40">
+      <div className="mt-0.5 flex items-center gap-2 text-micro font-mono text-white/40">
         <span>{new Date(e.time * 1000).toLocaleString()}</span>
         {e.duration_s > 0 && <span>· {fmtDur(e.duration_s)}</span>}
         {e.fps > 0 && <span className="text-emerald-400/80">· {e.fps.toFixed(1)} fps</span>}
       </div>
       <button type="button" onClick={() => onLoad(e)}
-              className="mt-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-white/[0.05] border border-white/10 text-white/60 hover:text-white transition-colors">
+              className="mt-1.5 px-2 py-0.5 rounded-md text-micro font-semibold bg-white/[0.05] border border-white/10 text-white/60 hover:text-white transition-colors">
         ↻ Load these settings
       </button>
     </div>
@@ -360,7 +360,7 @@ function ComparePanel({ a, b, onClear, onLoad }) {
 
       {/* Speed delta */}
       {a.fps > 0 && b.fps > 0 && (
-        <div className="mb-3 text-[11px] font-mono text-white/50">
+        <div className="mb-3 text-mini font-mono text-white/50">
           {b.fps === a.fps ? 'Same throughput.' : (
             <>Run B is <span className={b.fps > a.fps ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
               {b.fps > a.fps ? `${((b.fps / a.fps - 1) * 100).toFixed(0)}% faster` : `${((1 - b.fps / a.fps) * 100).toFixed(0)}% slower`}
@@ -370,15 +370,15 @@ function ComparePanel({ a, b, onClear, onLoad }) {
       )}
 
       {/* Changed settings */}
-      <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35 mb-1.5">
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/35 mb-1.5">
         {changed.length} setting{changed.length === 1 ? '' : 's'} differ
       </div>
       {changed.length === 0 ? (
-        <div className="text-[12px] text-white/40">These two runs used identical settings.</div>
+        <div className="text-note text-white/40">These two runs used identical settings.</div>
       ) : (
         <div className="rounded-lg border border-white/[0.07] overflow-hidden divide-y divide-white/[0.05]">
           {changed.map(({ k, va, vb }) => (
-            <div key={k} className="grid grid-cols-[1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11px] font-mono items-baseline">
+            <div key={k} className="grid grid-cols-[1fr_1fr_1fr] gap-2 px-3 py-1.5 text-mini font-mono items-baseline">
               <span className="text-white/40 truncate" title={k}>{LABELS[k] || k}</span>
               <span className="text-amber-300/80 truncate text-right">{fmtVal(va)}</span>
               <span className="text-emerald-300/80 truncate text-right">{fmtVal(vb)}</span>
@@ -390,13 +390,13 @@ function ComparePanel({ a, b, onClear, onLoad }) {
       {same.length > 0 && (
         <div className="mt-2">
           <button type="button" onClick={() => setShowSame((v) => !v)}
-                  className="text-[10px] font-semibold text-white/35 hover:text-white/60 transition-colors">
+                  className="text-micro font-semibold text-white/35 hover:text-white/60 transition-colors">
             {showSame ? '▾ Hide' : '▸ Show'} {same.length} matching setting{same.length === 1 ? '' : 's'}
           </button>
           {showSame && (
             <div className="mt-1.5 rounded-lg border border-white/[0.05] overflow-hidden divide-y divide-white/[0.04]">
               {same.map(({ k, va }) => (
-                <div key={k} className="grid grid-cols-[1fr_2fr] gap-2 px-3 py-1 text-[11px] font-mono items-baseline">
+                <div key={k} className="grid grid-cols-[1fr_2fr] gap-2 px-3 py-1 text-mini font-mono items-baseline">
                   <span className="text-white/30 truncate" title={k}>{LABELS[k] || k}</span>
                   <span className="text-white/50 truncate text-right">{fmtVal(va)}</span>
                 </div>

@@ -10,6 +10,31 @@
   --breakpoint-3xl: 1920px;
   --breakpoint-4xl: 2560px;
   --breakpoint-5xl: 3440px;
+
+  /* ── Type scale ────────────────────────────────────────────────────────
+     This app is dense — badges, HUD readouts, micro-labels — so most of its
+     text lives BELOW Tailwind's `text-xs` (12px), where Tailwind offers no
+     steps at all. That gap is why 303 one-off `text-[Npx]` values had
+     accumulated across eleven sizes from 7px to 34px: every author picked a
+     number, and nothing made the ramp visible or reviewable.
+
+     These are deliberately font-size ONLY. Tailwind's own `text-xs`/`text-sm`
+     also set a line-height, and the arbitrary values they replace did not, so
+     naming them without a line-height is what keeps this a rename rather than
+     a silent re-layout of every dense row in the app.
+
+     Sizes below `nano` are gone on purpose: 7px and 8px uppercase text with
+     letter-spacing is past legible, so those uses are promoted to the 9px
+     floor. `test_ui_type_scale.py` keeps new one-off sizes out. */
+  --text-nano: 9px;      /* badges + overlay chips; the legibility floor */
+  --text-micro: 10px;    /* micro-labels — the workhorse of this UI */
+  --text-mini: 11px;     /* captions, secondary metadata */
+  --text-note: 12px;     /* like text-xs, without its line-height */
+  --text-compact: 13px;  /* dense body copy */
+  --text-plain: 14px;    /* like text-sm, without its line-height */
+  --text-lead: 15px;     /* panel + dialog titles */
+  --text-title: 17px;    /* stat readouts */
+  --text-display: 34px;  /* the single hero numeral (live FPS) */
 }
 
 /* ── Theme Definitions ────────────────────────────────────────────────── */

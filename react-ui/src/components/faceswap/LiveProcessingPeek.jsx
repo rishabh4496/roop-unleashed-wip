@@ -51,7 +51,7 @@ export default function LiveProcessingPeek({
 
         {/* Live Status Overlay Badges */}
         <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
-          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider backdrop-blur-md border ${
+          <span className={`px-2.5 py-1 rounded-full text-micro font-bold uppercase tracking-wider backdrop-blur-md border ${
             paused
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
               : isLive
@@ -63,7 +63,7 @@ export default function LiveProcessingPeek({
 
           {!isLive && maxFrames > 1 && (
             <span
-              className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-black/70 backdrop-blur-md border border-white/15 text-white"
+              className="px-2.5 py-1 rounded-full text-micro font-mono font-bold bg-black/70 backdrop-blur-md border border-white/15 text-white"
               title="The frame this preview was rendered for — not the frame the render has reached"
             >
               of frame {frame} / {maxFrames}

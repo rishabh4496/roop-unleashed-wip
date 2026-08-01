@@ -75,7 +75,7 @@ export default function CommandPalette({ open, onClose, commands }) {
             placeholder="Search actions, themes, settings…"
             className="flex-1 bg-transparent text-white text-sm placeholder-white/30 focus:outline-none"
           />
-          <kbd className="text-[9px] font-mono text-white/40 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">ESC</kbd>
+          <kbd className="text-nano font-mono text-white/40 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">ESC</kbd>
         </div>
         <div ref={listRef} className="max-h-[52vh] overflow-y-auto py-2">
           {filtered.length === 0 ? (
@@ -83,7 +83,7 @@ export default function CommandPalette({ open, onClose, commands }) {
           ) : (
             groups.map((g) => (
               <div key={g.section} className="mb-1">
-                <div className="px-4 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/30">{g.section}</div>
+                <div className="px-4 py-1 text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{g.section}</div>
                 {g.items.map(({ c, i }) => (
                   <button
                     key={c.id}
@@ -96,9 +96,9 @@ export default function CommandPalette({ open, onClose, commands }) {
                     <span className="text-base w-6 text-center shrink-0">{c.icon || '•'}</span>
                     <span className="flex-1 min-w-0">
                       <span className="block text-sm font-semibold text-white/90 truncate">{c.title}</span>
-                      {c.subtitle && <span className="block text-[11px] text-white/40 truncate">{c.subtitle}</span>}
+                      {c.subtitle && <span className="block text-mini text-white/40 truncate">{c.subtitle}</span>}
                     </span>
-                    {i === sel && <kbd className="text-[9px] font-mono text-white/50 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 shrink-0">↵</kbd>}
+                    {i === sel && <kbd className="text-nano font-mono text-white/50 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 shrink-0">↵</kbd>}
                   </button>
                 ))}
               </div>

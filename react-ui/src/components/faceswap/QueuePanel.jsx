@@ -137,7 +137,7 @@ export default function QueuePanel({
                     {editable && !running && <span aria-hidden className="opacity-30 mr-1.5">⠿</span>}
                     {idx + 1}. {job.label || job.target_name}
                   </span>
-                  <span className="opacity-75 text-[10px] block truncate">
+                  <span className="opacity-75 text-micro block truncate">
                     {job.source_name || `Source ${job.source_index + 1}`}
                     {' · '}{job.payload?.swap_model || 'inswapper'}
                     {' · '}{job.payload?.enhancer || 'no enhancer'}
@@ -145,13 +145,13 @@ export default function QueuePanel({
                     {dur && <> · {dur}</>}
                   </span>
                   {job.error && (
-                    <span className="text-[10px] text-red-300/90 block truncate" title={job.error}>
+                    <span className="text-micro text-red-300/90 block truncate" title={job.error}>
                       {job.error}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">
+                  <span className="font-bold uppercase text-nano tracking-wider px-2 py-0.5 rounded bg-black/30 border border-white/5">
                     {QUEUE_STATUS_LABEL[shown] || shown}
                   </span>
                   {onLoadJobSettings && (

@@ -205,7 +205,7 @@ export default function SliderTrackerBar({
           <button
             type="button"
             onClick={onToggleSliderEffect}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase border transition-all duration-200 cursor-pointer ${
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-micro font-bold tracking-wider uppercase border transition-all duration-200 cursor-pointer ${
               sliderEffectEnabled
                 ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.25)]'
                 : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
@@ -254,7 +254,7 @@ export default function SliderTrackerBar({
             <button
               type="button"
               onClick={onResetSliders}
-              className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/60 hover:text-white transition-colors"
+              className="px-2.5 py-1.5 rounded-xl text-mini font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/60 hover:text-white transition-colors"
               title="Reset all trackers to default values"
             >
               ↺ Reset
@@ -266,7 +266,7 @@ export default function SliderTrackerBar({
             <button
               type="button"
               onClick={onRefreshPreview}
-              className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-[var(--accent)]/10 hover:bg-[var(--accent)]/20 border border-[var(--accent)]/30 text-[var(--accent)] transition-colors"
+              className="px-2.5 py-1.5 rounded-xl text-mini font-semibold bg-[var(--accent)]/10 hover:bg-[var(--accent)]/20 border border-[var(--accent)]/30 text-[var(--accent)] transition-colors"
               title="Force re-render preview with current slider tracker settings"
             >
               🔄 Refresh Preview
@@ -277,7 +277,7 @@ export default function SliderTrackerBar({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/70 transition-colors flex items-center gap-1"
+            className="px-2.5 py-1.5 rounded-xl text-mini font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/70 transition-colors flex items-center gap-1"
           >
             <span>{expanded ? 'Collapse' : 'Expand'}</span>
             <svg
@@ -300,12 +300,12 @@ export default function SliderTrackerBar({
         <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-white/5 select-none">
           {/* Left preset pills list */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-white/40 mr-1">
+            <span className="text-micro font-bold uppercase tracking-wider text-white/40 mr-1">
               Presets:
             </span>
             {activePreset === 'Custom' && (
               <span
-                className="px-2 py-1 rounded-lg text-[10px] font-bold border border-dashed border-white/25 text-white/60 bg-white/[0.03]"
+                className="px-2 py-1 rounded-lg text-micro font-bold border border-dashed border-white/25 text-white/60 bg-white/[0.03]"
                 title="Current slider values do not match any saved preset"
               >
                 Custom
@@ -330,7 +330,7 @@ export default function SliderTrackerBar({
                     type="button"
                     onClick={() => applyPreset(p)}
                     disabled={!sliderEffectEnabled}
-                    className="px-2.5 py-1 text-[10px] font-bold disabled:cursor-not-allowed"
+                    className="px-2.5 py-1 text-micro font-bold disabled:cursor-not-allowed"
                   >
                     {p.name}
                   </button>
@@ -338,7 +338,7 @@ export default function SliderTrackerBar({
                     <button
                       type="button"
                       onClick={(e) => handleDeleteCustomPreset(p.id, e)}
-                      className="mr-1.5 px-1 rounded bg-black/40 text-[10px] font-extrabold hover:text-red-300 transition-colors"
+                      className="mr-1.5 px-1 rounded bg-black/40 text-micro font-extrabold hover:text-red-300 transition-colors"
                       title="Delete custom preset"
                     >
                       ×
@@ -359,21 +359,21 @@ export default function SliderTrackerBar({
                   value={newPresetName}
                   onChange={(e) => setNewPresetName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSaveCurrentPreset()}
-                  className="px-2 py-1 rounded-lg bg-black/80 text-white text-[11px] border border-white/10 focus:outline-none focus:border-[var(--accent)]"
+                  className="px-2 py-1 rounded-lg bg-black/80 text-white text-mini border border-white/10 focus:outline-none focus:border-[var(--accent)]"
                   autoFocus
                 />
                 <button
                   type="button"
                   onClick={handleSaveCurrentPreset}
                   disabled={!newPresetName.trim()}
-                  className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-40"
+                  className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-40"
                 >
                   Save
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsSaving(false)}
-                  className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 text-white/60 hover:text-white transition-colors"
+                  className="px-2 py-1 rounded-lg text-micro font-bold bg-white/10 text-white/60 hover:text-white transition-colors"
                 >
                   Cancel
                 </button>
@@ -383,7 +383,7 @@ export default function SliderTrackerBar({
                 type="button"
                 onClick={() => setIsSaving(true)}
                 disabled={!sliderEffectEnabled}
-                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 cursor-pointer"
                 title="Save current slider values as a custom preset"
               >
                 <span>💾 Save Preset</span>
@@ -431,7 +431,7 @@ export default function SliderTrackerBar({
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="text-xs shrink-0">{s.icon}</span>
                         <span
-                          className="text-[11px] font-semibold text-white/80 truncate group-hover/card:text-white transition-colors"
+                          className="text-mini font-semibold text-white/80 truncate group-hover/card:text-white transition-colors"
                           title={s.info}
                         >
                           {s.label}
@@ -460,7 +460,7 @@ export default function SliderTrackerBar({
                     </div>
 
                     {/* Footer: Min, Default indicator, Max */}
-                    <div className="flex items-center justify-between text-[9px] font-mono text-white/35 mt-1.5">
+                    <div className="flex items-center justify-between text-nano font-mono text-white/35 mt-1.5">
                       <span>{s.min}</span>
                       <button
                         type="button"

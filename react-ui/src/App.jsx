@@ -507,17 +507,17 @@ export default function App() {
         <div className="flex items-center gap-3">
           <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-lg">⚡</span>
           <div>
-            <h1 className="text-[15px] font-bold tracking-tight text-white/95 flex items-center gap-1.5">
+            <h1 className="text-lead font-bold tracking-tight text-white/95 flex items-center gap-1.5">
               Roop Unleashed <span className="text-white/35 font-medium">Studio</span>
             </h1>
             {meta?.git_version && (
-              <span className="text-[9px] font-mono text-white/35 tracking-wider block mt-0.5">
+              <span className="text-nano font-mono text-white/35 tracking-wider block mt-0.5">
                 Engine {meta.git_version}
               </span>
             )}
           </div>
           {progress.processing && (
-            <div className="ml-2 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-[10px] font-bold tracking-wide uppercase">
+            <div className="ml-2 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-micro font-bold tracking-wide uppercase">
               <span className={`h-1.5 w-1.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
               <span className={progress.paused ? 'text-amber-400/90' : 'text-[var(--accent)]'}>
                 {progress.paused ? 'Paused' : `Processing ${Math.round((progress.progress || 0) * 100)}%`}
@@ -586,11 +586,11 @@ export default function App() {
           className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-xs font-medium"
         >
           <span className="text-sm">⌘</span> Search
-          <kbd className="text-[9px] font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
+          <kbd className="text-nano font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
         <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">
           <button type="button" onClick={() => bumpZoom(-0.05)} title="Zoom out (Ctrl −)" aria-label="Zoom out" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">−</button>
-          <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" aria-label="Reset zoom" className="min-w-[44px] text-[11px] font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
+          <button type="button" onClick={() => setZoom(1)} title="Reset zoom (Ctrl 0)" aria-label="Reset zoom" className="min-w-[44px] text-mini font-semibold text-white/60 hover:text-white tabular-nums transition-colors">{Math.round(zoom * 100)}%</button>
           <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" aria-label="Zoom in" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
         </div>
         <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
@@ -609,7 +609,7 @@ export default function App() {
                 aria-current={active ? 'page' : undefined}
                 whileTap={{ scale: 0.94 }}
                 transition={spring.snappy}
-                className={`relative px-3.5 py-2 rounded-lg text-[12px] font-semibold tracking-wide whitespace-nowrap flex items-center gap-1.5 transition-colors duration-200 ${
+                className={`relative px-3.5 py-2 rounded-lg text-note font-semibold tracking-wide whitespace-nowrap flex items-center gap-1.5 transition-colors duration-200 ${
                   active ? 'text-white' : 'text-white/45 hover:text-white/90'
                 }`}
               >
@@ -634,14 +634,14 @@ export default function App() {
           <div role="alert" className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up flex flex-wrap items-center justify-between gap-3">
             <span className="selectable">⚠️ {error}</span>
             <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[11px] text-red-300/50">
+              <span className="text-mini text-red-300/50">
                 {retrying ? 'Retrying…' : 'Retrying automatically…'}
               </span>
               <button
                 type="button"
                 onClick={() => { bootAttemptRef.current = 0; loadCore(); }}
                 disabled={retrying}
-                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-[11px] font-semibold text-red-200 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-mini font-semibold text-red-200 disabled:opacity-50"
               >
                 Retry now
               </button>

@@ -72,7 +72,7 @@ function RangeField({ label, value, min, max, onCommit, accent = false }) {
       }`}
       title={`${label} point — click to type a frame number`}
     >
-      <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">{label}</span>
+      <span className="text-nano font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">{label}</span>
       <input
         type="number"
         min={min}
@@ -85,7 +85,7 @@ function RangeField({ label, value, min, max, onCommit, accent = false }) {
           if (e.key === 'Enter') e.currentTarget.blur();
           if (e.key === 'Escape') { setDraft(null); e.currentTarget.blur(); }
         }}
-        className="w-[7ch] bg-transparent text-right text-[11px] font-mono font-semibold tabular-nums text-[var(--text-main)] outline-none"
+        className="w-[7ch] bg-transparent text-right text-mini font-mono font-semibold tabular-nums text-[var(--text-main)] outline-none"
       />
     </label>
   );
@@ -422,12 +422,12 @@ export default function Timeline({
       {/* ── Header: identity + the single, editable statement of the range ── */}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex items-baseline gap-2.5 min-w-0">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Timeline</span>
-          <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]/55 truncate">
+          <span className="text-mini font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Timeline</span>
+          <span className="font-mono text-micro tabular-nums text-[var(--text-muted)]/55 truncate">
             {maxFrames.toLocaleString()} frames · {fps} fps · {fmtTC(maxFrames, fps)}
           </span>
           {zoomed && (
-            <span className="rounded-md border border-[var(--border-color)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-[var(--text-muted)]"
+            <span className="rounded-md border border-[var(--border-color)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-nano tabular-nums text-[var(--text-muted)]"
                   title="Visible range — the track is zoomed in">
               showing {fmtTC(vStart, fps)}–{fmtTC(vEnd, fps)} · {Math.round((maxFrames - 1) / vSpan)}×
             </span>
@@ -438,10 +438,10 @@ export default function Timeline({
                       onCommit={(v) => setFrameMarkerVal('start', v)} />
           <RangeField label="Out" value={endFrame} min={startFrame} max={maxFrames}
                       onCommit={(v) => setFrameMarkerVal('end', v)} />
-          <span className="inline-flex items-baseline gap-1.5 rounded-lg border border-[var(--accent)]/25 bg-[var(--accent)]/[0.08] px-2 py-1 font-mono text-[11px] tabular-nums text-[var(--accent)]"
+          <span className="inline-flex items-baseline gap-1.5 rounded-lg border border-[var(--accent)]/25 bg-[var(--accent)]/[0.08] px-2 py-1 font-mono text-mini tabular-nums text-[var(--accent)]"
                 title="Length of the selected range — this is what gets rendered">
             {fmtTC(rangeLen, fps)}
-            <span className="text-[9px] opacity-60">{rangeLen.toLocaleString()} f · {rangeShare}%</span>
+            <span className="text-nano opacity-60">{rangeLen.toLocaleString()} f · {rangeShare}%</span>
           </span>
         </div>
       </div>
@@ -458,7 +458,7 @@ export default function Timeline({
           return (
             <React.Fragment key={f}>
               <span className="absolute bottom-0 w-px h-2.5 bg-[var(--text-muted)]/40" style={{ left: `${pct}%` }} />
-              <span className="absolute bottom-3 font-mono text-[9px] tabular-nums text-[var(--text-muted)]/60 whitespace-nowrap"
+              <span className="absolute bottom-3 font-mono text-nano tabular-nums text-[var(--text-muted)]/60 whitespace-nowrap"
                     style={{ left: `${pct}%`, transform: anchor(pct) }}>
                 {ticks.frameMode ? fmtTCF(f, fps) : fmtTC(f, fps)}
               </span>
@@ -498,7 +498,7 @@ export default function Timeline({
                 onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
                 onLoad={(e) => { e.currentTarget.style.visibility = 'visible'; }}
               />
-              <div className="mt-1 flex items-baseline justify-between px-0.5 font-mono text-[10px] tabular-nums">
+              <div className="mt-1 flex items-baseline justify-between px-0.5 font-mono text-micro tabular-nums">
                 <span className="text-[var(--text-main)] font-semibold">{fmtTC(hoverFrame, fps)}</span>
                 <span className="text-[var(--text-muted)]/60">f {hoverFrame.toLocaleString()}</span>
               </div>
@@ -556,7 +556,7 @@ export default function Timeline({
               <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-9 w-2.5 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,0.7)] grid place-items-center gap-[2px]">
                 <span className="block h-[7px] w-px bg-black/25" />
               </span>
-              <span className={`absolute top-1 text-[8px] font-bold uppercase tracking-wider text-white/70 ${
+              <span className={`absolute top-1 text-nano font-bold uppercase tracking-wider text-white/70 ${
                 which === 'start' ? 'left-1.5' : 'right-1.5'}`}>
                 {which === 'start' ? 'In' : 'Out'}
               </span>
@@ -612,7 +612,7 @@ export default function Timeline({
         {inView(frame) && (
           <div className={`absolute -bottom-2 z-30 pointer-events-none ${isScrubbing ? '' : 'transition-[left] duration-100 ease-out'}`}
                style={{ left: `${currentPct}%`, transform: anchor(currentPct) }}>
-            <span className="rounded-md bg-[var(--accent)] px-1.5 py-0.5 font-mono text-[9px] font-bold tabular-nums text-white shadow-[0_2px_6px_rgba(0,0,0,0.5)]">
+            <span className="rounded-md bg-[var(--accent)] px-1.5 py-0.5 font-mono text-nano font-bold tabular-nums text-white shadow-[0_2px_6px_rgba(0,0,0,0.5)]">
               {fmtTCF(frame, fps)}
             </span>
           </div>
@@ -642,8 +642,8 @@ export default function Timeline({
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] px-3 py-2">
         {/* Read-out */}
         <div className="flex items-baseline gap-2 font-mono">
-          <span className="text-[15px] font-semibold tabular-nums text-[var(--text-main)]">{fmtTC(frame, fps)}</span>
-          <span className="text-[11px] tabular-nums text-[var(--text-muted)]/45">/ {fmtTC(maxFrames, fps)}</span>
+          <span className="text-lead font-semibold tabular-nums text-[var(--text-main)]">{fmtTC(frame, fps)}</span>
+          <span className="text-mini tabular-nums text-[var(--text-muted)]/45">/ {fmtTC(maxFrames, fps)}</span>
           <span className="mx-1 h-4 w-px bg-[var(--border-color)] self-center" />
           <input
             type="number"
@@ -660,10 +660,10 @@ export default function Timeline({
               if (e.key === 'Enter') e.currentTarget.blur();
               if (e.key === 'Escape') { setFrameDraft(null); e.currentTarget.blur(); }
             }}
-            className="w-[8ch] rounded-md border border-[var(--border-color)] bg-[var(--input-bg)] py-0.5 text-center text-[11px] font-semibold tabular-nums text-[var(--text-main)] outline-none transition-colors focus:border-[var(--accent)]"
+            className="w-[8ch] rounded-md border border-[var(--border-color)] bg-[var(--input-bg)] py-0.5 text-center text-mini font-semibold tabular-nums text-[var(--text-main)] outline-none transition-colors focus:border-[var(--accent)]"
             title="Type a frame number and press Enter to jump"
           />
-          <span className="text-[10px] tabular-nums text-[var(--text-muted)]/40">/ {maxFrames.toLocaleString()}</span>
+          <span className="text-micro tabular-nums text-[var(--text-muted)]/40">/ {maxFrames.toLocaleString()}</span>
         </div>
 
         {/* Transport */}
@@ -713,18 +713,18 @@ export default function Timeline({
           <div className="spring-cluster flex items-center gap-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5">
             <button type="button" onClick={() => setFrameMarkerVal('start', frame)}
                     title="Set In point to the current frame ([)"
-                    className="px-2 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
+                    className="px-2 py-1 rounded-md text-mini font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
               Set in
             </button>
             <button type="button" onClick={() => setFrameMarkerVal('end', frame)}
                     title="Set Out point to the current frame (])"
-                    className="px-2 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
+                    className="px-2 py-1 rounded-md text-mini font-semibold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
               Set out
             </button>
             <button type="button"
                     onClick={async () => { await setFrameMarkerVal('start', 1); await setFrameMarkerVal('end', maxFrames); }}
                     title="Reset the range to the whole clip (R)"
-                    className="px-2 py-1 rounded-md text-[11px] font-semibold text-[var(--text-muted)]/70 hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
+                    className="px-2 py-1 rounded-md text-mini font-semibold text-[var(--text-muted)]/70 hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
               Full
             </button>
           </div>
@@ -737,7 +737,7 @@ export default function Timeline({
             {markers.length > 0 && (
               <button type="button" onClick={() => persistMarkers([])}
                       title={`Clear all ${markers.length} markers`}
-                      className="px-1.5 py-1 rounded-md font-mono text-[10px] font-bold tabular-nums text-amber-300/80 hover:text-amber-200 hover:bg-white/[0.06] transition-colors">
+                      className="px-1.5 py-1 rounded-md font-mono text-micro font-bold tabular-nums text-amber-300/80 hover:text-amber-200 hover:bg-white/[0.06] transition-colors">
                 {markers.length}✕
               </button>
             )}
@@ -746,7 +746,7 @@ export default function Timeline({
           <div className="spring-cluster flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--surface-2)] p-0.5" title="Playback speed">
             {SPEEDS.map((r) => (
               <button key={r} type="button" onClick={() => setPlaybackRate(r)}
-                      className={`px-1.5 py-1 rounded-md text-[10px] font-bold tabular-nums transition-colors ${
+                      className={`px-1.5 py-1 rounded-md text-micro font-bold tabular-nums transition-colors ${
                         playbackRate === r
                           ? 'bg-[var(--accent)] text-white'
                           : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06]'}`}>
@@ -773,7 +773,7 @@ export default function Timeline({
                     onClick={() => (zoomed ? resetView() : setView && setView({
                       start: Math.max(1, startFrame), end: Math.max(startFrame + 1, endFrame) }))}
                     title={zoomed ? 'Zoom out to the whole clip' : 'Zoom to the selected In/Out range'}
-                    className="px-2 py-1 rounded-md text-[10px] font-bold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
+                    className="px-2 py-1 rounded-md text-micro font-bold text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-white/[0.06] transition-colors">
               {zoomed ? 'All' : 'Range'}
             </button>
           </div>

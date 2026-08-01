@@ -84,11 +84,11 @@ export function ConfirmHost() {
             transition={spring.snappy}
             className="relative w-full max-w-sm rounded-2xl glass-panel border border-white/10 p-6 shadow-2xl"
           >
-            <h2 className="text-[15px] font-bold text-white/95 flex items-center gap-2">
+            <h2 className="text-lead font-bold text-white/95 flex items-center gap-2">
               <span>{danger ? '⚠️' : '❓'}</span>{dialog.title || 'Are you sure?'}
             </h2>
             {dialog.message && (
-              <p className="mt-2 text-[13px] leading-relaxed text-white/60 selectable">{dialog.message}</p>
+              <p className="mt-2 text-compact leading-relaxed text-white/60 selectable">{dialog.message}</p>
             )}
             {dialog.kind === 'prompt' && (
               <input
@@ -97,17 +97,17 @@ export function ConfirmHost() {
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onConfirm(); } }}
                 placeholder={dialog.placeholder || ''}
-                className="mt-4 w-full px-3 py-2.5 rounded-xl glass-input text-white text-[13px] focus:outline-none placeholder:text-white/25 selectable"
+                className="mt-4 w-full px-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none placeholder:text-white/25 selectable"
               />
             )}
             <div className="mt-6 flex justify-end gap-2.5">
               <button
                 type="button" onClick={onCancel}
-                className="px-4 py-2 rounded-xl text-[13px] font-semibold bg-white/[0.05] hover:bg-white/[0.09] text-white/70 hover:text-white border border-white/10 transition-colors"
+                className="px-4 py-2 rounded-xl text-compact font-semibold bg-white/[0.05] hover:bg-white/[0.09] text-white/70 hover:text-white border border-white/10 transition-colors"
               >{dialog.cancelLabel || 'Cancel'}</button>
               <button
                 type="button" onClick={onConfirm} autoFocus={dialog.kind !== 'prompt'}
-                className={`px-4 py-2 rounded-xl text-[13px] font-semibold border transition-colors ${
+                className={`px-4 py-2 rounded-xl text-compact font-semibold border transition-colors ${
                   danger
                     ? 'bg-red-500/15 hover:bg-red-500/25 text-red-300 border-red-500/30'
                     : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white border-white/10'}`}

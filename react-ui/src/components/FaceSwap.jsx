@@ -2502,45 +2502,45 @@ export default function FaceSwap({
         <Section title="Clip advisor">
           <button type="button" disabled={advisorBusy || !targets.length || progress.processing} onClick={runAdvisor}
             title="Samples the selected target (face sizes, count, detection coverage, motion, lighting) and recommends settings tuned to it. Nothing changes until you apply."
-            className="w-full py-2 rounded-lg text-[12px] font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+            className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
             {advisorBusy
               ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Analyzing target…</>)
               : '🧭 Analyze target & recommend settings'}
           </button>
           {advice && (
             <div className="space-y-2 mt-2">
-              <div className="text-[10px] text-white/40 leading-relaxed">
+              <div className="text-micro text-white/40 leading-relaxed">
                 {advice.stats.sampled_frames} frame{advice.stats.sampled_frames === 1 ? '' : 's'} sampled ·
                 faces found on {advice.stats.detection_coverage}% ·
                 face size {advice.stats.min_face_size_pct}–{advice.stats.max_face_size_pct}% ·
                 brightness {advice.stats.brightness}
                 {advice.is_video ? ` · motion ${advice.stats.motion}` : ''}
               </div>
-              {advice.message && <div className="text-[11px] text-amber-300/80">{advice.message}</div>}
+              {advice.message && <div className="text-mini text-amber-300/80">{advice.message}</div>}
               {advice.recommendations.length === 0 && !advice.message ? (
-                <div className="text-[11px] font-bold text-emerald-400">✓ Current settings already fit this clip</div>
+                <div className="text-mini font-bold text-emerald-400">✓ Current settings already fit this clip</div>
               ) : advice.recommendations.length > 0 && (
                 <>
                   {advice.recommendations.map((r) => (
                     <div key={r.key} className="rounded-lg bg-black/25 border border-white/5 px-2.5 py-1.5">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold text-white/85">{ADVISOR_LABELS[r.key] || r.key}</span>
-                        <span className="text-[11px] font-mono shrink-0">
+                        <span className="text-mini font-bold text-white/85">{ADVISOR_LABELS[r.key] || r.key}</span>
+                        <span className="text-mini font-mono shrink-0">
                           <span className="text-white/35">{fmtAdviceVal(p[r.key] ?? '—')}</span>
                           <span className="text-white/30"> → </span>
                           <span className="text-[var(--accent)] font-bold">{fmtAdviceVal(r.value)}</span>
                         </span>
                       </div>
-                      <div className="text-[10px] text-white/40 leading-snug mt-0.5">{r.reason}</div>
+                      <div className="text-micro text-white/40 leading-snug mt-0.5">{r.reason}</div>
                     </div>
                   ))}
                   <div className="flex gap-2">
                     <button type="button" onClick={applyAdvice}
-                      className="flex-1 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--accent)] text-white hover:opacity-90 transition-opacity">
+                      className="flex-1 py-1.5 rounded-lg text-mini font-bold bg-[var(--accent)] text-white hover:opacity-90 transition-opacity">
                       ✓ Apply all {advice.recommendations.length}
                     </button>
                     <button type="button" onClick={() => setAdvice(null)}
-                      className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-white/[0.04] border border-white/10 text-white/60 hover:text-white/90 transition-colors">
+                      className="px-3 py-1.5 rounded-lg text-mini font-bold bg-white/[0.04] border border-white/10 text-white/60 hover:text-white/90 transition-colors">
                       Dismiss
                     </button>
                   </div>
@@ -2551,7 +2551,7 @@ export default function FaceSwap({
         </Section>
 
         <Section title="Live camera" collapsible defaultOpen={false}>
-          <div className="text-[10px] text-white/40 leading-relaxed -mt-1">
+          <div className="text-micro text-white/40 leading-relaxed -mt-1">
             Swap your webcam feed live using the loaded source face{liveObs ? ',' : ''} — optionally
             published as a system <b>virtual camera</b> for OBS / video calls.
           </div>
@@ -2564,7 +2564,7 @@ export default function FaceSwap({
           <Toggle label="Stream to virtual camera (OBS)" info="Publishes the swapped feed as a system camera device via pyvirtualcam — pick 'OBS Virtual Camera' in any app." checked={liveObs} onChange={setLiveObs} />
           {!liveActive ? (
             <button type="button" disabled={liveBusy || progress.processing} onClick={startLiveCam}
-              className="w-full py-2 rounded-lg text-[12px] font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+              className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
               {liveBusy
                 ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Opening camera…</>)
                 : '📷 Start live camera'}
@@ -2574,18 +2574,18 @@ export default function FaceSwap({
               <div className="relative rounded-xl overflow-hidden bg-black/50 border border-white/10 aspect-video">
                 <img src={`${API}/api/livecam/frame?t=${liveTick}`} alt="Live camera"
                   className="w-full h-full object-contain" draggable={false} />
-                <span className="absolute top-2 left-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 text-[10px] font-bold text-white/90 border border-white/10">
+                <span className="absolute top-2 left-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 text-micro font-bold text-white/90 border border-white/10">
                   <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" /> LIVE
                 </span>
               </div>
               <button type="button" disabled={liveBusy} onClick={stopLiveCam}
-                className="w-full py-2 rounded-lg text-[12px] font-bold bg-white/[0.04] border border-white/10 text-white/70 hover:text-white hover:border-white/25 transition-colors disabled:opacity-40">
+                className="w-full py-2 rounded-lg text-note font-bold bg-white/[0.04] border border-white/10 text-white/70 hover:text-white hover:border-white/25 transition-colors disabled:opacity-40">
                 ⏹ Stop live camera
               </button>
             </>
           )}
           {sourceFaces.length === 0 && (
-            <div className="text-[10px] text-amber-300/70">No source face loaded — the feed will pass through unswapped.</div>
+            <div className="text-micro text-amber-300/70">No source face loaded — the feed will pass through unswapped.</div>
           )}
         </Section>
 
@@ -2739,7 +2739,7 @@ export default function FaceSwap({
                 <input type="file" accept=".json" onChange={importRecipe} className="sr-only" />
               </label>
             </div>
-            <p className="text-[10px] text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
+            <p className="text-micro text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
           </Section>
         </div>
 
@@ -2750,12 +2750,12 @@ export default function FaceSwap({
                 {/* GPU & VRAM */}
                 <div className="bg-black/25 p-3 rounded-xl border border-white/5 space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-white/40 text-[10px] uppercase font-bold tracking-wider">GPU</span>
+                    <span className="text-white/40 text-micro uppercase font-bold tracking-wider">GPU</span>
                     <span className="text-white font-semibold truncate max-w-[200px]">{telemetry.gpu}</span>
                   </div>
                   {telemetry.vram_total > 0 && (
                     <div className="space-y-1">
-                      <div className="flex justify-between text-[10px]">
+                      <div className="flex justify-between text-micro">
                         <span className="text-white/40">VRAM Usage</span>
                         <span className="text-emerald-400 font-bold">{telemetry.vram_used} GB / {telemetry.vram_total} GB</span>
                       </div>
@@ -2772,7 +2772,7 @@ export default function FaceSwap({
                 {/* CPU & Memory */}
                 <div className="bg-black/25 p-3 rounded-xl border border-white/5 space-y-2.5">
                   <div className="space-y-1">
-                    <div className="flex justify-between items-center text-[10px]">
+                    <div className="flex justify-between items-center text-micro">
                       <span className="text-white/40 uppercase font-bold tracking-wider">CPU Utilization</span>
                       <span className="text-orange-400 font-bold">{telemetry.cpu_percent}%</span>
                     </div>
@@ -2785,7 +2785,7 @@ export default function FaceSwap({
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between items-center text-[10px]">
+                    <div className="flex justify-between items-center text-micro">
                       <span className="text-white/40 uppercase font-bold tracking-wider">System RAM</span>
                       <span className="text-blue-300 font-bold">{telemetry.ram_used} GB / {telemetry.ram_total} GB</span>
                     </div>
@@ -2802,7 +2802,7 @@ export default function FaceSwap({
 
                 {/* Active threads info */}
                 <div className="bg-black/25 px-3 py-2 rounded-xl border border-white/5 flex items-center justify-between">
-                  <span className="text-[10px] text-white/40 uppercase font-bold tracking-wider">Active Python Threads</span>
+                  <span className="text-micro text-white/40 uppercase font-bold tracking-wider">Active Python Threads</span>
                   <span className="text-pink-400 font-bold text-xs bg-pink-500/10 px-2 py-0.5 rounded-md border border-pink-500/20">{telemetry.threads}</span>
                 </div>
               </div>
@@ -2811,7 +2811,7 @@ export default function FaceSwap({
                 <Skeleton className="h-16 w-full" />
                 <Skeleton className="h-20 w-full" />
                 <Skeleton className="h-9 w-full" />
-                <div className="text-[10px] text-white/25 italic text-center">Connecting to hardware diagnostics…</div>
+                <div className="text-micro text-white/25 italic text-center">Connecting to hardware diagnostics…</div>
               </div>
             )}
             <div className="mt-3 flex justify-between items-center">
@@ -2926,14 +2926,14 @@ export default function FaceSwap({
                       <div className="text-base shrink-0 opacity-75 hidden">{typeIcon}</div>
                       <div className="flex-1 min-w-0">
                         <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] font-medium text-white/40">
+                        <div className="flex items-center gap-2 mt-0.5 text-micro font-medium text-white/40">
                           {isVideo ? (
                             <span>{t.frames} frames · {t.fps} FPS{duration ? ` · ${duration}s` : ''}</span>
                           ) : (
                             <span>Static Image</span>
                           )}
                           {statusLabel && (
-                            <span className={`text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-semibold ${badgeColor}`}>
+                            <span className={`text-nano uppercase tracking-wider px-1.5 py-0.5 rounded border font-semibold ${badgeColor}`}>
                               {statusLabel}
                             </span>
                           )}
@@ -2975,8 +2975,8 @@ export default function FaceSwap({
               {sourceFacesInfo[selSource] && (
                 <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-[10px] uppercase tracking-[0.14em] text-white/50">📁 Selected source details</span>
-                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[10px] text-[var(--accent)] font-bold border border-[var(--accent)]/20">
+                    <span className="font-semibold text-micro uppercase tracking-[0.14em] text-white/50">📁 Selected source details</span>
+                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-micro text-[var(--accent)] font-bold border border-[var(--accent)]/20">
                       {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
                     </span>
                   </div>
@@ -2984,7 +2984,7 @@ export default function FaceSwap({
                   <div className="space-y-1.5 pt-1">
                     {sourceFacesInfo[selSource].count > 1 ? (
                       <>
-                        <div className="text-[10px] font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
+                        <div className="text-micro font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
                         <div className="flex flex-wrap gap-1.5">
                           {Object.entries(
                             sourceFacesInfo[selSource].poses.reduce((acc, p) => {
@@ -2992,7 +2992,7 @@ export default function FaceSwap({
                               return acc;
                             }, {})
                           ).map(([pose, cnt]) => (
-                            <span key={pose} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-[10px] text-white/70">
+                            <span key={pose} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-micro text-white/70">
                               {pose} <span className="text-[var(--accent)] font-extrabold">({cnt})</span>
                             </span>
                           ))}
@@ -3047,13 +3047,13 @@ export default function FaceSwap({
                           strokeLinecap="round"
                         />
                       </svg>
-                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-[13px] font-extrabold text-white tabular-nums" />
+                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-compact font-extrabold text-white tabular-nums" />
                     </div>
 
                     <div className="space-y-0.5 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className={`h-2 w-2 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-                        <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                        <span className={`text-mini font-semibold uppercase tracking-[0.14em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
                           {progress.paused ? 'Paused' : 'Processing'}
                         </span>
                       </div>
@@ -3068,12 +3068,12 @@ export default function FaceSwap({
                       lives in the Preview panel, so the run-bar stays a slim strip). */}
                   <div className="flex items-center gap-3 text-xs font-mono shrink-0">
                     <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
+                      <span className="text-micro uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
                       <span className="text-white font-bold tabular-nums whitespace-nowrap">{fmtTime(elapsedMs)}</span>
                     </div>
                     <div className="h-6 w-px bg-white/10" />
                     <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wider text-white/40 font-bold">ETA</span>
+                      <span className="text-micro uppercase tracking-wider text-white/40 font-bold">ETA</span>
                       <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
                     </div>
                   </div>
@@ -3087,7 +3087,7 @@ export default function FaceSwap({
                         <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-colors duration-200 group-hover:bg-emerald-500/25">
                           <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
                         </span>
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
                       </motion.button>
                     ) : (
                       <motion.button type="button" onClick={pause} title="Pause (Space)"
@@ -3096,7 +3096,7 @@ export default function FaceSwap({
                         <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-colors duration-200 group-hover:bg-amber-500/25">
                           <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
                         </span>
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
                       </motion.button>
                     )}
                     <motion.button type="button" onClick={stop} title="Stop"
@@ -3105,7 +3105,7 @@ export default function FaceSwap({
                       <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-colors duration-200 group-hover:bg-red-500/25">
                         <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                       </span>
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
+                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
                     </motion.button>
                   </div>
 
@@ -3165,14 +3165,14 @@ export default function FaceSwap({
                   <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
+                        <span className={`text-mini font-semibold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
                           {progress.paused ? 'Paused' : 'Processing'}
                         </span>
                         {!progress.paused && <span className="h-px w-8 bg-[var(--accent)]/40" />}
                       </div>
                       <div className="mt-1 flex items-baseline gap-2.5">
                         <AnimatedNumber value={prog * 100} decimals={1} suffix="%"
-                                        className="font-mono text-[34px] leading-none font-bold tabular-nums text-white" />
+                                        className="font-mono text-display leading-none font-bold tabular-nums text-white" />
                         <span className="text-sm font-medium text-white/55 truncate max-w-[46ch]">
                           {progress.desc || 'Swapping faces…'}
                         </span>
@@ -3180,18 +3180,18 @@ export default function FaceSwap({
                     </div>
                     <div className="flex items-stretch gap-5 font-mono">
                       <div className="text-right">
-                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Elapsed</div>
-                        <div className="text-[17px] font-bold tabular-nums text-white/85">{fmtTime(elapsedMs)}</div>
+                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Elapsed</div>
+                        <div className="text-title font-bold tabular-nums text-white/85">{fmtTime(elapsedMs)}</div>
                       </div>
                       <div className="w-px bg-white/10" />
                       <div className="text-right">
-                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Time left</div>
-                        <div className="text-[17px] font-bold tabular-nums text-emerald-400">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</div>
+                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Time left</div>
+                        <div className="text-title font-bold tabular-nums text-emerald-400">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</div>
                       </div>
                       <div className="w-px bg-white/10" />
                       <div className="text-right">
-                        <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/30">Finishes</div>
-                        <div className="text-[17px] font-bold tabular-nums text-white/85">
+                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Finishes</div>
+                        <div className="text-title font-bold tabular-nums text-white/85">
                           {etaMs > 0 ? new Date(Date.now() + etaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
                         </div>
                       </div>
@@ -3232,7 +3232,7 @@ export default function FaceSwap({
                                          style={{ width: `${Math.max(4, prog * 100)}%` }} />
                                   )}
                                 </div>
-                                <div className={`mt-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] truncate ${
+                                <div className={`mt-1.5 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-[0.12em] truncate ${
                                   state === 'done' ? 'text-emerald-400/70'
                                   : state === 'active' ? 'text-white'
                                   : 'text-white/25'}`}>
@@ -3343,7 +3343,7 @@ export default function FaceSwap({
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
+                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -3364,7 +3364,7 @@ export default function FaceSwap({
                                   }
                                 }
                               }}
-                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                              className={`px-3 py-1.5 rounded-lg text-mini font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
                             >
                               {enh}
                             </button>
@@ -3390,8 +3390,8 @@ export default function FaceSwap({
                     {/* Mask-engine selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🎭 Compare Mask Engines (Select up to 4)</span>
-                        <span className="text-[10px] text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🎭 Compare Mask Engines (Select up to 4)</span>
+                        <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {meta.mask_engines?.map((mE) => {
@@ -3413,7 +3413,7 @@ export default function FaceSwap({
                                   }
                                 }
                               }}
-                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                              className={`px-3 py-1.5 rounded-lg text-mini font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
                             >
                               {mE}
                             </button>
@@ -3439,8 +3439,8 @@ export default function FaceSwap({
                     {/* Swapper-model selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🔀 Compare Swapper Models (Select up to 4)</span>
-                        <span className="text-[10px] text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🔀 Compare Swapper Models (Select up to 4)</span>
+                        <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {meta.swap_models?.map((sM) => {
@@ -3462,7 +3462,7 @@ export default function FaceSwap({
                                   }
                                 }
                               }}
-                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                              className={`px-3 py-1.5 rounded-lg text-mini font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
                             >
                               {sM}
                             </button>
@@ -3488,8 +3488,8 @@ export default function FaceSwap({
                     {/* AI-upscaler selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 block">🔎 Compare AI Upscalers (Select up to 4)</span>
-                        <span className="text-[10px] text-white/30">Swaps once, then upscales each</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🔎 Compare AI Upscalers (Select up to 4)</span>
+                        <span className="text-micro text-white/30">Swaps once, then upscales each</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {AI_UPSCALE_MODELS.map((m) => {
@@ -3511,7 +3511,7 @@ export default function FaceSwap({
                                   }
                                 }
                               }}
-                              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
+                              className={`px-3 py-1.5 rounded-lg text-mini font-semibold border transition-all duration-200 ${isSelected ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white' : 'bg-white/[0.02] border-white/10 text-white/50 hover:border-white/20 hover:text-white/85'}`}
                             >
                               {m.label}
                             </button>
@@ -3592,7 +3592,7 @@ export default function FaceSwap({
                         <div className="w-full space-y-1.5">
                           {steps.map((s, i) => (
                             <div key={i} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${s.done ? 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-300/90' : 'border-white/10 bg-white/[0.02] text-white/55'}`}>
-                              <span className={`grid place-items-center h-4 w-4 rounded-full text-[9px] font-bold shrink-0 ${s.done ? 'bg-emerald-500 text-black' : 'bg-white/10 text-white/50'}`}>{s.done ? '✓' : i + 1}</span>
+                              <span className={`grid place-items-center h-4 w-4 rounded-full text-nano font-bold shrink-0 ${s.done ? 'bg-emerald-500 text-black' : 'bg-white/10 text-white/50'}`}>{s.done ? '✓' : i + 1}</span>
                               <span className={s.done ? 'line-through opacity-70' : ''}>{s.label}</span>
                             </div>
                           ))}
@@ -3704,14 +3704,14 @@ export default function FaceSwap({
                     <a
                       href={upscaledSrc}
                       download={`upscaled_frame_${frame}.png`}
-                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
+                      className="px-3 py-1.5 rounded-lg text-mini font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
                     >
                       ⬇ Download
                     </a>
                     <button
                       type="button"
                       onClick={() => setUpscaledSrc('')}
-                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
+                      className="px-3 py-1.5 rounded-lg text-mini font-semibold border border-white/10 bg-white/[0.04] text-white/80 hover:border-white/25 hover:text-white transition-colors"
                     >
                       ✕ Close
                     </button>
@@ -3728,14 +3728,14 @@ export default function FaceSwap({
             <TiltCard className="rounded-2xl w-full" max={6}>
             <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 w-full">
               <div className="flex items-center justify-between mb-4">
-                <span className="text-[11px] uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
-                <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${estSourceClass}`}>{estSourceLabel}</span>
+                <span className="text-mini uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
+                <span className={`text-micro font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${estSourceClass}`}>{estSourceLabel}</span>
               </div>
               <div className="flex items-end gap-3 mb-4">
                 <span className="text-3xl font-bold text-white/95 tabular-nums leading-none">~{fmtTime(estTotalMs)}</span>
                 <span className="text-xs text-white/40 mb-0.5">{Math.round(estPerFrame)} ms/frame{heavyVram ? ' · high VRAM' : ''}</span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-2.5 text-[11px]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-2.5 text-mini">
                 {[
                   ['Frames', estFrames.toLocaleString()],
                   ['Duration', estDurationS ? `${estDurationS.toFixed(1)}s @ ${estFps} fps` : '—'],
@@ -3753,7 +3753,7 @@ export default function FaceSwap({
                   </div>
                 ))}
               </div>
-              <div className="mt-3 pt-3 border-t border-white/5 text-[10px] text-white/35 leading-snug">
+              <div className="mt-3 pt-3 border-t border-white/5 text-micro text-white/35 leading-snug">
                 {estLearned
                   ? 'Learned from your completed runs with these settings. Accuracy improves as you process more.'
                   : calibEst?.source === 'global'
