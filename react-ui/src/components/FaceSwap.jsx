@@ -2591,7 +2591,7 @@ export default function FaceSwap({
 
         <div className="space-y-5">
           <Section title="Swap settings">
-          <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter)" value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
+          <Select label="Swap model" info="inswapper 128 · reswapper/hyperswap(a/b/c)/ghost(1-3)/simswap/blendswap/uniface/hififace 256 · simswap_512 (each downloads on first use; ghost/simswap/hififace use their own alignment + identity converter). COST PER FACE, measured on an RTX 4070 TensorRT FP16 at the 256px subsample — note this is per FACE, not per inference, because a model smaller than the subsample size is tiled and run (subsample/size)² times: ghost_1 3.7ms, hyperswap a/c 5.3ms, hyperswap_1b 5.6ms, hififace 6.1ms, simswap 6.7ms, ghost_3 11.4ms, simswap_512 11.6ms, blendswap 13.2ms, reswapper 16.4ms, and inswapper 21.1ms — inswapper is 5.3ms per call but 128px, so at 256px subsample it runs FOUR times per face and is the most expensive option here despite looking near-cheapest. The whole spread is ~17ms against a swap stage reporting ~46ms per face, so unless you are on inswapper this is a quality choice, not a speed one." value={p.swap_model} onChange={(v) => set('swap_model', v)} options={meta.swap_models} />
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Select
             label="Detector engine"
@@ -2651,7 +2651,7 @@ export default function FaceSwap({
         </Section>
 
         <Section title="Masking parameters" collapsible defaultOpen={false}>
-          <Select label="Masking engine" value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
+          <Select label="Masking engine" info="Choose this one on quality, not speed — the models are all cheap and within a few ms of each other. Measured on an RTX 4070, TensorRT FP16, isolated: Face Parser 2.4ms, DFL XSeg 2.9ms, XSeg-3 4.7ms, Face Occluder 5.0ms, MobileSAM 5.8ms+decoder, FastSAM 5.8ms. The whole spread is ~3ms against a masking stage that costs ~42ms per face, because almost all of that stage is the CPU work around the model — the landmark hull, the mouth mask, the blurs and the non-frontal unwarp — not the model itself. So switching engines to go faster will not work; switch when one of them handles YOUR occlusions better. SAM2 (tracked) is not comparable here: it runs a whole-clip pre-pass instead of per-crop inference." value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
           {p.mask_engine === 'Clip2Seg' && (
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
           )}

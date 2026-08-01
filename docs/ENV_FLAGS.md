@@ -359,3 +359,53 @@ GFPGAN on CPU vs 12 ms on TensorRT, a 43x error):
    torch); without it ORT falls back to CPU for the WHOLE session, not to CUDA.
 
 Always assert `sess.get_providers()[0]` rather than assuming.
+
+## Mask engine cost (measured)
+
+RTX 4070, TensorRT FP16, isolated, one crop:
+
+| engine | ms/call |
+|---|---|
+| Face Parser (BiSeNet) | 2.45 |
+| DFL XSeg | 2.94 |
+| Face Occluder v3 (XSeg-3) | 4.69 |
+| Face Occluder | 5.02 |
+| MobileSAM (encoder) | 5.82 + decoder |
+| FastSAM | 5.84 |
+
+**The engine choice is not a speed lever.** The whole spread is ~3 ms against a
+masking stage measured at ~42 ms/face — nearly all of that stage is the CPU work
+around the model (landmark hull, mouth mask, blurs, non-frontal unwarp), not the
+model. Pick on how well each handles your occlusions. SAM2 is excluded: it runs a
+whole-clip pre-pass rather than per-crop inference, and MobileSAM's decoder needs
+real encoder output, so the harness cannot feed it synthetically.
+
+## Swap model cost (measured)
+
+**Per FACE, not per inference.** Pixel boost tiles any model smaller than the
+subsample size and runs it `(subsample/output_size)**2` times
+(`procmgr_tiling.implode_pixel_boost`), so ms/call alone ranks these wrongly.
+At the 256px default:
+
+| model | ms/call | tiles | per face |
+|---|---|---|---|
+| ghost_1 | 3.74 | 1 | **3.74** |
+| hyperswap_1a | 5.28 | 1 | 5.28 |
+| hyperswap_1c | 5.29 | 1 | 5.29 |
+| hyperswap_1b | 5.58 | 1 | 5.58 |
+| hififace | 6.14 | 1 | 6.14 |
+| simswap | 6.72 | 1 | 6.72 |
+| ghost_3 | 11.41 | 1 | 11.41 |
+| simswap_512 | 11.58 | 1 | 11.58 |
+| blendswap | 13.20 | 1 | 13.20 |
+| reswapper | 16.37 | 1 | 16.37 |
+| uniface | 19.38 | 1 | 19.38 |
+| **inswapper** | 5.27 | **4** | **21.08** |
+
+`inswapper` is 128px: second-cheapest per call, **most expensive per face**, and
+it is the original project default. Everything else is 1 tile at 256.
+
+The spread is ~17 ms against a swap stage reporting ~46 ms/face, so — as with
+masking — the model is the minority of the cost and this is a quality choice
+rather than a speed one. The enhancer is the only stage where the model itself
+dominates (see the enhancer table above).
