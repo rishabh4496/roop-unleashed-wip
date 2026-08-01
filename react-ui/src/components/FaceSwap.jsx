@@ -2503,7 +2503,7 @@ export default function FaceSwap({
         <Section title="Clip advisor">
           <button type="button" disabled={advisorBusy || !targets.length || progress.processing} onClick={runAdvisor}
             title="Samples the selected target (face sizes, count, detection coverage, motion, lighting) and recommends settings tuned to it. Nothing changes until you apply."
-            className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+            className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
             {advisorBusy
               ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Analyzing target…</>)
               : '🧭 Analyze target & recommend settings'}
@@ -2565,7 +2565,7 @@ export default function FaceSwap({
           <Toggle label="Stream to virtual camera (OBS)" info="Publishes the swapped feed as a system camera device via pyvirtualcam — pick 'OBS Virtual Camera' in any app." checked={liveObs} onChange={setLiveObs} />
           {!liveActive ? (
             <button type="button" disabled={liveBusy || progress.processing} onClick={startLiveCam}
-              className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+              className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
               {liveBusy
                 ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Opening camera…</>)
                 : '📷 Start live camera'}
@@ -2580,7 +2580,7 @@ export default function FaceSwap({
                 </span>
               </div>
               <button type="button" disabled={liveBusy} onClick={stopLiveCam}
-                className="w-full py-2 rounded-lg text-note font-bold bg-white/[0.04] border border-white/10 text-white/70 hover:text-white hover:border-white/25 transition-colors disabled:opacity-40">
+                className="w-full py-2 rounded-lg text-note font-bold bg-white/[0.04] border border-white/10 text-white/70 hover:text-white hover:border-white/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 ⏹ Stop live camera
               </button>
             </>

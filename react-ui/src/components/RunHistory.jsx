@@ -290,7 +290,7 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
               onClick={onToggleCompare}
               disabled={compareFull}
               title={compareFull ? 'Two runs already selected — clear one first' : 'Select this run to compare'}
-              className={`px-2.5 py-1 rounded-lg text-mini font-semibold border transition-colors disabled:opacity-30 ${
+              className={`px-2.5 py-1 rounded-lg text-mini font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                 selected
                   ? 'bg-[var(--accent)]/20 border-[var(--accent)]/40 text-[var(--accent)]'
                   : 'bg-white/[0.04] border-white/10 text-white/55 hover:text-white hover:border-white/20'

@@ -507,7 +507,7 @@ export default function InteractivePreview({
         <button
           onClick={() => zoomBy(-0.5)}
           disabled={zoom <= 1}
-          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
+          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
           title="Zoom out (−)"
           aria-label="Zoom out"
         >
@@ -528,7 +528,7 @@ export default function InteractivePreview({
         <button
           onClick={() => zoomBy(0.5)}
           disabled={zoom >= ZOOM_MAX}
-          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-30"
+          className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
           title="Zoom in (+)"
           aria-label="Zoom in"
         >

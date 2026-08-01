@@ -658,7 +658,7 @@ export default function App() {
                 type="button"
                 onClick={() => { bootAttemptRef.current = 0; loadCore(); }}
                 disabled={retrying}
-                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-mini font-semibold text-red-200 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-mini font-semibold text-red-200 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Retry now
               </button>

@@ -227,7 +227,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
               disabled={mixed && m.id !== 'side'}
               title={m.hint}
               aria-pressed={mode === m.id}
-              className={`px-2.5 py-1 rounded-lg text-mini font-bold transition-all disabled:opacity-25 ${
+              className={`px-2.5 py-1 rounded-lg text-mini font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                 mode === m.id ? 'bg-[var(--accent)] text-white shadow-md' : 'bg-white/10 text-white/70 hover:text-white'
               }`}
             >

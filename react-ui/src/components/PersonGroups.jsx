@@ -213,12 +213,12 @@ export default function PersonGroups({
         <div className="flex gap-1.5">
           <button type="button" disabled={busy} onClick={autoCluster}
             title="Group every captured face by identity automatically"
-            className="px-2 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40">
+            className="px-2 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             🧩 Auto-group
           </button>
           <button type="button" disabled={busy || !targetFaces.length} onClick={clearAllFaces}
             title="Remove all captured target faces from this layout"
-            className="px-2 py-1 rounded-lg text-micro font-bold bg-white/[0.03] border border-white/10 text-white/50 hover:text-white/80 hover:border-white/20 transition-colors disabled:opacity-40">
+            className="px-2 py-1 rounded-lg text-micro font-bold bg-white/[0.03] border border-white/10 text-white/50 hover:text-white/80 hover:border-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             Reset
           </button>
         </div>
@@ -378,7 +378,7 @@ export default function PersonGroups({
                 {/* Auto-capture angles from the whole video (fills coverage). */}
                 <button type="button" disabled={busy || harvesting !== null} onClick={() => autoAngles(rank)}
                   title="Scan the whole video and automatically capture this person at many angles — fills pose coverage so their identity survives turns/profiles without hand-capturing frames. Wrong grabs can be removed with the ✕ on each angle."
-                  className="w-full py-1.5 rounded-lg text-mini font-bold bg-[var(--accent)]/12 border border-[var(--accent)]/35 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+                  className="w-full py-1.5 rounded-lg text-mini font-bold bg-[var(--accent)]/12 border border-[var(--accent)]/35 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                   {harvesting === rank
                     ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Scanning video for angles…</>)
                     : '🎯 Auto-capture angles (scan whole video)'}
@@ -386,7 +386,7 @@ export default function PersonGroups({
 
                 {/* Grab angle at current frame */}
                 <button type="button" disabled={busy} onClick={() => addAngle(rank)}
-                  className="w-full py-1.5 rounded-lg text-mini font-bold bg-white/[0.03] border border-white/10 text-white/70 hover:border-[var(--accent)]/40 hover:text-white transition-colors disabled:opacity-40">
+                  className="w-full py-1.5 rounded-lg text-mini font-bold bg-white/[0.03] border border-white/10 text-white/70 hover:border-[var(--accent)]/40 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                   ➕ Capture this person’s angle at frame {frame}
                 </button>
               </div>

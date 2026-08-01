@@ -368,7 +368,7 @@ export default function SliderTrackerBar({
                   type="button"
                   onClick={handleSaveCurrentPreset}
                   disabled={!newPresetName.trim()}
-                  className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-40"
+                  className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Save
                 </button>
@@ -385,7 +385,7 @@ export default function SliderTrackerBar({
                 type="button"
                 onClick={() => setIsSaving(true)}
                 disabled={!sliderEffectEnabled}
-                className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 title="Save current slider values as a custom preset"
               >
                 <span>💾 Save Preset</span>

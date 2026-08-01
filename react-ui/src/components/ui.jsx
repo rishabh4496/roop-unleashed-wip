@@ -207,6 +207,13 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
     ghost: 'bg-transparent hover:bg-white/[0.06] text-white/55 hover:text-white',
   };
   const sizes = {
+    // `xs` was missing while two call sites asked for it. An unknown key made
+    // `sizes[size]` undefined, which template-interpolated the literal string
+    // "undefined" into className — so those buttons rendered with no padding,
+    // no font size and square corners. The `||` fallbacks below stop the next
+    // typo doing the same thing silently; test_ui_primitive_props.py fails the
+    // build on an unknown value rather than letting it degrade quietly.
+    xs: 'px-2.5 py-1 text-micro tracking-wide rounded-lg',
     sm: 'px-3 py-1.5 text-mini tracking-wide rounded-lg',
     md: 'px-4 py-2.5 text-compact tracking-wide rounded-xl',
     lg: 'px-6 py-3.5 text-sm tracking-wide rounded-xl',
@@ -219,7 +226,7 @@ export const Button = ({ children, onClick, variant = 'primary', disabled, class
       whileHover={disabled ? undefined : { y: -2, scale: 1.03 }}
       whileTap={disabled ? undefined : { scale: 0.95, y: 0 }}
       transition={spring.snappy}
-      className={`font-semibold text-center transition-colors duration-200 disabled:opacity-35 disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`font-semibold text-center transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${variants[variant] || variants.primary} ${sizes[size] || sizes.md} ${className}`}
     >
       {children}
     </motion.button>
