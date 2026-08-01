@@ -21,6 +21,7 @@ import { Icon } from './icons';
 // spinner, so a tab change is a pure animation instead of a network round trip.
 // A rejected prefetch is ignored — React.lazy retries on real render, and the
 // ErrorBoundary below owns the failure case.
+const loadHome = () => import('./components/Home');
 const loadFaceSwap = () => import('./components/FaceSwap');
 const loadSettings = () => import('./components/Settings');
 const loadFaceManager = () => import('./components/FaceManager');
@@ -28,6 +29,7 @@ const loadExtras = () => import('./components/Extras');
 const loadGallery = () => import('./components/Gallery');
 const loadRunHistory = () => import('./components/RunHistory');
 
+const Home = lazy(loadHome);
 const FaceSwap = lazy(loadFaceSwap);
 const Settings = lazy(loadSettings);
 const FaceManager = lazy(loadFaceManager);
@@ -49,6 +51,7 @@ function TabFallback() {
 }
 
 const TABS = [
+  { id: 'home', label: 'Home', icon: Icon.home, preload: loadHome },
   { id: 'faceswap', label: 'Face Swap', icon: Icon.faceswap, preload: loadFaceSwap },
   { id: 'facemgr', label: 'Face Manager', icon: Icon.faces, preload: loadFaceManager },
   { id: 'extras', label: 'Editor', icon: Icon.editor, preload: loadExtras },
@@ -767,6 +770,14 @@ export default function App() {
             >
               <ErrorBoundary resetKey={tab}>
               <Suspense fallback={<TabFallback />}>
+                {tab === 'home' && (
+                  <Home
+                    progress={progress}
+                    setTab={setTab}
+                    setSettings={setSettings}
+                    notify={notify}
+                  />
+                )}
                 {tab === 'faceswap' && (
                   <FaceSwap
                     meta={meta}
