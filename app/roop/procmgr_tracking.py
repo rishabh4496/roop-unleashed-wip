@@ -375,6 +375,21 @@ class TrackingMixin:
                     if not ret or frame is None:
                         break
 
+                # Feed the UI's live view during the pre-pass too. This stage is a
+                # third of a long run's wall clock and it used to leave the
+                # processing box frozen on whatever the swap phase last published
+                # — or empty, on the first job of a batch — which reads as a hang
+                # rather than as work. These are the SOURCE frames: there is no
+                # swapped output yet, and showing the footage being scanned is
+                # what makes the progress legible.
+                #
+                # Published before the skip check so the view keeps moving at any
+                # ROOP_TEMPORAL_STEP. Costs nothing per frame: live_preview
+                # throttles to one publish every ROOP_LIVE_PREVIEW_MS and only
+                # while the UI is actually fetching, so a skipped publish is a
+                # clock read (~0.27us).
+                self._publish_live(frame)
+
                 # Skip frames to speed up detection and save memory
                 if idx > 0 and idx % TRACK_STEP != 0:
                     idx += 1

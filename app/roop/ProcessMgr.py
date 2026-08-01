@@ -1774,6 +1774,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         # COPY per frame for the UI, which is why it was turned off; the module
         # now throttles to ~2 frames a second and downscales + encodes once, so
         # the cost no longer scales with frame rate. See roop/live_preview.py.
+        #
+        # `is_preview` marks the shared ProcessMgr that core.live_swap uses for
+        # single-frame previews. It was set for exactly this reason and then
+        # never read, so scrubbing the timeline or re-rendering the preview while
+        # a batch ran overwrote the batch's live frame — the processing box would
+        # show whatever frame the user was inspecting instead of the render.
+        if getattr(self, 'is_preview', False):
+            return
         _live_preview.publish(frame)
 
     def process_frame(self, frame:Frame, frame_idx=None):
