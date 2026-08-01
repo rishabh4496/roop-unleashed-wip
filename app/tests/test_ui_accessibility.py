@@ -57,6 +57,13 @@ def _buttons(src):
     controls were passing for entirely the wrong reason.
 
     Scanning with brace/quote depth finds the real end of the tag.
+
+    Backticks count as a quote context, and that is not a detail: a template
+    literal like `Copy part ${tab}'s log` contains an APOSTROPHE. Treating `'`
+    as a quote opener there desynchronises everything after it, and the button
+    is dropped from the scan entirely — silently exempting it from the check.
+    Opening a backtick context and running to its partner skips the apostrophe,
+    and any `>` inside the string with it, which is also correct.
     """
     for m in BUTTON_OPEN.finditer(src):
         i, depth, quote = m.end(), 0, None
@@ -65,7 +72,7 @@ def _buttons(src):
             if quote:
                 if ch == quote:
                     quote = None
-            elif ch in '"\'':
+            elif ch in '"\'`':
                 quote = ch
             elif ch == '{':
                 depth += 1
