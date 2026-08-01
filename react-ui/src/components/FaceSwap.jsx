@@ -28,6 +28,8 @@ import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import useSequentialImage from './faceswap/useSequentialImage';
+import useCompareGrid from './faceswap/useCompareGrid';
+import useRenderLite from './faceswap/useRenderLite';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
@@ -98,23 +100,21 @@ export default function FaceSwap({
   const [compare, setCompare] = useState(false);
   const [sliderEffectEnabled, setSliderEffectEnabled] = useState(true);
   const [splitView, setSplitView] = useState(false);
-  const [comparingEnhancers, setComparingEnhancers] = useState(false);
-  const [selectedGridEnhancers, setSelectedGridEnhancers] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('roop_grid_enhancers') || 'null');
-      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
-        return saved;
-      }
-    } catch { /* fall through to default */ }
-    return ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'];
+  // The four comparison grids (enhancers, masks, swappers, upscalers) all hold
+  // the same eight pieces of state, so they share one hook and differ only in
+  // their storage key and defaults. Destructured back to the names the rest of
+  // this file already uses — see faceswap/useCompareGrid.
+  const {
+    comparing: comparingEnhancers, setComparing: setComparingEnhancers,
+    selected: selectedGridEnhancers, setSelected: setSelectedGridEnhancers,
+    previews: enhancerPreviews, setPreviews: setEnhancerPreviews,
+    times: enhancerTimes, setTimes: setEnhancerTimes,
+    timers: liveRenderingTimers, setTimers: setLiveRenderingTimers,
+    intervalsRef: activeIntervalsRef,
+  } = useCompareGrid({
+    storageKey: 'roop_grid_enhancers',
+    defaults: ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'],
   });
-  useEffect(() => {
-    localStorage.setItem('roop_grid_enhancers', JSON.stringify(selectedGridEnhancers));
-  }, [selectedGridEnhancers]);
-  const [enhancerPreviews, setEnhancerPreviews] = useState({});
-  const [enhancerTimes, setEnhancerTimes] = useState({});
-  const [liveRenderingTimers, setLiveRenderingTimers] = useState({});
-  const activeIntervalsRef = useRef({});
 
   // ── Workspace Layout & Premium Experience State ──
   const [workspaceMode, setWorkspaceMode] = useState('default'); // 'default' | 'cinema' | 'dual' | 'timeline'
@@ -167,36 +167,9 @@ export default function FaceSwap({
     }
   };
 
-  // ── Render-lite: stop the UI competing with the render for the GPU ─────────
-  // This window is composited by Chromium on the SAME GPU that is running the
-  // swap, and the swap phase sits at ~98% utilisation — so every frame the
-  // compositor paints is taken off the render. The costly parts are the
-  // backdrop-filter blurs (a full readback + blur of whatever is behind each
-  // panel, re-done whenever anything under them changes — and something under
-  // them changes every second, because the progress poll lands) and the
-  // never-ending keyframe animations, which keep the compositor awake at 60 Hz
-  // for a render nobody is watching frame-by-frame.
-  //
-  // Switching to the Terminal makes all of that stop, which is exactly why the
-  // render speeds up there. This makes the UI cost that little while it is on
-  // screen instead. Scoped to `data-render-lite` in index.css, applied only
-  // during a run, and switchable from the dock so the difference can be
-  // measured rather than taken on trust.
-  const [renderLite, setRenderLite] = useState(() => {
-    try { return localStorage.getItem('roop_render_lite') !== '0'; } catch { return true; }
-  });
-  const toggleRenderLite = () => {
-    setRenderLite((on) => {
-      try { localStorage.setItem('roop_render_lite', on ? '0' : '1'); } catch { /* private mode */ }
-      return !on;
-    });
-  };
-  useEffect(() => {
-    const el = document.documentElement;
-    if (progress.processing && renderLite) el.setAttribute('data-render-lite', '');
-    else el.removeAttribute('data-render-lite');
-    return () => el.removeAttribute('data-render-lite');
-  }, [progress.processing, renderLite]);
+  // Keeps the UI from competing with the render for the GPU while a job runs —
+  // see faceswap/useRenderLite for why that is worth doing.
+  const { renderLite, toggleRenderLite } = useRenderLite(progress.processing);
 
   const prevProcessingRef = useRef(false);
   useEffect(() => {
@@ -210,65 +183,51 @@ export default function FaceSwap({
   }, [progress.processing, desktopAlerts]);
 
   // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
-  const [comparingMasks, setComparingMasks] = useState(false);
-  const [selectedGridMasks, setSelectedGridMasks] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('roop_grid_masks') || 'null');
-      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
-        return saved;
-      }
-    } catch { /* fall through to default */ }
-    return ['None', 'DFL XSeg', 'Face Occluder', 'Face Parser (BiSeNet)'];
+  const {
+    comparing: comparingMasks, setComparing: setComparingMasks,
+    selected: selectedGridMasks, setSelected: setSelectedGridMasks,
+    previews: maskPreviews, setPreviews: setMaskPreviews,
+    times: maskTimes, setTimes: setMaskTimes,
+    timers: maskRenderTimers, setTimers: setMaskRenderTimers,
+    intervalsRef: maskIntervalsRef,
+  } = useCompareGrid({
+    storageKey: 'roop_grid_masks',
+    defaults: ['None', 'DFL XSeg', 'Face Occluder', 'Face Parser (BiSeNet)'],
   });
-  useEffect(() => {
-    localStorage.setItem('roop_grid_masks', JSON.stringify(selectedGridMasks));
-  }, [selectedGridMasks]);
-  const [maskPreviews, setMaskPreviews] = useState({});
-  const [maskTimes, setMaskTimes] = useState({});
-  const [maskRenderTimers, setMaskRenderTimers] = useState({});
-  const maskIntervalsRef = useRef({});
 
   // ── Swapper-model comparison grid (mirrors the enhancer/mask grid) ──
-  const [comparingSwappers, setComparingSwappers] = useState(false);
-  const [selectedGridSwappers, setSelectedGridSwappers] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('roop_grid_swappers') || 'null');
-      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => typeof x === 'string')) {
-        return saved;
-      }
-    } catch { /* fall through to default */ }
-    return ['inswapper', 'reswapper', 'hyperswap', 'simswap'];
+  const {
+    comparing: comparingSwappers, setComparing: setComparingSwappers,
+    selected: selectedGridSwappers, setSelected: setSelectedGridSwappers,
+    previews: swapperPreviews, setPreviews: setSwapperPreviews,
+    times: swapperTimes, setTimes: setSwapperTimes,
+    timers: swapperRenderTimers, setTimers: setSwapperRenderTimers,
+    intervalsRef: swapperIntervalsRef,
+  } = useCompareGrid({
+    storageKey: 'roop_grid_swappers',
+    defaults: ['inswapper', 'reswapper', 'hyperswap', 'simswap'],
   });
-  useEffect(() => {
-    localStorage.setItem('roop_grid_swappers', JSON.stringify(selectedGridSwappers));
-  }, [selectedGridSwappers]);
-  const [swapperPreviews, setSwapperPreviews] = useState({});
-  const [swapperTimes, setSwapperTimes] = useState({});
-  const [swapperRenderTimers, setSwapperRenderTimers] = useState({});
-  const swapperIntervalsRef = useRef({});
 
   // ── AI-upscale comparison grid (mirrors the enhancer/mask/swapper grid) ──
   // Keyed by the friendly MODEL LABEL (e.g. "Real-ESRGAN ×2"), which is also
   // the caption CompareGrid shows; label→subtype is resolved when calling the
   // backend. Each cell swaps the frame ONCE then upscales it with one model.
-  const [comparingUpscalers, setComparingUpscalers] = useState(false);
-  const [selectedGridUpscalers, setSelectedGridUpscalers] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('roop_grid_upscalers') || 'null');
-      const valid = AI_UPSCALE_MODELS.map(m => m.label);
-      if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(x => valid.includes(x))) {
-        return saved;
-      }
-    } catch { /* fall through to default */ }
-    return AI_UPSCALE_MODELS.slice(0, 2).map(m => m.label);
+  //
+  // The only grid whose stored selection is validated against a fixed set
+  // rather than "any string": these labels index into AI_UPSCALE_MODELS, so a
+  // stale one from an older build would render a cell that can never resolve.
+  const {
+    comparing: comparingUpscalers, setComparing: setComparingUpscalers,
+    selected: selectedGridUpscalers, setSelected: setSelectedGridUpscalers,
+    previews: upscalePreviews, setPreviews: setUpscalePreviews,
+    times: upscaleTimes, setTimes: setUpscaleTimes,
+    timers: upscaleRenderTimers, setTimers: setUpscaleRenderTimers,
+    intervalsRef: upscaleIntervalsRef,
+  } = useCompareGrid({
+    storageKey: 'roop_grid_upscalers',
+    defaults: AI_UPSCALE_MODELS.slice(0, 2).map((m) => m.label),
+    isValid: (x) => AI_UPSCALE_MODELS.some((m) => m.label === x),
   });
-  useEffect(() => {
-    localStorage.setItem('roop_grid_upscalers', JSON.stringify(selectedGridUpscalers));
-  }, [selectedGridUpscalers]);
-  const [upscalePreviews, setUpscalePreviews] = useState({});
-  const [upscaleTimes, setUpscaleTimes] = useState({});
-  const [upscaleRenderTimers, setUpscaleRenderTimers] = useState({});
-  const upscaleIntervalsRef = useRef({});
 
   // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
   const telemetry = useTelemetry();
