@@ -2595,7 +2595,7 @@ export default function FaceSwap({
           <Select label="Face selection" value={p.face_detection_mode} onChange={(v) => set('face_detection_mode', v)} options={meta.face_detection_modes} />
           <Select
             label="Detector engine"
-            info="SCRFD (default) is fast and accurate on frontal faces. YOLOFace is often better on steep profiles and partially occluded faces. RetinaFace has the highest recall on hard poses/lighting (fewest missed detections → less swap blink), slightly slower. All engines reuse the same identity/landmark models; alternates download a small model on first use."
+            info="RetinaFace R50 is the safest pick: it was the only engine that held full recall as a face grew to fill the frame, where SCRFD (the stock default) and RetinaFace 10g both dropped to zero. Prefer it unless you need the speed. YOLOFace is often better on steep profiles and partially occluded faces. YuNet is the lightest. SCRFD is fast and accurate on frontal faces but the weakest on close-ups. All engines reuse the same identity/landmark models; alternates download a small model on first use."
             value={p.detector_engine || 'scrfd'}
             onChange={(v) => set('detector_engine', v)}
             options={meta.detector_engines || ['scrfd', 'yoloface', 'retinaface', 'retinaface_r50', 'yunet']}
