@@ -30,6 +30,9 @@ import useTelemetry from './faceswap/useTelemetry';
 import useSequentialImage from './faceswap/useSequentialImage';
 import useCompareGrid from './faceswap/useCompareGrid';
 import useRenderLite from './faceswap/useRenderLite';
+import useLiveCam from './faceswap/useLiveCam';
+import useClipAdvisor, { ADVISOR_LABELS, fmtAdviceVal } from './faceswap/useClipAdvisor';
+import useRuntimeEstimate from './faceswap/useRuntimeEstimate';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
@@ -2264,147 +2267,37 @@ export default function FaceSwap({
   const startFrame = targets[selTarget]?.start_frame || 1;
   const endFrame = targets[selTarget]?.end_frame || maxFrames;
 
-  // ── Pre-run estimate (idle only) ──
-  // Heuristic baseline, refined by the measured ms/frame the backend has learned
-  // for the CURRENT settings from past completed runs (roop.runtime_calib).
-  const [calibEst, setCalibEst] = useState(null);
+  // Pre-run estimate (idle only) — heuristic baseline refined by what the
+  // backend has measured for these exact settings. See
+  // faceswap/useRuntimeEstimate.
   const estFrames = maxFrames > 1 ? Math.max(1, endFrame - startFrame + 1) : (targets.length ? 1 : 0);
-
-  // Fetch the learned estimate (debounced) whenever the perf-relevant settings
-  // or the frame span change, while idle.
-  useEffect(() => {
-    if (progress.processing || estFrames <= 1 || targets.length === 0) { setCalibEst(null); return; }
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      try {
-        const res = await postJSON('/api/runtime_estimate', {
-          frames: estFrames,
-          face_count: previewFaces.length,   // density hint from the current frame
-          swap_model: p.swap_model,
-          selected_enhancer: p.selected_enhancer,
-          face_detection_mode: p.face_detection_mode,
-          face_detector_size: p.face_detector_size,
-          detector_engine: p.detector_engine,
-          num_swap_steps: num(p.num_swap_steps, 1),
-          subsample_upscale: p.subsample_upscale,
-          track_identities: p.track_identities,
-          temporal_detection: p.temporal_detection,
-          mask_engine: p.mask_engine,
-          stabilize_face: p.stabilize_face,
-          stabilize_enhancer: p.stabilize_enhancer,
-          // Both are whole GPU stages and part of the calibration signature
-          // (see runtime_calib._SIG_FIELDS) — omitting them here would make the
-          // predicted signature never match the one the completed run records.
-          expression_restore_strength: num(p.expression_restore_strength, 0),
-          upscale_after_swap: p.upscale_after_swap,
-        });
-        if (!cancelled) setCalibEst(res || null);
-      } catch { if (!cancelled) setCalibEst(null); }
-    }, 500);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [progress.processing, estFrames, previewFaces.length, p.swap_model, p.selected_enhancer,
-      p.face_detection_mode, p.face_detector_size, p.detector_engine, p.num_swap_steps,
-      p.subsample_upscale, p.track_identities, p.temporal_detection, p.mask_engine,
-      p.stabilize_face, p.stabilize_enhancer, p.expression_restore_strength,
-      p.upscale_after_swap, targets.length]);
-
-  const heuristicPerFrame = (() => {
-    let ms = 45;
-    if (p.selected_enhancer && p.selected_enhancer !== 'None') ms += 70;
-    const det = parseInt(p.face_detector_size || '640', 10) || 640;
-    ms += (det / 640) * 15;
-    ms += (num(p.num_swap_steps, 1) - 1) * 25;
-    if (p.track_identities) ms += 8;
-    const parallel = Math.max(1.5, Math.min(4, (telemetry?.threads || 3) * 0.6));
-    return ms / parallel;   // wall-clock ms/frame, comparable to the measured value
-  })();
-
-  // Prefer the measured ms/frame. Blend 50/50 with the heuristic when the data
-  // is thin (single sample, or the cross-settings global fallback).
-  const estPerFrame = (() => {
-    if (calibEst && calibEst.ms_per_frame) {
-      const thin = calibEst.source !== 'measured' || (calibEst.samples || 0) < 2;
-      return thin ? (calibEst.ms_per_frame + heuristicPerFrame) / 2 : calibEst.ms_per_frame;
-    }
-    return heuristicPerFrame;
-  })();
-  const estTotalMs = estFrames * estPerFrame;
-  const estLearned = !!(calibEst && calibEst.source === 'measured' && (calibEst.samples || 0) >= 1);
+  const { calibEst, estPerFrame, estTotalMs, estLearned } = useRuntimeEstimate({
+    settings: p,
+    estFrames,
+    faceCount: previewFaces.length,   // density hint from the current frame
+    processing: progress.processing,
+    hasTargets: targets.length > 0,
+    threads: telemetry?.threads,
+  });
 
   const heavyVram = (p.selected_enhancer && p.selected_enhancer !== 'None') &&
     (parseInt(p.face_detector_size || '640', 10) >= 960);
 
-  // ── Clip advisor: sample the target, get recommended settings, apply. ──
-  const [advice, setAdvice] = useState(null);
-  const [advisorBusy, setAdvisorBusy] = useState(false);
-  const ADVISOR_LABELS = {
-    temporal_detection: 'Temporal detection',
-    detector_engine: 'Detector engine',
-    rescue_small_faces: 'Rescue small faces',
-    face_detector_size: 'Detection resolution',
-    subsample_upscale: 'Subsample upscale',
-    face_detection_mode: 'Face selection',
-    track_identities: 'Track identities',
-    face_detector_threshold: 'Detection threshold',
-    stabilize_face: 'Stabilize face',
-  };
-  const fmtAdviceVal = (v) => (v === true ? 'On' : v === false ? 'Off' : String(v));
-  const runAdvisor = async () => {
-    if (!targets.length) { notify('Load a target first', 'error'); return; }
-    setAdvisorBusy(true);
-    setAdvice(null);
-    try {
-      const res = await postJSON('/api/advisor', { index: selTarget, settings: p });
-      setAdvice(res);
-      if (res.recommendations?.length === 0 && !res.message) notify('Settings already fit this clip ✓');
-    } catch (e) { notify(e.message, 'error'); } finally { setAdvisorBusy(false); }
-  };
-  const applyAdvice = () => {
-    if (!advice?.recommendations?.length) return;
-    advice.recommendations.forEach((r) => set(r.key, r.value));
-    notify(`Applied ${advice.recommendations.length} recommended setting${advice.recommendations.length === 1 ? '' : 's'}`);
-    setAdvice(null);
-  };
+  // Clip advisor: sample the target, get recommended settings, apply them on
+  // request. See faceswap/useClipAdvisor.
+  const { advice, setAdvice, advisorBusy, runAdvisor, applyAdvice } = useClipAdvisor({
+    targets, selTarget, settings: p, set, notify,
+  });
 
-  // ── Live camera (webcam → live swap → optional OBS virtual camera) ──
-  const [liveActive, setLiveActive] = useState(false);
-  const [liveBusy, setLiveBusy] = useState(false);
-  const [liveCamNum, setLiveCamNum] = useState(0);
-  const [liveRes, setLiveRes] = useState('1280x720');
-  const [liveObs, setLiveObs] = useState(false);
-  const [liveTick, setLiveTick] = useState(0);
-  useEffect(() => {
-    if (!liveActive) return;
-    const id = setInterval(() => setLiveTick((t) => t + 1), 200);   // ~5fps preview
-    return () => clearInterval(id);
-  }, [liveActive]);
-  // If the tab remounts while a cam session is running, pick its state back up.
-  useEffect(() => {
-    getJSON('/api/livecam/status').then((st) => setLiveActive(!!st.active)).catch(() => {});
-  }, []);
-  const startLiveCam = async () => {
-    setLiveBusy(true);
-    try {
-      await postJSON('/api/livecam/start', { cam_number: liveCamNum, resolution: liveRes, stream_obs: liveObs });
-      // The device opens asynchronously in the capture thread — confirm it came up.
-      setTimeout(async () => {
-        try {
-          const st = await getJSON('/api/livecam/status');
-          setLiveActive(!!st.active);
-          if (!st.active) notify(`Camera ${liveCamNum} could not be opened — check the index / close other apps using it`, 'error');
-          else notify('Live camera running' + (liveObs ? ' → streaming to virtual camera' : ''));
-        } catch { /* backend gone */ }
-        setLiveBusy(false);
-      }, 1500);
-    } catch (e) { notify(e.message, 'error'); setLiveBusy(false); }
-  };
-  const stopLiveCam = async () => {
-    setLiveBusy(true);
-    try { await postJSON('/api/livecam/stop', {}); } catch { /* already down */ }
-    setLiveActive(false);
-    setLiveBusy(false);
-    notify('Live camera stopped');
-  };
+  // Live camera (webcam → live swap → optional OBS virtual camera). The whole
+  // session lives on the backend; see faceswap/useLiveCam.
+  const {
+    liveActive, liveBusy, liveTick,
+    liveCamNum, setLiveCamNum,
+    liveRes, setLiveRes,
+    liveObs, setLiveObs,
+    startLiveCam, stopLiveCam,
+  } = useLiveCam({ notify });
 
   // Derived values for the estimation box.
   const estFps = targets[selTarget]?.fps || 0;
