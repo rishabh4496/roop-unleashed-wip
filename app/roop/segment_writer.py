@@ -34,6 +34,13 @@ import threading
 
 import roop.globals
 from roop.ffmpeg_writer import FFMPEG_VideoWriter, FFMPEG_BINARY
+# These lines are emitted from INSIDE the encode thread, where a raised
+# exception is not a bad log line but a dead writer — and a dead writer leaves
+# every producer blocked on a bounded queue. bar_write already exists for
+# exactly this: it degrades unprintable characters instead of raising. Bare
+# print() here bypassed it, and a decorative check-mark on a non-UTF-8 console
+# was enough to stop a 2400-frame render dead at 58%.
+from roop.procmgr_runtime import bar_write
 
 MANIFEST_VERSION = 1
 
@@ -194,7 +201,7 @@ class SegmentedVideoWriter:
                 json.dump(m, fh, indent=1)
             os.replace(tmp, manifest_path(self.target_video))
         except Exception as e:
-            print(f"[Resume] could not write manifest: {e}")
+            bar_write(f"[Resume] could not write manifest: {e}")
 
     # ── writing ──────────────────────────────────────────────────────────────
     def _open_next_segment(self):
@@ -236,7 +243,7 @@ class SegmentedVideoWriter:
             last = _parts[-1]
             # One line per part, so the console says what is safe on disk. This is
             # the only crash-survival signal a long run gives while it is running.
-            print(f"[Resume] ✓ part {last['index']} written · frames "
+            bar_write(f"[Resume] ✓ part {last['index']} written · frames "
                   f"{last['first']}-{last['last']} · {last['bytes'] / 1048576:.0f} MB")
             self._write_manifest()
         else:
@@ -252,7 +259,7 @@ class SegmentedVideoWriter:
         try:
             self._finalize_segment()
         except Exception as e:
-            print(f"[Resume] finalizing last segment failed: {e}")
+            bar_write(f"[Resume] finalizing last segment failed: {e}")
         if not self.segments:
             return
         # Completed run (nothing signalled a stop) → concat, then clean up.
@@ -268,11 +275,11 @@ class SegmentedVideoWriter:
         if not completed and ok:
             n = len(self.segments)
             if keep_after_stop:
-                print(f"[Resume] stopped — merged {n} segment(s) into "
+                bar_write(f"[Resume] stopped — merged {n} segment(s) into "
                       f"{os.path.basename(self.target_video)}; parts kept for resuming "
                       f"(ROOP_RESUME_KEEP=1).")
             else:
-                print(f"[Resume] stopped — merged {n} segment(s) into "
+                bar_write(f"[Resume] stopped — merged {n} segment(s) into "
                       f"{os.path.basename(self.target_video)} and removed the parts "
                       f"(set ROOP_RESUME_KEEP=1 to keep them for resuming).")
         if ok and (completed or not keep_after_stop):
@@ -294,11 +301,11 @@ class SegmentedVideoWriter:
             proc = subprocess.run(cmd, capture_output=True, **kwargs)
             if proc.returncode != 0:
                 err = (proc.stderr or b"").decode("utf-8", "replace")[:400]
-                print(f"[Resume] segment concat failed (ffmpeg exit {proc.returncode}): {err}")
+                bar_write(f"[Resume] segment concat failed (ffmpeg exit {proc.returncode}): {err}")
                 return False
             return True
         except Exception as e:
-            print(f"[Resume] segment concat failed: {e}")
+            bar_write(f"[Resume] segment concat failed: {e}")
             return False
         finally:
             try:

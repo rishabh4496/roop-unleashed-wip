@@ -883,7 +883,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     self.processed_queue[threadindex].put((False, None))
                     roop.globals.processing = False
                     raise
-                self.processed_queue[threadindex].put((True, resimg))
+                # Bounded: the writer is the only consumer, and if it has died
+                # this is where every worker would otherwise park forever.
+                while True:
+                    try:
+                        self.processed_queue[threadindex].put((True, resimg), timeout=0.5)
+                        break
+                    except _QueueFull:
+                        if not roop.globals.processing:
+                            break
                 del frame
                 progress()
 
@@ -891,21 +899,47 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
     def write_frames_thread(self):
         nextindex = 0
         num_producers = self.num_threads
-        
-        while True:
-            process, frame = self.processed_queue[nextindex % self.num_threads].get()
-            nextindex += 1
-            if frame is not None:
-                with _prof('encode'):
-                    if self.output_to_file:
-                        self.videowriter.write_frame(frame)
-                    if self.output_to_cam:
-                        self.streamwriter.WriteToStream(frame)
-                del frame
-            elif process == False:
-                num_producers -= 1
-                if num_producers < 1:
-                    return
+
+        try:
+            while True:
+                process, frame = self.processed_queue[nextindex % self.num_threads].get()
+                nextindex += 1
+                if frame is not None:
+                    with _prof('encode'):
+                        if self.output_to_file:
+                            self.videowriter.write_frame(frame)
+                        if self.output_to_cam:
+                            self.streamwriter.WriteToStream(frame)
+                    del frame
+                elif process == False:
+                    num_producers -= 1
+                    if num_producers < 1:
+                        return
+        except Exception as exc:
+            # This is the ONLY consumer of processed_queue. If it dies, every
+            # worker blocks on a bounded put() and the main thread waits on
+            # as_completed forever — a render that stops dead with no message.
+            # Seen for real: a decorative character in a resume log line raised
+            # UnicodeEncodeError on a non-UTF-8 console and took the encoder with
+            # it, at 58% of a 2400-frame clip.
+            bar_write(f'[ProcessMgr] write thread failed: '
+                      f'{type(exc).__name__}: {exc}')
+            roop.globals.processing = False
+            # Unblock the producers rather than leave them parked forever. They
+            # check `processing` and exit; draining is what lets them get there.
+            try:
+                while True:
+                    drained = False
+                    for q in self.processed_queue:
+                        try:
+                            q.get_nowait()
+                            drained = True
+                        except _QueueEmpty:
+                            pass
+                    if not drained:
+                        break
+            except Exception:
+                pass
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
@@ -1381,10 +1415,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         break
                 if not chunk:
                     break
-                prefetch_q.put(chunk)
+                # Bounded for the same reason as the write queue: if the consumer
+                # stops (writer death, cancel), an unbounded put parks this thread
+                # holding a whole decoded chunk — ~1.1GB at 192 1080p frames.
+                while True:
+                    try:
+                        prefetch_q.put(chunk, timeout=0.5)
+                        break
+                    except _QueueFull:
+                        if not roop.globals.processing:
+                            break
                 if not roop.globals.processing:
                     break
-            prefetch_q.put(None)  # sentinel: always sent, even on cancel
+            try:
+                prefetch_q.put(None, timeout=5)  # sentinel: always attempted
+            except _QueueFull:
+                pass
 
         rt = Thread(target=_reader, name='stab_reader', daemon=True)
         rt.start()
@@ -1417,6 +1463,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             self.streamwriter.WriteToStream(fr)
             except Exception as exc:
                 _writer_exc[0] = exc
+                # Say so HERE. This used to be recorded silently and re-raised in
+                # the caller's `finally` — which the caller could not reach,
+                # because it was parked in _write_q.put() waiting for this very
+                # thread. The render simply stopped, with no message.
+                bar_write(f'[Stabilize] write thread failed: '
+                          f'{type(exc).__name__}: {exc}')
 
         _wt = Thread(target=_writer, name='stab_writer', daemon=True)
         _wt.start()
@@ -1525,9 +1577,28 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 # Queue the chunk for the background write thread.
                 # Blocks only when FFMPEG is slower than frame processing
                 # (correct back-pressure; prevents unbounded memory growth).
+                # Bounded, and aware of whether anyone is still draining.
+                #
+                # _write_q is Queue(1), so a writer that has stopped consuming
+                # blocks this put forever — and the `_wt.is_alive()` guard in the
+                # finally below is then unreachable, because reaching a finally
+                # requires leaving the try. A writer that raised recorded its
+                # exception and RETURNED, so that is exactly what happened: this
+                # thread parked in put(), the reader parked behind it, memory
+                # climbed, and the render stopped with no error. Observed at 58%
+                # of a 2400-frame clip.
                 _t_put0 = time.perf_counter()
-                _write_q.put((chunk_start, results, len(chunk)))
+                while True:
+                    try:
+                        _write_q.put((chunk_start, results, len(chunk)), timeout=0.5)
+                        break
+                    except _QueueFull:
+                        if (_writer_exc[0] is not None or not _wt.is_alive()
+                                or not roop.globals.processing):
+                            break
                 _t_put = time.perf_counter() - _t_put0     # write back-pressure stall
+                if _writer_exc[0] is not None or not _wt.is_alive():
+                    break   # leave the chunk loop; finally drains and re-raises
 
                 if _PROFILE:
                     _bts = list(_block_times.values())
