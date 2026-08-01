@@ -24,7 +24,7 @@ import PresetStudioModal from './faceswap/PresetStudioModal';
 import LiveProcessingPeek from './faceswap/LiveProcessingPeek';
 import ProcessingDock from './faceswap/ProcessingDock';
 import { popoutManager } from './faceswap/PopoutPreviewManager';
-import { num, fmtTime, playChime, notifyDesktop } from './faceswap/utils';
+import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
 import useSequentialImage from './faceswap/useSequentialImage';
@@ -37,6 +37,8 @@ import useUserDefaults from './faceswap/useUserDefaults';
 import useViewPersistence from './faceswap/useViewPersistence';
 import usePlaybackBuffer from './faceswap/usePlaybackBuffer';
 import useGridPreviewLoader from './faceswap/useGridPreviewLoader';
+import useWorkspaceLayout from './faceswap/useWorkspaceLayout';
+import useRunCompleteAlert from './faceswap/useRunCompleteAlert';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
 
@@ -122,71 +124,25 @@ export default function FaceSwap({
     defaults: ['None', 'GPEN', 'Restoreformer++', 'GFPGAN'],
   });
 
-  // ── Workspace Layout & Premium Experience State ──
-  const [workspaceMode, setWorkspaceMode] = useState('default'); // 'default' | 'cinema' | 'dual' | 'timeline'
-  const [ambilightEnabled, setAmbilightEnabled] = useState(true);
-  const [drawers, setDrawers] = useState({ left: true, right: true, bottom: true });
+  // Which panels the current workspace mode shows, and the drawer toggles that
+  // override it. See faceswap/useWorkspaceLayout.
+  const {
+    workspaceMode, setWorkspaceMode,
+    ambilightEnabled, setAmbilightEnabled,
+    drawers, setDrawers,
+    showLeftPanel, showRightPanel, showTimelineDeck,
+  } = useWorkspaceLayout();
 
-  // ── What each workspace mode actually does ───────────────────────────────
-  // The dock offered four modes but only 'cinema' changed anything; 'dual' and
-  // 'timeline' were menu entries that did nothing at all, and the dock's third
-  // drawer button toggled a `bottom` flag nothing read. Each mode is now one row
-  // of this table and every panel reads its visibility from here, so a mode
-  // cannot quietly become decorative again.
-  //
-  //            left faces   right settings   timeline deck
-  //  default       ✓              ✓                ✓
-  //  cinema        ✗              ✗                ✗        (all canvas)
-  //  dual          ✓              ✓                ✗        (faces + params)
-  //  timeline      ✗              ✗                ✓        (precision scrub)
-  const WORKSPACE_LAYOUT = {
-    default: { left: true, right: true, bottom: true },
-    cinema: { left: false, right: false, bottom: false },
-    dual: { left: true, right: true, bottom: false },
-    timeline: { left: false, right: false, bottom: true },
-  };
-  const layout = WORKSPACE_LAYOUT[workspaceMode] || WORKSPACE_LAYOUT.default;
-  // The dock's drawer buttons stay authoritative: a mode sets the baseline, and
-  // closing a drawer by hand still closes it.
-  const showLeftPanel = layout.left && drawers.left;
-  const showRightPanel = layout.right && drawers.right;
-  const showTimelineDeck = layout.bottom && drawers.bottom;
   const [showPresetStudio, setShowPresetStudio] = useState(false);
-  const [desktopAlerts, setDesktopAlerts] = useState(false);
 
-  // notifyDesktop() silently does nothing unless permission is already granted,
-  // so ask when the toggle is switched ON — otherwise enabling alerts is a
-  // no-op for anyone who has not started a run first (start() also asks).
-  const toggleDesktopAlerts = () => {
-    const on = !desktopAlerts;
-    setDesktopAlerts(on);
-    if (on) {
-      try {
-        if (!('Notification' in window)) {
-          notify('This browser has no desktop notifications', 'error');
-        } else if (Notification.permission === 'denied') {
-          notify('Desktop notifications are blocked for this site', 'error');
-        } else if (Notification.permission === 'default') {
-          Notification.requestPermission();
-        }
-      } catch { /* ignore */ }
-    }
-  };
+  // Chime + optional OS notification on the processing -> idle edge.
+  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
+    processing: progress.processing, notify,
+  });
 
   // Keeps the UI from competing with the render for the GPU while a job runs —
   // see faceswap/useRenderLite for why that is worth doing.
   const { renderLite, toggleRenderLite } = useRenderLite(progress.processing);
-
-  const prevProcessingRef = useRef(false);
-  useEffect(() => {
-    if (prevProcessingRef.current && !progress.processing) {
-      playChime();
-      if (desktopAlerts) {
-        notifyDesktop('Roop Unleashed Render Complete!', 'Your face swap processing run has finished.');
-      }
-    }
-    prevProcessingRef.current = progress.processing;
-  }, [progress.processing, desktopAlerts]);
 
   // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
   const {
