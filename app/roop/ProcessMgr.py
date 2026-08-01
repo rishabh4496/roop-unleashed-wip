@@ -750,9 +750,42 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 update()
 
 
+    def _post_sentinels(self, queues, num_threads, tag, give_up_after=30.0):
+        """Tell each worker its queue is finished, without being able to hang.
+
+        This used to be a bare `put(None)`. A bare put has no timeout, and at
+        threads=1 the queue depth is 1, so if the consumer was already gone the
+        reader blocked here forever — a non-daemon thread that `join(timeout=5)`
+        then gave up on, leaving it alive with a decoded frame for the life of
+        the process. Caught with py-spy: MainThread in `_shutdown`, this thread
+        in `queue.put`. In a long-lived server that is one leaked thread and one
+        1080p frame per render.
+
+        A worker that is still alive drains within milliseconds; one that has
+        died never will, and no amount of waiting changes that. So: bounded.
+        """
+        deadline = time.perf_counter() + float(give_up_after)
+        for i in range(num_threads):
+            while True:
+                try:
+                    queues[i].put(None, timeout=0.1)
+                    break
+                except _QueueFull:
+                    if not roop.globals.processing:
+                        break
+                    if time.perf_counter() > deadline:
+                        bar_write(f'[{tag}] worker {i} never drained its queue; '
+                                  f'abandoning its sentinel so this thread can exit')
+                        break
+
     def read_frames_thread(self, cap, frame_start, frame_end, num_threads):
         num_frame = 0
         total_num = frame_end - frame_start
+        # Bind the queues this run owns. `self.frames_queue` is REPLACED by the
+        # next run_batch_inmem, so a straggler reader that resolved the attribute
+        # late would post its leftover sentinel into the NEXT render's queue and
+        # retire one of its workers early.
+        queues = self.frames_queue
         if frame_start > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
 
@@ -769,7 +802,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             _thr = num_frame % num_threads
             while True:
                 try:
-                    self.frames_queue[_thr].put((num_frame, frame), timeout=0.1)
+                    queues[_thr].put((num_frame, frame), timeout=0.1)
                     break
                 except _QueueFull:
                     if not roop.globals.processing:
@@ -778,13 +811,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             if num_frame == total_num:
                 break
 
-        for i in range(num_threads):
-            self.frames_queue[i].put(None)
+        self._post_sentinels(queues, num_threads, 'ProcessMgr')
 
 
     def read_frames_webp_thread(self, bgr_frames, frame_start, frame_end, num_threads):
         """Feed pre-decoded BGR frames (from animated webp via PIL) into the processing queue."""
         subset = bgr_frames[frame_start:frame_end] if frame_end > frame_start else bgr_frames[frame_start:]
+        queues = self.frames_queue   # bind this run's queues; see read_frames_thread
         for num_frame, frame in enumerate(subset):
             wait_while_paused()
             if not roop.globals.processing:
@@ -792,13 +825,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             _thr = num_frame % num_threads
             while True:
                 try:
-                    self.frames_queue[_thr].put((num_frame, frame), timeout=0.1)
+                    queues[_thr].put((num_frame, frame), timeout=0.1)
                     break
                 except _QueueFull:
                     if not roop.globals.processing:
                         break
-        for i in range(num_threads):
-            self.frames_queue[i].put(None)
+        self._post_sentinels(queues, num_threads, 'ProcessMgr/webp')
 
 
     def process_videoframes(self, threadindex, progress) -> None:
@@ -970,8 +1002,29 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             height = processed_resolution[1]
 
         # Parallel stabilization buffers whole chunks of DECODED frames, so its
-        # memory budget is counted in frames of this size.
+        # memory budget is counted in frames of this size. Only now, with the
+        # dimensions known, can we tell how wide a stabilized run can actually
+        # go — so the parallel/sequential choice made above gets one last look.
         self._stab_frame_bytes = int(width) * int(height) * 3
+        if use_parallel_stab:
+            _wu, _blk, _width = self._stab_parallel_geometry(threads)
+            if _width < 2:
+                # 1-wide is single-threaded anyway, and paying the chunk
+                # buffering and block bookkeeping on top of that measured SLOWER
+                # than the plain sequential path (2.65 vs 2.92 fps at strength
+                # 1.0, 1080p). Take the path that is actually faster.
+                print(f"[Stabilize] warm-up {_wu}f needs {_blk}f blocks and only "
+                      f"one fits the memory budget — running sequentially "
+                      f"(1-wide chunking is slower than the sequential path). "
+                      f"Raise ROOP_STAB_CHUNK_MB to widen it.")
+                use_parallel_stab = False
+                threads = 1
+                self._stab_active = True
+                self._stab_t = 0
+                if self.kps_stabilizer is not None:
+                    self.kps_stabilizer.reset()
+                if self.enh_stabilizer is not None:
+                    self.enh_stabilizer.reset()
 
         self.output_to_file = output_method != "Virtual Camera"
         self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
@@ -1101,9 +1154,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
                 else:
                     readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
+                # daemon: the joins below are `join(timeout=...)`, so a thread that
+                # somehow still overruns is ABANDONED, not waited for. Non-daemon,
+                # such a thread then blocks interpreter shutdown forever — the
+                # symptom that exposed the unbounded sentinel put. Belt and braces
+                # with _post_sentinels: that one stops it wedging, this one stops a
+                # wedge from being fatal.
+                readthread.daemon = True
                 readthread.start()
 
                 writethread = Thread(target=self.write_frames_thread)
+                writethread.daemon = True
                 writethread.start()
 
                 # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
@@ -1208,6 +1269,33 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     need = max(need, _MAX_STAB_WARMUP)
         return need
 
+    def _stab_parallel_geometry(self, threads):
+        """(warm_up, block_frames, width) for parallel stabilization.
+
+        Every block pays `warm_up` frames of full-pipeline work it then discards,
+        so a block must be several times the warm-up or the priming eats the
+        parallelism it is buying. Blocks are therefore 4x the warm-up, and the
+        chunk holds as many as the decoded-frame memory budget allows — at 1080p
+        a frame is ~6MB, and a slow filter (strength 1.0 -> 39 warm-up frames ->
+        156-frame blocks) wants far more of them than fits.
+
+        `width` is how many such blocks fit, i.e. the REAL concurrency of a
+        stabilized run. It can come out at 1, which is the caller's cue to use
+        the sequential path instead: 1-wide through the chunking machinery is
+        single-threaded with extra bookkeeping, and measured SLOWER than simply
+        running sequentially (2.65 vs 2.92 fps at strength 1.0).
+        """
+        wu = self._stab_warmup or self._stab_warmup_frames()
+        block = max(4 * wu, 24)
+        budget_mb = 1536.0
+        try:
+            budget_mb = float(os.environ.get('ROOP_STAB_CHUNK_MB', '') or budget_mb)
+        except ValueError:
+            pass
+        frame_mb = max(0.1, (self._stab_frame_bytes or (1920 * 1080 * 3)) / (1024.0 ** 2))
+        fits = max(1, int((budget_mb / frame_mb) // block))
+        return wu, block, max(1, min(threads, fits))
+
     def _run_stab_parallel(self, source_video, awebp_frames, frame_start, frame_end,
                            frame_count, threads, progress_cb):
         """Parallel stabilization — the default path for a stabilized render.
@@ -1222,38 +1310,19 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         the weak ones. Frames are written in order through the already-open
         videowriter. Deadlock-free fork-join (plain thread start/join, no
         queues)."""
-        WU = self._stab_warmup or self._stab_warmup_frames()
-
-        # Chunk sizing follows from WU, because every block pays WU frames of
-        # full-pipeline work it then throws away. Overhead is WU/block, so a
-        # block has to be several times WU or the warm-up eats the parallelism
-        # it is paying for — at strength 1 (WU=39) the old fixed 24-frame block
-        # would have run 2.6 frames for every 1 kept.
-        #
-        # It cannot simply grow without limit either: a chunk is held in RAM, and
-        # at 1080p a frame is ~6MB. So blocks grow to 4x WU, the chunk holds as
-        # many of those as the memory budget allows, and if that is fewer than
-        # `threads` we run narrower rather than either seam or swap to disk.
-        block = max(4 * WU, 24)
-        budget_mb = 1536.0
-        try:
-            budget_mb = float(os.environ.get('ROOP_STAB_CHUNK_MB', '') or budget_mb)
-        except ValueError:
-            pass
-        frame_mb = max(0.1, (self._stab_frame_bytes or (1920 * 1080 * 3)) / (1024.0 ** 2))
-        max_blocks = max(1, int((budget_mb / frame_mb) // block))
         # NOT `n_blocks`: the per-chunk dispatch below binds that name itself, and
         # this value has to survive the whole run.
-        stab_width = max(1, min(threads, max_blocks))
+        WU, block, stab_width = self._stab_parallel_geometry(threads)
         CHUNK = stab_width * block
         try:
             CHUNK = int(os.environ.get('ROOP_STAB_CHUNK', '0') or '0') or CHUNK
         except ValueError:
             pass
         if stab_width < threads:
-            print(f"[Stabilize] warm-up {WU}f needs {block}f blocks; memory budget "
-                  f"({budget_mb:.0f}MB) fits {stab_width} of them, so this run "
-                  f"stabilises {stab_width}-wide instead of {threads}.")
+            print(f"[Stabilize] warm-up {WU}f needs {block}f blocks; the memory "
+                  f"budget fits {stab_width} of them, so this run stabilises "
+                  f"{stab_width}-wide instead of {threads}. "
+                  f"Raise ROOP_STAB_CHUNK_MB to widen it.")
         elif os.environ.get('ROOP_STAB_WARMUP'):
             # Don't repeat the <=1% claim for a hand-set value: the bound comes
             # from the derivation, and an override is exactly how you break it.

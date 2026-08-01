@@ -135,6 +135,27 @@ class SchedulerPrefersParallel(unittest.TestCase):
         self.assertIn('_MAX_STAB_WARMUP', PM_CODE)
         self.assertRegex(PM_CODE, r'_stab_warmup\s*>=\s*_MAX_STAB_WARMUP')
 
+    def test_one_wide_falls_back_to_the_sequential_path(self):
+        """A slow filter wants blocks so long that only one fits the memory
+        budget (strength 1.0 at 1080p: 39 warm-up frames -> 156-frame blocks).
+        One block is single-threaded ANYWAY, so paying the chunk buffering and
+        block bookkeeping on top of it is pure loss — measured 2.65 fps against
+        the sequential path's 2.92. The scheduler must take the faster of two
+        equally correct paths."""
+        self.assertIn('_stab_parallel_geometry', PM_CODE)
+        self.assertRegex(PM_CODE, r'_width\s*<\s*2')
+        m = re.search(r'if _width < 2:(.*?)\n\s{8}\S', PM_CODE, re.S)
+        self.assertIsNotNone(m, 'the 1-wide downgrade block was not found')
+        self.assertIn('use_parallel_stab = False', m.group(1))
+        self.assertIn('threads = 1', m.group(1))
+
+    def test_geometry_is_shared_not_duplicated(self):
+        """The scheduler's downgrade check and the run's actual chunk sizing must
+        agree; two copies of the arithmetic would drift and the run would then
+        parallelise at a width the scheduler already rejected."""
+        self.assertEqual(len(re.findall(r'def _stab_parallel_geometry', PM_CODE)), 1)
+        self.assertGreaterEqual(len(re.findall(r'_stab_parallel_geometry\(', PM_CODE)), 3)
+
     def test_dispatch_uses_the_memory_derived_width(self):
         """The chunk is sized to hold exactly stab_width warm-up-amortising
         blocks; splitting it `threads` ways instead would produce blocks shorter
