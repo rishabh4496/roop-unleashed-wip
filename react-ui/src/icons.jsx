@@ -28,6 +28,7 @@ import {
   CircleCheck, CircleX, CircleAlert, Info, Unplug, Bell, Radio, Image,
   Pencil, Film, PanelLeft, PanelRight, PanelBottom, LayoutGrid, FolderOpen as Folder,
   Eye, ExternalLink, ChevronRight,
+  House, RotateCcw, Sun, Moon, Monitor,
 } from 'lucide-react';
 
 // Small sizes need a heavier stroke to stay legible; large ones need less or
@@ -54,6 +55,7 @@ const make = (Glyph, displayName) => {
 
 export const Icon = {
   // Navigation — one per tab.
+  home: make(House, 'home'),
   faceswap: make(Drama, 'faceswap'),
   faces: make(Users, 'faces'),
   editor: make(WandSparkles, 'editor'),
@@ -76,11 +78,22 @@ export const Icon = {
 
   // Actions.
   queue: make(Plus, 'queue'),
+  // Same glyph as `queue`, different ROLE — "create a new thing" is not
+  // "append to the batch", and keeping them separate means either can be
+  // redrawn without disturbing the other.
+  add: make(Plus, 'add'),
+  // Revert a control to its default. Deliberately counter-clockwise, so it
+  // never reads as `refresh` (which re-fetches rather than undoes).
+  reset: make(RotateCcw, 'reset'),
   refresh: make(RefreshCw, 'refresh'),
   compare: make(Columns2, 'compare'),
   split: make(SquareSplitVertical, 'split'),
   shortcuts: make(Keyboard, 'shortcuts'),
   theme: make(Palette, 'theme'),
+  // The three states of the light/dark pairing control.
+  light: make(Sun, 'light'),
+  dark: make(Moon, 'dark'),
+  system: make(Monitor, 'system'),
   download: make(Download, 'download'),
   upload: make(Upload, 'upload'),
   drop: make(Inbox, 'drop'),

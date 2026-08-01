@@ -1048,15 +1048,18 @@ input[type="range"]::-webkit-slider-thumb:active {
    missed /15 /20 /25 /35 /45 /55 /85 (88 uses) and every variant-prefixed one —
    `hover:text-white` (55 uses) still flipped to invisible white on hover. And
    it worked by setting `opacity`, which fades an element's children, border and
-   background too, when `text-white/60` only ever means a text COLOUR. */
-.theme-glass-light,
-.theme-cyberpunk-light,
-.theme-emerald-light,
-.theme-nordic-light,
-.theme-sakura-light,
-.theme-arctic-light,
-.theme-latte-light,
-.theme-sepia-light {
+   background too, when `text-white/60` only ever means a text COLOUR.
+
+   This used to be a hand-written list of the eight light theme CLASS names,
+   which had to be kept in step with `mode: 'light'` in themes.js by memory
+   alone — a test existed purely to catch the drift. It also could not express a
+   USER-authored light theme at all: a custom theme has no preset class, so it
+   would have matched nothing here and rendered white-on-white.
+
+   Keying off `data-theme-mode`, which App.jsx derives from the resolved theme's
+   own `mode`, removes both problems at the source. A light theme cannot be
+   forgotten, because nothing is written down twice. */
+[data-theme-mode="light"] {
   --color-white: var(--text-main);
 
   /* Focusing an input must not darken it on a light page — see .glass-input

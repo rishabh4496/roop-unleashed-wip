@@ -1,4 +1,4 @@
-"""Light themes must repoint `--color-white`, and every one of them must be listed.
+"""Light themes must repoint `--color-white`, and none may be able to miss it.
 
 Tailwind v4 compiles the whole `*-white` utility family — text, background,
 border, ring, at every alpha, under every variant — into a single expression:
@@ -12,14 +12,19 @@ The bug this guards was live in both directions:
     therefore missed every alpha nobody thought to list (/15 /20 /25 /35 /45
     /55 /85 — 88 uses) and every variant-prefixed one, so `hover:text-white`
     (55 uses) turned invisible the moment you hovered it.
-  * A theme added to `themes.js` with `mode: 'light'` but not to the selector
-    list in `index.css` gets NO correction at all, and is white-on-white
-    everywhere.
+  * The fix that replaced it enumerated the eight light theme CLASS names
+    instead. A theme added to `themes.js` with `mode: 'light'` but not to that
+    list got no correction at all and was white-on-white everywhere — and a
+    user-authored theme could never be in the list, because it has no class.
 
-The second is the one that will happen again: the two files are far apart and
-nothing but this test connects them. Neither failure shows up in a diff, in
-oxlint, or in the build — the CSS is valid and the app renders; the text is
-just not there.
+Both were the same shape of mistake: a hand-maintained list, far from the thing
+it mirrors, whose failure is silent. The CSS stays valid and the app still
+renders; the text is simply not there.
+
+So the correction is now keyed on `data-theme-mode`, which `applyThemeToDom`
+derives from the resolved theme's own `mode` field. There is no list to keep in
+step, and these tests hold that mechanism in place rather than re-checking a
+list that no longer exists.
 """
 
 import os
@@ -30,10 +35,6 @@ APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(os.path.dirname(APP), 'react-ui', 'src')
 CSS = os.path.join(SRC, 'index.css')
 THEMES = os.path.join(SRC, 'themes.js')
-
-# The `className` + `mode` pair off one THEMES entry in themes.js.
-THEME_ENTRY = re.compile(
-    r"className:\s*'(?P<cls>[^']*)'.*?mode:\s*'(?P<mode>\w+)'", re.S)
 
 
 def _read(path):
@@ -59,21 +60,34 @@ def _light_theme_block(css):
 
 
 class LightThemeCorrection(unittest.TestCase):
-    def test_every_light_theme_is_corrected(self):
-        css = _read(CSS)
-        selectors, _body = _light_theme_block(css)
+    def test_correction_is_keyed_on_the_mode_attribute(self):
+        selectors, _body = _light_theme_block(_read(CSS))
+        self.assertIn(
+            '[data-theme-mode="light"]', selectors,
+            'the light-theme block must key off data-theme-mode, which is '
+            'derived from each theme\'s own `mode`. Anything else has to be '
+            'maintained by hand and will eventually miss a theme.')
 
-        declared = [m.group('cls') for m in THEME_ENTRY.finditer(_read(THEMES))
-                    if m.group('mode') == 'light' and m.group('cls')]
-        self.assertTrue(declared, 'no light themes parsed out of themes.js — '
-                                  'the THEMES entry shape must have changed')
-
-        missing = [c for c in declared if f'.{c}' not in selectors]
+    def test_no_per_theme_class_list_returns(self):
+        """A list of `.theme-*-light` classes is the bug, not the fix."""
+        selectors, _body = _light_theme_block(_read(CSS))
+        enumerated = re.findall(r'\.theme-[\w-]*light\b', selectors)
         self.assertEqual(
-            missing, [],
-            'these themes are mode:"light" in themes.js but are not in the '
-            'light-theme block in index.css, so --color-white still resolves '
-            'to #fff and their text is white-on-white: ' + ', '.join(missing))
+            enumerated, [],
+            'listing light themes by class name cannot cover a user-authored '
+            'theme (it has no class) and silently misses any preset nobody '
+            'remembered to add — key off data-theme-mode instead: '
+            + ', '.join(enumerated))
+
+    def test_the_mode_attribute_is_actually_set_from_the_theme(self):
+        """The CSS above is inert unless something writes the attribute."""
+        themes = _read(THEMES)
+        self.assertRegex(
+            themes,
+            r"setAttribute\(\s*'data-theme-mode'\s*,[^)]*mode",
+            "applyThemeToDom in themes.js must set data-theme-mode from the "
+            "theme's `mode` field — without it every light theme renders "
+            "white-on-white and the block in index.css never matches")
 
     def test_the_correction_repoints_the_variable(self):
         _selectors, body = _light_theme_block(_read(CSS))
@@ -99,6 +113,42 @@ class LightThemeCorrection(unittest.TestCase):
             'group-hover: or placeholder: variants, and silently misses any '
             'alpha not written down — repoint --color-white instead: '
             + ', '.join(enumerated))
+
+
+class CustomThemeDerivation(unittest.TestCase):
+    """A custom theme must define everything a preset block defines.
+
+    A missing variable does not error — it falls through to whatever the
+    :root default left behind, so a custom theme would silently wear one of
+    the default theme's colours. The light-only `--input-bg-focus` is the
+    subtle one: without it, focusing an input on a light custom theme turns
+    its background dark while the ink stays dark (see `.glass-input:focus`).
+    """
+
+    def test_derivation_covers_the_root_variable_set(self):
+        vars_js = _read(os.path.join(SRC, 'themeVars.js'))
+        css = _read(CSS)
+
+        # Everything :root declares is what a theme is made of.
+        root = css[css.index(':root {'):]
+        root = root[:root.index('\n}')]
+        declared = set(re.findall(r'(--[\w-]+)\s*:', root))
+
+        derived = set(re.findall(r"'(--[\w-]+)':", vars_js))
+        missing = sorted(declared - derived)
+        self.assertEqual(
+            missing, [],
+            'deriveThemeVars must emit every variable :root defines, or a '
+            'custom theme inherits the default theme for these: '
+            + ', '.join(missing))
+
+    def test_light_custom_themes_get_the_input_focus_fix(self):
+        vars_js = _read(os.path.join(SRC, 'themeVars.js'))
+        self.assertIn(
+            '--input-bg-focus', vars_js,
+            'light themes need --input-bg-focus or focusing an input paints it '
+            'dark under dark ink — the preset light blocks set it, so the '
+            'derivation must too')
 
 
 if __name__ == '__main__':

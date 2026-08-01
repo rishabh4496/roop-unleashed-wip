@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
+import ThemeStudio from './ThemeStudio';
+import { allThemes } from '../themes';
 import { Icon } from '../icons';
 
 // A Section that participates in the settings search: with a query active it
@@ -24,7 +26,51 @@ function FilterSection({ title, query, children, ...rest }) {
 export default function Settings({ meta, settings, setSettings, notify }) {
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  // Theme edits change several keys at once (picking a theme also clears the
+  // system pairing), and they must land in ONE state update — two sequential
+  // `set` calls would each build off the same stale snapshot and the second
+  // would drop the first. They also post immediately rather than waiting for
+  // the 500ms autosave, because a theme change is the kind of thing a user
+  // verifies by reloading.
+  const setMany = (patch) => {
+    setSettings((s) => ({ ...s, ...patch }));
+    postJSON('/api/settings', patch).catch(() => {});
+  };
   const [query, setQuery] = useState('');
+  const [studio, setStudio] = useState({ open: false, initial: null });
+
+  const customThemes = Array.isArray(p.custom_themes) ? p.custom_themes : [];
+  const darkNames = allThemes(customThemes).filter((t) => t.mode !== 'light').map((t) => t.name);
+  const lightNames = allThemes(customThemes).filter((t) => t.mode === 'light').map((t) => t.name);
+
+  // Saving a theme replaces the entry with the same name when editing (the
+  // name may itself have changed, hence `prevName`), otherwise appends.
+  const saveTheme = (recipe, prevName) => {
+    const next = prevName
+      ? customThemes.map((t) => (t.name === prevName ? recipe : t))
+      : [...customThemes, recipe];
+    setMany({
+      custom_themes: next,
+      selected_theme: recipe.name,
+      theme_follow_system: false,
+    });
+    setStudio({ open: false, initial: null });
+    notify(prevName ? `Theme “${recipe.name}” updated` : `Theme “${recipe.name}” created`);
+  };
+
+  const deleteTheme = (name) => {
+    const next = customThemes.filter((t) => t.name !== name);
+    const patch = { custom_themes: next };
+    // Deleting the theme you are wearing (or half of the system pair) would
+    // leave a dangling name that resolves to the default anyway — make that
+    // explicit rather than leaving stale state in the config.
+    if (p.selected_theme === name) patch.selected_theme = 'Default';
+    if (p.theme_dark === name) patch.theme_dark = 'Default';
+    if (p.theme_light === name) patch.theme_light = 'Glass Light';
+    setMany(patch);
+    setStudio({ open: false, initial: null });
+    notify(`Theme “${name}” deleted`, 'info');
+  };
 
   const apply = async () => {
     try {
@@ -66,11 +112,47 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             gallery — neither carries one, so under the old title searching for
             the most obvious word for this control hid it. */}
         <FilterSection title="Appearance & Theme" query={query}>
+          {/* Light/dark pairing. With this on, `selected_theme` is ignored and
+              the OS decides which half of the pair is live — so the gallery
+              below switches to picking that half rather than the theme. */}
+          <div className="rounded-xl bg-white/[0.03] border border-white/10 p-3 space-y-3">
+            <Toggle
+              label="Follow system light / dark"
+              info="Use the operating system's appearance setting to pick between a dark and a light theme automatically, instead of one fixed theme."
+              checked={!!p.theme_follow_system}
+              onChange={(v) => setMany({ theme_follow_system: v })}
+            />
+            {p.theme_follow_system && (
+              <div className="grid grid-cols-2 gap-2">
+                <Select
+                  label="When dark"
+                  value={p.theme_dark || 'Default'}
+                  onChange={(v) => setMany({ theme_dark: v })}
+                  options={darkNames}
+                />
+                <Select
+                  label="When light"
+                  value={p.theme_light || 'Glass Light'}
+                  onChange={(v) => setMany({ theme_light: v })}
+                  options={lightNames}
+                />
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-medium text-white/70">Interface Theme</span>
-            <span className="text-micro text-[var(--accent)] font-bold">{p.selected_theme || 'Default'}</span>
+            <span className="text-micro text-[var(--accent)] font-bold">
+              {p.theme_follow_system ? 'Following system' : (p.selected_theme || 'Default')}
+            </span>
           </div>
-          <ThemeGallery value={p.selected_theme} onChange={(v) => { set('selected_theme', v); postJSON('/api/settings', { selected_theme: v }).catch(() => {}); }} />
+          <ThemeGallery
+            value={p.theme_follow_system ? null : p.selected_theme}
+            customThemes={p.custom_themes}
+            onChange={(v) => setMany({ selected_theme: v, theme_follow_system: false })}
+            onCreate={() => setStudio({ open: true, initial: null })}
+            onEdit={(t) => setStudio({ open: true, initial: t })}
+          />
         </FilterSection>
 
         <FilterSection title="Performance" query={query}>
@@ -161,6 +243,15 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           </button>
         </div>
       </div>
+
+      <ThemeStudio
+        open={studio.open}
+        initial={studio.initial}
+        customThemes={customThemes}
+        onClose={() => setStudio({ open: false, initial: null })}
+        onSave={saveTheme}
+        onDelete={deleteTheme}
+      />
     </div>
   );
 }

@@ -232,6 +232,18 @@ class Settings:
         self.perf_profile = self.default_get(data, 'perf_profile', 'auto')       # auto|on|off
         self.perf_batch_swap = self.default_get(data, 'perf_batch_swap', 'auto')  # auto|on|off
 
+        # ── Theme ────────────────────────────────────────────────────────────
+        # User-authored themes, each a small recipe the UI expands into the full
+        # CSS variable set (see react-ui/src/themeVars.js). Stored here rather
+        # than in browser localStorage so they survive the Pinokio Run<->Dev
+        # reload and travel with the config like every other preference.
+        self.custom_themes = self.default_get(data, 'custom_themes', [])
+        # When set, `selected_theme` is ignored and the theme follows the OS
+        # light/dark signal, picking from this pair.
+        self.theme_follow_system = self.default_get(data, 'theme_follow_system', False)
+        self.theme_dark = self.default_get(data, 'theme_dark', 'Default')
+        self.theme_light = self.default_get(data, 'theme_light', 'Glass Light')
+
 
 
 
@@ -239,6 +251,10 @@ class Settings:
     def save(self):
         data = {
             'selected_theme': self.selected_theme,
+            'custom_themes': self.custom_themes,
+            'theme_follow_system': self.theme_follow_system,
+            'theme_dark': self.theme_dark,
+            'theme_light': self.theme_light,
             'server_name': self.server_name,
             'server_port': self.server_port,
             'server_share': self.server_share,

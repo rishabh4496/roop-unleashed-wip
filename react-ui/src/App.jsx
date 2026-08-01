@@ -5,7 +5,7 @@ import CommandPalette from './components/CommandPalette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
-import { THEME_CLASSES, THEMES, themeByName } from './themes';
+import { themeByName, allThemes, applyThemeToDom } from './themes';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
 import { Icon } from './icons';
 
@@ -241,9 +241,46 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [bumpZoom]);
 
+  // ── Theme resolution ─────────────────────────────────────────────────────
+  // Declared above the command palette because that memo lists themes too.
+  //
+  // Track the OS light/dark preference. Nothing in the app used to read this,
+  // so a machine that switches to light mode at sunset left the UI dark. It is
+  // only ACTED on when the user opts into the pairing below, but it is always
+  // tracked so flipping that switch takes effect immediately.
+  const [systemDark, setSystemDark] = useState(
+    () => !window.matchMedia?.('(prefers-color-scheme: light)')?.matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!mq) return undefined;
+    const onChange = () => setSystemDark(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // Which theme is actually live: either the explicit pick, or — when the user
+  // has paired a light and a dark theme — whichever half the OS is asking for.
+  const themeName = settings?.theme_follow_system
+    ? (systemDark ? (settings?.theme_dark || 'Default') : (settings?.theme_light || 'Glass Light'))
+    : settings?.selected_theme;
+  const customThemes = settings?.custom_themes;
+
+  useEffect(() => {
+    if (!themeName) return;
+    // applyThemeToDom owns both mechanisms (a preset's class, a custom theme's
+    // inline variables) and sets data-theme-mode for either — see themes.js.
+    applyThemeToDom(themeByName(themeName, customThemes));
+  }, [themeName, customThemes]);
+
   const applyTheme = useCallback((name) => {
-    setSettings((s) => ({ ...(s || {}), selected_theme: name }));
-    postJSON('/api/settings', { selected_theme: name }).catch(() => {});
+    // Picking a theme by hand also leaves the system pairing: otherwise the
+    // choice would be overridden on the next render and the click would look
+    // like it did nothing.
+    const patch = { selected_theme: name, theme_follow_system: false };
+    setSettings((s) => ({ ...(s || {}), ...patch }));
+    postJSON('/api/settings', patch).catch(() => {});
   }, []);
 
   // Faceswap-tab actions are decoupled via a window event bus so the palette
@@ -266,9 +303,15 @@ export default function App() {
     cmds.push({ id: 'act-split', section: 'Actions', icon: Icon.split, title: 'Toggle split view', run: () => runFaceswap('split') });
     cmds.push({ id: 'act-preview', section: 'Actions', icon: Icon.refresh, title: 'Refresh preview', run: () => runFaceswap('preview') });
     cmds.push({ id: 'act-shortcuts', section: 'Actions', icon: Icon.shortcuts, title: 'Show keyboard shortcuts', run: () => runFaceswap('shortcuts') });
-    THEMES.forEach((t) => cmds.push({ id: `theme-${t.name}`, section: 'Theme', icon: Icon.theme, title: t.name, subtitle: t.label, run: () => applyTheme(t.name) }));
+    // Custom themes are selectable from the palette too — they are themes, and
+    // leaving them out would make the studio's output feel second-class.
+    allThemes(customThemes).forEach((t) => cmds.push({
+      id: `theme-${t.name}`, section: 'Theme', icon: Icon.theme,
+      title: t.name, subtitle: t.custom ? 'Your theme' : t.label,
+      run: () => applyTheme(t.name),
+    }));
     return cmds;
-  }, [applyTheme, runFaceswap]);
+  }, [applyTheme, runFaceswap, customThemes]);
 
   const registerFileListener = useCallback((cb) => {
     fileListenersRef.current.push(cb);
@@ -478,17 +521,6 @@ export default function App() {
     };
   }, [flushSettings]);
 
-  // Apply selected theme class to body/html
-  useEffect(() => {
-    if (!settings || !settings.selected_theme) return;
-    document.documentElement.classList.remove(...THEME_CLASSES);
-    document.body.classList.remove(...THEME_CLASSES);
-    const cls = themeByName(settings.selected_theme).className;
-    if (cls) {
-      document.documentElement.classList.add(cls);
-      document.body.classList.add(cls);
-    }
-  }, [settings]);
 
   return (
     <MotionConfig reducedMotion="user">

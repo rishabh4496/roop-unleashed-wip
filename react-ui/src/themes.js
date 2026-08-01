@@ -1,6 +1,12 @@
 // Single source of truth for UI themes. `className` matches the .theme-* blocks
 // in index.css (empty string = the :root default). `accent` / `bg` drive the
 // swatch preview in the theme gallery; `mode` tags light vs dark.
+//
+// A user-authored theme (Theme Studio) has the same shape but carries
+// `custom: true` and no `className` — its colours come from themeVars.js
+// instead of a stylesheet block. Everything downstream treats the two alike.
+import { deriveThemeVars, normalizeRecipe } from './themeVars';
+
 export const THEMES = [
   { name: 'Default',         className: '',                    accent: '#E94560', bg: '#0B0C12', mode: 'dark',  label: 'Obsidian & Crimson' },
   { name: 'Midnight Violet', className: 'theme-midnight-violet', accent: '#9b5de5', bg: '#0d0819', mode: 'dark',  label: 'Deep purple glow' },
@@ -49,4 +55,49 @@ export const THEMES = [
 
 export const THEME_CLASSES = THEMES.map((t) => t.className).filter(Boolean);
 
-export const themeByName = (name) => THEMES.find((t) => t.name === name) || THEMES[0];
+// Presets first, then the user's own. `customs` is CFG.custom_themes, which is
+// [] until the Theme Studio saves one, so every caller can pass it blindly.
+export const allThemes = (customs) => [
+  ...THEMES,
+  ...(Array.isArray(customs) ? customs.map(normalizeRecipe) : []),
+];
+
+export const themeByName = (name, customs) =>
+  allThemes(customs).find((t) => t.name === name) || THEMES[0];
+
+// ── Applying a theme to the document ──────────────────────────────────────
+// One place that knows how a theme reaches the page, because there are now
+// three callers with the same needs (the app on load, the settings gallery, and
+// the studio's live preview) and two mechanisms to keep in step: presets are a
+// CSS class, customs are inline variables.
+//
+// `data-theme-mode` is set for BOTH kinds. It is what the light-theme
+// correction block in index.css keys off, so it is the single thing that must
+// be right for a light theme to be legible at all.
+
+// The variables the last custom theme wrote, so switching back to a preset can
+// remove exactly those and nothing else — a preset defines its colours through
+// a class, and a leftover inline variable would win over it forever.
+let appliedVars = [];
+
+export function applyThemeToDom(theme) {
+  const t = theme || THEMES[0];
+  const root = document.documentElement;
+  const { body } = document;
+
+  root.classList.remove(...THEME_CLASSES);
+  body.classList.remove(...THEME_CLASSES);
+  appliedVars.forEach((k) => root.style.removeProperty(k));
+  appliedVars = [];
+
+  if (t.custom) {
+    const vars = deriveThemeVars(t);
+    Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
+    appliedVars = Object.keys(vars);
+  } else if (t.className) {
+    root.classList.add(t.className);
+    body.classList.add(t.className);
+  }
+
+  root.setAttribute('data-theme-mode', t.mode === 'light' ? 'light' : 'dark');
+}
