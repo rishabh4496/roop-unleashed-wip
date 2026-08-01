@@ -329,3 +329,33 @@ for a custom `GridSample3D` op. That needs a plugin library this project does no
 ship — the model fails to load at all — so it is deliberately not used.
 
 Models (~537 MB) download to `app/models/liveportrait/` on first use.
+
+## Face enhancer cost (measured)
+
+The enhancer is ~36% of a render's wall clock and the swap phase runs the GPU at
+~98%, so its share of GPU work is the main lever on speed once threading is
+fixed. Isolated cost of one 512² face, RTX 4070, TensorRT FP16, engines warm
+(±15% run to run):
+
+| enhancer | ms/call | vs RestoreFormer++ | est. effect on total render |
+|---|---|---|---|
+| GFPGAN v1.4 | ~12 | 0.50x | ~18% faster |
+| GPEN-BFR-512 | ~18 | 0.79x | ~8% faster |
+| CodeFormer | ~22 | 0.96x | ~1% faster |
+| RestoreFormer++ | ~23 | 1.00x | baseline |
+
+Speed only — quality is a separate judgement and belongs to whoever is watching
+the output. Reproduce with `app/tools/bench_enhancers.py`.
+
+**Benchmarking ONNX outside the app — three traps**, each of which silently
+yields CPU numbers that look like a plausible result (measured 483 ms/call for
+GFPGAN on CPU vs 12 ms on TensorRT, a 43x error):
+
+1. `import torch` BEFORE `onnxruntime` makes ORT reject the CUDA EP.
+2. `tensorrt_libs` must be on the DLL path.
+3. That alone is not enough — `onnxruntime_providers_tensorrt.dll` also needs
+   `cublas64_12.dll`, which in this environment lives in
+   `env/Lib/site-packages/torch/lib`. Add the directory (that does not import
+   torch); without it ORT falls back to CPU for the WHOLE session, not to CUDA.
+
+Always assert `sess.get_providers()[0]` rather than assuming.
