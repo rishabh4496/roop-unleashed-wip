@@ -420,8 +420,9 @@ export const Confetti = ({ active }) => {
 };
 
 // One family, one optical weight, and the tint comes from the theme rather than
-// from the glyph — emoji brought their own vendor artwork and their own colour,
-// so ❌/ℹ️/✅ never read as three states of one thing.
+// from the glyph. The three emoji these replaced each came from a different
+// part of the vendor's artwork, at different sizes and saturations, so they
+// never read as three states of one thing.
 const toastIcon = (type) => (type === 'error' ? Icon.error : type === 'info' ? Icon.info : Icon.success);
 const toastColor = (type) => (type === 'error' ? 'text-red-400' : type === 'info' ? 'text-blue-300' : 'text-green-400');
 

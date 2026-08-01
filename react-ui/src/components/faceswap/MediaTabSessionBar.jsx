@@ -17,7 +17,7 @@ export default function MediaTabSessionBar({
   return (
     <div className="flex items-center gap-1.5 overflow-x-auto rounded-xl border border-white/10 bg-neutral-900/60 p-1.5 backdrop-blur-md no-scrollbar">
       <div className="flex items-center gap-1 px-2 text-mini font-bold uppercase tracking-wider text-neutral-400">
-        <span>🎬</span>
+        <Icon.film size={12} />
         <span>Sessions</span>
       </div>
 

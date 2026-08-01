@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getJSON, postJSON, postFile, fileUrl } from '../../api';
 import { Button } from '../ui';
 import { confirmDialog, promptDialog } from '../confirm';
+import { Icon } from '../../icons';
 
 // Persistent, named .fsz facesets on disk. Save the selected source faceset here
 // once and reload it any time without re-uploading. Point the library folder
@@ -117,7 +118,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
     <span className={`shrink-0 ${size} rounded-md overflow-hidden bg-black/40 border border-white/10`}>
       {e?.thumb
         ? <img src={e.thumb} alt={e.name} className="w-full h-full object-cover" draggable={false} />
-        : <span className="flex items-center justify-center w-full h-full text-white/20 text-sm">🧑</span>}
+        : <span className="flex items-center justify-center w-full h-full text-white/20"><Icon.faces size={14} /></span>}
     </span>
   );
 
@@ -129,7 +130,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
         className="w-full flex items-center justify-between px-3.5 py-2.5 text-left select-none rounded-t-xl hover:bg-white/[0.02] transition-colors"
       >
         <span className="font-semibold text-micro uppercase tracking-[0.14em] text-white/50">
-          📚 Faceset library
+          Faceset library
         </span>
         <span className="flex items-center gap-2">
           {entries.length > 0 && (
@@ -145,11 +146,11 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
         <div className="px-3.5 pb-3.5 space-y-3">
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="primary" disabled={!canSave || busy} onClick={saveCurrent}>
-              💾 Save selected face
+              Save selected face
             </Button>
             <Button size="sm" variant="secondary" onClick={() => importRef.current?.click()}>⬆ Import .fsz</Button>
-            <Button size="sm" variant="secondary" onClick={openFolder}>📂 Open folder</Button>
-            <Button size="sm" variant="secondary" disabled={busy || entries.length === 0} onClick={rebuildThumbs} title="Regenerate previews, picking the most frontal face in each set">🖼 Fix thumbnails</Button>
+            <Button size="sm" variant="secondary" onClick={openFolder}>Open folder</Button>
+            <Button size="sm" variant="secondary" disabled={busy || entries.length === 0} onClick={rebuildThumbs} title="Regenerate previews, picking the most frontal face in each set">Fix thumbnails</Button>
             <Button size="sm" variant="secondary" onClick={refresh}>↻</Button>
             <input ref={importRef} type="file" accept=".fsz" multiple className="hidden" onChange={onImport} />
           </div>
@@ -221,10 +222,13 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                               {e.faces > 1 && <span className="text-white/35"> · {e.faces} faces</span>}
                             </span>
                           )}
-                          <span className="flex items-center gap-1.5 text-mini text-white/35 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" aria-label={`Rename faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}>✏️</button>
-                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" aria-label={`Export faceset ${e.name}`} href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}>⬇</a>
-                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" aria-label={`Delete faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); del(e); }}>🗑</button>
+                          {/* focus-within as well as group-hover — these are
+                              real tab stops, and opacity-0 alone left a
+                              keyboard user focused on invisible controls. */}
+                          <span className="flex items-center gap-1.5 text-mini text-white/35 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            <button type="button" className="hover:text-white/80 transition-colors" title="Rename" aria-label={`Rename faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}><Icon.rename size={12} /></button>
+                            <a className="hover:text-white/80 transition-colors" title="Export .fsz" aria-label={`Export faceset ${e.name}`} href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}><Icon.download size={12} /></a>
+                            <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" aria-label={`Delete faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); del(e); }}><Icon.trash size={12} /></button>
                           </span>
                         </div>
                       ))}

@@ -93,8 +93,8 @@ export const Icon = {
   bell: make(Bell, 'bell'),
 
   // Toast / dialog severity. These read as a SET — same family, same optical
-  // weight — which is the part emoji could not give us: ❌ and ✅ came from one
-  // vendor's artwork and ℹ️ from another's, at different sizes and saturations.
+  // weight — which is the part emoji could not give us, since the error,
+  // info and success glyphs were drawn independently of one another.
   success: make(CircleCheck, 'success'),
   error: make(CircleX, 'error'),
   info: make(Info, 'info'),

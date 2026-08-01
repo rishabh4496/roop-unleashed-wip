@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
+import { Icon } from '../icons';
 
 // A Section that participates in the settings search: with a query active it
 // keeps only the controls whose label/info match (or the whole section when the
@@ -40,7 +41,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   return (
     <div className="space-y-6">
       <div className="relative max-w-md">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-sm pointer-events-none">🔍</span>
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none"><Icon.search size={14} /></span>
         <input
           type="search"
           value={query}
@@ -148,7 +149,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             onClick={apply}
             className="px-4 py-2 rounded-xl bg-[var(--accent)] hover:brightness-110 text-white font-bold text-xs shadow-lg transition-transform active:scale-95 flex items-center gap-1.5"
           >
-            💾 Apply Settings
+            Apply Settings
           </button>
           <button
             type="button"
@@ -156,7 +157,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 font-bold text-xs transition-colors"
             title="Clean loaded media"
           >
-            🧹 Clean
+            Clean
           </button>
         </div>
       </div>

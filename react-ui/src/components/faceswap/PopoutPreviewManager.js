@@ -85,7 +85,7 @@ class PopoutPreviewManager {
       </head>
       <body>
         <div class="header">
-          <div class="title">🎭 ROOP UNLEASHED — DEDICATED PREVIEW MONITOR</div>
+          <div class="title">ROOP UNLEASHED — DEDICATED PREVIEW MONITOR</div>
           <div class="status" id="statusBadge">Connected</div>
         </div>
         <div class="stage">

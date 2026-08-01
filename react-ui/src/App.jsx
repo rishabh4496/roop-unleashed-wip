@@ -198,7 +198,7 @@ export default function App() {
       // Backend /api/progress returns output as { path, kind } (no `name`), so
       // derive the filename from the path for the notification body.
       const outName = (progress.output?.path || '').split(/[\\/]/).pop();
-      notifyDesktop('✨ Swap complete', outName ? `${outName} is ready` : 'Your render is ready');
+      notifyDesktop('Swap complete', outName ? `${outName} is ready` : 'Your render is ready');
       setConfetti(false);
       requestAnimationFrame(() => setConfetti(true));
       setTimeout(() => setConfetti(false), 2600);

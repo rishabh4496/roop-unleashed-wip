@@ -33,7 +33,7 @@ const sanitizeCustomPresets = (raw) => {
 const BUILTIN_PRESETS = [
   { name: 'Default', values: TRACKER_DEFAULT_VALUES },
   {
-    name: '✨ Ultra Realism',
+    name: 'Ultra Realism',
     values: {
       blend_ratio: 0.85,
       detail_transfer_strength: 0.4,
@@ -46,7 +46,7 @@ const BUILTIN_PRESETS = [
     },
   },
   {
-    name: '🎬 Cinematic',
+    name: 'Cinematic',
     values: {
       blend_ratio: 0.9,
       detail_transfer_strength: 0.25,
@@ -59,7 +59,7 @@ const BUILTIN_PRESETS = [
     },
   },
   {
-    name: '🕊️ Subtle Touchup',
+    name: 'Subtle Touchup',
     values: {
       blend_ratio: 0.6,
       detail_transfer_strength: 0.15,
@@ -72,7 +72,7 @@ const BUILTIN_PRESETS = [
     },
   },
   {
-    name: '⚡ Strong Likeness',
+    name: 'Strong Likeness',
     values: {
       blend_ratio: 1.0,
       detail_transfer_strength: 0.5,
@@ -85,7 +85,7 @@ const BUILTIN_PRESETS = [
     },
   },
   {
-    name: '🌿 Natural Soft',
+    name: 'Natural Soft',
     values: {
       blend_ratio: 0.75,
       detail_transfer_strength: 0.2,
@@ -196,7 +196,6 @@ export default function SliderTrackerBar({
         {/* Left title & active status badge */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-base">🎚️</span>
             <span className="text-xs font-extrabold uppercase tracking-[0.16em] text-white/90">
               Slider Tracker
             </span>
@@ -270,7 +269,7 @@ export default function SliderTrackerBar({
               className="px-2.5 py-1.5 rounded-xl text-mini font-semibold bg-[var(--accent)]/10 hover:bg-[var(--accent)]/20 border border-[var(--accent)]/30 text-[var(--accent)] transition-colors"
               title="Force re-render preview with current slider tracker settings"
             >
-              🔄 Refresh Preview
+              Refresh Preview
             </button>
           )}
 
@@ -388,7 +387,7 @@ export default function SliderTrackerBar({
                 className="px-2.5 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/15 hover:bg-[var(--accent)]/25 border border-[var(--accent)]/40 text-white transition-all shadow-[0_0_10px_var(--accent-glow)] flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 title="Save current slider values as a custom preset"
               >
-                <span>💾 Save Preset</span>
+                <span>Save Preset</span>
               </button>
             )}
           </div>
@@ -428,10 +427,9 @@ export default function SliderTrackerBar({
                         : 'border-white/5 hover:border-white/15'
                     }`}
                   >
-                    {/* Card Header: Icon, Label, Value */}
+                    {/* Card Header: Label, Value */}
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-xs shrink-0">{s.icon}</span>
                         <span
                           className="text-mini font-semibold text-white/80 truncate group-hover/card:text-white transition-colors"
                           title={s.info}

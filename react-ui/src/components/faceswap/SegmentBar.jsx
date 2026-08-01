@@ -56,7 +56,7 @@ export default function SegmentBar({
             ? 'Set In/Out to a shorter range first — a segment covering the whole clip is just a normal run'
             : `Add frames ${startFrame}–${endFrame} as a segment`}
         >
-          ➕ Add In/Out as segment
+          Add In/Out as segment
         </Button>
 
         {segments.length > 0 && (
@@ -66,7 +66,7 @@ export default function SegmentBar({
             </Button>
             {joinable >= 2 && (
               <Button size="sm" variant="primary" onClick={join} disabled={joining}>
-                {joining ? '⏳ Joining…' : `🔗 Join ${joinable} rendered segments`}
+                {joining ? 'Joining…' : `Join ${joinable} rendered segments`}
               </Button>
             )}
             <Button size="sm" variant="ghost" className="text-red-400" onClick={onClear} disabled={busy}>

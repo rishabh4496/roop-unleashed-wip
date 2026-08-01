@@ -123,7 +123,7 @@ export default function PersonGroups({
       const detail = res.scanned
         ? ` — scanned ${res.scanned} frames in ${res.seconds}s, ${res.bins} pose bin${res.bins === 1 ? '' : 's'} covered`
         : '';
-      if (res.count) notify(`🎯 Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}${detail}`);
+      if (res.count) notify(`Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}${detail}`);
       else notify((res.message || 'No new angles found') + detail, 'warning');
     } catch (e) {
       notify(e.message, 'error');
@@ -189,7 +189,7 @@ export default function PersonGroups({
   if (targetFaces.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-white/10 bg-black/10 p-4 text-center space-y-1.5 select-none">
-        <div className="text-2xl opacity-40">🧑‍🤝‍🧑</div>
+        <div className="flex justify-center opacity-40"><Icon.faces size={22} /></div>
         <div className="text-xs text-white/50 font-semibold">No people captured yet</div>
         <div className="text-mini text-white/30 leading-relaxed">
           Load a target below, scrub to a clear frame, then use <span className="text-white/50 font-bold">“Face from frame”</span> to capture people. Add more angles per person for steadier video swaps.
@@ -214,7 +214,7 @@ export default function PersonGroups({
           <button type="button" disabled={busy} onClick={autoCluster}
             title="Group every captured face by identity automatically"
             className="px-2 py-1 rounded-lg text-micro font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-            🧩 Auto-group
+            Auto-group
           </button>
           <button type="button" disabled={busy || !targetFaces.length} onClick={clearAllFaces}
             title="Remove all captured target faces from this layout"
@@ -297,9 +297,9 @@ export default function PersonGroups({
                   title="Which source face this person becomes"
                   className={`px-2 py-1 rounded-lg glass-input text-white text-mini font-bold focus:outline-none cursor-pointer max-w-[120px] shrink-0 ${mapValid ? '' : 'text-white/50'}`}
                 >
-                  <option value={-1} className="bg-[#121420]">❌ Skip</option>
+                  <option value={-1} className="bg-[#121420]">Skip</option>
                   {sourceFaces.map((_, sfIdx) => (
-                    <option key={sfIdx} value={sfIdx} className="bg-[#121420]">🎭 Face {sfIdx + 1}</option>
+                    <option key={sfIdx} value={sfIdx} className="bg-[#121420]">Face {sfIdx + 1}</option>
                   ))}
                 </select>
               )}
@@ -381,13 +381,13 @@ export default function PersonGroups({
                   className="w-full py-1.5 rounded-lg text-mini font-bold bg-[var(--accent)]/12 border border-[var(--accent)]/35 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                   {harvesting === rank
                     ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Scanning video for angles…</>)
-                    : '🎯 Auto-capture angles (scan whole video)'}
+                    : 'Auto-capture angles (scan whole video)'}
                 </button>
 
                 {/* Grab angle at current frame */}
                 <button type="button" disabled={busy} onClick={() => addAngle(rank)}
                   className="w-full py-1.5 rounded-lg text-mini font-bold bg-white/[0.03] border border-white/10 text-white/70 hover:border-[var(--accent)]/40 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                  ➕ Capture this person’s angle at frame {frame}
+                  Capture this person’s angle at frame {frame}
                 </button>
               </div>
             )}

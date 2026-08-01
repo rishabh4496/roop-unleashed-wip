@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button, Section } from '../ui';
 import { confirmDialog } from '../confirm';
 import { QUEUE_STATUS_CLASS, QUEUE_STATUS_LABEL } from './useQueue';
+import { Icon } from '../../icons';
 
 // The batch queue view. It renders whatever /api/queue reports and sends every
 // change straight back — it keeps no copy of the list, so it cannot drift from
@@ -71,7 +72,7 @@ export default function QueuePanel({
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={onAddCurrent} disabled={!canAdd}>
-            ➕ Add current to queue
+            Add current to queue
           </Button>
           {jobs.length > 0 && (
             <>
@@ -162,7 +163,7 @@ export default function QueuePanel({
                       title="Load this job's settings into the editor"
                       aria-label={`Load settings from job ${idx + 1}`}
                     >
-                      ⚙️
+                      <Icon.settings size={13} />
                     </button>
                   )}
                   {editable && (

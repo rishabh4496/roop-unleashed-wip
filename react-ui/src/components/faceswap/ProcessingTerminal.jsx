@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from '../../icons';
 
 /**
  * Terminal-style live feed shown inside the Preview box while a job runs.
@@ -114,8 +115,8 @@ export default function ProcessingTerminal({
               {parts.length ? `${parts.length} part${parts.length > 1 ? 's' : ''}` : 'no parts yet'}
             </span>
             {errorCount > 0 && (
-              <button onClick={() => setTab('errors')} className={chip(tab === 'errors')} title="Warnings and errors only">
-                ⚠ {errorCount}
+              <button onClick={() => setTab('errors')} className={`${chip(tab === 'errors')} inline-flex items-center gap-1`} title="Warnings and errors only" aria-label={`Show only the ${errorCount} warnings and errors`}>
+                <Icon.warning size={11} /> {errorCount}
               </button>
             )}
             {parts.map((p) => (
@@ -141,7 +142,7 @@ export default function ProcessingTerminal({
             className="flex items-center gap-1 px-2 py-0.5 rounded text-micro font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all active:scale-95"
             title={typeof tab === 'number' ? `Copy part ${tab}'s log` : 'Copy the log shown'}
           >
-            <span>{copied ? '✓ Copied!' : '📋 Copy'}</span>
+            <span>{copied ? '✓ Copied!' : 'Copy'}</span>
           </button>
 
           <span className="flex items-center gap-1.5 text-micro text-white/40">

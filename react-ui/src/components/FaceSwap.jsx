@@ -44,14 +44,14 @@ const AI_UPSCALE_MODELS = [
   { value: 'span_x4', label: 'SPAN ×4' },
   { value: 'compact_x4', label: 'Compact ×4 (fast AI)' },
   { value: 'nomos8k_x4', label: 'Nomos8k ×4' },
-  { value: 'lanczos_x2', label: '⚡ Fast Lanczos ×2 (no AI)' },
-  { value: 'lanczos_x4', label: '⚡ Fast Lanczos ×4 (no AI)' },
-  { value: 'fsr_x2', label: '⚡ FSR-lite ×2 · Lanczos+CAS (no AI)' },
-  { value: 'fsr_x4', label: '⚡ FSR-lite ×4 · Lanczos+CAS (no AI)' },
-  { value: 'spline_x2', label: '⚡ Spline36 ×2 (no AI)' },
-  { value: 'spline_x4', label: '⚡ Spline36 ×4 (no AI)' },
-  { value: 'sinc_x2', label: '⚡ Sinc ×2 · sharpest (no AI)' },
-  { value: 'sinc_x4', label: '⚡ Sinc ×4 · sharpest (no AI)' },
+  { value: 'lanczos_x2', label: 'Fast Lanczos ×2 (no AI)' },
+  { value: 'lanczos_x4', label: 'Fast Lanczos ×4 (no AI)' },
+  { value: 'fsr_x2', label: 'FSR-lite ×2 · Lanczos+CAS (no AI)' },
+  { value: 'fsr_x4', label: 'FSR-lite ×4 · Lanczos+CAS (no AI)' },
+  { value: 'spline_x2', label: 'Spline36 ×2 (no AI)' },
+  { value: 'spline_x4', label: 'Spline36 ×4 (no AI)' },
+  { value: 'sinc_x2', label: 'Sinc ×2 · sharpest (no AI)' },
+  { value: 'sinc_x4', label: 'Sinc ×4 · sharpest (no AI)' },
 ];
 
 export default function FaceSwap({
@@ -880,7 +880,7 @@ export default function FaceSwap({
     //
     // `force` skips it AND evicts the entry. The cache key covers every setting
     // that reaches the backend, so an automatic refresh after a settings change
-    // is always a miss and re-renders correctly. But the manual 🔄 Refresh button
+    // is always a miss and re-renders correctly. But the manual Refresh button
     // used to go through this same lookup, which made it a no-op whenever the
     // cache was warm: nothing the user could do would re-run the swap for the
     // current frame. Anything the key cannot see — a source file edited on disk,
@@ -2290,7 +2290,7 @@ export default function FaceSwap({
     queue: addToQueue,
     compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; }),
     split: () => setSplitView((v) => !v),
-    preview: () => refreshPreview({ force: true }),   // explicit user action — same as 🔄 Refresh
+    preview: () => refreshPreview({ force: true }),   // explicit user action — same as Refresh
     shortcuts: () => setShowShortcutHUD(true),
   };
   useEffect(() => {
@@ -2472,12 +2472,12 @@ export default function FaceSwap({
               <Button key={name} size="sm"
                 variant={activePreset === name ? 'primary' : 'secondary'}
                 onClick={() => applyPreset(name)}>
-                {name === 'Fast' ? '⚡ Fast' : name === 'Balanced' ? '⚖️ Balanced' : '💎 Quality'}
+                {name}
               </Button>
             ))}
             <Button size="sm" variant="secondary" onClick={saveAsDefault}
               title="Save the current Face Swap tab settings as your default. 'Reset defaults' will restore to this.">
-              ⭐ Save as default
+              Save as default
             </Button>
             <Button size="sm" variant="secondary" onClick={resetToDefaults}
               title={userDefaults
@@ -2488,7 +2488,7 @@ export default function FaceSwap({
             {userDefaults && (
               <Button size="sm" variant="secondary" onClick={clearUserDefault}
                 title="Forget your saved default and go back to the factory defaults">
-                🗑️ Clear my default
+                Clear my default
               </Button>
             )}
           </div>
@@ -2506,7 +2506,7 @@ export default function FaceSwap({
             className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
             {advisorBusy
               ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Analyzing target…</>)
-              : '🧭 Analyze target & recommend settings'}
+              : 'Analyze target & recommend settings'}
           </button>
           {advice && (
             <div className="space-y-2 mt-2">
@@ -2568,7 +2568,7 @@ export default function FaceSwap({
               className="w-full py-2 rounded-lg text-note font-bold bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
               {liveBusy
                 ? (<><span className="h-3 w-3 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" /> Opening camera…</>)
-                : '📷 Start live camera'}
+                : 'Start live camera'}
             </button>
           ) : (
             <>
@@ -2629,23 +2629,23 @@ export default function FaceSwap({
             value={num(p.face_detector_nms, 0.40)}
             onChange={(v) => set('face_detector_nms', v)}
           />
-          <Toggle label="🎯 Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points — more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
+          <Toggle label="Refine alignment (68-pt)" info="Derives the alignment keypoints from the 68-point landmark model instead of the detector's raw 5 points — more stable alignment on angled faces, less residual swap wobble. Small per-face cost." checked={!!p.refine_landmarks} onChange={(v) => set('refine_landmarks', v)} />
           <Select label="↔️ Profile alignment (90° faces)" info="Near-profile faces (~70°+ yaw) only — frontal and mid-angle faces are bit-identical in every mode. At high yaw both eyes project to almost the same point, so the normal 5-point fit against a frontal template is ill-conditioned. 'stabilize' takes the crop rotation from the eye→mouth axis, which stops head NOD leaking into in-plane roll (±25° of nod at 90° yaw otherwise swings the crop ~30°); this is a TEMPORAL fix — it reduces wobble across frames, so judge it on video, not on a still. 'pose' goes further and replaces the template with a head projected at the estimated yaw, cutting the fit error ~60%; geometrically cleaner, but the swap models were trained on frontally-aligned crops, so verify it visually before trusting it." value={p.yaw_align || 'off'} onChange={(v) => set('yaw_align', v)} options={['off', 'stabilize', 'pose']} />
-          <Toggle label="🔬 Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
+          <Toggle label="Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
           <Select label="Post-processing enhancer" info="The single most expensive stage in a render — about 36% of total time — so this choice costs more than any other on this panel. Measured on an RTX 4070, TensorRT FP16, one 512² face, isolated (±15% run to run): GFPGAN v1.4 ~12ms, GPEN-512 ~18ms, CodeFormer ~22ms, RestoreFormer++ ~23ms. Because the swap phase runs the GPU at ~98%, those ratios carry straight through: GFPGAN is roughly HALF the cost of RestoreFormer++, worth ~18% off the whole render, and GPEN-512 ~8%. That is a quality trade, not a free win — GFPGAN is the older restorer and tends to look smoother and less detailed, while RestoreFormer++ and CodeFormer hold more texture. Cost is measured; which one looks better on your footage is yours to judge. GPEN 1024/2048 are heavier still and not in this comparison." value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
           <Slider label="Max face distance" info="How far from your captured target face a detected face may sit and still be swapped. This is a DISTANCE, not a similarity — 0 means identical and HIGHER IS MORE PERMISSIVE, so raising it makes look-alikes and bystanders start getting swapped. Scale is scipy cosine distance (0–2). Measured on a hard clip: the SAME person stays under ~0.66 even on bad frames, while DIFFERENT people sit at ~0.93–1.07. The 0.75 default sits mid-gap. Lower it toward 0.66 if the swap jumps to the wrong person mid-shot; raise it toward 0.85 if the swap blinks off on profiles and motion blur. Run with ROOP_DEBUG_MATCH=1 to print the real per-frame distances." min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.75)} onChange={(v) => set('max_face_distance', v)} />
           <Select label="Subsample upscale" value={p.subsample_upscale} onChange={(v) => set('subsample_upscale', v)} options={meta.upscale} />
-          <Toggle label="🔎 AI upscale (after swap)" info="Runs an AI upscaler as the final step of the swap pass — each frame is swapped & enhanced first, then upscaled, producing a single output file (no second pass). Full-frame upscaling is heavy: ×4 on video is slow and VRAM-hungry." checked={!!p.upscale_after_swap} onChange={(v) => set('upscale_after_swap', v)} />
+          <Toggle label="AI upscale (after swap)" info="Runs an AI upscaler as the final step of the swap pass — each frame is swapped & enhanced first, then upscaled, producing a single output file (no second pass). Full-frame upscaling is heavy: ×4 on video is slow and VRAM-hungry." checked={!!p.upscale_after_swap} onChange={(v) => set('upscale_after_swap', v)} />
           {p.upscale_after_swap && (
             <Select label="AI upscale model" value={p.upscale_model_after} onChange={(v) => set('upscale_model_after', v)} options={AI_UPSCALE_MODELS} />
           )}
-          <Select label="🎞 Frame interpolation (after swap)" info="Raises the output frame rate with motion-interpolated in-between frames as the final pass (after any upscale). RIFE = AI motion interpolation (recommended, fast); minterpolate = classical ffmpeg motion estimation (no model, much slower). Duration is unchanged — frame count and fps are multiplied together, audio untouched." value={p.interp_after_swap || 'off'} onChange={(v) => set('interp_after_swap', v)}
+          <Select label="Frame interpolation (after swap)" info="Raises the output frame rate with motion-interpolated in-between frames as the final pass (after any upscale). RIFE = AI motion interpolation (recommended, fast); minterpolate = classical ffmpeg motion estimation (no model, much slower). Duration is unchanged — frame count and fps are multiplied together, audio untouched." value={p.interp_after_swap || 'off'} onChange={(v) => set('interp_after_swap', v)}
             options={[{ value: 'off', label: 'Off' }, { value: 'rife_2x', label: 'RIFE ×2 fps' }, { value: 'rife_4x', label: 'RIFE ×4 fps' }, { value: 'minterpolate_2x', label: 'ffmpeg minterpolate ×2' }]} />
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl']} />
           <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
           <Slider label="Skin detail transfer" info="Adds the ORIGINAL footage's real high-frequency texture (pores, stubble, grain) onto the swapped face. The generator smooths skin and the enhancer fakes flickery pores; this uses genuine detail from the scene instead. 0 = off. Start ~0.3–0.5; too high reintroduces the target's skin identity." min={0} max={1} step={0.05} value={num(p.detail_transfer_strength, 0)} onChange={(v) => set('detail_transfer_strength', v)} />
-          <Slider label="😀 Expression restore" info="Puts the TARGET's own expression back onto the swapped face using LivePortrait. Swappers pull faces toward the average expression of their training data, so laughing, crying and grimacing come out flattened — this reads the expression off the original frame and re-applies it. 0 = off (bit-exact no-op). Try ~0.8–1.0; above 1 exaggerates past the original, which helps when the swap compressed an expression rather than removed it. Only the expression moves — head pose cannot drift by construction. Downloads ~537MB on first use and measured ~0.33s per face on TensorRT, so it roughly doubles a slow render; needs TensorRT, since onnxruntime's CUDA GridSample cannot run this model and the CPU fallback is ~1.9s per face." min={0} max={2} step={0.05} value={num(p.expression_restore_strength, 0)} onChange={(v) => set('expression_restore_strength', v)} />
+          <Slider label="Expression restore" info="Puts the TARGET's own expression back onto the swapped face using LivePortrait. Swappers pull faces toward the average expression of their training data, so laughing, crying and grimacing come out flattened — this reads the expression off the original frame and re-applies it. 0 = off (bit-exact no-op). Try ~0.8–1.0; above 1 exaggerates past the original, which helps when the swap compressed an expression rather than removed it. Only the expression moves — head pose cannot drift by construction. Downloads ~537MB on first use and measured ~0.33s per face on TensorRT, so it roughly doubles a slow render; needs TensorRT, since onnxruntime's CUDA GridSample cannot run this model and the CPU fallback is ~1.9s per face." min={0} max={2} step={0.05} value={num(p.expression_restore_strength, 0)} onChange={(v) => set('expression_restore_strength', v)} />
           {num(p.expression_restore_strength, 0) > 0 && (
             <Select label="Expression region" info="Which part of the face the restored expression is applied to. 'lips' is the usual choice for speech and laughing; 'eyes' for blinks and squinting; 'all' transfers everything including brow and jaw." value={p.expression_restore_region || 'all'} onChange={(v) => set('expression_restore_region', v)} options={['all', 'lips', 'eyes']} />
           )}
@@ -2673,13 +2673,13 @@ export default function FaceSwap({
           <Slider label="Mouth mask left" min={0} max={2} step={0.01} value={num(p.mouth_left_scale, 1)} onChange={(v) => set('mouth_left_scale', v)} />
           <Slider label="Mouth mask right" min={0} max={2} step={0.01} value={num(p.mouth_right_scale, 1)} onChange={(v) => set('mouth_right_scale', v)} />
           <Slider label="Mouth mask edge blend" min={0} max={200} step={1} value={num(p.mouth_mask_blend, 10)} onChange={(v) => set('mouth_mask_blend', v)} />
-          <Toggle label="🧊 3D source pose matching" info="Only affects image-source swappers (BlendSwap / UniFace) — feeds them a pose-matched source crop. Has NO effect on inswapper/ghost/hyperswap/simswap (their identity vector is pose-invariant, so warping the source would only degrade it)." checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
-          <Toggle label="🎯 Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
+          <Toggle label="3D source pose matching" info="Only affects image-source swappers (BlendSwap / UniFace) — feeds them a pose-matched source crop. Has NO effect on inswapper/ghost/hyperswap/simswap (their identity vector is pose-invariant, so warping the source would only degrade it)." checked={!!p.use_3d_recon} onChange={(v) => set('use_3d_recon', v)} />
+          <Toggle label="Multi-angle source bank" info="auto-pick best source per frame" checked={!!p.use_source_bank} onChange={(v) => set('use_source_bank', v)} />
           <Toggle label="↔️ Frontalize angled faces" info="Un-rotates steep profile/side (lateral) faces before swapping so they don't come out distorted/'alien', then restores the original angle." checked={!!p.use_frontalization} onChange={(v) => set('use_frontalization', v)} />
           {p.use_frontalization && (
             <Slider label="Frontalize above angle (°)" info="Frontalization kicks in when the face yaw/pitch exceeds this. Lower = frontalize more; higher = only the steepest." min={10} max={60} step={5} value={num(p.frontalization_threshold, 30)} onChange={(v) => set('frontalization_threshold', v)} />
           )}
-          <Toggle label="🧬 Reshape jaw/chin to source" info="Identity swappers (inswapper/hyperswap/reswapper…) keep the TARGET's jaw & chin bone structure. This warps the swapped face's lower-silhouette toward your SOURCE person's jaw/chin shape after the swap (a smooth liquify — no re-swap, so swap quality is untouched). Best for moderate shape differences; very large changes can distort the neck/background near the jaw. Landmark jitter is smoothed when Temporal detection is on." checked={!!p.jaw_reshape} onChange={(v) => set('jaw_reshape', v)} />
+          <Toggle label="Reshape jaw/chin to source" info="Identity swappers (inswapper/hyperswap/reswapper…) keep the TARGET's jaw & chin bone structure. This warps the swapped face's lower-silhouette toward your SOURCE person's jaw/chin shape after the swap (a smooth liquify — no re-swap, so swap quality is untouched). Best for moderate shape differences; very large changes can distort the neck/background near the jaw. Landmark jitter is smoothed when Temporal detection is on." checked={!!p.jaw_reshape} onChange={(v) => set('jaw_reshape', v)} />
           {p.jaw_reshape && (
             <Slider label="Jaw reshape strength" info="0 = off (target's jaw), 1 = full source jaw/chin shape. Start around 0.4–0.6 and back off if the chin looks distorted." min={0} max={1} step={0.05} value={num(p.jaw_reshape_strength, 0.5)} onChange={(v) => set('jaw_reshape_strength', v)} />
           )}
@@ -2688,9 +2688,9 @@ export default function FaceSwap({
         <Section title="Video parameters">
           <Select label="Video method" value={p.video_swapping_method} onChange={(v) => set('video_swapping_method', v)} options={meta.video_methods} />
           <Select label="On no face detected" value={p.no_face_action} onChange={(v) => set('no_face_action', v)} options={meta.no_face_actions} />
-          <Toggle label="🛡️ Temporal detection (anti-flicker)" info="Video (In-Memory method): one tracked detection pre-pass over the clip. Short detection misses (≤10 frames) are gap-filled by interpolating the face's position, so the swap can't blink out; with 'Stabilize face' also on, keypoints AND mask/mouth landmarks are smoothed per person. The swap pass then skips per-frame detection and stays multi-threaded. Includes identity locking when that toggle is on." checked={!!p.temporal_detection} onChange={(v) => set('temporal_detection', v)} />
+          <Toggle label="Temporal detection (anti-flicker)" info="Video (In-Memory method): one tracked detection pre-pass over the clip. Short detection misses (≤10 frames) are gap-filled by interpolating the face's position, so the swap can't blink out; with 'Stabilize face' also on, keypoints AND mask/mouth landmarks are smoothed per person. The swap pass then skips per-frame detection and stays multi-threaded. Includes identity locking when that toggle is on." checked={!!p.temporal_detection} onChange={(v) => set('temporal_detection', v)} />
           <Toggle label="VR mode" checked={!!p.vr_mode} onChange={(v) => set('vr_mode', v)} />
-          <Toggle label="✨ Reduce enhancer flicker" info="Temporally blends the enhanced face. Runs multi-threaded (work-stealing) when the launcher's ROOP_STAB_PARALLEL is on (the Pinokio default) — otherwise it forces single-thread. Either way it costs some extra compute (blending + per-block warm-up), so it's somewhat slower, not free." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
+          <Toggle label="Reduce enhancer flicker" info="Temporally blends the enhanced face. Runs multi-threaded (work-stealing) when the launcher's ROOP_STAB_PARALLEL is on (the Pinokio default) — otherwise it forces single-thread. Either way it costs some extra compute (blending + per-block warm-up), so it's somewhat slower, not free." checked={!!p.stabilize_enhancer} onChange={(v) => set('stabilize_enhancer', v)} />
           {p.stabilize_enhancer && (
             <Slider label="Flicker reduction strength" info="higher = smoother" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
@@ -2711,7 +2711,7 @@ export default function FaceSwap({
               <div className="flex-1 min-w-[120px]">
                 <TextInput label="Save active settings as:" value={newProfileName} onChange={setNewProfileName} placeholder="My Preset Name" />
               </div>
-              <Button size="sm" onClick={saveProfile}>💾 Save</Button>
+              <Button size="sm" onClick={saveProfile}>Save</Button>
             </div>
             {profiles.length > 0 && (
               <div className="space-y-2 mt-3">
@@ -2727,16 +2727,16 @@ export default function FaceSwap({
               </div>
             )}
             <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
-              <Button size="xs" variant="secondary" onClick={exportProfiles}>📤 Export Presets</Button>
+              <Button size="xs" variant="secondary" onClick={exportProfiles}>Export Presets</Button>
               <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
-                📥 Import Presets
+                Import Presets
                 <input type="file" accept=".json" onChange={importProfiles} className="sr-only" />
               </label>
             </div>
             <div className="flex flex-wrap gap-2 mt-2">
-              <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">🔗 Share Recipe</Button>
+              <Button size="xs" variant="secondary" onClick={exportRecipe} className="!text-[var(--accent)]">Share Recipe</Button>
               <label className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 hover:text-white cursor-pointer transition-all active:scale-95 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
-                📂 Load Recipe
+                Load Recipe
                 <input type="file" accept=".json" onChange={importRecipe} className="sr-only" />
               </label>
             </div>
@@ -2816,7 +2816,7 @@ export default function FaceSwap({
               </div>
             )}
             <div className="mt-3 flex justify-between items-center">
-              <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>⌨️ Keyboard Shortcuts Info</Button>
+              <Button size="sm" variant="secondary" onClick={() => setShowShortcutHUD(true)}>Keyboard Shortcuts Info</Button>
             </div>
           </Section>
         </div>
@@ -2854,8 +2854,8 @@ export default function FaceSwap({
           </Section>
 
           <Section title="Enhancements">
-            <Toggle label="🔒 Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
-            <Toggle label="🎯 Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
+            <Toggle label="Lock face identities (video)" info="For 'Selected face' mode on video: tracks each person across the clip and keeps them on one source, so identities don't flip frame-to-frame when faces cross or turn. Adds a short tracking pre-pass; the swap stays multi-threaded." checked={!!p.track_identities} onChange={(v) => set('track_identities', v)} />
+            <Toggle label="Stabilize face (video)" info="Temporal keypoint smoothing — reduces swap wobble. Runs at Max Threads (2-pass) unless Enhancer Flicker is on." checked={!!p.stabilize_face} onChange={(v) => set('stabilize_face', v)} />
             {p.stabilize_face && (
               <>
                 <Select label="Smoothing method" info="One Euro = adaptive (best jitter-vs-lag). EMA = simpler fixed smoothing." value={p.stabilize_method || 'one_euro'} onChange={(v) => set('stabilize_method', v)} options={['one_euro', 'ema']} />
@@ -2910,7 +2910,7 @@ export default function FaceSwap({
                   }
                   const isVideo = t.frames > 1;
                   const duration = isVideo && t.fps ? (t.frames / t.fps).toFixed(1) : null;
-                  const typeIcon = isVideo ? '🎥' : '🖼️';
+                  const TypeIcon = isVideo ? Icon.film : Icon.still;
                   return (
                     <div key={i}
                       className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm border transition-all duration-200 cursor-pointer ${selTarget === i ? 'bg-[var(--accent)]/10 border-[var(--accent)]/40' : 'bg-white/[0.02] border-white/[0.06] hover:border-white/15 hover:bg-white/[0.04]'}`}
@@ -2924,7 +2924,10 @@ export default function FaceSwap({
                         className="w-12 h-9 shrink-0 rounded-lg object-cover bg-black/40 border border-white/10"
                         onError={(e) => { e.target.style.display = 'none'; if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'block'; }}
                       />
-                      <div className="text-base shrink-0 opacity-75 hidden">{typeIcon}</div>
+                      {/* Revealed by the <img>'s onError above (it sets
+                          display:block on its nextElementSibling), so this is
+                          the fallback when a thumbnail cannot be decoded. */}
+                      <div className="shrink-0 opacity-75 hidden text-white/50"><TypeIcon size={16} /></div>
                       <div className="flex-1 min-w-0">
                         <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
                         <div className="flex items-center gap-2 mt-0.5 text-micro font-medium text-white/40">
@@ -2968,15 +2971,15 @@ export default function FaceSwap({
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>❌ Remove</Button>
-                <Button size="sm" variant="secondary" title="Set each tile to the most frontal face in its set" onClick={() => sourceAction('/api/source/refresh_thumbs', {})}>🙂 Frontal thumb</Button>
+                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>Remove</Button>
+                <Button size="sm" variant="secondary" title="Set each tile to the most frontal face in its set" onClick={() => sourceAction('/api/source/refresh_thumbs', {})}>Frontal thumb</Button>
                 <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
               </div>
               
               {sourceFacesInfo[selSource] && (
                 <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 text-xs select-none">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-micro uppercase tracking-[0.14em] text-white/50">📁 Selected source details</span>
+                    <span className="font-semibold text-micro uppercase tracking-[0.14em] text-white/50">Selected source details</span>
                     <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-micro text-[var(--accent)] font-bold border border-[var(--accent)]/20">
                       {sourceFacesInfo[selSource].count > 1 ? `${sourceFacesInfo[selSource].count} Reference Faces` : 'Single Face'}
                     </span>
@@ -3126,7 +3129,7 @@ export default function FaceSwap({
                   <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
                   {maxFrames > 1 && (
                     <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
-                      ⚡ Render 5s Preview
+                      Render 5s Preview
                     </Button>
                   )}
                 </div>
@@ -3344,7 +3347,7 @@ export default function FaceSwap({
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">📊 Compare Enhancers (Select up to 4)</span>
+                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Enhancers (Select up to 4)</span>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -3391,7 +3394,7 @@ export default function FaceSwap({
                     {/* Mask-engine selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🎭 Compare Mask Engines (Select up to 4)</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Mask Engines (Select up to 4)</span>
                         <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -3440,7 +3443,7 @@ export default function FaceSwap({
                     {/* Swapper-model selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🔀 Compare Swapper Models (Select up to 4)</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Swapper Models (Select up to 4)</span>
                         <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -3489,7 +3492,7 @@ export default function FaceSwap({
                     {/* AI-upscaler selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">🔎 Compare AI Upscalers (Select up to 4)</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare AI Upscalers (Select up to 4)</span>
                         <span className="text-micro text-white/30">Swaps once, then upscales each</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -3578,8 +3581,8 @@ export default function FaceSwap({
                   ];
                   return (
                     <div className="relative flex flex-col items-center gap-4 text-center px-6 w-full max-w-sm">
-                      <div className={`grid place-items-center h-14 w-14 rounded-2xl border text-2xl ${ready ? 'bg-emerald-500/10 border-emerald-500/25' : 'bg-[var(--accent)]/10 border-[var(--accent)]/20'}`}>
-                        {ready ? '✨' : '🎭'}
+                      <div className={`grid place-items-center h-14 w-14 rounded-2xl border ${ready ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400/80' : 'bg-[var(--accent)]/10 border-[var(--accent)]/20 text-[var(--accent)]/80'}`}>
+                        {ready ? <Icon.full size={24} /> : <Icon.faceswap size={24} />}
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-white/85">{ready ? 'Ready to preview' : 'No preview yet'}</div>
@@ -3664,24 +3667,24 @@ export default function FaceSwap({
                 which is exactly what must not happen mid-run, so they go away
                 with everything else while a job is running. */}
             <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''} ${progress.processing ? 'hidden' : ''}`}>
-              <Button size="sm" variant="secondary" title="Re-run the swap for this frame, ignoring the cached result" onClick={() => refreshPreview({ force: true })}>🔄 Refresh</Button>
+              <Button size="sm" variant="secondary" title="Re-run the swap for this frame, ignoring the cached result" onClick={() => refreshPreview({ force: true })}>Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
               {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
                 <Button size="sm" variant="secondary" disabled={upscaling} onClick={upscaleThisFrame}
                   title="AI-upscale just this frame to preview final quality">
-                  {upscaling ? '🔎 Upscaling…' : `🔎 Upscale this frame (${AI_UPSCALE_MODELS.find(m => m.value === (p.upscale_model_after || 'esrganx2'))?.label || 'AI'})`}
+                  {upscaling ? 'Upscaling…' : `Upscale this frame (${AI_UPSCALE_MODELS.find(m => m.value === (p.upscale_model_after || 'esrganx2'))?.label || 'AI'})`}
                 </Button>
               )}
             </div>
 
             <div className={`flex items-center flex-wrap gap-3 ${progress.processing ? 'hidden' : ''}`}>
-              <Toggle label="✨ Live Swap" checked={fakePreview} onChange={setFakePreview} />
-              <Toggle label="🔍 Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
+              <Toggle label="Live Swap" checked={fakePreview} onChange={setFakePreview} />
+              <Toggle label="Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
-              <Toggle label="📊 Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
-              <Toggle label="🎭 Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
-              <Toggle label="🔀 Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingUpscalers(false); } }} />
-              <Toggle label="🔎 Upscale Grid" checked={comparingUpscalers} onChange={(v) => { setComparingUpscalers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } }} />
+              <Toggle label="Enhancer Grid" checked={comparingEnhancers} onChange={(v) => { setComparingEnhancers(v); if (v) { setCompare(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
+              <Toggle label="Mask Grid" checked={comparingMasks} onChange={(v) => { setComparingMasks(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
+              <Toggle label="Swapper Grid" checked={comparingSwappers} onChange={(v) => { setComparingSwappers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingUpscalers(false); } }} />
+              <Toggle label="Upscale Grid" checked={comparingUpscalers} onChange={(v) => { setComparingUpscalers(v); if (v) { setCompare(false); setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); } }} />
             </div>
           </Section>
 
@@ -3699,7 +3702,7 @@ export default function FaceSwap({
               >
                 <div className="flex items-center justify-between gap-4 px-4 py-2.5 border-b border-white/10">
                   <span className="text-xs font-semibold text-white/80">
-                    🔎 Upscaled frame{upscaledDims ? ` · ${upscaledDims.w}×${upscaledDims.h}` : ''}
+                    Upscaled frame{upscaledDims ? ` · ${upscaledDims.w}×${upscaledDims.h}` : ''}
                   </span>
                   <div className="flex items-center gap-2">
                     <a
@@ -3793,7 +3796,7 @@ export default function FaceSwap({
                   <div className="flex flex-wrap gap-2">
                     <a href={outUrl} download
                       className="inline-block px-3 py-1.5 rounded-xl text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-bold transition-colors">⬇ Download</a>
-                    <Button size="sm" variant="secondary" onClick={revealOutput}>📂 Open folder</Button>
+                    <Button size="sm" variant="secondary" onClick={revealOutput}>Open folder</Button>
                   </div>
                   <QualityReport outputPath={out.path} notify={notify} />
                 </div>
@@ -3808,11 +3811,11 @@ export default function FaceSwap({
       {pastedFiles && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center animate-slide-up">
           <Card className="p-6 max-w-md w-full border border-white/10 shadow-2xl flex flex-col gap-4 text-center">
-            <h3 className="text-lg font-bold text-white">📋 Clipboard/Dropped File</h3>
+            <h3 className="text-lg font-bold text-white">Clipboard/Dropped File</h3>
             <p className="text-sm text-white/60">Would you like to load <span className="font-semibold text-white">{pastedFiles[0]?.name}</span> as a Source Face or Target Media?</p>
             <div className="flex gap-3 justify-center mt-2">
-              <Button variant="primary" onClick={() => { onAddSource(pastedFiles); setPastedFiles(null); }}>🎭 Source Face</Button>
-              <Button variant="secondary" onClick={() => { onAddTarget(pastedFiles); setPastedFiles(null); }}>🎞️ Target Media</Button>
+              <Button variant="primary" onClick={() => { onAddSource(pastedFiles); setPastedFiles(null); }}>Source Face</Button>
+              <Button variant="secondary" onClick={() => { onAddTarget(pastedFiles); setPastedFiles(null); }}>Target Media</Button>
               <Button variant="stop" onClick={() => setPastedFiles(null)}>Cancel</Button>
             </div>
           </Card>
@@ -3826,7 +3829,7 @@ export default function FaceSwap({
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center animate-slide-up" onClick={() => setShowShortcutHUD(false)}>
           <Card className="p-6 max-w-lg w-full border border-white/10 shadow-2xl flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">⌨️ Pro Keyboard Shortcuts</h3>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">Pro Keyboard Shortcuts</h3>
               <Button size="sm" variant="ghost" onClick={() => setShowShortcutHUD(false)}>✕</Button>
             </div>
             <div className="grid grid-cols-2 gap-x-8 gap-y-5 py-2 text-sm text-white/80">

@@ -64,10 +64,10 @@ function Label({ side, file, entry }) {
 }
 
 const MODES = [
-  { id: 'slider', label: '✂️ Slider', hint: 'Wipe between them' },
+  { id: 'slider', label: 'Slider', hint: 'Wipe between them' },
   { id: 'side', label: '⬍ Side by side', hint: 'Both in full' },
-  { id: 'blend', label: '🌓 Blend', hint: 'Cross-fade' },
-  { id: 'diff', label: '⚡ Difference', hint: 'Where they differ at all' },
+  { id: 'blend', label: 'Blend', hint: 'Cross-fade' },
+  { id: 'diff', label: 'Difference', hint: 'Where they differ at all' },
 ];
 
 export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, onClose, onSwap }) {

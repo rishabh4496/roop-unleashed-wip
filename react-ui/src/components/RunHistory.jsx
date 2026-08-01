@@ -3,6 +3,7 @@ import { getJSON, postJSON, fileUrl } from '../api';
 import { Button, Card } from './ui';
 import { confirmDialog } from './confirm';
 import { LABELS, CHIP_KEYS, fmtDur, fmtVal, primitives, diffSettings } from './settingsDiff';
+import { Icon } from '../icons';
 
 /**
  * Run History — a browsable record of every completed swap.
@@ -129,10 +130,10 @@ export default function RunHistory({ notify, setSettings, setTab }) {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-white/90">🕐 Run History</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/90">Run History</h2>
           <p className="text-sm text-white/50">Every completed swap, with the settings and speed it ran at. Pick two to compare.</p>
         </div>
-        <Button variant="secondary" onClick={load} disabled={loading}>🔄 Refresh</Button>
+        <Button variant="secondary" onClick={load} disabled={loading}>Refresh</Button>
       </div>
 
       {/* Summary strip */}
@@ -169,7 +170,7 @@ export default function RunHistory({ notify, setSettings, setTab }) {
 
       {!loading && entries.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-white/10 rounded-2xl text-center">
-          <span className="text-4xl mb-2">🕐</span>
+          <Icon.history size={34} className="mb-2 text-white/20" />
           <span className="text-white/60 text-sm font-medium">No runs recorded yet</span>
           <span className="text-white/35 text-xs mt-1">Finish a swap and it will appear here with its settings and timing.</span>
         </div>
@@ -244,7 +245,7 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
                    className="w-full h-full object-contain" />
             )
           ) : (
-            <span className="text-white/20 text-2xl">{allDeleted ? '🗑️' : '🎬'}</span>
+            <span className="text-white/20">{allDeleted ? <Icon.trash size={22} /> : <Icon.film size={22} />}</span>
           )}
         </div>
 
@@ -305,7 +306,7 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
             {liveName && (
               <button type="button" onClick={() => onReveal(liveName)}
                       className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
-                📁 Reveal
+                Reveal
               </button>
             )}
             <button type="button" onClick={onDelete}

@@ -242,15 +242,15 @@ export default function Gallery({ notify, setSettings, setTab }) {
       {/* Upper header action bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-white/90">📂 Outputs</h2>
+          <h2 className="text-xl font-bold tracking-tight text-white/90">Outputs</h2>
           <p className="text-sm text-white/50">Browse, manage, and reuse files from the output folder.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={fetchOutputs} disabled={loading}>
-            🔄 Refresh
+            Refresh
           </Button>
           <Button variant="primary" onClick={revealFolder}>
-            📁 Reveal Folder
+            Reveal Folder
           </Button>
         </div>
       </div>
@@ -276,7 +276,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
               }`}
               title="Grid View"
             >
-              🖼️ Grid
+              Grid
             </button>
             <button
               type="button"
@@ -345,7 +345,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                 className="px-2.5 py-1 rounded bg-[var(--accent)]/20 hover:bg-[var(--accent)]/30 border border-[var(--accent)]/40 text-white text-micro font-bold transition-all animate-fade-in flex items-center gap-1"
                 title="Compare these two renders side by side"
               >
-                <span>🔍 Compare A/B</span>
+                <span>Compare A/B</span>
               </button>
             )}
             {selectedVisible.length > 0 && (
@@ -354,7 +354,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                 onClick={bulkDelete}
                 className="px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-micro font-bold transition-all animate-fade-in flex items-center gap-1"
               >
-                <span>🗑️ Delete Selected ({selectedVisible.length})</span>
+                <span>Delete Selected ({selectedVisible.length})</span>
               </button>
             )}
           </div>
@@ -372,7 +372,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
       {/* Empty state */}
       {!loading && filteredFiles.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-white/10 rounded-2xl">
-          <span className="text-4xl mb-2">📁</span>
+          <Icon.outputs size={34} className="mb-2 text-white/20" />
           <span className="text-white/50 text-sm">No files found matching the criteria.</span>
         </div>
       )}
@@ -443,7 +443,9 @@ export default function Gallery({ notify, setSettings, setTab }) {
                           />
                         </td>
                         <td className="p-3 font-semibold text-white/90 truncate max-w-xs flex items-center gap-2">
-                          <span className="text-base shrink-0">{file.kind === 'video' ? '🎬' : '🖼️'}</span>
+                          {file.kind === 'video'
+                            ? <Icon.film size={15} className="text-white/40" />
+                            : <Icon.still size={15} className="text-white/40" />}
                           <a href={srcUrl} target="_blank" rel="noreferrer" className="hover:text-[var(--accent)] truncate" title={file.name}>
                             {file.name}
                           </a>
@@ -460,7 +462,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                                 className="px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-micro font-bold"
                                 title="Re-apply run settings"
                               >
-                                ⚙️ Preset
+                                Preset
                               </button>
                             )}
                             <button
@@ -470,7 +472,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                               className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-micro font-bold"
                               title="Reuse as Target"
                             >
-                              🎯 Target
+                              Target
                             </button>
                             <button
                               type="button"
@@ -479,7 +481,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
                               className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-white/80 text-micro font-bold"
                               title="Extract Face as Source"
                             >
-                              👤 Source
+                              Source
                             </button>
                             <button
                               type="button"
@@ -602,7 +604,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
             className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-102"
           />
           ) : (
-            <div className="w-full h-full flex items-center justify-center text-white/15 text-3xl">🎬</div>
+            <div className="w-full h-full flex items-center justify-center text-white/15"><Icon.film size={30} /></div>
           )
         ) : (
           <img
@@ -616,7 +618,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
         {/* Video badge */}
         {isVideo && (
           <span className="absolute top-2 right-2 bg-black/70 px-2 py-0.5 rounded text-micro font-semibold text-white tracking-wider pointer-events-none z-10 flex items-center gap-1 border border-white/5">
-            🎬 Video
+            Video
           </span>
         )}
 
@@ -630,7 +632,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
               disabled={isBusy}
               className="flex-1 justify-center whitespace-nowrap"
             >
-              🎯 Set Target
+              Set Target
             </Button>
             <Button
               size="sm"
@@ -639,7 +641,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
               disabled={isBusy}
               className="flex-1 justify-center whitespace-nowrap"
             >
-              👥 Extract Faces
+              Extract Faces
             </Button>
           </div>
           <div className="flex gap-2 w-full max-w-[200px]">
@@ -650,7 +652,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
               disabled={isBusy}
               className="flex-1 justify-center"
             >
-              📁 Reveal
+              Reveal
             </Button>
             <a
               href={srcUrl}
@@ -670,7 +672,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
                 title={`Re-apply the exact settings this file was rendered with (${historyEntry.settings?.swap_model || ''} · ${historyEntry.settings?.selected_enhancer || 'no enhancer'})`}
                 className="w-full justify-center whitespace-nowrap"
               >
-                ⚙️ Load run settings
+                Load run settings
               </Button>
             </div>
           )}
@@ -699,7 +701,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
             disabled={isBusy}
             className="text-mini font-bold text-white/30 hover:text-red-400 cursor-pointer transition-colors"
           >
-            🗑️ Delete
+            Delete
           </button>
         </div>
       </div>

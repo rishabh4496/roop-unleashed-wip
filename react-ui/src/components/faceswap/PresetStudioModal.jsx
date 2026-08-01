@@ -27,7 +27,7 @@ export default function PresetStudioModal({
   const CURATED_RECIPES = [
     {
       id: 'cinematic_4k',
-      title: '🎬 Cinematic 4K Ultra',
+      title: 'Cinematic 4K Ultra',
       desc: 'Maximum fidelity. GPEN 1024 face restore, Real-ESRGAN ×4 second pass, temporal anti-flicker and enhancer stabilisation.',
       badge: 'PRO QUALITY',
       color: 'from-amber-500/20 to-orange-500/20 border-amber-500/40 text-amber-300',
@@ -46,7 +46,7 @@ export default function PresetStudioModal({
     },
     {
       id: 'fast_draft',
-      title: '⚡ Fast Live Draft',
+      title: 'Fast Live Draft',
       desc: 'Optimised for turnaround. No face restore, no second pass, no temporal pre-pass — the fastest honest preview of the swap itself.',
       badge: 'HIGH SPEED',
       color: 'from-blue-500/20 to-cyan-500/20 border-blue-500/40 text-blue-300',
@@ -63,7 +63,7 @@ export default function PresetStudioModal({
     },
     {
       id: 'anime_art',
-      title: '🎨 Anime & Stylized Art',
+      title: 'Anime & Stylized Art',
       desc: 'For illustration and anime: Real-ESRGAN Anime ×4 second pass, XSeg masking, no colour transfer to keep flat shading intact.',
       badge: 'ART & ANIME',
       color: 'from-pink-500/20 to-purple-500/20 border-pink-500/40 text-pink-300',
@@ -79,7 +79,7 @@ export default function PresetStudioModal({
     },
     {
       id: 'group_scene',
-      title: '👥 Multi-Person Crowd',
+      title: 'Multi-Person Crowd',
       desc: 'Scenes with several people: identity locking on, temporal gap-fill on, and frames with no match left untouched instead of guessed.',
       badge: 'MULTI-FACE',
       color: 'from-emerald-500/20 to-teal-500/20 border-emerald-500/40 text-emerald-300',
@@ -118,7 +118,6 @@ export default function PresetStudioModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-neutral-950/60">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">✨</span>
             <div>
               <h2 className="text-lg font-bold text-white">Preset Studio & Recipe Manager</h2>
               <p className="text-xs text-neutral-400">Curated 1-click quality recipes & configuration diff inspector</p>
@@ -210,10 +209,10 @@ export default function PresetStudioModal({
                   className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all"
                   title="Export active settings as JSON recipe"
                 >
-                  📤 Export
+                  Export
                 </button>
                 <label className="cursor-pointer px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/5 border border-white/10 text-neutral-300 hover:bg-white/10 hover:text-white transition-all focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
-                  📥 Import
+                  Import
                   <input type="file" accept=".json" onChange={onImportRecipe} className="sr-only" />
                 </label>
               </div>
@@ -226,7 +225,7 @@ export default function PresetStudioModal({
                 }}
                 className="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-indigo-500/20 hover:scale-105 active:scale-95 transition-all"
               >
-                Apply Recipe ✨
+                Apply Recipe
               </button>
             </div>
           </div>

@@ -120,7 +120,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
           className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur border border-white/10 text-mini font-bold text-white/80 hover:text-white hover:border-white/30 transition-all"
           title="Reset zoom (or double-click)"
         >
-          🔍 {zoom.toFixed(1)}× — Reset
+          {zoom.toFixed(1)}× — Reset
         </button>
       )}
       {zoom === 1 && items.length > 0 && (

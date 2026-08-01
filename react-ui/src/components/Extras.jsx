@@ -11,7 +11,7 @@ const OP_LABELS = {
   colorize: { deoldify_artistic: 'DeOldify (Artistic)', deoldify_stable: 'DeOldify (Stable)' },
   filter: { stylize: 'Stylize', detailenhance: 'Detail Enhance', pencil: 'Pencil Sketch', cartoon: 'Cartoon', C64: 'C64 Palette' },
 };
-const OP_TITLES = { upscale: '🔎 AI Upscale', colorize: '🎨 Colorize (B&W → color)', filter: '🖌️ Stylize Filter' };
+const OP_TITLES = { upscale: 'AI Upscale', colorize: 'Colorize (B&W → color)', filter: 'Stylize Filter' };
 
 export default function Extras({ notify, registerFileListener }) {
   const [file, setFile] = useState(null);
@@ -108,7 +108,7 @@ export default function Extras({ notify, registerFileListener }) {
         <Section title="Input & transform">
           <label className="block cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
             <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60 mb-4">
-              📁 {fileName || 'Pick an image or video'}
+              {fileName || 'Pick an image or video'}
             </div>
             <input type="file" accept="image/*,video/*" onChange={onPick} className="sr-only" />
           </label>

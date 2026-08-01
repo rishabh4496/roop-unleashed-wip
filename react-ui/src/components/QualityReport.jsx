@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { postJSON } from '../api';
 import { AnimatedNumber } from './ui';
+import { Icon } from '../icons';
 
 const scoreColor = (s) => (s >= 80 ? '#10b981' : s >= 60 ? 'var(--accent)' : s >= 40 ? '#f59e0b' : '#ef4444');
 const gradeColor = (g) => ({ A: '#10b981', B: '#34d399', C: '#f59e0b', D: '#f97316', E: '#ef4444' }[g] || '#9ca3af');
@@ -45,7 +46,7 @@ export default function QualityReport({ outputPath, notify }) {
     return (
       <button type="button" onClick={analyze}
         className="w-full mt-1 py-2.5 rounded-xl text-xs font-bold bg-white/[0.03] border border-white/10 text-white/70 hover:border-[var(--accent)]/40 hover:text-white transition-colors">
-        📊 Analyze quality of this result
+        Analyze quality of this result
       </button>
     );
   }
@@ -62,7 +63,7 @@ export default function QualityReport({ outputPath, notify }) {
   if (err) {
     return (
       <div className="mt-1 p-3 rounded-xl bg-black/30 border border-white/5 flex items-center justify-between gap-2">
-        <span className="text-xs text-white/50">⚠️ {err}</span>
+        <span className="text-xs text-white/50 flex items-center gap-1.5"><Icon.warning size={13} className="text-amber-400/80" /> {err}</span>
         <button type="button" onClick={analyze} className="text-mini font-bold text-[var(--accent)] hover:underline shrink-0">Retry</button>
       </div>
     );
@@ -119,7 +120,7 @@ export default function QualityReport({ outputPath, notify }) {
         <span className="text-nano text-white/25 leading-tight max-w-[70%]">
           Heuristic scores from re-detecting faces in the output. Load the source for likeness.
         </span>
-        <button type="button" onClick={analyze} className="text-mini font-bold text-white/50 hover:text-white shrink-0">🔄 Re-analyze</button>
+        <button type="button" onClick={analyze} className="text-mini font-bold text-white/50 hover:text-white shrink-0">Re-analyze</button>
       </div>
     </div>
   );

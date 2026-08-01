@@ -572,7 +572,7 @@ export default function InteractivePreview({
                 : 'hud-glass-button text-white/80 hover:text-white'
             }`}
           >
-            <span>🎭 Compare Faces</span>
+            <span>Compare Faces</span>
             {compare && <span className="text-nano bg-black/40 px-1 rounded font-mono">{Math.round(sliderPosition)}%</span>}
           </button>
         )}
@@ -591,7 +591,7 @@ export default function InteractivePreview({
               : 'hud-glass-button text-white/70'
           }`}
         >
-          👁️ Hold Peek
+          Hold Peek
         </button>
 
         <span className="w-px h-5 bg-white/10 mx-1" />
@@ -607,7 +607,7 @@ export default function InteractivePreview({
               : 'hud-glass-button text-white/70'
           }`}
         >
-          🔍 Lens
+          Lens
         </button>
         )}
 
@@ -622,7 +622,7 @@ export default function InteractivePreview({
               : 'hud-glass-button text-white/70'
           }`}
         >
-          🖌️ Mask Brush
+          Mask Brush
         </button>
         )}
 
@@ -709,12 +709,12 @@ export default function InteractivePreview({
       )}
       {magnifierActive && !splitMode && (
         <span className="rounded-lg bg-cyan-500/20 text-cyan-300 backdrop-blur-md px-2 py-1 text-nano font-bold uppercase tracking-wider border border-cyan-400/30">
-          🔍 Magnifier Lens (3.5×)
+          Magnifier Lens (3.5×)
         </span>
       )}
       {maskBrushActive && !splitMode && (
         <span className="rounded-lg bg-pink-500/20 text-pink-300 backdrop-blur-md px-2 py-1 text-nano font-bold uppercase tracking-wider border border-pink-400/30">
-          🖌️ Mask Brush Active ({brushMode})
+          Mask Brush Active ({brushMode})
         </span>
       )}
     </div>
@@ -811,7 +811,7 @@ export default function InteractivePreview({
             }`}
             title="Split Slider mode"
           >
-            ✂️ Split
+            Split
           </button>
           <button
             type="button"
@@ -821,7 +821,7 @@ export default function InteractivePreview({
             }`}
             title="Opacity Blend mode (O)"
           >
-            🌓 Blend
+            Blend
           </button>
           <button
             type="button"
@@ -831,7 +831,7 @@ export default function InteractivePreview({
             }`}
             title="Difference Map mode"
           >
-            ⚡ Diff
+            Diff
           </button>
 
           {compareMode === 'slider' && (
@@ -896,7 +896,7 @@ export default function InteractivePreview({
               brushMode === 'paint' ? 'bg-pink-500 text-white' : 'bg-white/10 text-white/70'
             }`}
           >
-            🖌️ Paint
+            Paint
           </button>
           <button
             type="button"
@@ -905,7 +905,7 @@ export default function InteractivePreview({
               brushMode === 'erase' ? 'bg-amber-500 text-black' : 'bg-white/10 text-white/70'
             }`}
           >
-            🧹 Erase
+            Erase
           </button>
           <div className="flex items-center gap-1.5 px-2 border-l border-white/10">
             <span className="text-nano font-mono text-white/50 uppercase font-bold">Size:</span>
@@ -937,7 +937,7 @@ export default function InteractivePreview({
               }`}
               title="Send the painted region to the swap — painted areas keep the ORIGINAL face"
             >
-              {maskApplied ? '✓ Mask Applied' : '✅ Apply Mask'}
+              {maskApplied ? '✓ Mask Applied' : 'Apply Mask'}
             </button>
           )}
         </div>

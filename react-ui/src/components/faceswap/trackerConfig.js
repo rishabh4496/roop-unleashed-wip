@@ -15,7 +15,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'blend_ratio',
     label: 'Original / Enhanced Blend',
-    icon: '🧪',
     min: 0,
     max: 1,
     step: 0.01,
@@ -27,7 +26,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'detail_transfer_strength',
     label: 'Skin Detail Transfer',
-    icon: '✨',
     min: 0,
     max: 1,
     step: 0.05,
@@ -39,7 +37,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'expression_restore_strength',
     label: 'Expression Restore',
-    icon: '😀',
     min: 0,
     max: 2,
     step: 0.05,
@@ -51,7 +48,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'face_mask_blend',
     label: 'Face Mask Edge Blend',
-    icon: '🎭',
     min: 0,
     max: 200,
     step: 1,
@@ -63,7 +59,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'max_face_distance',
     label: 'Max Face Distance',
-    icon: '🎯',
     min: 0.01,
     max: 1,
     step: 0.01,
@@ -80,7 +75,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'num_swap_steps',
     label: 'Swapping Steps',
-    icon: '⚡',
     min: 1,
     max: 5,
     step: 1,
@@ -92,7 +86,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'jaw_reshape_strength',
     label: 'Jaw Reshape Strength',
-    icon: '🗿',
     min: 0,
     max: 1,
     step: 0.05,
@@ -104,7 +97,6 @@ export const TRACKER_SLIDERS = [
   {
     key: 'stabilize_enhancer_strength',
     label: 'Flicker Reduction',
-    icon: '🎬',
     min: 0,
     max: 1,
     step: 0.05,
