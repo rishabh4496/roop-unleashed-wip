@@ -139,18 +139,42 @@ export const InfoBadge = ({ info }) => (
   </span>
 );
 
-export const Field = ({ label, info, children }) => (
+// Marks a control whose value differs from what a fresh install would have, and
+// offers a one-click revert. Both props are optional, so every existing call
+// site is unaffected — only Settings, which knows the defaults, passes them.
+//
+// Not a plain icon button: `title` alone is invisible to a screen reader and
+// slow to a sighted user, so the accessible name names the SETTING being
+// reverted rather than saying "reset" thirty times in a row.
+export const ResetMark = ({ label, onReset }) => (
+  <button
+    type="button"
+    onClick={(e) => { e.preventDefault(); onReset(); }}
+    title={`Changed from default — click to reset${label ? ` “${label}”` : ''}`}
+    aria-label={label ? `Reset ${label} to default` : 'Reset to default'}
+    className="shrink-0 mt-0.5 inline-flex items-center gap-1 px-1.5 h-4.5 rounded-full bg-[var(--accent)]/12 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/25 apple-transition group/reset"
+  >
+    <span className="h-1 w-1 rounded-full bg-[var(--accent)] group-hover/reset:hidden" />
+    <Icon.reset size={9} className="hidden group-hover/reset:block" />
+    <span className="text-nano font-bold tracking-wide">MOD</span>
+  </button>
+);
+
+export const Field = ({ label, info, children, modified, onReset }) => (
   <label className="block">
     <div className="flex items-start justify-between gap-2 mb-1.5">
       <span className="text-xs font-medium text-white/70 leading-snug min-w-0">{label}</span>
-      {info && <InfoBadge info={info} />}
+      <span className="flex items-start gap-1.5 shrink-0">
+        {modified && onReset && <ResetMark label={label} onReset={onReset} />}
+        {info && <InfoBadge info={info} />}
+      </span>
     </div>
     {children}
   </label>
 );
 
-export const Select = ({ label, info, value, onChange, options = [] }) => (
-  <Field label={label} info={info}>
+export const Select = ({ label, info, value, onChange, options = [], modified, onReset }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset}>
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
@@ -166,8 +190,8 @@ export const Select = ({ label, info, value, onChange, options = [] }) => (
   </Field>
 );
 
-export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 0.01 }) => (
-  <Field label={label} info={info}>
+export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 0.01, modified, onReset }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset}>
     <div className="flex items-center gap-3">
       <input
         type="range"
@@ -187,7 +211,7 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
 // the Face Swap panel) impossible to reach or operate from the keyboard at all.
 // sr-only keeps it invisible but focusable, and `peer` carries its focus state
 // out to the switch so the ring lands on the thing the eye is looking at.
-export const Toggle = ({ label, info, checked, onChange }) => (
+export const Toggle = ({ label, info, checked, onChange, modified, onReset }) => (
   <label className="flex items-start justify-between gap-3 w-full text-left cursor-pointer group/toggle select-none">
     <input
       type="checkbox"
@@ -197,6 +221,7 @@ export const Toggle = ({ label, info, checked, onChange }) => (
     />
     <span className="flex items-start gap-1.5 min-w-0 flex-1">
       <span className="text-compact font-semibold tracking-wide leading-snug text-white/80 group-hover/toggle:text-white transition-colors">{label}</span>
+      {modified && onReset && <ResetMark label={label} onReset={onReset} />}
       {info && <InfoBadge info={info} />}
     </span>
     <motion.span
@@ -214,8 +239,8 @@ export const Toggle = ({ label, info, checked, onChange }) => (
   </label>
 );
 
-export const TextInput = ({ label, info, value, onChange, placeholder, type = 'text' }) => (
-  <Field label={label} info={info}>
+export const TextInput = ({ label, info, value, onChange, placeholder, type = 'text', modified, onReset }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset}>
     <input
       type={type}
       value={value ?? ''}

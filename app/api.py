@@ -383,6 +383,26 @@ def get_settings():
     return {}
 
 
+@app.get("/api/settings/defaults")
+def get_settings_defaults():
+    """The values a fresh install would have, for the UI's "changed" markers.
+
+    Settings.load() falls back to its hardcoded default for every key it cannot
+    read out of the config file, so pointing a throwaway instance at a path that
+    does not exist yields exactly the default set — no duplicated table to drift
+    out of step with the real one. Nothing is written: only load() runs.
+
+    A couple of defaults are computed rather than constant (max_threads scales
+    with VRAM), which is the right answer here too — "default" means what this
+    machine would have started with.
+    """
+    from settings import Settings
+    try:
+        return Settings(os.path.join(os.path.dirname(__file__), '__nonexistent_defaults__.yaml')).__dict__
+    except Exception:
+        return {}
+
+
 @app.post("/api/settings")
 def save_settings(settings: dict = Body(...)):
     _update_mask_offsets_from_payload(settings)

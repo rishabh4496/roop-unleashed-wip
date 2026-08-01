@@ -1,26 +1,56 @@
-import React, { useState } from 'react';
-import { postJSON } from '../api';
+import React, { useEffect, useState } from 'react';
+import { getJSON, postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
 import ThemeStudio from './ThemeStudio';
 import { allThemes } from '../themes';
+import { fmtVal } from './settingsDiff';
+import { confirmDialog } from './confirm';
 import { Icon } from '../icons';
 
-// A Section that participates in the settings search: with a query active it
-// keeps only the controls whose label/info match (or the whole section when the
-// section title itself matches), and hides itself when nothing matches. With no
-// query it behaves exactly like a plain Section.
-function FilterSection({ title, query, children, ...rest }) {
+// A Section that participates in the settings search and the "only changed"
+// filter. With either active it keeps just the controls that match (or the
+// whole section when its own title matches the query), and hides itself when
+// nothing is left. With neither it behaves exactly like a plain Section.
+//
+// It also surfaces a per-section reset, which is why it inspects `settingKey`:
+// the section is the natural unit for "put this group back how it was", and
+// deriving the key list from the children means it cannot fall out of step with
+// the controls actually rendered.
+function FilterSection({ title, query, onlyModified, onResetKeys, children, ...rest }) {
   const q = (query || '').trim().toLowerCase();
-  if (!q) return <Section title={title} {...rest}>{children}</Section>;
-  const titleMatch = title.toLowerCase().includes(q);
-  const kids = React.Children.toArray(children).filter((c) => {
-    if (titleMatch) return true;
+  const titleMatch = !!q && title.toLowerCase().includes(q);
+  const all = React.Children.toArray(children);
+
+  const kids = all.filter((c) => {
     const pr = (c && c.props) || {};
+    if (onlyModified && !pr.modified) return false;
+    if (!q || titleMatch) return true;
     return [pr.label, pr.info].some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
   });
   if (kids.length === 0) return null;
-  return <Section title={title} {...rest}>{kids}</Section>;
+
+  // Reset offers the section's FULL key set, not just what survived filtering —
+  // resetting "everything in Output" should not silently depend on what a
+  // search box happens to be showing.
+  const modifiedKeys = all
+    .map((c) => c?.props)
+    .filter((pr) => pr?.modified && pr?.settingKey)
+    .map((pr) => pr.settingKey);
+
+  const action = modifiedKeys.length > 0 && onResetKeys ? (
+    <button
+      type="button"
+      onClick={() => onResetKeys(modifiedKeys, title)}
+      title={`Reset the ${modifiedKeys.length} changed setting${modifiedKeys.length === 1 ? '' : 's'} in ${title}`}
+      className="flex items-center gap-1 px-2 py-1 rounded-lg text-nano font-bold tracking-wide text-white/45 hover:text-[var(--accent)] bg-white/[0.04] hover:bg-[var(--accent)]/12 border border-white/10 hover:border-[var(--accent)]/30 apple-transition"
+    >
+      <Icon.reset size={10} />
+      {modifiedKeys.length}
+    </button>
+  ) : null;
+
+  return <Section title={title} action={action} {...rest}>{kids}</Section>;
 }
 
 export default function Settings({ meta, settings, setSettings, notify }) {
@@ -38,6 +68,67 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   };
   const [query, setQuery] = useState('');
   const [studio, setStudio] = useState({ open: false, initial: null });
+
+  // ── Drift from defaults ──────────────────────────────────────────────────
+  // With this many knobs — three pool sizes, encoder presets, NVDEC, detector
+  // thresholds — the useful question after an evening of tuning is "what have I
+  // actually changed?", and nothing answered it. The backend reports what a
+  // fresh install would hold (see /api/settings/defaults, which instantiates
+  // Settings against a path that does not exist rather than duplicating the
+  // table), so the comparison cannot drift from the real defaults.
+  //
+  // An older backend has no such route; `defaults` then stays null and every
+  // marker, chip and reset below simply does not render.
+  const [defaults, setDefaults] = useState(null);
+  const [onlyModified, setOnlyModified] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getJSON('/api/settings/defaults')
+      .then((d) => { if (live) setDefaults(d && typeof d === 'object' ? d : null); })
+      .catch(() => { /* pre-restart backend — markers stay off */ });
+    return () => { live = false; };
+  }, []);
+
+  // fmtVal normalises the comparison the same way the run-history diff does, so
+  // 14 and "14" — which YAML and a number input disagree about — do not read as
+  // a change. Non-primitives (custom_themes) are never marked.
+  const isModified = (k) => {
+    if (!defaults || !(k in defaults)) return false;
+    const cur = p[k];
+    if (cur !== null && !['string', 'number', 'boolean'].includes(typeof cur)) return false;
+    return fmtVal(cur) !== fmtVal(defaults[k]);
+  };
+
+  const resetKeys = (keys, what) => {
+    if (!defaults) return;
+    const patch = {};
+    keys.forEach((k) => { if (k in defaults) patch[k] = defaults[k]; });
+    if (Object.keys(patch).length === 0) return;
+    setMany(patch);
+    notify(`Reset ${what || `${Object.keys(patch).length} setting(s)`} to default`, 'info');
+  };
+
+  // Everything a control binds to, in one place, so `bind` can hand a control
+  // its value, its change handler, its modified marker and its reset together —
+  // and so the key is present on the element for FilterSection to collect.
+  const bind = (k, fallback) => ({
+    settingKey: k,
+    value: p[k] ?? (defaults ? defaults[k] : fallback) ?? fallback,
+    onChange: (v) => set(k, v),
+    modified: isModified(k),
+    onReset: () => resetKeys([k]),
+  });
+  const bindToggle = (k) => ({
+    settingKey: k,
+    checked: !!p[k],
+    onChange: (v) => set(k, v),
+    modified: isModified(k),
+    onReset: () => resetKeys([k]),
+  });
+
+  const modifiedCount = defaults
+    ? Object.keys(defaults).filter((k) => isModified(k)).length
+    : 0;
 
   const customThemes = Array.isArray(p.custom_themes) ? p.custom_themes : [];
   const darkNames = allThemes(customThemes).filter((t) => t.mode !== 'light').map((t) => t.name);
@@ -86,25 +177,66 @@ export default function Settings({ meta, settings, setSettings, notify }) {
 
   return (
     <div className="space-y-6">
-      <div className="relative max-w-md">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none"><Icon.search size={14} /></span>
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search settings… (e.g. thread, nvenc, codec)"
-          aria-label="Search settings"
-          className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none placeholder:text-white/25"
-        />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[16rem] max-w-md">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none"><Icon.search size={14} /></span>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings… (e.g. thread, nvenc, codec)"
+            aria-label="Search settings"
+            className="w-full pl-9 pr-3 py-2.5 rounded-xl glass-input text-white text-compact focus:outline-none placeholder:text-white/25"
+          />
+        </div>
+
+        {/* Only meaningful once something HAS drifted, so it stays out of the
+            way on a stock install rather than sitting there reading "0". */}
+        {modifiedCount > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setOnlyModified((v) => !v)}
+              aria-pressed={onlyModified}
+              title={onlyModified ? 'Show all settings' : 'Show only settings you have changed'}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-mini font-semibold border apple-transition ${
+                onlyModified
+                  ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-[var(--accent)]'
+                  : 'bg-white/[0.04] border-white/10 text-white/55 hover:text-white hover:border-white/20'
+              }`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+              {modifiedCount} changed
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (await confirmDialog({
+                  title: 'Reset all settings?',
+                  message: `Put all ${modifiedCount} changed settings back to their defaults. Your themes and loaded media are not affected.`,
+                  confirmLabel: 'Reset all',
+                  danger: true,
+                })) {
+                  resetKeys(Object.keys(defaults).filter((k) => isModified(k)), 'all settings');
+                  setOnlyModified(false);
+                }
+              }}
+              title="Reset every changed setting to its default"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 apple-transition"
+            >
+              <Icon.reset size={12} /> Reset all
+            </button>
+          </>
+        )}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
-        <FilterSection title="Server" query={query}>
-          <Toggle label="Public server (share)" checked={!!p.server_share} onChange={(v) => set('server_share', v)} />
-          <Toggle label="Clear output folder before each run" checked={!!p.clear_output} onChange={(v) => set('clear_output', v)} />
-          <TextInput label="Server name" info="blank = local" value={p.server_name} onChange={(v) => set('server_name', v)} placeholder="127.0.0.1" />
-          <TextInput label="Server port" info="0 = default" type="number" value={p.server_port} onChange={(v) => set('server_port', v)} />
-          <TextInput label="Filename output template" info="{file} {time} {date} {i} {timestamp}" value={p.output_template} onChange={(v) => set('output_template', v)} placeholder="{file}_{timestamp}" />
-          <TextInput label="Faceset library folder" info="Where saved facesets live. Blank = app/facesets. Point at a cloud folder (OneDrive/Dropbox/Google Drive) to sync facesets across devices." value={p.faceset_library_path || ''} onChange={(v) => set('faceset_library_path', v)} placeholder="e.g. C:\Users\you\OneDrive\roop-facesets" />
+        <FilterSection title="Server" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+          <Toggle label="Public server (share)" {...bindToggle('server_share')} />
+          <Toggle label="Clear output folder before each run" {...bindToggle('clear_output')} />
+          <TextInput label="Server name" info="blank = local" {...bind('server_name', '')} placeholder="127.0.0.1" />
+          <TextInput label="Server port" info="0 = default" type="number" {...bind('server_port', 0)} />
+          <TextInput label="Filename output template" info="{file} {time} {date} {i} {timestamp}" {...bind('output_template', '')} placeholder="{file}_{timestamp}" />
+          <TextInput label="Faceset library folder" info="Where saved facesets live. Blank = app/facesets. Point at a cloud folder (OneDrive/Dropbox/Google Drive) to sync facesets across devices." {...bind('faceset_library_path', '')} placeholder="e.g. C:\Users\you\OneDrive\roop-facesets" />
         </FilterSection>
 
         {/* "Theme" belongs in the title: the search matches on a child's label
@@ -155,48 +287,46 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           />
         </FilterSection>
 
-        <FilterSection title="Performance" query={query}>
-          <Select label="Provider" info="Inference sessions are built at startup — provider and precision changes take effect after restarting the app." value={p.provider} onChange={(v) => set('provider', v)} options={meta.providers} />
+        <FilterSection title="Performance" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+          <Select label="Provider" info="Inference sessions are built at startup — provider and precision changes take effect after restarting the app." {...bind('provider')} options={meta.providers} />
           {p.provider === 'tensorrt' && (
-            <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." value={p.trt_precision ?? 'mixed'} onChange={(v) => set('trt_precision', v)} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
+            <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." {...bind('trt_precision', 'mixed')} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
           )}
-          <Toggle label="Force CPU for face analyser" checked={!!p.force_cpu} onChange={(v) => set('force_cpu', v)} />
+          <Toggle label="Force CPU for face analyser" {...bindToggle('force_cpu')} />
 
-          <Slider 
-            label="Face detection threshold" 
-            min={0.10} 
-            max={0.90} 
-            step={0.05} 
-            value={p.face_detector_threshold ?? 0.60} 
-            onChange={(v) => set('face_detector_threshold', v)} 
+          <Slider
+            label="Face detection threshold"
+            min={0.10}
+            max={0.90}
+            step={0.05}
+            {...bind('face_detector_threshold', 0.60)}
           />
-          <Slider 
-            label="Overlap NMS threshold" 
-            min={0.10} 
-            max={0.90} 
-            step={0.05} 
-            value={p.face_detector_nms ?? 0.40} 
-            onChange={(v) => set('face_detector_nms', v)} 
+          <Slider
+            label="Overlap NMS threshold"
+            min={0.10}
+            max={0.90}
+            step={0.05}
+            {...bind('face_detector_nms', 0.40)}
           />
-          <Slider label="Max threads" info="default 3" min={1} max={32} step={1} value={p.max_threads ?? 3} onChange={(v) => set('max_threads', v)} />
-          <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} value={p.memory_limit ?? 0} onChange={(v) => set('memory_limit', v)} />
+          <Slider label="Max threads" info="default 3" min={1} max={32} step={1} {...bind('max_threads', 3)} />
+          <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} {...bind('memory_limit', 0)} />
         </FilterSection>
 
-        <FilterSection title="Advanced performance (restart to apply)" query={query}>
+        <FilterSection title="Advanced performance (restart to apply)" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <p className="text-xs text-white/40 -mt-2">These override the launcher env and the VRAM auto-tuner. Leave on "auto" unless you know what you're tuning. Changes take effect after restarting the app.</p>
-          <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — TensorRT contexts for the SWAPPER only; it does not affect face detection. 'auto' selects by VRAM: <7GB = 0 (disabled), 7-11.5GB = 2, 11.5-15.5GB = 4, 15.5GB+ = 8. Lower this first if you need to free VRAM for another pool." value={p.perf_trt_pool || 'auto'} onChange={(v) => set('perf_trt_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
-          <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking, and the width of 'Analyzing faces'. LOWERING it slows that stage close to proportionally. DO NOT just raise it to match Max threads. Each instance carries its own model set plus a copy of the detector (retinaface_r50 is ~104MB), and on a 12GB card 8 does not fit alongside the swapper pool: measured, it ran out of VRAM and thrashed from 11.8 fps down to 0.5 and still falling, at 95% VRAM. The auto tier (12GB = 4) is chosen to leave that headroom. If you raise it, go one step at a time and watch VRAM — 5 or 6 may fit, 8 does not. Raising it only helps when the stage is DETECTION-bound. Check STAGE TIMING (ROOP_PROFILE=1): if track_decode per frame exceeds track_detect divided by this pool size, the stage is waiting on the video decoder instead and more instances buy nothing but VRAM." value={p.perf_detmask_pool || 'auto'} onChange={(v) => set('perf_detmask_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
-          <Select label="Expression pool" info="ROOP_EXPR_POOL — TensorRT contexts for the LivePortrait expression restorer, the most expensive per-face stage there is (a full re-render: 5 models, one of them a 421MB generator). Only allocated when expression restore is actually on. 'auto' is VRAM-tiered: below 11.5GB = 0 (single context), above = 2, which was measured +28% on the stage. Raise to 3 only if STAGE TIMING shows 'expression' total/wall-clock exceeding the slot count — i.e. threads queueing for a slot. Each slot is ~537MB of weights, the largest of any pool here." value={p.perf_expr_pool || 'auto'} onChange={(v) => set('perf_expr_pool', v)} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
-          <Select label="Encoder preset" info="ROOP_ENCODER_PRESET — Encoding speed preset. 'auto' selects: 'faster' for CPU encoders (libx264/libx265), and 'p5' (VBR HQ) for NVENC GPU encoders." value={p.perf_encoder_preset || 'auto'} onChange={(v) => set('perf_encoder_preset', v)} options={meta.encoder_presets || ['auto', 'faster', 'fast', 'medium']} />
-          <Select label="GPU video decode (NVDEC)" info="ROOP_NVDEC — Decode the source video on the GPU's dedicated NVDEC engine (ffmpeg -hwaccel cuda) instead of CPU cv2, speeding up the analysis pre-pass and the swap pass decode. 'auto'/'on' = enabled behind a per-file probe with automatic CPU fallback; 'off' = always CPU." value={p.perf_nvdec || 'auto'} onChange={(v) => set('perf_nvdec', v)} options={meta.tristate || ['auto', 'on', 'off']} />
-          <Select label="Batched swap" info="ROOP_BATCH_SWAP — Groups face tiles to process them in a single batched GPU pass. 'auto' defaults to 'on'." value={p.perf_batch_swap || 'auto'} onChange={(v) => set('perf_batch_swap', v)} options={meta.tristate || ['auto', 'on', 'off']} />
-          <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed performance execution breakdown in the terminal window. 'auto' defaults to 'on'." value={p.perf_profile || 'auto'} onChange={(v) => set('perf_profile', v)} options={meta.tristate || ['auto', 'on', 'off']} />
+          <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — TensorRT contexts for the SWAPPER only; it does not affect face detection. 'auto' selects by VRAM: <7GB = 0 (disabled), 7-11.5GB = 2, 11.5-15.5GB = 4, 15.5GB+ = 8. Lower this first if you need to free VRAM for another pool." {...bind('perf_trt_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
+          <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking, and the width of 'Analyzing faces'. LOWERING it slows that stage close to proportionally. DO NOT just raise it to match Max threads. Each instance carries its own model set plus a copy of the detector (retinaface_r50 is ~104MB), and on a 12GB card 8 does not fit alongside the swapper pool: measured, it ran out of VRAM and thrashed from 11.8 fps down to 0.5 and still falling, at 95% VRAM. The auto tier (12GB = 4) is chosen to leave that headroom. If you raise it, go one step at a time and watch VRAM — 5 or 6 may fit, 8 does not. Raising it only helps when the stage is DETECTION-bound. Check STAGE TIMING (ROOP_PROFILE=1): if track_decode per frame exceeds track_detect divided by this pool size, the stage is waiting on the video decoder instead and more instances buy nothing but VRAM." {...bind('perf_detmask_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
+          <Select label="Expression pool" info="ROOP_EXPR_POOL — TensorRT contexts for the LivePortrait expression restorer, the most expensive per-face stage there is (a full re-render: 5 models, one of them a 421MB generator). Only allocated when expression restore is actually on. 'auto' is VRAM-tiered: below 11.5GB = 0 (single context), above = 2, which was measured +28% on the stage. Raise to 3 only if STAGE TIMING shows 'expression' total/wall-clock exceeding the slot count — i.e. threads queueing for a slot. Each slot is ~537MB of weights, the largest of any pool here." {...bind('perf_expr_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
+          <Select label="Encoder preset" info="ROOP_ENCODER_PRESET — Encoding speed preset. 'auto' selects: 'faster' for CPU encoders (libx264/libx265), and 'p5' (VBR HQ) for NVENC GPU encoders." {...bind('perf_encoder_preset', 'auto')} options={meta.encoder_presets || ['auto', 'faster', 'fast', 'medium']} />
+          <Select label="GPU video decode (NVDEC)" info="ROOP_NVDEC — Decode the source video on the GPU's dedicated NVDEC engine (ffmpeg -hwaccel cuda) instead of CPU cv2, speeding up the analysis pre-pass and the swap pass decode. 'auto'/'on' = enabled behind a per-file probe with automatic CPU fallback; 'off' = always CPU." {...bind('perf_nvdec', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
+          <Select label="Batched swap" info="ROOP_BATCH_SWAP — Groups face tiles to process them in a single batched GPU pass. 'auto' defaults to 'on'." {...bind('perf_batch_swap', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
+          <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed performance execution breakdown in the terminal window. 'auto' defaults to 'on'." {...bind('perf_profile', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
         </FilterSection>
 
-        <FilterSection title="Output" query={query}>
-          <Select label="Image format" value={p.output_image_format} onChange={(v) => set('output_image_format', v)} options={meta.image_formats} />
-          <Select label="Video format" value={p.output_video_format} onChange={(v) => set('output_video_format', v)} options={meta.video_formats} />
-          <Select label="Video codec" value={p.output_video_codec} onChange={(v) => set('output_video_codec', v)} options={meta.video_codecs} />
+        <FilterSection title="Output" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+          <Select label="Image format" {...bind('output_image_format')} options={meta.image_formats} />
+          <Select label="Video format" {...bind('output_video_format')} options={meta.video_formats} />
+          <Select label="Video codec" {...bind('output_video_codec')} options={meta.video_codecs} />
           {(() => {
             // NVENC codecs use -cq (a different scale than libx264/265 -crf); the
             // same number produces a much bigger, near-lossless file on GPU encoders.
@@ -213,11 +343,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
               ? `NVENC uses -cq, not CRF: LOWER = bigger/near-lossless (14 is huge). Try ~23 for a normal-size file. Max ${qMax}.`
               : `default 14 (libx264/265 CRF: lower = bigger). Try ~23 for a normal-size file. Max ${qMax}.`;
             return (
-              <Slider label={qLabel} info={qInfo} min={0} max={qMax} step={1} value={Math.min(p.video_quality ?? 14, qMax)} onChange={(v) => set('video_quality', v)} />
+              <Slider label={qLabel} info={qInfo} min={0} max={qMax} step={1} {...bind('video_quality', 14)} value={Math.min(p.video_quality ?? 14, qMax)} />
             );
           })()}
-          <Toggle label="Use OS temp folder" checked={!!p.use_os_temp_folder} onChange={(v) => set('use_os_temp_folder', v)} />
-          <Toggle label="Show video in browser (re-encodes)" checked={!!p.output_show_video} onChange={(v) => set('output_show_video', v)} />
+          <Toggle label="Use OS temp folder" {...bindToggle('use_os_temp_folder')} />
+          <Toggle label="Show video in browser (re-encodes)" {...bindToggle('output_show_video')} />
         </FilterSection>
       </div>
 

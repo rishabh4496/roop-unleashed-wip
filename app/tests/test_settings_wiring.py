@@ -208,7 +208,12 @@ class TestPerfKnobWiring(unittest.TestCase):
 
     def _jsx_perf_keys(self):
         src = (REPO / "react-ui" / "src" / "components" / "Settings.jsx").read_text(encoding="utf-8")
-        return set(re.findall(r"set\('(perf_[a-z_0-9]+)'", src))
+        # Settings.jsx binds a control to its key through `bind('key')` /
+        # `bindToggle('key')`, which also carries the default-drift marker and
+        # the per-control reset. A bare `set('key', v)` is still used for the
+        # handful of writes that are not a single bound control (theme edits),
+        # so both shapes count as "the UI can change this".
+        return set(re.findall(r"\b(?:bind|bindToggle|set)\(\s*'(perf_[a-z_0-9]+)'", src))
 
     def _settings_source(self):
         return (REPO / "app" / "settings.py").read_text(encoding="utf-8")
