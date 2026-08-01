@@ -960,7 +960,14 @@ html[data-render-lite] .animate-scanner-sweep {
 
 .glass-input:focus {
   border-color: var(--accent);
-  background: rgba(0, 0, 0, 0.4);
+  /* Was a hardcoded rgba(0,0,0,0.4), which is only right for a dark theme. On a
+     light one, focusing an input turned its background dark while `color` above
+     stayed the theme's DARK ink — so the text you were typing went nearly
+     invisible at the moment you started typing it. A `select` happened to
+     escape that, but only because the light-theme block used to force its
+     background with !important; that crutch is gone now, so the fix belongs
+     here. The default keeps every dark theme byte-for-byte identical. */
+  background: var(--input-bg-focus, rgba(0, 0, 0, 0.4));
   box-shadow: 0 0 0 3px var(--input-focus);
 }
 
@@ -1016,6 +1023,11 @@ input[type="range"]::-webkit-slider-thumb:active {
 .theme-latte-light,
 .theme-sepia-light {
   --color-white: var(--text-main);
+
+  /* Focusing an input must not darken it on a light page — see .glass-input
+     :focus. Slightly brighter than the resting --input-bg so focus still reads
+     as a state change. */
+  --input-bg-focus: rgba(255, 255, 255, 0.92);
 
   /* Surfaces that stay dark in EVERY theme: media scrims, the preview HUD, and
      the handful of hardcoded near-black panels. A dark scrim over a photo is
