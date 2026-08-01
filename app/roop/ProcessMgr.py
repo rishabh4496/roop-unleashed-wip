@@ -833,6 +833,25 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         self._post_sentinels(queues, num_threads, 'ProcessMgr/webp')
 
 
+    def _worker_done(self, threadindex):
+        """Retire this worker: tell the writer, and never block doing it.
+
+        The writer is the only consumer of processed_queue. When it has died —
+        which is the case every other guard here exists for — an unbounded put of
+        this end-marker parks the worker for good, and the main thread sits in
+        as_completed behind it. The marker only matters to a writer that is still
+        running, and a running writer drains within milliseconds.
+        """
+        self.processing_threads -= 1
+        deadline = time.perf_counter() + 10.0
+        while True:
+            try:
+                self.processed_queue[threadindex].put((False, None), timeout=0.1)
+                return
+            except _QueueFull:
+                if not roop.globals.processing or time.perf_counter() > deadline:
+                    return
+
     def process_videoframes(self, threadindex, progress) -> None:
         while True:
             # Bounded, because a sentinel is not guaranteed to arrive.
@@ -850,8 +869,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     if not roop.globals.processing:
                         break
             if item is None:
-                self.processing_threads -= 1
-                self.processed_queue[threadindex].put((False, None))
+                self._worker_done(threadindex)
                 return
             else:
                 frame_idx, frame = item
@@ -880,8 +898,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                                 self.frames_queue[threadindex].get_nowait()
                         except Exception:
                             pass
-                        self.processing_threads -= 1
-                        self.processed_queue[threadindex].put((False, None))
+                        self._worker_done(threadindex)
                         roop.globals.processing = False
                         raise
                 except Exception:
@@ -892,8 +909,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             self.frames_queue[threadindex].get_nowait()
                     except Exception:
                         pass
-                    self.processing_threads -= 1
-                    self.processed_queue[threadindex].put((False, None))
+                    self._worker_done(threadindex)
                     roop.globals.processing = False
                     raise
                 # Bounded: the writer is the only consumer, and if it has died
@@ -915,7 +931,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
 
         try:
             while True:
-                process, frame = self.processed_queue[nextindex % self.num_threads].get()
+                # Bounded so this thread reliably ENDS. run_batch_inmem joins it
+                # with a timeout and then closes the videowriter — and its own
+                # comment warns that closing the pipe while a write_frame is in
+                # flight corrupts the temp file. A worker that failed to deliver
+                # its end-marker would leave this get() blocked past that join,
+                # which is exactly the race the join was meant to prevent.
+                process = frame = None
+                got = False
+                while not got:
+                    try:
+                        process, frame = self.processed_queue[
+                            nextindex % self.num_threads].get(timeout=0.5)
+                        got = True
+                    except _QueueEmpty:
+                        if not roop.globals.processing:
+                            return
                 nextindex += 1
                 if frame is not None:
                     with _prof('encode'):
@@ -1415,6 +1446,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         prefetch_q = Queue(2)
 
         def _reader():
+            # Everything below is wrapped so the sentinel in the finally is sent
+            # on EVERY exit path. Decoding can raise — a corrupt frame, a cv2
+            # error, an ffmpeg pipe that closed — and without this the thread
+            # would die silently with the consumer parked on prefetch_q.get()
+            # forever. Same hang as a dropped sentinel, reached from the other
+            # direction.
+            try:
+                _read_loop()
+            except Exception as exc:
+                bar_write(f'[Stabilize] frame reader failed: '
+                          f'{type(exc).__name__}: {exc}')
+                roop.globals.processing = False
+            finally:
+                _send_sentinel()
+
+        def _read_loop():
             while roop.globals.processing:
                 # Pause: stop reading new frames while paused
                 while getattr(roop.globals, 'pause', False) and roop.globals.processing:
@@ -1440,6 +1487,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                             break
                 if not roop.globals.processing:
                     break
+
+        def _send_sentinel():
             # The sentinel is how the consumer learns the stream ended, so it must
             # be DELIVERED, not merely attempted. A bounded attempt that gives up
             # is worse than a blocking one: the reader exits, and the consumer
