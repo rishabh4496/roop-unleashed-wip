@@ -17,6 +17,46 @@ def _alpha(t_e, cutoff):
     return r / (r + 1.0)
 
 
+# Warm-up frames needed before a filter's seed stops showing in its output.
+#
+# Parallel stabilization splits a clip into contiguous blocks and gives each
+# block its own filter, seeded from the first frame it sees rather than from the
+# true history. Every one of these filters is an EMA
+# (`out = a*x + (1-a)*prev`), so that wrong seed decays geometrically: after W
+# frames its weight is exactly (1-a)^W. Priming each block with W frames it then
+# discards is what makes a block boundary seam-free — and W is not a taste
+# parameter, it is fixed by `a` and the error you are willing to leave behind.
+#
+# A single hardcoded W cannot be right for every setting: `a` is derived from
+# the smoothing strength the user chose, and it varies enormously.
+#
+#     strength   a       (1-a)^4    W for <=1%
+#       0.00     0.725     0.57%        4
+#       0.50     0.580     3.10%        6
+#       0.75     0.430    10.57%        9
+#       1.00     0.112    62.28%       39
+#
+# So the old fixed WU=4 was right only at the weak end and left 62% of the seed
+# error at the strong end — a visible step at every block boundary, in the
+# configuration that asked for the MOST smoothing.
+_MAX_WARMUP = 240
+
+
+def ema_warmup_frames(alpha, eps=0.01):
+    """Frames for an EMA with factor `alpha` to forget its seed to <= `eps`.
+
+    Solves (1-alpha)^W <= eps. Capped: alpha near 0 is a filter that effectively
+    never forgets, and no finite warm-up fixes it — the caller must fall back to
+    sequential rather than pretend.
+    """
+    a = float(alpha)
+    if a >= 1.0:
+        return 0            # no memory: the seed is gone after one frame
+    if a <= 0.0:
+        return _MAX_WARMUP  # never forgets
+    return min(_MAX_WARMUP, max(1, math.ceil(math.log(eps) / math.log(1.0 - a))))
+
+
 class OneEuroFilter:
     """Adaptive low-pass filter over an arbitrary-shaped numpy signal (elementwise)."""
 
@@ -61,6 +101,12 @@ class KpsStabilizer:
         self.match_scale = float(match_scale)  # match radius as a fraction of face size
         self.tracks = []                       # [{filter, centroid, last_t}]
 
+    def warmup_frames(self, eps=0.01):
+        """Warm-up for parallel stabilization. `beta` only ever RAISES the cutoff
+        on motion, which speeds convergence, so the still case (cutoff =
+        min_cutoff) is the worst case and the one to size for."""
+        return ema_warmup_frames(_alpha(1.0, self.min_cutoff), eps)
+
     def reset(self):
         self.tracks = []
 
@@ -100,6 +146,10 @@ class EmaKpsStabilizer:
         self.max_missing = int(max_missing)
         self.match_scale = float(match_scale)
         self.tracks = []
+
+    def warmup_frames(self, eps=0.01):
+        """Warm-up for parallel stabilization — a plain fixed-alpha EMA."""
+        return ema_warmup_frames(self.alpha, eps)
 
     def reset(self):
         self.tracks = []
@@ -151,6 +201,13 @@ class EnhancerStabilizer:
         self.max_missing = int(max_missing)
         self.match_scale = float(match_scale)
         self.tracks = []   # [{prev(float32 crop), centroid, last_t}]
+
+    def warmup_frames(self, eps=0.01):
+        """Warm-up for parallel stabilization. `motion_beta` only ever RAISES the
+        cutoff (faster convergence), so a still face — cutoff = base_cutoff — is
+        the worst case. This is the filter that scales hardest with the user's
+        strength setting: 4 frames at strength 0, 39 at strength 1."""
+        return ema_warmup_frames(_alpha(1.0, self.base_cutoff), eps)
 
     def reset(self):
         self.tracks = []

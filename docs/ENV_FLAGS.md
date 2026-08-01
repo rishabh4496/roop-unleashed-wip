@@ -30,10 +30,11 @@ Defaults below are what the code falls back to when the variable is unset.
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `ROOP_STAB_PARALLEL` | 0 | Run the enhancer flicker stabilizer multi-threaded (windowed contiguous blocks + warm-up). Opt-in / experimental. |
+| `ROOP_STAB_PARALLEL` | **1 (on)** | Run the flicker/kps stabilizers multi-threaded (contiguous blocks + derived warm-up). `0` restores the sequential path, which processes the whole clip on **one** thread — measured 2.5-3x slower on the swap pass. |
 | `ROOP_STAB_2PASS` | 1 (on) | Two-pass kps stabilization (precompute pass 1 + parallel lookup pass 2) when enhancer-stab is off. `0` disables. |
-| `ROOP_STAB_WARMUP` | 4 | Warm-up frames per parallel stabilization block. |
-| `ROOP_STAB_CHUNK` | auto | Frames per parallel stabilization chunk (auto = `max(threads*24, 192)`). |
+| `ROOP_STAB_WARMUP` | auto | Warm-up frames per parallel block. Auto solves `(1-a)^W <= 1%` from the filter's own smoothing factor: 4 frames at strength 0, 6 at 0.5, 39 at 1.0. It was a fixed 4, which left 62% of the seed at strength 1.0 — a step at every block boundary. Override only to A/B a suspected seam. |
+| `ROOP_STAB_CHUNK` | auto | Frames per parallel stabilization chunk (auto = `stab_width * max(4*warmup, 24)`, so each block is long enough to amortise its own warm-up). |
+| `ROOP_STAB_CHUNK_MB` | 1536 | Memory budget for the decoded-frame chunk. If `4*warmup` blocks won't fit for every thread, the run stabilises narrower rather than shortening blocks below their warm-up. |
 | `ROOP_STAB_BLOCKS_PER_THREAD` | 1 | >1 enables work-stealing dispatch to fix idle-thread imbalance in parallel stabilization. |
 
 ## Encoding / decoding

@@ -27,6 +27,11 @@ from threading import Thread, Lock, local
 _EXPR_BUILD_LOCK = Lock()
 from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
 
+# Above this, a stabilizer's warm-up is longer than any block we would be willing
+# to hold in memory, so parallel stabilization cannot be made seam-free and the
+# scheduler stays sequential instead. Same cap the derivation saturates at.
+from roop.one_euro import _MAX_WARMUP as _MAX_STAB_WARMUP
+
 
 # Per-frame diagnostic pose logging. Computing source yaw/pitch (estimate_pose)
 # every frame purely to print a line is wasted CPU in the hot loop and starves
@@ -494,6 +499,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             self._enh_stab_factory = None
         self._stab_active = False
         self._stab_t = 0
+        self._stab_warmup = 0
+        self._stab_frame_bytes = None   # set once the clip's dimensions are known
 
         # Only request the analysis sub-models actually needed → faster detection.
         # landmark_3d_68 (the 1k3d68 model, run per face on every frame) is consumed
@@ -898,7 +905,21 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
             self._kps_stab_factory = None
         _want_kps_stab = self.kps_stabilizer is not None
         _want_enh_stab = self.enh_stabilizer is not None
-        _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '0') == '1'
+        # Parallel stabilization is now the DEFAULT. Smoothing is sequential per
+        # face, not per clip, so a contiguous block primed with enough warm-up
+        # produces the same output as running the whole clip in order — and the
+        # warm-up needed for that is derived from the filter (see
+        # _stab_warmup_frames), not guessed. Turning it off costs 2-3x on the
+        # swap pass, measured, because the fallback is ONE thread.
+        # ROOP_STAB_PARALLEL=0 restores the sequential path.
+        _parallel_ok = os.environ.get('ROOP_STAB_PARALLEL', '1') != '0'
+        self._stab_warmup = self._stab_warmup_frames()
+        if _parallel_ok and self._stab_warmup >= _MAX_STAB_WARMUP:
+            # A filter this slow never forgets its seed within a bounded warm-up,
+            # so no block boundary can be made seam-free. Correctness wins.
+            print(f"[Stabilize] smoothing too slow to parallelise safely "
+                  f"(needs >{_MAX_STAB_WARMUP} warm-up frames) — staying sequential.")
+            _parallel_ok = False
         use_parallel_stab = (_want_kps_stab or _want_enh_stab) and threads > 1 and _parallel_ok
         _two_pass_ok = os.environ.get('ROOP_STAB_2PASS', '1') != '0'
         use_2pass = (not use_parallel_stab) and _want_kps_stab and not _want_enh_stab and threads > 1 and _two_pass_ok
@@ -947,6 +968,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         if processed_resolution is not None:
             width = processed_resolution[0]
             height = processed_resolution[1]
+
+        # Parallel stabilization buffers whole chunks of DECODED frames, so its
+        # memory budget is counted in frames of this size.
+        self._stab_frame_bytes = int(width) * int(height) * 3
 
         self.output_to_file = output_method != "Virtual Camera"
         self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
@@ -1155,20 +1180,88 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
         return b
 
 
+    def _stab_warmup_frames(self, eps=0.01):
+        """How many frames each parallel block must discard before its output is
+        trustworthy — asked of the filters themselves rather than hardcoded.
+
+        Every active stabilizer is primed from the wrong seed at a block start,
+        so the answer is the SLOWEST of them to forget: whichever needs the most
+        frames sets the boundary. `eps` is the residual weight of that seed we
+        accept at the boundary (1% by default), which is what "seam-free" means
+        here in a way that can actually be checked.
+
+        ROOP_STAB_WARMUP overrides, for A/B-ing a seam against the derivation.
+        """
+        raw = os.environ.get('ROOP_STAB_WARMUP')
+        if raw:
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                pass
+        need = 0
+        for stab in (self.kps_stabilizer, self.enh_stabilizer):
+            fn = getattr(stab, 'warmup_frames', None)
+            if fn is not None:
+                try:
+                    need = max(need, int(fn(eps)))
+                except Exception:
+                    need = max(need, _MAX_STAB_WARMUP)
+        return need
+
     def _run_stab_parallel(self, source_video, awebp_frames, frame_start, frame_end,
                            frame_count, threads, progress_cb):
-        """Parallel stabilization (opt-in). Decodes the clip in chunks sequentially
-        into memory (no seek → HEVC-safe), splits each chunk into contiguous
-        per-thread sub-blocks, and runs each sub-block IN ORDER with its own
-        stabilizer instances. A warm-up overlap primes each block's filter from
-        the frames just before it, so block boundaries are seam-free. Frames are
-        written in order through the already-open videowriter. Deadlock-free
-        fork-join (plain thread start/join, no queues)."""
-        WU = max(0, int(os.environ.get('ROOP_STAB_WARMUP', '4') or '4'))
+        """Parallel stabilization — the default path for a stabilized render.
+
+        Decodes the clip in chunks sequentially into memory (no seek → HEVC-safe),
+        splits each chunk into contiguous sub-blocks, and runs each sub-block IN
+        ORDER with its own stabilizer instances. A warm-up overlap primes each
+        block's filter from the frames just before it (carried across the chunk
+        boundary too), so block boundaries are seam-free — with the warm-up
+        LENGTH solved from the filter's smoothing factor rather than fixed, which
+        is what makes that claim true at every strength setting rather than only
+        the weak ones. Frames are written in order through the already-open
+        videowriter. Deadlock-free fork-join (plain thread start/join, no
+        queues)."""
+        WU = self._stab_warmup or self._stab_warmup_frames()
+
+        # Chunk sizing follows from WU, because every block pays WU frames of
+        # full-pipeline work it then throws away. Overhead is WU/block, so a
+        # block has to be several times WU or the warm-up eats the parallelism
+        # it is paying for — at strength 1 (WU=39) the old fixed 24-frame block
+        # would have run 2.6 frames for every 1 kept.
+        #
+        # It cannot simply grow without limit either: a chunk is held in RAM, and
+        # at 1080p a frame is ~6MB. So blocks grow to 4x WU, the chunk holds as
+        # many of those as the memory budget allows, and if that is fewer than
+        # `threads` we run narrower rather than either seam or swap to disk.
+        block = max(4 * WU, 24)
+        budget_mb = 1536.0
         try:
-            CHUNK = int(os.environ.get('ROOP_STAB_CHUNK', '0') or '0') or max(threads * 24, 192)
+            budget_mb = float(os.environ.get('ROOP_STAB_CHUNK_MB', '') or budget_mb)
         except ValueError:
-            CHUNK = max(threads * 24, 192)
+            pass
+        frame_mb = max(0.1, (self._stab_frame_bytes or (1920 * 1080 * 3)) / (1024.0 ** 2))
+        max_blocks = max(1, int((budget_mb / frame_mb) // block))
+        # NOT `n_blocks`: the per-chunk dispatch below binds that name itself, and
+        # this value has to survive the whole run.
+        stab_width = max(1, min(threads, max_blocks))
+        CHUNK = stab_width * block
+        try:
+            CHUNK = int(os.environ.get('ROOP_STAB_CHUNK', '0') or '0') or CHUNK
+        except ValueError:
+            pass
+        if stab_width < threads:
+            print(f"[Stabilize] warm-up {WU}f needs {block}f blocks; memory budget "
+                  f"({budget_mb:.0f}MB) fits {stab_width} of them, so this run "
+                  f"stabilises {stab_width}-wide instead of {threads}.")
+        elif os.environ.get('ROOP_STAB_WARMUP'):
+            # Don't repeat the <=1% claim for a hand-set value: the bound comes
+            # from the derivation, and an override is exactly how you break it.
+            print(f"[Stabilize] parallel: {threads} blocks x {block}f, warm-up "
+                  f"{WU}f (ROOP_STAB_WARMUP override — seam-freeness not guaranteed).")
+        else:
+            print(f"[Stabilize] parallel: {threads} blocks x {block}f, "
+                  f"warm-up {WU}f (<=1% seed residual at boundaries).")
 
         self._parallel_stab = True
         self._stab_active = True
@@ -1273,7 +1366,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                 combined = carry + chunk
                 base = len(carry)
                 base_global = chunk_start - base
-                n = max(1, min(threads, len(chunk)))
+                # stab_width, not threads: the chunk was sized to hold exactly
+                # this many warm-up-amortising blocks. Splitting it `threads` ways
+                # instead would hand back blocks shorter than the warm-up they
+                # each have to pay for.
+                n = max(1, min(stab_width, len(chunk)))
                 results = {}
                 _block_times = {}   # per WORKER wall time → imbalance (see dispatch note below)
 
