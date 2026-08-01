@@ -84,8 +84,10 @@ def _build_face_analyser():
     # engine's detector instead. insightface asserts 'detection' is present at
     # construction and prepare() needs it, so it can only be dropped afterwards;
     # doing so frees one unused det_10g session PER pool instance. fa.det_model
-    # is left None deliberately: _detect_faces_raw's det_size/det_thresh
-    # overrides are all guarded on getattr(fa.det_model, ...) being non-None.
+    # is left None deliberately: the det_size/det_thresh writes onto it in
+    # _detect_faces_raw are guarded on getattr(fa.det_model, ...) being non-None,
+    # and are only how SCRFD is steered — a hybrid engine is passed the effective
+    # values as arguments instead, so the hole costs it nothing.
     # _ensure_face_analyser tracks the engine so switching back to SCRFD (which
     # does need fa.get()) rebuilds the pool rather than hitting the hole.
     if _hybrid_engine_active():
@@ -314,36 +316,43 @@ def _hybrid_detector_faces(frame, fa, bboxes, kpss):
     return ret
 
 
-def _hybrid_yolo_faces(frame, fa):
+def _hybrid_yolo_faces(frame, fa, det_size, det_thresh):
     # Module-level detect(), not get_detector().detect(): the instance has to be
     # LEASED for the call, or concurrent workers share one ORT session again.
     from roop import yoloface
-    det_size = _desired_det_size()[0]
-    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
     bboxes, kpss = yoloface.detect(frame, det_size=det_size, det_thresh=det_thresh)
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
-def _hybrid_retinaface_faces(frame, fa, model_type='10g'):
+def _hybrid_retinaface_faces(frame, fa, det_size, det_thresh, model_type='10g'):
     from roop import retinaface
-    det_size = _desired_det_size()[0]
-    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
     bboxes, kpss = retinaface.detect(frame, det_size=det_size, det_thresh=det_thresh, model_type=model_type)
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
-def _hybrid_yunet_faces(frame, fa):
+def _hybrid_yunet_faces(frame, fa, det_size, det_thresh):
     from roop import yunet
-    det_size = _desired_det_size()[0]
-    det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
     bboxes, kpss = yunet.detect(frame, det_size=det_size, det_thresh=det_thresh)
     return _hybrid_detector_faces(frame, fa, bboxes, kpss)
 
 
 def _detect_faces_raw(frame, det_size=None, det_thresh=None):
-    """Run the selected detector engine and return raw Face objects (unsorted) without rescues."""
+    """Run the selected detector engine and return raw Face objects (unsorted) without rescues.
+
+    det_size / det_thresh override the configured detection resolution and
+    confidence floor for THIS call. They must reach whichever engine is selected,
+    not just SCRFD: the overrides used to be written onto `fa.det_model`, which a
+    hybrid engine does not own (_build_face_analyser pops it, leaving None), and
+    the hybrid branches then re-read the unchanged globals. That made
+    _rescue_downscaled — the close-up rescue, and the only rescue that varies
+    detector PARAMETERS rather than the image — an exact re-run of the pass that
+    had just returned nothing, on four of the five engines.
+    """
     engine = getattr(roop.globals, 'detector_engine', 'scrfd')
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
+    eff_size = det_size if det_size is not None else _desired_det_size()[0]
+    eff_thresh = (det_thresh if det_thresh is not None
+                  else getattr(roop.globals, 'face_detector_threshold', 0.60))
     with lease_face_analyser() as fa:
         for model in fa.models.values():
             if hasattr(model, 'nms_thresh'):
@@ -359,13 +368,13 @@ def _detect_faces_raw(frame, det_size=None, det_thresh=None):
             
         try:
             if engine == 'yoloface':
-                faces = _hybrid_yolo_faces(frame, fa)
+                faces = _hybrid_yolo_faces(frame, fa, eff_size, eff_thresh)
             elif engine == 'retinaface':
-                faces = _hybrid_retinaface_faces(frame, fa, model_type='10g')
+                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='10g')
             elif engine == 'retinaface_r50':
-                faces = _hybrid_retinaface_faces(frame, fa, model_type='r50')
+                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='r50')
             elif engine == 'yunet':
-                faces = _hybrid_yunet_faces(frame, fa)
+                faces = _hybrid_yunet_faces(frame, fa, eff_size, eff_thresh)
             else:
                 faces = fa.get(frame)
         finally:
@@ -412,7 +421,9 @@ def _rescue_downscaled(frame: Frame):
         orig_thresh = getattr(roop.globals, 'face_detector_threshold', 0.50)
         lowered_thresh = max(0.30, orig_thresh - 0.15)
         
-        # Override det_size directly on the model via _detect_faces_raw
+        # This is the ONLY rescue that varies detector parameters instead of the
+        # image, so it is worth nothing unless the override reaches the engine
+        # actually in use — see the note in _detect_faces_raw.
         faces = _detect_faces_raw(frame, det_size=320, det_thresh=lowered_thresh)
         
         if faces:
