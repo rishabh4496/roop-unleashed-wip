@@ -27,7 +27,19 @@ from roop.utilities import resolve_relative_path
 
 _LOCK = threading.Lock()
 _ALPHA = 0.35          # EMA weight for the newest run
-_VERSION = 1
+
+# Bump when a change makes the PIPELINE materially faster or slower at settings
+# the signature cannot see. Every stored ms/frame was measured against the old
+# pipeline, so leaving them in place makes the pre-run estimate confidently
+# wrong until the EMA drifts — at alpha 0.35 an entry with 89 samples behind it
+# still misleads for several runs.
+#
+# 2 (2026-08-01): parallel stabilization stopped forcing the whole swap pass onto
+# ONE thread, and the mask stopped being derived twice per face. The stored data
+# shows the old bug plainly — 4 threads measured FASTER than 8 (58.6 vs 66.4
+# ms/frame) because thread count was irrelevant to a serialised pass — so those
+# entries describe a pipeline that no longer exists.
+_VERSION = 2
 
 # Perf-relevant settings. Each tuple is (canonical_name, [payload keys to try]).
 # The enhancer name already encodes GPEN size ("GPEN 1024"), so no size field is
@@ -63,7 +75,11 @@ def _load():
         with open(_path(), 'r', encoding='utf-8') as fh:
             data = json.load(fh)
         if isinstance(data, dict) and "entries" in data:
-            return data
+            # The version was written but never read, so it could never do the one
+            # job it exists for. A file from an older, slower pipeline is worse
+            # than no file: the estimate is stated with confidence and is wrong.
+            if int(data.get("version", 0)) == _VERSION:
+                return data
     except Exception:
         pass
     return {"version": _VERSION, "entries": {}, "global_ms_per_frame": None,
