@@ -123,13 +123,32 @@ class TestFrontendReachesBackend(unittest.TestCase):
 
     def test_the_builder_is_the_only_preview_request_site(self):
         """Any hand-written /api/preview body would sit outside the cache
-        signature and reintroduce the stale-preview bug."""
-        src = FACESWAP_JSX.read_text(encoding="utf-8")
+        signature and reintroduce the stale-preview bug.
+
+        Scanned across FaceSwap.jsx AND the faceswap/ modules: the comparison
+        grids' loader moved into a hook, so counting only the component would
+        now miss three of the request sites — and, worse, would stop noticing
+        if one of them were rewritten by hand.
+        """
+        sources = [FACESWAP_JSX.read_text(encoding="utf-8")]
+        for path in sorted((FACESWAP_JSX.parent / "faceswap").glob("*.js*")):
+            sources.append(path.read_text(encoding="utf-8"))
+        src = "\n".join(sources)
+
         literals = re.findall(r"postJSON\('/api/preview',\s*\{", src)
         self.assertEqual(literals, [], "found a hand-built /api/preview body; "
                                        "route it through buildPreviewPayload")
+
+        # The real assertion is the one above. This second one only proves the
+        # regex still matches something, so an edit that renames the builder
+        # cannot make the check vacuously pass.
+        #
+        # The floor was 5 when the enhancer, mask and swapper grids each had
+        # their own copy of the same loader. Those are one hook now, so three
+        # call sites legitimately became one: refreshPreview, the upscale grid's
+        # single base swap, and useGridPreviewLoader. Fewer sites is the point.
         calls = len(re.findall(r"postJSON\('/api/preview',\s*buildPreviewPayload\(", src))
-        self.assertGreaterEqual(calls, 5)
+        self.assertGreaterEqual(calls, 3)
 
     def test_cache_signature_is_derived_from_the_payload(self):
         """If these ever diverge, a setting can be sent without invalidating the

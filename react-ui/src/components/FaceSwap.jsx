@@ -36,6 +36,7 @@ import useRuntimeEstimate from './faceswap/useRuntimeEstimate';
 import useUserDefaults from './faceswap/useUserDefaults';
 import useViewPersistence from './faceswap/useViewPersistence';
 import usePlaybackBuffer from './faceswap/usePlaybackBuffer';
+import useGridPreviewLoader from './faceswap/useGridPreviewLoader';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { motion, spring, TiltCard } from '../motion';
 
@@ -807,241 +808,44 @@ export default function FaceSwap({
     }
   };
 
-  const loadEnhancerPreviews = async (activeCheck) => {
-    if (targets.length === 0) return;
-    const available = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
-
-    setEnhancerPreviews((prev) => {
-      const reset = {};
-      for (const enh of available) {
-        if (prev[enh]) reset[enh] = prev[enh];
-      }
-      return reset;
-    });
-    setEnhancerTimes((prev) => {
-      const reset = {};
-      for (const enh of available) {
-        if (prev[enh]) reset[enh] = prev[enh];
-      }
-      return reset;
-    });
-    setLiveRenderingTimers((prev) => {
-      const reset = {};
-      for (const enh of available) {
-        if (prev[enh]) reset[enh] = prev[enh];
-      }
-      return reset;
-    });
-
-    for (const enh of available) {
-      if (!activeCheck()) return;
-      const localParams = { ...p, selected_enhancer: enh };
-      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
-      
-      if (previewCacheRef.current[cacheKey]) {
-        if (!activeCheck()) return;
-        setEnhancerPreviews((prev) => ({ ...prev, [enh]: previewCacheRef.current[cacheKey].image }));
-        setEnhancerTimes((prev) => ({ ...prev, [enh]: 'Cached' }));
-        continue;
-      }
-
-      try {
-        const start = Date.now();
-        setLiveRenderingTimers(prev => ({ ...prev, [enh]: '0.0s' }));
-        activeIntervalsRef.current[enh] = setInterval(() => {
-          setLiveRenderingTimers(prev => ({
-            ...prev,
-            [enh]: ((Date.now() - start) / 1000).toFixed(1) + 's'
-          }));
-        }, 100);
-
-        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
-        const duration = ((Date.now() - start) / 1000).toFixed(2);
-        if (activeIntervalsRef.current[enh]) {
-          clearInterval(activeIntervalsRef.current[enh]);
-          delete activeIntervalsRef.current[enh];
-        }
-        if (!activeCheck()) return;
-        if (res.image) {
-          setEnhancerPreviews((prev) => ({ ...prev, [enh]: res.image }));
-          setEnhancerTimes((prev) => ({ ...prev, [enh]: `${duration}s` }));
-          setLiveRenderingTimers((prev) => ({ ...prev, [enh]: null }));
-          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
-        }
-      } catch {
-        if (activeIntervalsRef.current[enh]) {
-          clearInterval(activeIntervalsRef.current[enh]);
-          delete activeIntervalsRef.current[enh];
-        }
-        setLiveRenderingTimers((prev) => ({ ...prev, [enh]: null }));
-        // Fail silently
-      }
-    }
+  // ── Comparison-grid preview loaders ─────────────────────────────────────
+  // Enhancers, mask engines and swapper models each render one preview per
+  // selected variant with everything else held fixed. That was the same seventy
+  // lines three times over; it is one hook now, differing only in which settings
+  // key is varied and which values are legal. See faceswap/useGridPreviewLoader.
+  //
+  // The cache key's tail is shared by all three (and by refreshPreview), so it
+  // is built once here rather than re-spelled per grid.
+  const gridCacheSuffix = `${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+  const gridCommon = {
+    settings: p, fakePreview, selTarget, frame, targetCount: targets.length,
+    buildPreviewPayload, previewSignature, previewCacheRef,
+    cacheSuffix: gridCacheSuffix, reloadKey: previewKey,
   };
 
-  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadEnhancerPreviews is a stable closure invoked on mount/trigger */
-  useEffect(() => {
-    if (!comparingEnhancers || targets.length === 0) return;
-    let active = true;
-    loadEnhancerPreviews(() => active);
-    return () => {
-      active = false;
-      if (activeIntervalsRef.current) {
-        Object.values(activeIntervalsRef.current).forEach(clearInterval);
-        activeIntervalsRef.current = {};
-      }
-    };
-  }, [comparingEnhancers, selectedGridEnhancers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
-  /* eslint-enable react-hooks/exhaustive-deps */
+  useGridPreviewLoader({
+    ...gridCommon,
+    enabled: comparingEnhancers, selection: selectedGridEnhancers,
+    allowed: meta.enhancers, paramKey: 'selected_enhancer',
+    setPreviews: setEnhancerPreviews, setTimes: setEnhancerTimes,
+    setTimers: setLiveRenderingTimers, intervalsRef: activeIntervalsRef,
+  });
 
-  // Render one preview per selected mask engine, holding every other setting
-  // (including the currently-selected enhancer) fixed — the mirror image of
-  // loadEnhancerPreviews, but varying `mask_engine` instead of `enhancer`.
-  const loadMaskPreviews = async (activeCheck) => {
-    if (targets.length === 0) return;
-    const available = selectedGridMasks.filter(m => meta.mask_engines?.includes(m));
+  useGridPreviewLoader({
+    ...gridCommon,
+    enabled: comparingMasks, selection: selectedGridMasks,
+    allowed: meta.mask_engines, paramKey: 'mask_engine',
+    setPreviews: setMaskPreviews, setTimes: setMaskTimes,
+    setTimers: setMaskRenderTimers, intervalsRef: maskIntervalsRef,
+  });
 
-    const keepOnly = (prev) => {
-      const reset = {};
-      for (const m of available) if (prev[m]) reset[m] = prev[m];
-      return reset;
-    };
-    setMaskPreviews(keepOnly);
-    setMaskTimes(keepOnly);
-    setMaskRenderTimers(keepOnly);
-
-    for (const me of available) {
-      if (!activeCheck()) return;
-      const localParams = { ...p, mask_engine: me };
-      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
-
-      if (previewCacheRef.current[cacheKey]) {
-        if (!activeCheck()) return;
-        setMaskPreviews((prev) => ({ ...prev, [me]: previewCacheRef.current[cacheKey].image }));
-        setMaskTimes((prev) => ({ ...prev, [me]: 'Cached' }));
-        continue;
-      }
-
-      try {
-        const start = Date.now();
-        setMaskRenderTimers(prev => ({ ...prev, [me]: '0.0s' }));
-        maskIntervalsRef.current[me] = setInterval(() => {
-          setMaskRenderTimers(prev => ({ ...prev, [me]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
-        }, 100);
-
-        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
-        const duration = ((Date.now() - start) / 1000).toFixed(2);
-        if (maskIntervalsRef.current[me]) {
-          clearInterval(maskIntervalsRef.current[me]);
-          delete maskIntervalsRef.current[me];
-        }
-        if (!activeCheck()) return;
-        if (res.image) {
-          setMaskPreviews((prev) => ({ ...prev, [me]: res.image }));
-          setMaskTimes((prev) => ({ ...prev, [me]: `${duration}s` }));
-          setMaskRenderTimers((prev) => ({ ...prev, [me]: null }));
-          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
-        }
-      } catch {
-        if (maskIntervalsRef.current[me]) {
-          clearInterval(maskIntervalsRef.current[me]);
-          delete maskIntervalsRef.current[me];
-        }
-        setMaskRenderTimers((prev) => ({ ...prev, [me]: null }));
-        // Fail silently (e.g. SAM2-tracked needs a video pre-pass and may skip a single frame)
-      }
-    }
-  };
-
-  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadMaskPreviews is a stable closure invoked on trigger */
-  useEffect(() => {
-    if (!comparingMasks || targets.length === 0) return;
-    let active = true;
-    loadMaskPreviews(() => active);
-    return () => {
-      active = false;
-      if (maskIntervalsRef.current) {
-        Object.values(maskIntervalsRef.current).forEach(clearInterval);
-        maskIntervalsRef.current = {};
-      }
-    };
-  }, [comparingMasks, selectedGridMasks, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
-  /* eslint-enable react-hooks/exhaustive-deps */
-
-  // ── Swapper-model grid preview loader ──────────────────────────────────
-  // Identical shape to loadMaskPreviews/loadEnhancerPreviews, but varies
-  // `swap_model` instead of mask_engine/enhancer. Each selected swapper model
-  // downloads on first use, so the live per-cell timer matters here.
-  const loadSwapperPreviews = async (activeCheck) => {
-    if (targets.length === 0) return;
-    const available = selectedGridSwappers.filter(m => meta.swap_models?.includes(m));
-
-    const keepOnly = (prev) => {
-      const reset = {};
-      for (const m of available) if (prev[m]) reset[m] = prev[m];
-      return reset;
-    };
-    setSwapperPreviews(keepOnly);
-    setSwapperTimes(keepOnly);
-    setSwapperRenderTimers(keepOnly);
-
-    for (const sm of available) {
-      if (!activeCheck()) return;
-      const localParams = { ...p, swap_model: sm };
-      const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
-
-      if (previewCacheRef.current[cacheKey]) {
-        if (!activeCheck()) return;
-        setSwapperPreviews((prev) => ({ ...prev, [sm]: previewCacheRef.current[cacheKey].image }));
-        setSwapperTimes((prev) => ({ ...prev, [sm]: 'Cached' }));
-        continue;
-      }
-
-      try {
-        const start = Date.now();
-        setSwapperRenderTimers(prev => ({ ...prev, [sm]: '0.0s' }));
-        swapperIntervalsRef.current[sm] = setInterval(() => {
-          setSwapperRenderTimers(prev => ({ ...prev, [sm]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
-        }, 100);
-
-        const res = await postJSON('/api/preview', buildPreviewPayload(localParams, { index: selTarget, frame, fake: fakePreview }));
-        const duration = ((Date.now() - start) / 1000).toFixed(2);
-        if (swapperIntervalsRef.current[sm]) {
-          clearInterval(swapperIntervalsRef.current[sm]);
-          delete swapperIntervalsRef.current[sm];
-        }
-        if (!activeCheck()) return;
-        if (res.image) {
-          setSwapperPreviews((prev) => ({ ...prev, [sm]: res.image }));
-          setSwapperTimes((prev) => ({ ...prev, [sm]: `${duration}s` }));
-          setSwapperRenderTimers((prev) => ({ ...prev, [sm]: null }));
-          previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
-        }
-      } catch {
-        if (swapperIntervalsRef.current[sm]) {
-          clearInterval(swapperIntervalsRef.current[sm]);
-          delete swapperIntervalsRef.current[sm];
-        }
-        setSwapperRenderTimers((prev) => ({ ...prev, [sm]: null }));
-        // Fail silently (a model may fail to download or init on a single frame)
-      }
-    }
-  };
-
-  /* eslint-disable react-hooks/exhaustive-deps -- intentional: loadSwapperPreviews is a stable closure invoked on trigger */
-  useEffect(() => {
-    if (!comparingSwappers || targets.length === 0) return;
-    let active = true;
-    loadSwapperPreviews(() => active);
-    return () => {
-      active = false;
-      if (swapperIntervalsRef.current) {
-        Object.values(swapperIntervalsRef.current).forEach(clearInterval);
-        swapperIntervalsRef.current = {};
-      }
-    };
-  }, [comparingSwappers, selectedGridSwappers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
-  /* eslint-enable react-hooks/exhaustive-deps */
+  useGridPreviewLoader({
+    ...gridCommon,
+    enabled: comparingSwappers, selection: selectedGridSwappers,
+    allowed: meta.swap_models, paramKey: 'swap_model',
+    setPreviews: setSwapperPreviews, setTimes: setSwapperTimes,
+    setTimers: setSwapperRenderTimers, intervalsRef: swapperIntervalsRef,
+  });
 
   // ── AI-upscale grid preview loader ─────────────────────────────────────
   // Unlike the enhancer/swapper grids (which re-run the full swap per cell),
