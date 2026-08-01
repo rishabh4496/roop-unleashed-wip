@@ -53,6 +53,24 @@ def _defined_keys(ui_src, component, obj_name):
     return set(re.findall(r'^\s*(\w+):', obj[:i], re.M))
 
 
+def _module_object_keys(ui_src, obj_name):
+    """The keys of a module-level object literal, e.g. `const ELEVATION = {…}`.
+
+    Separate from `_defined_keys` because a lookup shared by two components
+    (Card and the Section that forwards to it) belongs at module scope, not
+    inside either one's body.
+    """
+    obj = ui_src.split(f'const {obj_name} = {{', 1)[1]
+    depth, i = 1, 0
+    while i < len(obj) and depth:
+        if obj[i] == '{':
+            depth += 1
+        elif obj[i] == '}':
+            depth -= 1
+        i += 1
+    return set(re.findall(r'^\s*(\w+):', obj[:i], re.M))
+
+
 def _jsx_files():
     for root, _dirs, names in os.walk(SRC):
         for name in sorted(names):
@@ -85,6 +103,34 @@ class PrimitiveProps(unittest.TestCase):
 
     def test_button_variants_exist(self):
         self._check('Button', 'variant', 'variants')
+
+    def test_card_elevations_exist(self):
+        """`elevation` decides whether a surface tilts under the cursor.
+
+        A typo here does not lose styling the way a bad `size` does — it falls
+        back to `panel`, which looks entirely reasonable. That is worse, not
+        better: a media tile meant to read as `hero` would just quietly stop
+        doing so, and nothing would ever point at the line.
+        """
+        with open(UI, encoding='utf-8') as fh:
+            defined = _module_object_keys(fh.read(), 'ELEVATION')
+        self.assertTrue(defined, 'parsed no ELEVATION keys out of ui.jsx')
+
+        offenders = []
+        for path in _jsx_files():
+            with open(path, encoding='utf-8') as fh:
+                src = fh.read()
+            # Section forwards the prop straight to Card, so both are checked.
+            for component in ('Card', 'Section'):
+                for value, line in _usages(src, component, 'elevation'):
+                    if value not in defined:
+                        rel = os.path.relpath(path, SRC).replace('\\', '/')
+                        offenders.append(f'{rel}:{line} elevation="{value}"')
+        self.assertEqual(
+            offenders, [],
+            'Card has no such elevation, so this surface silently falls back '
+            f'to "panel". Defined: {sorted(defined)}. Offenders: '
+            + ', '.join(offenders))
 
 
 if __name__ == '__main__':

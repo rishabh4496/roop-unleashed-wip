@@ -3,25 +3,52 @@ import { PERSON_COLORS } from './constants';
 import { motion, AnimatePresence, fadeUp, spring, useTilt, TiltGlare } from '../motion';
 import { Icon } from '../icons';
 
-// Panels rise + de-blur in on mount (cinematic reveal), and carry the app's
-// signature hover: a GENTLE mouse-follow tilt plus a cursor-tracking accent
-// glare (the same effect as the runtime-estimation card, dialed down so it
-// reads as premium polish without fighting the inputs inside form panels).
-// It's opt-out via tilt={false} and collapses to nothing under reduced-motion.
-// The tilt runs on motion values, so hovering never re-renders the card.
-// Pass animate={false} to opt a card out of the entrance.
+// Panels rise in on mount (cinematic reveal) and lift on hover.
+//
+// ── Elevation ─────────────────────────────────────────────────────────────
+// Tilt + cursor glare used to be the DEFAULT for every Card, which meant every
+// panel in the app — thirty-odd form sections, dialogs, list rows — tilted
+// under the cursor. An effect applied to everything stops reading as emphasis
+// and starts reading as noise; it also fought the controls inside form panels,
+// which is why the one place that cared had already opted out by hand.
+//
+// So elevation is now explicit, and there are only three kinds of surface:
+//
+//   panel (default) — still. Hairline border, quiet hover, resting specular.
+//                     This is what a form or a list belongs in.
+//   hero            — panel plus the mouse-follow tilt and cursor-tracking
+//                     accent glare. For DISPLAY surfaces (media tiles), where
+//                     depth is the point and there is nothing to click through.
+//   flat            — no hover response at all, for cards nested in something
+//                     that already responds.
+//
+// `tilt` / `glare` remain as explicit overrides so a call site can dissent from
+// its elevation without inventing a fourth level. Both collapse to nothing
+// under reduced-motion, and the tilt runs on motion values, so hovering never
+// re-renders the card. Pass animate={false} to opt out of the entrance.
+const ELEVATION = {
+  panel: { tilt: false, glare: false, hover: true },
+  hero: { tilt: true, glare: true, hover: true },
+  flat: { tilt: false, glare: false, hover: false },
+};
 export const Card = ({
-  children, className = '', animate = true, hover = true,
-  tilt = true, tiltMax = 3.5, glare = true,
+  children, className = '', animate = true, hover, elevation = 'panel',
+  tilt, tiltMax = 3.5, glare,
   onMouseMove, onMouseLeave, ...rest
 }) => {
   const t = useTilt({ max: tiltMax });
-  // Glare and tilt are independent so a tall/dense card can keep the premium
-  // cursor glow while opting out of the physical tilt (tilt={false}). Both
-  // collapse under reduced-motion. The pointer handlers are needed whenever
-  // either is on, since the glare also tracks the cursor.
-  const tiltOn = tilt && !t.reduce;
-  const glareOn = glare && !t.reduce;
+  // A lookup rather than a chain of comparisons, for the same reason Button's
+  // sizes are one: an unknown key is then a single well-defined fallback, and
+  // test_ui_primitive_props.py can check every call site against these names.
+  const e = ELEVATION[elevation] || ELEVATION.panel;
+  // An explicit prop wins over the elevation's own answer.
+  const wantTilt = tilt ?? e.tilt;
+  const wantGlare = glare ?? e.glare;
+  const wantHover = hover ?? e.hover;
+  const tiltOn = wantTilt && !t.reduce;
+  const glareOn = wantGlare && !t.reduce;
+  // The pointer handlers are needed whenever either is on, since the glare
+  // also tracks the cursor.
   const active = tiltOn || glareOn;
   return (
     <motion.div
@@ -29,7 +56,7 @@ export const Card = ({
       onMouseMove={active ? (e) => { t.onMouseMove(e); onMouseMove?.(e); } : onMouseMove}
       onMouseLeave={active ? (e) => { t.onMouseLeave(e); onMouseLeave?.(e); } : onMouseLeave}
       style={tiltOn ? t.style : undefined}
-      className={`rounded-2xl glass-panel ${hover ? 'card-lift' : ''} ${active ? 'group/spot relative' : ''} ${className}`}
+      className={`rounded-2xl glass-panel ${wantHover ? 'card-lift' : ''} ${active ? 'group/spot relative' : ''} ${className}`}
       variants={fadeUp}
       initial={animate ? 'hidden' : false}
       animate={animate ? 'show' : false}
@@ -41,13 +68,13 @@ export const Card = ({
   );
 };
 
-export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true, tilt, glare, hover }) => {
+export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true, tilt, glare, hover, elevation }) => {
   const [open, setOpen] = useState(defaultOpen);
   const showBody = !collapsible || open;
   const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
   const label = 'text-mini font-semibold uppercase tracking-[0.14em] text-white/40';
   return (
-    <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover}>
+    <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover} elevation={elevation}>
       {title && (
         <div className={`flex items-center justify-between gap-3 ${showBody ? 'mb-4' : 'mb-0'}`}>
           {collapsible ? (

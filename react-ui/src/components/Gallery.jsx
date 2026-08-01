@@ -573,6 +573,10 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
 
   return (
     <Card
+      // A media tile is exactly the surface tilt was built for: it is a
+      // picture, not a form, so depth reads as depth and there are no controls
+      // for the movement to fight.
+      elevation="hero"
       className={`tap overflow-hidden border flex flex-col group/card transition-all ${
         isSelected ? 'border-[var(--accent)] bg-[var(--accent)]/5 shadow-[0_0_20px_rgba(233,69,96,0.2)]' : 'border-white/5 hover:border-[#E94560]/40 hover:shadow-[0_12px_36px_rgba(233,69,96,0.15)]'
       }`}

@@ -3144,7 +3144,10 @@ export default function FaceSwap({
             )}
           </div>
 
-          <Section title="Preview" tilt={false} glare={false} hover={false}>
+          {/* The preview holds a live image and its scrub/compare controls;
+              nothing here should move under the cursor. This used to spell that
+              out as three separate opt-outs, which is now just an elevation. */}
+          <Section title="Preview" elevation="flat">
             {/* While a job runs we no longer stream live swapped frames into the
                 preview box (they thrashed the GPU and jittered). Instead we show a
                 progress panel that mirrors the terminal: percent, frame X / Y,

@@ -91,6 +91,12 @@
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.22);
   --radius-lg: 16px;
+  /* The top-edge highlight on a glass panel — the surface catching light.
+     This was hardcoded white in .glass-panel and .card-lift, at two slightly
+     different alphas, which meant light themes composited a white highlight
+     against a near-white card and got nothing visible for the cost. Now each
+     mode can state its own edge; see the light override further down. */
+  --specular: rgba(255, 255, 255, 0.05);
 }
 
 .theme-glass-light {
@@ -930,7 +936,7 @@ html[data-render-lite] .animate-scanner-sweep {
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-card), inset 0 1px 0 var(--specular);
   transition: border-color 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -949,7 +955,7 @@ html[data-render-lite] .animate-scanner-sweep {
 .card-lift:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-card), 0 14px 46px rgba(0, 0, 0, 0.3),
-              inset 0 1px 0 rgba(255, 255, 255, 0.05);
+              inset 0 1px 0 var(--specular);
 }
 
 .shimmer-sweep {
@@ -1061,6 +1067,12 @@ input[type="range"]::-webkit-slider-thumb:active {
    forgotten, because nothing is written down twice. */
 [data-theme-mode="light"] {
   --color-white: var(--text-main);
+
+  /* On a light page the panel is already brighter than what sits behind it, so
+     a white top-edge highlight has nothing to catch. A faint inner SHADE at the
+     top edge reads the way the white one does on dark: as the surface having a
+     thickness. */
+  --specular: rgba(0, 0, 0, 0.035);
 
   /* Focusing an input must not darken it on a light page — see .glass-input
      :focus. Slightly brighter than the resting --input-bg so focus still reads

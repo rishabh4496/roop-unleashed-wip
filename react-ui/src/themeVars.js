@@ -168,6 +168,10 @@ export function deriveThemeVars(recipe) {
       ? '0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 30px rgba(0, 0, 0, 0.07)'
       : '0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.22)',
     '--radius-lg': `${radius}px`,
+    // The panel's top-edge highlight. White catches light on a dark page; on a
+    // light one the panel is already the brighter surface, so the same read
+    // comes from a faint inner shade instead. See the note in index.css.
+    '--specular': light ? 'rgba(0, 0, 0, 0.035)' : alpha(lighten(bg, 1), 0.05),
     // Light themes only: see the `.glass-input:focus` comment in index.css.
     // Emitting it unconditionally on dark would darken-then-lighten inputs on
     // focus, so it is scoped the same way the preset blocks scope it.
