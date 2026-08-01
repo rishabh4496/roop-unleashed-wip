@@ -160,8 +160,12 @@ export const ResetMark = ({ label, onReset }) => (
   </button>
 );
 
-export const Field = ({ label, info, children, modified, onReset }) => (
-  <label className="block">
+// `settingKey` is stamped onto the DOM as `data-setting` so the command palette
+// can scroll to and highlight a specific control by name. It is only supplied
+// by the Settings panel's binding helper; everywhere else it is undefined and
+// React omits the attribute entirely.
+export const Field = ({ label, info, children, modified, onReset, settingKey }) => (
+  <label className="block" data-setting={settingKey}>
     <div className="flex items-start justify-between gap-2 mb-1.5">
       <span className="text-xs font-medium text-white/70 leading-snug min-w-0">{label}</span>
       <span className="flex items-start gap-1.5 shrink-0">
@@ -173,8 +177,8 @@ export const Field = ({ label, info, children, modified, onReset }) => (
   </label>
 );
 
-export const Select = ({ label, info, value, onChange, options = [], modified, onReset }) => (
-  <Field label={label} info={info} modified={modified} onReset={onReset}>
+export const Select = ({ label, info, value, onChange, options = [], modified, onReset, settingKey }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset} settingKey={settingKey}>
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
@@ -190,8 +194,8 @@ export const Select = ({ label, info, value, onChange, options = [], modified, o
   </Field>
 );
 
-export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 0.01, modified, onReset }) => (
-  <Field label={label} info={info} modified={modified} onReset={onReset}>
+export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 0.01, modified, onReset, settingKey }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset} settingKey={settingKey}>
     <div className="flex items-center gap-3">
       <input
         type="range"
@@ -211,8 +215,8 @@ export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 
 // the Face Swap panel) impossible to reach or operate from the keyboard at all.
 // sr-only keeps it invisible but focusable, and `peer` carries its focus state
 // out to the switch so the ring lands on the thing the eye is looking at.
-export const Toggle = ({ label, info, checked, onChange, modified, onReset }) => (
-  <label className="flex items-start justify-between gap-3 w-full text-left cursor-pointer group/toggle select-none">
+export const Toggle = ({ label, info, checked, onChange, modified, onReset, settingKey }) => (
+  <label data-setting={settingKey} className="flex items-start justify-between gap-3 w-full text-left cursor-pointer group/toggle select-none">
     <input
       type="checkbox"
       className="sr-only peer"
@@ -239,8 +243,8 @@ export const Toggle = ({ label, info, checked, onChange, modified, onReset }) =>
   </label>
 );
 
-export const TextInput = ({ label, info, value, onChange, placeholder, type = 'text', modified, onReset }) => (
-  <Field label={label} info={info} modified={modified} onReset={onReset}>
+export const TextInput = ({ label, info, value, onChange, placeholder, type = 'text', modified, onReset, settingKey }) => (
+  <Field label={label} info={info} modified={modified} onReset={onReset} settingKey={settingKey}>
     <input
       type={type}
       value={value ?? ''}

@@ -17,6 +17,11 @@ export default function useProfiles({ settings, setSettings, notify }) {
   const persistProfiles = (updated) => {
     setProfiles(updated);
     localStorage.setItem('roop_profiles', JSON.stringify(updated));
+    // The command palette lists presets straight from localStorage so it does
+    // not need this chunk loaded. A `storage` event only reaches OTHER
+    // documents, so tell our own as well or the palette would go stale until
+    // the next reload.
+    window.dispatchEvent(new CustomEvent('roop:presets-changed'));
     postJSON('/api/profiles', { profiles: updated }).catch(() => { /* offline-tolerant */ });
   };
 

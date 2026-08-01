@@ -1113,6 +1113,29 @@ input[type="range"]::-webkit-slider-thumb:active {
   }
 }
 
+/* The command palette can send you to one control in a four-column panel.
+   Scrolling there is not enough on its own — you still have to find it — so the
+   target pulses its accent ring twice and settles. Ring + background only, both
+   compositor-cheap, and it decays to nothing so no state is left behind. */
+@keyframes setting-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; background-color: transparent; }
+  15%, 55% { box-shadow: 0 0 0 3px var(--accent-glow); background-color: var(--accent-glow); }
+  35% { box-shadow: 0 0 0 1px var(--accent-glow); background-color: transparent; }
+}
+
+.setting-flash {
+  border-radius: 10px;
+  animation: setting-flash 1.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Still needs to say "here" — just without the pulse. */
+  .setting-flash {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+}
+
 @keyframes scanner-sweep {
   0% { top: 0%; }
   50% { top: 100%; }

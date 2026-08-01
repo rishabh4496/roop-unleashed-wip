@@ -6,6 +6,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
 import { themeByName, allThemes, applyThemeToDom } from './themes';
+import { SETTINGS_CATALOG, focusSetting } from './components/settingsCatalog';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
 import { Icon } from './icons';
 
@@ -284,10 +285,34 @@ export default function App() {
   }, []);
 
   // Faceswap-tab actions are decoupled via a window event bus so the palette
-  // stays independent of the FaceSwap component's internal handlers.
-  const runFaceswap = useCallback((id) => {
+  // stays independent of the FaceSwap component's internal handlers. `extra`
+  // carries arguments for the commands that need one (applying a named preset).
+  const runFaceswap = useCallback((id, extra) => {
     setTab('faceswap');
-    setTimeout(() => window.dispatchEvent(new CustomEvent('roop:command', { detail: { id } })), 60);
+    setTimeout(() => window.dispatchEvent(new CustomEvent('roop:command', { detail: { id, ...extra } })), 60);
+  }, []);
+
+  // Presets are mirrored into localStorage by useProfiles, so the palette can
+  // list them without a fetch and without waiting on the Face Swap chunk. Read
+  // once on mount; the `roop:presets-changed` ping keeps it current when that
+  // tab saves or deletes one.
+  const [presets, setPresets] = useState([]);
+  useEffect(() => {
+    const read = () => {
+      try {
+        const v = JSON.parse(localStorage.getItem('roop_profiles') || '[]');
+        setPresets(Array.isArray(v) ? v.filter((pr) => pr && pr.name) : []);
+      } catch { setPresets([]); }
+    };
+    read();
+    window.addEventListener('roop:presets-changed', read);
+    // `storage` only fires for OTHER documents, which covers the pop-out
+    // preview window writing presets while this one is open.
+    window.addEventListener('storage', read);
+    return () => {
+      window.removeEventListener('roop:presets-changed', read);
+      window.removeEventListener('storage', read);
+    };
   }, []);
 
   const commands = useMemo(() => {
@@ -310,8 +335,36 @@ export default function App() {
       title: t.name, subtitle: t.custom ? 'Your theme' : t.label,
       run: () => applyTheme(t.name),
     }));
+
+    // Every setting by name. The panel has its own search box, but you have to
+    // be standing in the panel to use it — and half the reason to look a
+    // setting up is that you are somewhere else and cannot remember which of
+    // four columns it lives in. Selecting one opens Settings and flashes the
+    // control itself.
+    SETTINGS_CATALOG.forEach((s) => cmds.push({
+      id: `setting-${s.key}`, section: 'Settings', icon: Icon.settings,
+      title: s.label, subtitle: s.section,
+      run: () => {
+        warmTab('settings');
+        setTab('settings');
+        // The panel is a lazy chunk and may be mounting for the first time, so
+        // give it a beat to subscribe before firing at it. Its own handler
+        // waits two frames again for the filters to settle.
+        setTimeout(() => focusSetting(s.key), 80);
+      },
+    }));
+
+    // Saved presets, straight from the same localStorage the Face Swap tab
+    // reads. No fetch: this memo runs on every settings change, and the list is
+    // already mirrored locally precisely so it works offline.
+    presets.forEach((pr) => cmds.push({
+      id: `preset-${pr.name}`, section: 'Presets', icon: Icon.layout,
+      title: pr.name, subtitle: 'Apply preset',
+      run: () => runFaceswap('preset', { name: pr.name }),
+    }));
+
     return cmds;
-  }, [applyTheme, runFaceswap, customThemes]);
+  }, [applyTheme, runFaceswap, customThemes, presets]);
 
   const registerFileListener = useCallback((cb) => {
     fileListenersRef.current.push(cb);

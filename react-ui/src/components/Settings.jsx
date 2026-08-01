@@ -5,6 +5,7 @@ import ThemeGallery from './ThemeGallery';
 import ThemeStudio from './ThemeStudio';
 import { allThemes } from '../themes';
 import { fmtVal } from './settingsDiff';
+import { FOCUS_SETTING_EVENT } from './settingsCatalog';
 import { confirmDialog } from './confirm';
 import { Icon } from '../icons';
 
@@ -129,6 +130,37 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   const modifiedCount = defaults
     ? Object.keys(defaults).filter((k) => isModified(k)).length
     : 0;
+
+  // ── Jump to a setting from the command palette ───────────────────────────
+  // The palette can name any setting; landing on this tab is only half the job,
+  // since the panel is four dense columns and the control you asked for may be
+  // anywhere in them. So clear any active filter (the target might be hidden by
+  // it), scroll to the control and flash it.
+  //
+  // rAF-after-state: the filters above have to re-render before the element
+  // exists to scroll to. A second frame is enough because clearing a filter
+  // only ever ADDS rows.
+  useEffect(() => {
+    const onFocusSetting = (e) => {
+      const key = e.detail?.key;
+      if (!key) return;
+      setQuery('');
+      setOnlyModified(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-setting="${CSS.escape(key)}"]`);
+        if (!el) return;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.classList.add('setting-flash');
+        // Focus the control itself, not its wrapper, so the keyboard lands
+        // where the eye does. The checkbox behind a Toggle is sr-only but
+        // focusable, which is exactly what we want here.
+        el.querySelector('input, select, textarea, button')?.focus?.({ preventScroll: true });
+        setTimeout(() => el.classList.remove('setting-flash'), 1600);
+      }));
+    };
+    window.addEventListener(FOCUS_SETTING_EVENT, onFocusSetting);
+    return () => window.removeEventListener(FOCUS_SETTING_EVENT, onFocusSetting);
+  }, []);
 
   const customThemes = Array.isArray(p.custom_themes) ? p.custom_themes : [];
   const darkNames = allThemes(customThemes).filter((t) => t.mode !== 'light').map((t) => t.name);

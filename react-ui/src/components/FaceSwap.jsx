@@ -2292,9 +2292,12 @@ export default function FaceSwap({
     split: () => setSplitView((v) => !v),
     preview: () => refreshPreview({ force: true }),   // explicit user action — same as Refresh
     shortcuts: () => setShowShortcutHUD(true),
+    // Applying a named preset is the one command that takes an argument, hence
+    // the detail object being forwarded to the handler below.
+    preset: (d) => { if (d?.name) loadProfile(d.name); },
   };
   useEffect(() => {
-    const h = (e) => { const fn = cmdRef.current[e.detail?.id]; if (fn) fn(); };
+    const h = (e) => { const fn = cmdRef.current[e.detail?.id]; if (fn) fn(e.detail); };
     window.addEventListener('roop:command', h);
     return () => window.removeEventListener('roop:command', h);
   }, []);
