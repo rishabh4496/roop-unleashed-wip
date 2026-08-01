@@ -2505,9 +2505,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                         bar_write(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
-                    fake_frame = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
+                    fake_frame, _img_mask = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
                     if enhanced_frame is not None:
-                        enhanced_frame = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
+                        # Same mask, different target — every input it is derived
+                        # from is identical here, so recomputing it (engine call,
+                        # landmark hull, mouth mask, blurs) would be pure waste.
+                        enhanced_frame, _ = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg, reuse_mask=_img_mask)
             else:
                 # Pooled (no global lock) ONLY when this enhancer built its own
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool

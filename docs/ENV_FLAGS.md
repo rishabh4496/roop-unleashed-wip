@@ -345,7 +345,7 @@ fixed. Isolated cost of one 512² face, RTX 4070, TensorRT FP16, engines warm
 | RestoreFormer++ | ~23 | 1.00x | baseline |
 
 Speed only — quality is a separate judgement and belongs to whoever is watching
-the output. Reproduce with `app/tools/bench_enhancers.py`.
+the output. Reproduce with `app/tools/bench_stages.py` (covers enhancer, mask and swap models).
 
 **Benchmarking ONNX outside the app — three traps**, each of which silently
 yields CPU numbers that look like a plausible result (measured 483 ms/call for

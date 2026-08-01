@@ -277,7 +277,21 @@ class MaskingMixin:
             return None
         return x0, y0, x1, y1, crop_x0, crop_y0, crop_x1, crop_y1
 
-    def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None, tgt_pitch_deg:float=0.0):
+    def process_mask(self, processor, frame:Frame, target:Frame, orig_frame:Frame=None, target_face:Face=None, M=None, tgt_pitch_deg:float=0.0, reuse_mask=None):
+        """Mask `target` back toward `frame`. Returns (result, img_mask).
+
+        `reuse_mask` skips straight to compositing with an already-computed mask.
+        The caller runs this TWICE per face when an enhancer is on — once for the
+        swapped crop, once for the enhanced one — and every input the mask is
+        derived from (`frame`, `target_face`, `M`, `orig_frame`, `tgt_pitch_deg`)
+        is identical across that pair. Only `target` differs. So the second pass
+        was recomputing a byte-identical mask: the engine inference plus the
+        landmark hull, the mouth mask, the blurs and the non-frontal unwarp,
+        which together are most of a stage measured at 23% of wall clock. The
+        mask model itself is only ~2.4ms of it.
+        """
+        if reuse_mask is not None:
+            return self._composite_mask(reuse_mask, frame, target), reuse_mask
         # SAM2 is temporally tracked: instead of running per-crop inference it warps
         # its precomputed full-frame mask into this crop via the affine M stashed in
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
@@ -466,6 +480,19 @@ class MaskingMixin:
             binary_mask = (img_mask > 0.35).astype(np.float32)
             img_mask = cv2.GaussianBlur(binary_mask, (5, 5), 0)
 
+        return self._composite_mask(img_mask, frame, target), img_mask
+
+    def _composite_mask(self, img_mask, frame: Frame, target: Frame):
+        """Blend `target` back toward `frame` under `img_mask`.
+
+        Split out from process_mask because this is the ONLY part that depends on
+        `target`. Everything above computes img_mask from `frame`/`target_face`/
+        `M`, which are identical for the swapped and the enhanced crop — so with
+        an enhancer active the whole mask computation used to run twice per face
+        for byte-identical results. img_mask is resized here rather than earlier
+        precisely so one mask can serve targets of different sizes (the swapped
+        crop is 256, the enhanced one 512).
+        """
         img_mask = cv2.resize(img_mask, (target.shape[1], target.shape[0]))
         img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
 
