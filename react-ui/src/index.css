@@ -969,7 +969,19 @@ input[type="range"]::-webkit-slider-thumb:active {
   transform: scale(1.25);
 }
 
-/* ── Light Theme Readability & Contrast Overrides ──────────────────────── */
+/* ── Light Theme Readability & Contrast ────────────────────────────────────
+   Tailwind v4 compiles the ENTIRE `*-white` family — text, background, border,
+   ring; every alpha; under every variant — down to one expression:
+   `color-mix(in oklab, var(--color-white) N%, transparent)`. So repointing that
+   single variable at the theme's ink colour corrects all of them at once, and
+   keeps correcting utilities nobody has written yet.
+
+   This replaces an enumeration of `.text-white\/30 … \/95`, which had two
+   problems. It could only cover the alphas someone remembered to list, so it
+   missed /15 /20 /25 /35 /45 /55 /85 (88 uses) and every variant-prefixed one —
+   `hover:text-white` (55 uses) still flipped to invisible white on hover. And
+   it worked by setting `opacity`, which fades an element's children, border and
+   background too, when `text-white/60` only ever means a text COLOUR. */
 .theme-glass-light,
 .theme-cyberpunk-light,
 .theme-emerald-light,
@@ -978,72 +990,39 @@ input[type="range"]::-webkit-slider-thumb:active {
 .theme-arctic-light,
 .theme-latte-light,
 .theme-sepia-light {
-  /* Dynamic text overrides: intercept text-white classes and convert to theme color variables */
-  .text-white {
-    color: var(--text-main) !important;
-  }
-  .text-white\/30 {
-    color: var(--text-main) !important;
-    opacity: 0.3 !important;
-  }
-  .text-white\/40 {
-    color: var(--text-main) !important;
-    opacity: 0.4 !important;
-  }
-  .text-white\/50 {
-    color: var(--text-main) !important;
-    opacity: 0.5 !important;
-  }
-  .text-white\/60 {
-    color: var(--text-main) !important;
-    opacity: 0.6 !important;
-  }
-  .text-white\/70 {
-    color: var(--text-main) !important;
-    opacity: 0.7 !important;
-  }
-  .text-white\/80 {
-    color: var(--text-main) !important;
-    opacity: 0.8 !important;
-  }
-  .text-white\/90 {
-    color: var(--text-main) !important;
-    opacity: 0.9 !important;
-  }
-  .text-white\/95 {
-    color: var(--text-main) !important;
-    opacity: 0.95 !important;
+  --color-white: var(--text-main);
+
+  /* Surfaces that stay dark in EVERY theme: media scrims, the preview HUD, and
+     the handful of hardcoded near-black panels. A dark scrim over a photo is
+     still right in light mode, so these keep white ink. Custom properties
+     inherit, so repointing the variable on the surface covers its whole
+     subtree — which is exactly the question being asked ("am I sitting on
+     something dark?"), and is why this scopes correctly where a flat list of
+     text utilities could not. */
+  [class*="bg-black/"],
+  .hud-glass,
+  .bg-\[\#121420\],
+  .bg-\[\#181016\],
+  .bg-\[\#0E0F15\]\/95,
+  .bg-\[\#0c0e14\]\/90 {
+    --color-white: #fff;
   }
 
-  /* Exclude elements where white text is actually needed (e.g. primary buttons, labels on dark accent badges) */
-  button.bg-\[\#E94560\],
-  button.bg-\[var\(--accent\)\],
-  .bg-\[var\(--accent\)\] {
-    color: #ffffff !important;
-    opacity: 1 !important;
+  /* The accent fill is dark enough to carry white ink in every theme, so it
+     must not follow the page's. The variable keeps any `text-white/N` on these
+     at its intended alpha; the declaration covers children that set no text
+     colour at all and would otherwise inherit the page's dark ink. */
+  .bg-\[var\(--accent\)\],
+  .bg-\[\#E94560\] {
+    --color-white: #fff;
+    color: #ffffff;
   }
 
-  /* Dropdown option menu list backgrounds inside light themes */
-  select.glass-input {
-    background-color: var(--input-bg) !important;
-    color: var(--text-main) !important;
-  }
+  /* Native <option> lists are painted by the OS, so they inherit none of the
+     above and still need explicit colours. */
   select.glass-input option {
-    background-color: #ffffff !important;
-    color: #1f2937 !important;
-  }
-
-  /* Neutral dark tone for secondary cards/tooltips background blur */
-  .bg-black\/90,
-  .bg-black\/95 {
-    background-color: rgba(255, 255, 255, 0.95) !important;
-    border-color: rgba(0, 0, 0, 0.08) !important;
-  }
-
-  /* File upload drop zones */
-  .hover\:bg-white\/5:hover,
-  .hover\:bg-white\/10:hover {
-    background-color: rgba(0, 0, 0, 0.05) !important;
+    background-color: #ffffff;
+    color: #1f2937;
   }
 }
 
