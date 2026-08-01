@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PERSON_COLORS } from './constants';
 import { motion, AnimatePresence, fadeUp, spring, useTilt, TiltGlare } from '../motion';
+import { Icon } from '../icons';
 
 // Panels rise + de-blur in on mount (cinematic reveal), and carry the app's
 // signature hover: a GENTLE mouse-follow tilt plus a cursor-tracking accent
@@ -307,7 +308,7 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                         title="Remove this face"
                         aria-label={`Remove face ${i + 1}`}
                         className="h-7 w-7 shrink-0 rounded-full bg-black/40 text-white/60 hover:bg-[var(--accent-hover)] hover:text-white hover:scale-110 active:scale-90 flex items-center justify-center"
-                      >✕</button>
+                      ><Icon.close size={13} /></button>
                     )}
                   </>
                 ) : (
@@ -335,8 +336,8 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
                         // focus-visible as well as group-hover: this is a real
                         // tab stop, and opacity-0 alone left a keyboard user
                         // focused on a control they could not see.
-                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 text-xs leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
-                      >✕</button>
+                        className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/70 text-white/80 leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--accent-hover)] hover:scale-110 active:scale-90 transition-all duration-300 flex items-center justify-center"
+                      ><Icon.close size={12} /></button>
                     )}
                   </>
                 )}
@@ -411,7 +412,10 @@ export const Confetti = ({ active }) => {
   );
 };
 
-const toastIcon = (type) => (type === 'error' ? '❌' : type === 'info' ? 'ℹ️' : '✅');
+// One family, one optical weight, and the tint comes from the theme rather than
+// from the glyph — emoji brought their own vendor artwork and their own colour,
+// so ❌/ℹ️/✅ never read as three states of one thing.
+const toastIcon = (type) => (type === 'error' ? Icon.error : type === 'info' ? Icon.info : Icon.success);
 const toastColor = (type) => (type === 'error' ? 'text-red-400' : type === 'info' ? 'text-blue-300' : 'text-green-400');
 
 // Stacked toasts. Multiple can be visible at once (a batch run or several errors
@@ -442,7 +446,7 @@ export const Toasts = ({ toasts = [], onDismiss }) => (
           aria-label={`Dismiss notification: ${t.message}`}
           className="pointer-events-auto cursor-pointer px-4 py-3 rounded-xl shadow-2xl bg-[#0E0F15]/95 backdrop-blur-xl border border-white/10 flex items-center gap-3 min-w-[250px] max-w-sm"
         >
-          <span className="text-lg shrink-0">{toastIcon(t.type)}</span>
+          {(() => { const I = toastIcon(t.type); return <I size={18} className={toastColor(t.type)} />; })()}
           <span className={`text-sm font-medium ${toastColor(t.type)}`}>{t.message}</span>
         </motion.div>
       ))}

@@ -27,7 +27,7 @@ import unittest
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(os.path.dirname(APP), 'react-ui', 'src')
 
-BUTTON = re.compile(r'<button\b(?P<attrs>(?:[^>]|\n)*?)>(?P<body>(?:.|\n)*?)</button>', re.S)
+BUTTON_OPEN = re.compile(r'<button\b')
 # A form control hidden with display:none is unreachable; `sr-only` is the
 # visually-hidden-but-focusable idiom and is what these must use instead.
 HIDDEN_INPUT = re.compile(r'<input\b(?:[^>]|\n)*?className="[^"]*\bhidden\b[^"]*"', re.S)
@@ -44,12 +44,86 @@ def _rel(path):
     return os.path.relpath(path, SRC).replace('\\', '/')
 
 
+def _buttons(src):
+    """Yield (line, attrs, body) for each <button>, splitting them correctly.
+
+    This was a regex — `<button\\b([^>]*?)>(.*?)</button>` — and it quietly got
+    the split wrong on the most common shape in this codebase: an inline arrow
+    handler. In `onClick={(e) => setX(1)}` the FIRST `>` belongs to the arrow,
+    not to the tag, so the attribute half was cut at `onClick={(e) =` and
+    everything after it, `aria-label` included, was treated as the button's
+    BODY. The name check then found the letters in `aria-label="Close"` sitting
+    in the body text and concluded the button had a visible label, so 100+
+    controls were passing for entirely the wrong reason.
+
+    Scanning with brace/quote depth finds the real end of the tag.
+    """
+    for m in BUTTON_OPEN.finditer(src):
+        i, depth, quote = m.end(), 0, None
+        while i < len(src):
+            ch = src[i]
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in '"\'':
+                quote = ch
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+            elif ch == '>' and depth == 0:
+                break
+            i += 1
+        else:
+            continue
+        attrs = src[m.end():i]
+        if src[i - 1] == '/':          # self-closing, so it has no body
+            continue
+        end = src.find('</button>', i)
+        if end == -1:
+            continue
+        yield src[:m.start()].count('\n') + 1, attrs, src[i + 1:end]
+
+
+# Text a `{…}` expression can be seen to render: any string literal inside it,
+# plus the bare `{value}` / `{obj.prop}` case where the whole expression is one
+# identifier and therefore renders whatever that holds.
+_LITERAL = re.compile(r"'([^']*)'|\"([^\"]*)\"|`([^`\\{]*)`")
+_BARE_IDENT = re.compile(r'^[\w.?\[\]]+$')
+
+
+def _expr_text(m):
+    inner = m.group(0)[1:-1].strip()
+    lits = [g for lit in _LITERAL.finditer(inner) for g in lit.groups() if g]
+    if lits:
+        return ' ' + ' '.join(lits) + ' '
+    # `{title}`, `{c.label}` — a value standing alone IS the button's text.
+    return ' x ' if _BARE_IDENT.match(inner) else ' '
+
+
 def _visible_text(body):
-    """What a sighted user reads on the button, minus markup and expressions."""
+    """What a sighted user reads on the button, minus markup.
+
+    Expressions used to be deleted wholesale, which made every button whose
+    label is computed — `{expanded ? 'Collapse' : 'Expand'}`, or just `{title}`
+    — look like it had no text at all and get reported as a nameless icon
+    button. Reading the literals back out is what separates those from the
+    controls that really are an icon and nothing else.
+    """
     text = re.sub(r'<svg(?:.|\n)*?</svg>', '', body, flags=re.S)
-    text = re.sub(r'\{[^{}]*\}', '', text)
+    text = re.sub(r'\{[^{}]*\}', _expr_text, text)
     text = re.sub(r'<[^>]*>', '', text)
     return text.strip()
+
+
+# An `<Icon.foo />` from icons.jsx renders an SVG, so a button containing only
+# one is exactly as nameless as a button containing a raw <svg> or an emoji.
+# It has to be recognised explicitly: the tag carries no ASCII letters once
+# markup is stripped, so without this a button whose whole content is an icon
+# component would be read as an empty layout element and skipped — which is
+# precisely how the emoji-to-icon migration could have quietly removed the
+# accessible name from every icon-only control in the app.
+ICON_COMPONENT = re.compile(r'<Icon\.\w+')
 
 
 class AccessibleNames(unittest.TestCase):
@@ -58,19 +132,18 @@ class AccessibleNames(unittest.TestCase):
         for path in _jsx_files():
             with open(path, encoding='utf-8') as fh:
                 src = fh.read()
-            for m in BUTTON.finditer(src):
-                if 'aria-label' in m.group('attrs'):
+            for line, attrs, body in _buttons(src):
+                if 'aria-label' in attrs:
                     continue
-                text = _visible_text(m.group('body'))
+                text = _visible_text(body)
                 # Any ASCII letter is a readable name already.
                 if re.search(r'[A-Za-z]', text):
                     continue
                 # A button with no content at all is a layout element, not a
                 # control a user is meant to find; the ones that matter here are
-                # the emoji/SVG icons.
-                if not text and '<svg' not in m.group('body'):
+                # the emoji/SVG/<Icon.*> icons.
+                if not text and '<svg' not in body and not ICON_COMPONENT.search(body):
                     continue
-                line = src[:m.start()].count('\n') + 1
                 offenders.append(f'{_rel(path)}:{line}')
         self.assertEqual(offenders, [],
                          'icon-only buttons with no aria-label (a `title` is a '

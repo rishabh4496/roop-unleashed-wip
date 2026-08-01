@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from '../../motion';
+import { Icon } from '../../icons';
 
 /**
  * FloatingActionDock
@@ -27,11 +28,14 @@ export default function FloatingActionDock({
 
   // Descriptions state what each mode ACTUALLY does — the table these map onto
   // lives in FaceSwap.jsx (WORKSPACE_LAYOUT). Keep the two in step.
+  // The icon is its own field. It used to be an emoji glued to the front of
+  // `label`, which the trigger below then had to split back apart on a space —
+  // so any label whose first word was not an icon silently rendered wrong.
   const MODES = [
-    { id: 'default', label: '🎛️ Standard Studio', desc: 'Faces, settings and timeline' },
-    { id: 'cinema', label: '🎬 Cinema Canvas', desc: 'Canvas only — panels and timeline hidden' },
-    { id: 'dual', label: '👥 Dual Inspector', desc: 'Faces + parameters, no timeline' },
-    { id: 'timeline', label: '🎞️ Timeline Deck', desc: 'Canvas and timeline, panels hidden' },
+    { id: 'default', icon: Icon.layout, label: 'Standard Studio', desc: 'Faces, settings and timeline' },
+    { id: 'cinema', icon: Icon.faceswap, label: 'Cinema Canvas', desc: 'Canvas only — panels and timeline hidden' },
+    { id: 'dual', icon: Icon.faces, label: 'Dual Inspector', desc: 'Faces + parameters, no timeline' },
+    { id: 'timeline', icon: Icon.film, label: 'Timeline Deck', desc: 'Canvas and timeline, panels hidden' },
   ];
 
   const currentMode = MODES.find((m) => m.id === workspaceMode) || MODES[0];
@@ -77,7 +81,7 @@ export default function FloatingActionDock({
           title="Generate instant preview frame"
           aria-label="Generate instant preview frame"
         >
-          <span>👁️</span>
+          <Icon.preview size={13} />
           <span>{previewing ? 'Rendering...' : 'Preview'}</span>
         </button>
 
@@ -89,9 +93,11 @@ export default function FloatingActionDock({
             onClick={() => setShowModeMenu(!showModeMenu)}
             className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-medium text-neutral-200 transition-all hover:bg-white/10 hover:text-white"
             title="Switch Workspace Layout Mode"
+            aria-label={`Workspace layout: ${currentMode.label}. Change layout`}
+            aria-expanded={showModeMenu}
           >
-            <span>{currentMode.label.split(' ')[0]}</span>
-            <span className="hidden sm:inline">{currentMode.label.split(' ').slice(1).join(' ')}</span>
+            <currentMode.icon size={13} />
+            <span className="hidden sm:inline">{currentMode.label}</span>
             <span className="text-micro opacity-60">▼</span>
           </button>
 
@@ -120,8 +126,8 @@ export default function FloatingActionDock({
                           : 'text-neutral-300 hover:bg-white/10 hover:text-white'
                       }`}
                     >
-                      <div className="text-xs">{mode.label}</div>
-                      <div className="text-micro text-neutral-400">{mode.desc}</div>
+                      <div className="text-xs flex items-center gap-2"><mode.icon size={13} />{mode.label}</div>
+                      <div className="text-micro text-neutral-400 pl-[21px]">{mode.desc}</div>
                     </button>
                   ))}
                 </div>
@@ -141,8 +147,9 @@ export default function FloatingActionDock({
               : 'text-neutral-400 hover:bg-white/10 hover:text-neutral-200'
           }`}
           title="Toggle Canvas Ambilight Glow"
+          aria-pressed={ambilightEnabled}
         >
-          <span>✨</span>
+          <Icon.full size={13} />
           <span className="hidden md:inline">Glow</span>
         </button>
 
@@ -153,7 +160,7 @@ export default function FloatingActionDock({
             className="flex items-center gap-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 px-2.5 py-1.5 text-xs text-indigo-300 transition-all hover:bg-indigo-500/20 hover:text-indigo-200"
             title="Open Preset Studio & Quality Recipes"
           >
-            <span>🎨</span>
+            <Icon.theme size={13} />
             <span className="hidden md:inline">Recipes</span>
           </button>
         )}
@@ -164,7 +171,7 @@ export default function FloatingActionDock({
           className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400 transition-all hover:bg-white/10 hover:text-neutral-200"
           title="Open Detached Pop-out Preview Monitor"
         >
-          <span>↗️</span>
+          <Icon.popout size={13} />
           <span className="hidden md:inline">Pop-out</span>
         </button>
 
@@ -178,8 +185,10 @@ export default function FloatingActionDock({
               drawers.left ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
             }`}
             title="Toggle Left Faces Sidebar"
+            aria-label="Toggle the faces sidebar"
+            aria-pressed={drawers.left}
           >
-            📂
+            <Icon.panelLeft size={14} />
           </button>
 
           <button
@@ -188,8 +197,10 @@ export default function FloatingActionDock({
               drawers.right ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
             }`}
             title="Toggle Right Settings Inspector"
+            aria-label="Toggle the settings inspector"
+            aria-pressed={drawers.right}
           >
-            ⚙️
+            <Icon.panelRight size={14} />
           </button>
 
           <button
@@ -198,8 +209,10 @@ export default function FloatingActionDock({
               drawers.bottom ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
             }`}
             title="Toggle Bottom Timeline & Logs Deck"
+            aria-label="Toggle the timeline and logs deck"
+            aria-pressed={drawers.bottom}
           >
-            🎞️
+            <Icon.panelBottom size={14} />
           </button>
         </div>
 

@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { postJSON } from '../api';
 import { PERSON_COLORS } from './constants';
 import { confirmDialog } from './confirm';
+import { Icon } from '../icons';
 
 // Coarse pose buckets we consider "primary coverage" for a person. Anything the
 // backend labels (e.g. "Left Profile + Up Tilt") is matched against these by
@@ -260,7 +261,9 @@ export default function PersonGroups({
             {/* Header */}
             <div className="flex items-center gap-2 px-3 py-2.5 cursor-pointer" onClick={() => { setSelTargetFace(indices[0]); }}>
               <button type="button" onClick={(e) => { e.stopPropagation(); toggleExpand(rank); }}
-                className="text-white/40 hover:text-white/80 transition-transform shrink-0" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</button>
+                aria-label={`${open ? 'Collapse' : 'Expand'} ${labelFor(rank)}`}
+                aria-expanded={open}
+                className="text-white/40 hover:text-white/80 transition-transform shrink-0" style={{ transform: open ? 'rotate(90deg)' : 'none' }}><Icon.expand size={13} /></button>
               <img src={targetFaces[indices[0]]} alt="" className="w-8 h-8 rounded-lg object-cover shrink-0 border" style={{ borderColor: color }} />
               <div className="flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
                 {editingRank === rank ? (
@@ -277,8 +280,9 @@ export default function PersonGroups({
                   <div className="flex items-center gap-1.5">
                     <span className="font-extrabold text-sm truncate" style={{ color }}>{labelFor(rank)}</span>
                     <button type="button" title="Rename person"
+                      aria-label={`Rename ${labelFor(rank)}`}
                       onClick={() => { setEditingRank(rank); setEditValue(nameFor(rank)); }}
-                      className="text-white/25 hover:text-white/70 text-mini shrink-0">✎</button>
+                      className="text-white/25 hover:text-white/70 shrink-0"><Icon.rename size={11} /></button>
                   </div>
                 )}
                 <div className="text-micro text-white/35 font-medium">{indices.length} {indices.length === 1 ? 'angle' : 'angles'}</div>
@@ -328,8 +332,9 @@ export default function PersonGroups({
                         <span className="absolute bottom-0.5 left-0.5 right-0.5 text-center text-nano font-black text-white bg-black/70 rounded px-0.5 truncate leading-tight pointer-events-none">{pose}</span>
                         {/* per-angle delete */}
                         <button type="button" title="Remove this angle"
+                          aria-label={`Remove the ${pose} angle`}
                           onClick={(e) => { e.stopPropagation(); removeAngle(i); }}
-                          className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-black/80 text-white/70 text-micro opacity-0 group-hover/angle:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center border border-white/10">✕</button>
+                          className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-black/80 text-white/70 opacity-0 group-hover/angle:opacity-100 focus-visible:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center border border-white/10"><Icon.close size={11} /></button>
                         {/* reassign to another person */}
                         {people.length > 1 && (
                           <select

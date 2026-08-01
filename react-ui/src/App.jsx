@@ -7,6 +7,7 @@ import { ConfirmHost, confirmDialog } from './components/confirm';
 import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
 import { THEME_CLASSES, THEMES, themeByName } from './themes';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
+import { Icon } from './icons';
 
 // Tab panels are code-split so the initial bundle only ships the shell + the
 // first tab's dependencies. Each is fetched on first visit (Vite emits one
@@ -47,12 +48,12 @@ function TabFallback() {
 }
 
 const TABS = [
-  { id: 'faceswap', label: '🎭 Face Swap', preload: loadFaceSwap },
-  { id: 'facemgr', label: '👥 Face Manager', preload: loadFaceManager },
-  { id: 'extras', label: '✏️ Editor', preload: loadExtras },
-  { id: 'gallery', label: '📂 Outputs', preload: loadGallery },
-  { id: 'history', label: '🕐 History', preload: loadRunHistory },
-  { id: 'settings', label: '⚙️ Settings', preload: loadSettings },
+  { id: 'faceswap', label: 'Face Swap', icon: Icon.faceswap, preload: loadFaceSwap },
+  { id: 'facemgr', label: 'Face Manager', icon: Icon.faces, preload: loadFaceManager },
+  { id: 'extras', label: 'Editor', icon: Icon.editor, preload: loadExtras },
+  { id: 'gallery', label: 'Outputs', icon: Icon.outputs, preload: loadGallery },
+  { id: 'history', label: 'History', icon: Icon.history, preload: loadRunHistory },
+  { id: 'settings', label: 'Settings', icon: Icon.settings, preload: loadSettings },
 ];
 
 // Fire each importer at most once; repeated hovers must not re-request.
@@ -254,15 +255,18 @@ export default function App() {
 
   const commands = useMemo(() => {
     const cmds = [];
-    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.label.split(' ')[0], title: `Go to ${t.label.replace(/^\S+\s/, '')}`, run: () => { warmTab(t.id); setTab(t.id); } }));
-    cmds.push({ id: 'act-start', section: 'Actions', icon: '▶', title: 'Start swapping', subtitle: 'Run the current job', run: () => runFaceswap('start') });
-    cmds.push({ id: 'act-stop', section: 'Actions', icon: '⏹', title: 'Stop processing', run: () => runFaceswap('stop') });
-    cmds.push({ id: 'act-queue', section: 'Actions', icon: '➕', title: 'Add current to batch queue', run: () => runFaceswap('queue') });
-    cmds.push({ id: 'act-compare', section: 'Actions', icon: '🔍', title: 'Toggle before/after compare', run: () => runFaceswap('compare') });
-    cmds.push({ id: 'act-split', section: 'Actions', icon: '⬍', title: 'Toggle split view', run: () => runFaceswap('split') });
-    cmds.push({ id: 'act-preview', section: 'Actions', icon: '🔄', title: 'Refresh preview', run: () => runFaceswap('preview') });
-    cmds.push({ id: 'act-shortcuts', section: 'Actions', icon: '⌨️', title: 'Show keyboard shortcuts', run: () => runFaceswap('shortcuts') });
-    THEMES.forEach((t) => cmds.push({ id: `theme-${t.name}`, section: 'Theme', icon: '🎨', title: t.name, subtitle: t.label, run: () => applyTheme(t.name) }));
+    // The tab's own icon and label carry straight into its palette row, so the
+    // two surfaces can never drift apart (this used to slice the emoji off the
+    // front of the label string and re-derive the title with a regex).
+    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.icon, title: `Go to ${t.label}`, run: () => { warmTab(t.id); setTab(t.id); } }));
+    cmds.push({ id: 'act-start', section: 'Actions', icon: Icon.play, title: 'Start swapping', subtitle: 'Run the current job', run: () => runFaceswap('start') });
+    cmds.push({ id: 'act-stop', section: 'Actions', icon: Icon.stop, title: 'Stop processing', run: () => runFaceswap('stop') });
+    cmds.push({ id: 'act-queue', section: 'Actions', icon: Icon.queue, title: 'Add current to batch queue', run: () => runFaceswap('queue') });
+    cmds.push({ id: 'act-compare', section: 'Actions', icon: Icon.compare, title: 'Toggle before/after compare', run: () => runFaceswap('compare') });
+    cmds.push({ id: 'act-split', section: 'Actions', icon: Icon.split, title: 'Toggle split view', run: () => runFaceswap('split') });
+    cmds.push({ id: 'act-preview', section: 'Actions', icon: Icon.refresh, title: 'Refresh preview', run: () => runFaceswap('preview') });
+    cmds.push({ id: 'act-shortcuts', section: 'Actions', icon: Icon.shortcuts, title: 'Show keyboard shortcuts', run: () => runFaceswap('shortcuts') });
+    THEMES.forEach((t) => cmds.push({ id: `theme-${t.name}`, section: 'Theme', icon: Icon.theme, title: t.name, subtitle: t.label, run: () => applyTheme(t.name) }));
     return cmds;
   }, [applyTheme, runFaceswap]);
 
@@ -505,7 +509,9 @@ export default function App() {
       {/* Floating Header Capsule */}
       <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
         <div className="flex items-center gap-3">
-          <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-lg">⚡</span>
+          <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-[var(--accent)]">
+            <Icon.brand size={18} />
+          </span>
           <div>
             <h1 className="text-lead font-bold tracking-tight text-white/95 flex items-center gap-1.5">
               Roop Unleashed <span className="text-white/35 font-medium">Studio</span>
@@ -538,10 +544,10 @@ export default function App() {
                         setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
                       } catch {}
                     }}
-                    className="hover:text-white text-white/60 transition-colors cursor-pointer"
+                    className="grid place-items-center hover:text-white text-white/60 transition-colors cursor-pointer"
                     title="Resume Job" aria-label="Resume job"
                   >
-                    ▶
+                    <Icon.play size={13} />
                   </button>
                 ) : (
                   <button
@@ -553,10 +559,10 @@ export default function App() {
                         setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
                       } catch {}
                     }}
-                    className="hover:text-white text-white/60 transition-colors cursor-pointer"
+                    className="grid place-items-center hover:text-white text-white/60 transition-colors cursor-pointer"
                     title="Pause Job" aria-label="Pause job"
                   >
-                    ⏸
+                    <Icon.pause size={13} />
                   </button>
                 )}
                 <button
@@ -569,10 +575,10 @@ export default function App() {
                       } catch {}
                     }
                   }}
-                  className="hover:text-red-400 text-white/60 transition-colors cursor-pointer"
+                  className="grid place-items-center hover:text-red-400 text-white/60 transition-colors cursor-pointer"
                   title="Stop Job" aria-label="Stop job"
                 >
-                  ⏹
+                  <Icon.stop size={13} />
                 </button>
               </div>
             </div>
@@ -585,7 +591,7 @@ export default function App() {
           title="Command palette (Ctrl/⌘ + K)"
           className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-xs font-medium"
         >
-          <span className="text-sm">⌘</span> Search
+          <Icon.search size={14} /> Search
           <kbd className="text-nano font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
         <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">
@@ -620,7 +626,13 @@ export default function App() {
                     transition={spring.snappy}
                   />
                 )}
-                <span className="relative z-10 flex items-center gap-1.5">{t.label}</span>
+                {/* The icon takes the accent only while the tab is active, so
+                    the selected tab is legible from colour and from the pill
+                    behind it, not from colour alone. */}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  <t.icon size={14} className={active ? 'text-[var(--accent)]' : undefined} />
+                  {t.label}
+                </span>
               </motion.button>
             );
           })}
@@ -632,7 +644,12 @@ export default function App() {
       <main className="flex-1 w-[98%] max-w-none mx-auto px-6 py-8 mt-4 z-10 relative">
         {error && (
           <div role="alert" className="rounded-2xl bg-red-500/10 border border-red-500/20 p-5 text-sm text-red-300 animate-slide-up flex flex-wrap items-center justify-between gap-3">
-            <span className="selectable">⚠️ {error}</span>
+            {/* items-start: on a wrapped multi-line error the icon belongs on
+                the first line, not floating in the vertical middle. */}
+            <span className="flex items-start gap-2 min-w-0">
+              <Icon.warning size={16} className="mt-px text-red-400" />
+              <span className="selectable">{error}</span>
+            </span>
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-mini text-red-300/50">
                 {retrying ? 'Retrying…' : 'Retrying automatically…'}
@@ -734,7 +751,9 @@ export default function App() {
       {isDraggingOver && (
         <div className="fixed inset-0 bg-[var(--accent)]/10 backdrop-blur-[2px] border-4 border-dashed border-[var(--accent)] z-50 flex items-center justify-center pointer-events-none">
           <div className="bg-black/80 px-6 py-4 rounded-2xl border border-white/10 shadow-2xl flex flex-col items-center gap-2">
-            <span className="text-4xl animate-bounce">📥</span>
+            {/* animate-bounce is a transform, so it stays on the compositor —
+                this overlay is on screen during a drag and must not repaint. */}
+            <Icon.drop size={34} className="animate-bounce text-[var(--accent)]" />
             <span className="text-lg font-bold text-white uppercase tracking-wider">Drop media here</span>
           </div>
         </div>

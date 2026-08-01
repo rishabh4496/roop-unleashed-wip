@@ -851,33 +851,25 @@ export default function InteractivePreview({
           {compareMode !== 'diff' && (
             <>
               <span className="w-px h-4 bg-white/15 mx-0.5" />
-              <button
-                type="button"
-                onClick={() => setSliderPosition(25)}
-                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
-                  sliderPosition === 25 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
-                }`}
-              >
-                25%
-              </button>
-              <button
-                type="button"
-                onClick={() => setSliderPosition(50)}
-                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
-                  sliderPosition === 50 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
-                }`}
-              >
-                50%
-              </button>
-              <button
-                type="button"
-                onClick={() => setSliderPosition(75)}
-                className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
-                  sliderPosition === 75 ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
-                }`}
-              >
-                75%
-              </button>
+              {/* Three identical blocks before this; the only thing that
+                  varied was the number. `aria-pressed` is what tells a screen
+                  reader WHICH of them is currently active — the visual-only
+                  cue was a background tint, and "25%" alone said nothing about
+                  what the control does. */}
+              {[25, 50, 75].map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  onClick={() => setSliderPosition(pct)}
+                  aria-label={`Move the compare split to ${pct}%`}
+                  aria-pressed={sliderPosition === pct}
+                  className={`px-1.5 py-1 rounded text-nano font-mono font-bold ${
+                    sliderPosition === pct ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white'
+                  }`}
+                >
+                  {pct}%
+                </button>
+              ))}
               <span className="w-px h-4 bg-white/15 mx-0.5" />
               <button
                 type="button"

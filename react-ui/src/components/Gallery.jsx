@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { getJSON, postJSON, postFiles, fileUrl } from '../api';
 import { Button, Card } from './ui';
 import { confirmDialog } from './confirm';
+import { Icon } from '../icons';
 import OutputCompare from './OutputCompare';
 
 export default function Gallery({ notify, setSettings, setTab }) {
@@ -485,16 +486,18 @@ export default function Gallery({ notify, setSettings, setTab }) {
                               onClick={() => revealFile(file.name)}
                               className="p-1 rounded bg-white/5 hover:bg-white/15 text-white/70"
                               title="Reveal File"
+                              aria-label={`Reveal ${file.name} in the file manager`}
                             >
-                              📁
+                              <Icon.reveal size={14} />
                             </button>
                             <button
                               type="button"
                               onClick={() => deleteFile(file.name)}
                               className="p-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400"
                               title="Delete File"
+                              aria-label={`Delete ${file.name}`}
                             >
-                              🗑️
+                              <Icon.trash size={14} />
                             </button>
                           </div>
                         </td>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Skeleton } from './ui';
+import { Icon } from '../icons';
 import PersonGroups from './PersonGroups';
 import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
@@ -2719,7 +2720,7 @@ export default function FaceSwap({
                   {profiles.map((pr) => (
                     <div key={pr.name} className="flex items-center gap-1 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg px-2.5 py-1 text-xs transition-colors">
                       <button onClick={() => loadProfile(pr.name)} className="text-white hover:text-[var(--accent)] font-semibold">{pr.name}</button>
-                      <button onClick={() => deleteProfile(pr.name)} className="text-white/40 hover:text-red-400 font-bold ml-1.5" title="Delete preset">✕</button>
+                      <button onClick={() => deleteProfile(pr.name)} className="text-white/40 hover:text-red-400 ml-1.5" title="Delete preset" aria-label={`Delete preset ${pr.name}`}><Icon.close size={12} /></button>
                     </div>
                   ))}
                 </div>
@@ -2939,9 +2940,9 @@ export default function FaceSwap({
                           )}
                         </div>
                       </div>
-                      <button type="button" title="Remove this target"
+                      <button type="button" title="Remove this target" aria-label="Remove this target"
                         onClick={(e) => { e.stopPropagation(); removeTarget(i); }}
-                        className="h-6 w-6 shrink-0 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center">✕</button>
+                        className="h-6 w-6 shrink-0 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--accent-hover)] hover:text-white transition-all flex items-center justify-center"><Icon.close size={12} /></button>
                     </div>
                   );
                 })}

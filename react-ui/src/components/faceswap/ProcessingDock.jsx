@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from '../../icons';
 
 /**
  * ProcessingDock
@@ -39,7 +40,7 @@ export default function ProcessingDock({
           }`}
           title={paused ? 'Resume execution' : 'Pause execution'}
         >
-          <span>{paused ? '▶' : '⏸'}</span>
+          {paused ? <Icon.play size={13} /> : <Icon.pause size={13} />}
           <span>{paused ? 'Resume Render' : 'Pause Render'}</span>
         </button>
 
@@ -49,7 +50,7 @@ export default function ProcessingDock({
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition-all active:scale-95"
           title="Cancel current swap run"
         >
-          <span>⏹</span>
+          <Icon.stop size={13} />
           <span>Cancel Job</span>
         </button>
       </div>
@@ -67,7 +68,7 @@ export default function ProcessingDock({
             ? 'Lite UI on — panel blurs and looping animations are off while rendering, so the browser leaves the GPU to the swap'
             : 'Lite UI off — the full interface is being composited on the same GPU as the render'}
         >
-          <span>{renderLite ? '🪶' : '✨'}</span>
+          {renderLite ? <Icon.lite size={13} /> : <Icon.full size={13} />}
           <span className="hidden sm:inline">{renderLite ? 'Lite UI' : 'Full UI'}</span>
         </button>
 
@@ -83,7 +84,7 @@ export default function ProcessingDock({
           aria-pressed={desktopAlerts}
           aria-label="Desktop alerts when the job finishes"
         >
-          <span>🔔</span>
+          <Icon.bell size={13} />
           <span className="hidden sm:inline">{desktopAlerts ? 'Alerts On' : 'Desktop Alerts'}</span>
         </button>
       </div>

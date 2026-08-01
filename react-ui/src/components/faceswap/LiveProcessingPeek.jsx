@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from '../../icons';
 
 /**
  * LiveProcessingPeek
@@ -57,8 +58,12 @@ export default function LiveProcessingPeek({
               : isLive
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                 : 'bg-white/10 text-neutral-300 border-white/20'
-          }`}>
-            {paused ? '⏸ PAUSED' : isLive ? '🔴 LIVE' : '🖼 PREVIEW STILL'}
+          } inline-flex items-center gap-1.5`}>
+            {paused
+              ? <><Icon.pause size={11} /> PAUSED</>
+              : isLive
+                ? <><Icon.live size={11} /> LIVE</>
+                : <><Icon.still size={11} /> PREVIEW STILL</>}
           </span>
 
           {!isLive && maxFrames > 1 && (

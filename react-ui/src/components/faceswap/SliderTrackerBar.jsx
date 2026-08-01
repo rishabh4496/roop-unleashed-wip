@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TRACKER_SLIDERS, TRACKER_DEFAULT_VALUES } from './trackerConfig';
+import { Icon } from '../../icons';
 
 const STORAGE_KEY = 'roop_user_slider_presets';
 
@@ -338,10 +339,11 @@ export default function SliderTrackerBar({
                     <button
                       type="button"
                       onClick={(e) => handleDeleteCustomPreset(p.id, e)}
-                      className="mr-1.5 px-1 rounded bg-black/40 text-micro font-extrabold hover:text-red-300 transition-colors"
+                      className="mr-1.5 px-1 rounded bg-black/40 hover:text-red-300 transition-colors"
                       title="Delete custom preset"
+                      aria-label={`Delete custom preset ${p.name}`}
                     >
-                      ×
+                      <Icon.close size={11} />
                     </button>
                   )}
                 </div>

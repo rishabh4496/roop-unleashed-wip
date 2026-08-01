@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, spring } from '../motion';
+import { Icon } from '../icons';
 
 // Promise-based, themed replacements for window.confirm / window.prompt so
 // destructive actions don't pop a jarring native OS dialog in the premium UI.
@@ -85,7 +86,10 @@ export function ConfirmHost() {
             className="relative w-full max-w-sm rounded-2xl glass-panel border border-white/10 p-6 shadow-2xl"
           >
             <h2 className="text-lead font-bold text-white/95 flex items-center gap-2">
-              <span>{danger ? '⚠️' : '❓'}</span>{dialog.title || 'Are you sure?'}
+              {danger
+                ? <Icon.warning size={17} className="text-red-400" />
+                : <Icon.question size={17} className="text-white/50" />}
+              {dialog.title || 'Are you sure?'}
             </h2>
             {dialog.message && (
               <p className="mt-2 text-compact leading-relaxed text-white/60 selectable">{dialog.message}</p>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from '../icons';
 
 // Catches render/lifecycle errors inside a tab panel — including the dynamic
 // `import()` rejection thrown by a lazy chunk that failed to load (a dev-server
@@ -45,7 +46,9 @@ export default class ErrorBoundary extends React.Component {
     );
     return (
       <div role="alert" className="flex flex-col items-center justify-center h-[45vh] gap-4 text-center px-6">
-        <span className="text-3xl">{isChunk ? '🔌' : '⚠️'}</span>
+        {isChunk
+          ? <Icon.disconnected size={30} className="text-white/40" />
+          : <Icon.warning size={30} className="text-amber-400/80" />}
         <div className="text-sm font-semibold text-white/80">
           {isChunk ? 'This panel could not be loaded' : 'Something went wrong in this panel'}
         </div>

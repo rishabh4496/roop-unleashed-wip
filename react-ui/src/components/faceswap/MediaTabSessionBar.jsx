@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from '../../icons';
 
 /**
  * MediaTabSessionBar
@@ -41,10 +42,14 @@ export default function MediaTabSessionBar({
                   e.stopPropagation();
                   onRemoveTarget(idx);
                 }}
-                className="opacity-0 group-hover:opacity-15 hover:!opacity-100 hover:text-rose-400 transition-opacity p-0.5 rounded"
+                // focus-visible alongside group-hover: this is a real tab stop,
+                // and opacity-0 alone leaves a keyboard user focused on a
+                // control they cannot see.
+                className="opacity-0 group-hover:opacity-15 hover:!opacity-100 focus-visible:!opacity-100 hover:text-rose-400 transition-opacity p-0.5 rounded"
                 title="Close target session"
+                aria-label={`Close target session ${fileName}`}
               >
-                ✕
+                <Icon.close size={12} />
               </button>
             )}
           </div>

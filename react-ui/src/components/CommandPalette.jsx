@@ -93,7 +93,14 @@ export default function CommandPalette({ open, onClose, commands }) {
                     onClick={() => run(c)}
                     className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${i === sel ? 'bg-[var(--accent)]/15' : 'hover:bg-white/5'}`}
                   >
-                    <span className="text-base w-6 text-center shrink-0">{c.icon || '•'}</span>
+                    {/* `icon` is an icon COMPONENT from icons.jsx (it used to
+                        be an emoji string). Rendering it in a fixed-width,
+                        centred box keeps every title in the list on the same
+                        left edge regardless of the glyph's own width — the
+                        thing emoji could never be relied on to do. */}
+                    <span className="w-6 grid place-items-center shrink-0 text-white/45">
+                      {c.icon ? <c.icon size={16} /> : <span className="h-1 w-1 rounded-full bg-current" />}
+                    </span>
                     <span className="flex-1 min-w-0">
                       <span className="block text-sm font-semibold text-white/90 truncate">{c.title}</span>
                       {c.subtitle && <span className="block text-mini text-white/40 truncate">{c.subtitle}</span>}
