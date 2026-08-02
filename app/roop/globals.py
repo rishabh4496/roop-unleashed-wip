@@ -70,6 +70,26 @@ jaw_reshape_strength = 0.5
 # Skin detail transfer: inject the original footage's high-frequency texture
 # (pores, grain) onto the swapped/enhanced face. 0 = off (no-op), 0..1 = amount.
 detail_transfer_strength = 0.0
+# ── DeepFaceLab merger post-ops (roop/procmgr_merger.py) ─────────────────────
+# Cheap CPU passes over the merged crop, applied just before paste-back. Every
+# one is a bit-identical no-op at the value below, and the chain short-circuits
+# when they all are, so the defaults cost one attribute read each.
+#   hist_match  0..1  match the plate's per-channel histogram (a 4th colour
+#                     family: rct/lct/mkl match moments, this matches shape)
+#   sharpen    -1..1  signed unsharp; negative softens (the denoise direction)
+#   motion_blur 0..1  directional blur, axis measured off the plate's own smear
+#   grain_match 0..1  add noise matched to the plate's measured noise floor —
+#                     the swap comes back cleaner than the footage around it
+#   degrade     0..1  bicubic down-and-up, to match a soft/compressed plate
+merger_hist_match = 0.0
+merger_sharpen = 0.0
+merger_motion_blur = 0.0
+merger_grain_match = 0.0
+merger_degrade = 0.0
+# Grow/shrink the pasted face about its own centre (DFL's output_face_scale).
+# Identity swappers keep the TARGET's head size, so this is the only lever when
+# the source person's face is visibly narrower or broader. 0 = off (no-op).
+output_face_scale = 0.0
 # Expression restorer (LivePortrait): put the TARGET's expression back onto the
 # swapped face. Swappers regress toward their training set's mean expression, so
 # laughing/crying/grimacing get flattened; this reads the expression deformation

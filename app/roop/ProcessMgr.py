@@ -15,6 +15,7 @@ from typing import Any, List, Callable
 from roop.typing import Frame, Face
 from roop.procmgr_masking import MaskingMixin
 from roop.procmgr_color import ColorTransferMixin
+from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop import recognizer_adaface as _ada
@@ -346,7 +347,7 @@ def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
     return face
 
 
-class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixin):
+class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin, TrackingMixin):
     plugins = {
         'faceswap'          : 'FaceSwapInsightFace',
         'mask_clip2seg'     : 'Mask_Clip2Seg',
@@ -2736,6 +2737,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, PixelBoostMixin, TrackingMixi
                     fake_frame = self.apply_detail_transfer(fake_frame, aligned_img, _dt)
             except Exception as e:
                 bar_write(f"[ProcessMgr] Detail transfer failed: {e}")
+
+        # ── DFL merger post-ops ───────────────────────────────────────────────
+        # Histogram match, sharpen/soften, motion blur, grain match, degrade —
+        # the cheap half of DeepFaceLab's merger, applied to the crop that is
+        # already in memory. Every knob is a bit-identical no-op at its neutral
+        # value and the whole chain short-circuits when they all are, so this
+        # costs one attribute read per knob when the features are off.
+        # aligned_img is the reference: the measured ops read the PLATE's
+        # histogram, blur axis and noise floor rather than asking for them.
+        try:
+            if enhanced_frame is not None:
+                enhanced_frame = self.apply_merger_post(enhanced_frame, aligned_img)
+            else:
+                fake_frame = self.apply_merger_post(fake_frame, aligned_img)
+        except Exception as e:
+            bar_write(f"[ProcessMgr] Merger post-op failed: {e}")
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]

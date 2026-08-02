@@ -69,16 +69,37 @@ def _function_body(src, marker, from_index=0):
     return src[start:end]
 
 
+def merger_helper_keys():
+    """Keys consumed by _apply_merger_settings.
+
+    That helper reads `payload.get(key, ...)` with a LOOP VARIABLE, so the
+    regex below finds nothing in it — the key names live in a tuple of string
+    literals instead. Parsing them out keeps this honest automatically: adding
+    a knob to the helper is enough, with no allowlist here to remember to
+    update (and none to go stale if a knob is ever removed).
+    """
+    src = _api_source()
+    start = src.index("def _apply_merger_settings(")
+    body = src[start:src.index("\ndef ", start + 1)]
+    return set(re.findall(r'\(\s*"([a-z_0-9]+)"\s*,\s*[-0-9.]+\s*\)', body))
+
+
 def preview_consumed_keys():
     src = _api_source()
     body = _function_body(src, 'def preview(')
-    return set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
+    keys = set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
+    if "_apply_merger_settings(payload)" in body:
+        keys |= merger_helper_keys()
+    return keys
 
 
 def run_consumed_keys():
     src = _api_source()
     body = _function_body(src, "batch_process_regular(")
-    return set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
+    keys = set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
+    if "_apply_merger_settings(payload)" in body:
+        keys |= merger_helper_keys()
+    return keys
 
 
 # Sent by the frontend but not read via payload.get in preview(): these are
@@ -114,6 +135,27 @@ class TestFrontendReachesBackend(unittest.TestCase):
         unconsumed = frontend_payload_keys() - preview_consumed_keys() - VIA_MASK_OFFSET_HELPER
         self.assertEqual(unconsumed, set(), f"FaceSwap.jsx sends {sorted(unconsumed)} "
                                             f"but /api/preview never reads them")
+
+    def test_merger_helper_is_actually_called_by_both_paths(self):
+        """The helper only excuses those keys while it really runs — and it has
+        to run on BOTH paths. A preview that skipped it would be previewing
+        something other than what the render produces, which is worse than the
+        setting not existing."""
+        src = _api_source()
+        self.assertTrue(merger_helper_keys(), "no keys parsed out of "
+                                              "_apply_merger_settings — did its shape change?")
+        for marker in ('def preview(', 'batch_process_regular('):
+            self.assertIn("_apply_merger_settings(payload)",
+                          _function_body(src, marker),
+                          f"{marker} never applies the merger settings")
+
+    def test_merger_knobs_default_to_neutral(self):
+        """Every merger op is a no-op at 0, so a fresh install must start there
+        — a non-zero default would silently change everyone's output."""
+        import roop.globals as g
+        for key in sorted(merger_helper_keys()):
+            self.assertEqual(float(getattr(g, key)), 0.0,
+                             f"roop.globals.{key} does not default to neutral")
 
     def test_mask_offset_helper_is_actually_called(self):
         """VIA_MASK_OFFSET_HELPER above is only a valid excuse while preview()

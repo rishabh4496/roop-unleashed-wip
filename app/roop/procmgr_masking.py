@@ -15,6 +15,7 @@ import os
 import cv2
 import numpy as np
 
+import roop.globals
 from roop.typing import Frame, Face
 from roop.face_util import clamp_cut_values, kps_pose_ratios
 
@@ -58,6 +59,14 @@ class MaskingMixin:
     def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
+
+        # ── Output face scale (DFL's output_face_scale) ────────────────────
+        # Grow or shrink the pasted face about its own centre. The identity
+        # swappers keep the TARGET's head size, so when the source person has a
+        # visibly narrower or broader face there is otherwise no lever for it.
+        # Folded into IM before any warp runs, which makes it free: the same
+        # number of warps happen, one of them just has a different matrix.
+        IM, face_landmarks = self._scale_paste(IM, upsk_face.shape, face_landmarks)
 
         img_matte = np.zeros((upsk_face.shape[0], upsk_face.shape[1]), dtype=np.uint8)
 
@@ -115,6 +124,46 @@ class MaskingMixin:
             paste_face = cv2.addWeighted(paste_face.astype(np.uint8), 0.6, overlay, 0.4, 0)
 
         return paste_face.astype(np.uint8)
+
+    @staticmethod
+    def _scale_paste(IM, crop_shape, face_landmarks):
+        """Fold `output_face_scale` into the crop→frame matrix.
+
+        IM maps crop coordinates to frame coordinates. To resize the pasted
+        face about its own centre we want crop point p to land at
+        ``f_c + s*(IM(p) - f_c)``, where f_c is where the crop's centre lands
+        in the frame. Writing IM as ``A p + b`` that is just ``A' = sA`` and
+        ``b' = s·b + (1-s)·f_c`` — one matrix, applied before the warps, so
+        the matte and the face stay registered for free.
+
+        The landmark hull is built in FRAME space and would otherwise clip a
+        grown face, so it is scaled about the same centre by the same factor.
+
+        Returns the inputs unchanged when the scale is neutral.
+
+        Note: `restore_original_mouth` re-composites the mouth using the
+        target's untouched geometry, so at large scales the restored mouth is
+        registered to the original face size, not the scaled one.
+        """
+        try:
+            scale = float(getattr(roop.globals, 'output_face_scale', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            scale = 0.0
+        s = 1.0 + scale
+        if abs(s - 1.0) <= 1e-6:
+            return IM, face_landmarks
+
+        h, w = crop_shape[:2]
+        centre = np.array([w / 2.0, h / 2.0, 1.0], dtype=np.float64)
+        f_c = IM @ centre                      # crop centre, in frame coords
+
+        IM = IM.copy()
+        IM[:, 2] = s * IM[:, 2] + (1.0 - s) * f_c   # must use the ORIGINAL b
+        IM[:, :2] = s * IM[:, :2]
+
+        if face_landmarks is not None:
+            face_landmarks = (np.asarray(face_landmarks, dtype=np.float32) - f_c) * s + f_c
+        return IM, face_landmarks
 
     def blur_area(self, img_matte, face_mask_blend):
         # Always apply minimal anti-aliasing after the affine warp

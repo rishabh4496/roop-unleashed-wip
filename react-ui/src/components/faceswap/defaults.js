@@ -56,6 +56,14 @@ export const FACESWAP_DEFAULTS = {
   jaw_reshape: false,
   jaw_reshape_strength: 0.5,
   detail_transfer_strength: 0,
+  // DeepFaceLab merger post-ops. All neutral by default — each is a
+  // bit-identical no-op at 0, so the defaults change nothing about a render.
+  merger_hist_match: 0,
+  merger_sharpen: 0,
+  merger_motion_blur: 0,
+  merger_grain_match: 0,
+  merger_degrade: 0,
+  output_face_scale: 0,
   // Expression restore is an editable Face Swap control and a heavy GPU stage,
   // but was missing here — so "Reset defaults" left it at whatever it was.
   expression_restore_strength: 0,

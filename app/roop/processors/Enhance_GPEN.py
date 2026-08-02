@@ -38,10 +38,17 @@ def _fp32_trt_providers(providers):
     return patched
 
 
-# GPEN blind face restoration at three native resolutions. 512 is the classic
+# GPEN blind face restoration at four native resolutions. 512 is the classic
 # roop weight; 1024/2048 are the FaceFusion exports for large/close-up faces
-# (better detail ceiling, proportionally more VRAM/time).
+# (better detail ceiling, proportionally more VRAM/time). 256 goes the other
+# way: a quarter of 512's pixels through the net, for distant faces, comparison
+# grids and preview scrubbing where 512's detail is thrown away by the paste
+# downscale anyway.
 GPEN_MODELS = {
+    256: {
+        "file": "gpen_bfr_256.onnx",
+        "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/gpen_bfr_256.onnx",
+    },
     512: {
         "file": "GPEN-BFR-512.onnx",
         "url": "https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx",
@@ -134,16 +141,35 @@ class Enhance_GPEN():
         if not np.isfinite(result).all():
             print("[GPEN] non-finite output — using unenhanced frame "
                   "(FP16 overflow? set trt precision to fp32 or ROOP_GPEN_FP16=0)")
-            scale_factor = int(fallback_bgr.shape[1] / input_size)
-            return fallback_bgr.astype(np.uint8), scale_factor
+            return self._sized(fallback_bgr.astype(np.uint8), input_size)
 
         # post-process
         result = np.clip(result, -1, 1)
         result = (result + 1) / 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        scale_factor = int(result.shape[1] / input_size)
-        return result.astype(np.uint8), scale_factor
+        return self._sized(result.astype(np.uint8), input_size)
+
+    @staticmethod
+    def _sized(result, input_size):
+        """Return (frame, scale_factor) with the contract paste_upscale expects.
+
+        scale_factor is `result_width / input_size` as an INTEGER, because the
+        caller multiplies the paste matrix by it. That is fine while the model
+        is the same size as the crop or larger (512→1, 1024→2, 2048→4), but a
+        model SMALLER than the crop gives int(256/512) = 0, which would collapse
+        the paste matrix to zero and blank the face.
+
+        So a downscaling model is resized back to the crop size here and reports
+        1. The saving that tier exists for is in the network, not in carrying a
+        smaller buffer through the paste — and an INTER_CUBIC upsample of a
+        256px crop costs a fraction of what the 512px net would have.
+        """
+        if result.shape[1] < input_size:
+            result = cv2.resize(result, (input_size, input_size),
+                                interpolation=cv2.INTER_CUBIC)
+            return result, 1
+        return result, int(result.shape[1] / input_size)
 
 
     def Release(self):

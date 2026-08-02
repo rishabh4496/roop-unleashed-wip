@@ -370,6 +370,8 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         processors.update({"codeformer": {}})
     elif roop.globals.selected_enhancer == 'DMDNet':
         processors.update({"dmdnet": {}})
+    elif roop.globals.selected_enhancer == 'GPEN 256':
+        processors.update({"gpen": {"size": 256}})
     elif roop.globals.selected_enhancer == 'GPEN':
         processors.update({"gpen": {"size": 512}})
     elif roop.globals.selected_enhancer == 'GPEN 1024':

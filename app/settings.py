@@ -208,6 +208,15 @@ class Settings:
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
         # Skin detail transfer strength (high-frequency texture from footage)
         self.detail_transfer_strength = self.default_get(data, 'detail_transfer_strength', 0.0)
+        # DeepFaceLab merger post-ops — see roop/procmgr_merger.py. All neutral
+        # by default; each is a bit-identical no-op at 0.
+        self.merger_hist_match = self.default_get(data, 'merger_hist_match', 0.0)
+        self.merger_sharpen = self.default_get(data, 'merger_sharpen', 0.0)
+        self.merger_motion_blur = self.default_get(data, 'merger_motion_blur', 0.0)
+        self.merger_grain_match = self.default_get(data, 'merger_grain_match', 0.0)
+        self.merger_degrade = self.default_get(data, 'merger_degrade', 0.0)
+        # Grow/shrink the pasted face about its own centre (DFL output_face_scale)
+        self.output_face_scale = self.default_get(data, 'output_face_scale', 0.0)
         # Expression restorer (LivePortrait) — see roop.globals
         self.expression_restore_strength = self.default_get(data, 'expression_restore_strength', 0.0)
         self.expression_restore_region = self.default_get(data, 'expression_restore_region', 'all')
@@ -333,6 +342,12 @@ class Settings:
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,
+            'merger_hist_match': self.merger_hist_match,
+            'merger_sharpen': self.merger_sharpen,
+            'merger_motion_blur': self.merger_motion_blur,
+            'merger_grain_match': self.merger_grain_match,
+            'merger_degrade': self.merger_degrade,
+            'output_face_scale': self.output_face_scale,
             'expression_restore_strength': self.expression_restore_strength,
             'expression_restore_region': self.expression_restore_region,
             'rescue_small_faces': self.rescue_small_faces,

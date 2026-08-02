@@ -38,6 +38,12 @@ export const LABELS = {
   vr_mode: 'VR mode',
   expression_restore_strength: 'Expression restore',
   detail_transfer_strength: 'Detail transfer',
+  merger_hist_match: 'Histogram match',
+  merger_sharpen: 'Sharpen / soften',
+  merger_motion_blur: 'Motion blur',
+  merger_grain_match: 'Grain match',
+  merger_degrade: 'Degrade',
+  output_face_scale: 'Face size',
   stabilize_face: 'Stabilize face',
 };
 

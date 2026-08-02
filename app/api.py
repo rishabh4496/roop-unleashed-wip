@@ -442,8 +442,8 @@ def get_meta():
         "git_version": _get_git_version(),
         "providers": providers,
         "trt_precisions": ["fp32", "fp16", "mixed"],
-        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN",
-                       "GPEN 1024", "GPEN 2048", "Restoreformer++",
+        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN 256",
+                       "GPEN", "GPEN 1024", "GPEN 2048", "Restoreformer++",
                        "KEEP (sidecar)"],
         "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
                          "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
@@ -455,7 +455,7 @@ def get_meta():
                           "Segment Anything (MobileSAM)", "Segment Anything (FastSAM)",
                           "Segment Anything 2 (tracked)"],
         "sam2_model_sizes": ["tiny", "small", "base_plus", "large"],
-        "color_transfer_modes": ["none", "rct", "lct", "mkl"],
+        "color_transfer_modes": ["none", "rct", "lct", "mkl", "idt"],
         "detector_engines": ["scrfd", "yoloface", "retinaface", "retinaface_r50", "yunet"],
         "encoder_presets": ["auto", "ultrafast", "superfast", "veryfast", "faster",
                              "fast", "medium", "slow", "slower", "veryslow"],
@@ -1753,6 +1753,28 @@ def _preview_person_ids(idx, faces):
     return ids
 
 
+def _apply_merger_settings(payload):
+    """Push the DFL merger post-op knobs from a request onto roop.globals.
+
+    Six numeric settings that /api/preview and /api/swap both need to apply
+    identically — a preview that ignored them would be previewing something
+    other than what the render produces. One helper rather than the same six
+    lines twice, so the two paths cannot drift apart.
+    """
+    for key, default in (("merger_hist_match", 0.0),
+                         ("merger_sharpen", 0.0),
+                         ("merger_motion_blur", 0.0),
+                         ("merger_grain_match", 0.0),
+                         ("merger_degrade", 0.0),
+                         ("output_face_scale", 0.0)):
+        fallback = getattr(roop_globals.CFG, key, default)
+        try:
+            value = float(payload.get(key, fallback))
+        except (TypeError, ValueError):
+            value = default
+        setattr(roop_globals, key, value)
+
+
 # ── Live preview swap ────────────────────────────────────────────────────────
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
@@ -1788,6 +1810,7 @@ def preview(payload: dict = Body(...)):
     roop_globals.expression_restore_region = payload.get("expression_restore_region", getattr(roop_globals.CFG, "expression_restore_region", "all"))
     roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
+    _apply_merger_settings(payload)
 
     faces_list = []
     person_ids = []
@@ -2001,6 +2024,7 @@ def _run_swap(payload):
         roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", roop_globals.CFG.rescue_small_faces))
         roop_globals.detector_engine = payload.get("detector_engine", roop_globals.CFG.detector_engine)
         roop_globals.temporal_detection = bool(payload.get("temporal_detection", getattr(roop_globals.CFG, "temporal_detection", False)))
+        _apply_merger_settings(payload)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None
