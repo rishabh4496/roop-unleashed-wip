@@ -42,8 +42,34 @@ const sanitizeCustomPresets = (raw) => {
 const preset = (name, overrides) =>
   ({ name, values: { ...TRACKER_DEFAULT_VALUES, ...overrides } });
 
+// ── What the merger values in each preset follow from ─────────────────────
+// Three facts decide these; they are not five variations on "some grain".
+//
+// 1. GRAIN is the one that appears everywhere but Default. Its amount tracks
+//    how hard the preset is already pushing, because the cleaner a stage
+//    leaves the face the further it has drifted from the plate's noise floor.
+//
+// 2. HISTOGRAM MATCH PULLS THE FACE TOWARD THE TARGET. That makes it a
+//    trade-off, not a quality dial: it is the highest in the presets whose job
+//    is to make the face belong to the shot, and deliberately near zero in
+//    Strong Likeness, where dragging tonality back toward the target is
+//    working against the entire point of the preset.
+//
+// 3. SHARPEN'S SIGN IS THE PRESET'S TEXTURE. Cinematic and Natural Soft go
+//    negative because film and "soft" are not video-crisp; Strong Likeness
+//    goes positive to hold the source's detail. Ultra Realism sits at 0 — its
+//    job is to match the plate, and matching is not a look.
+//
+// FACE SIZE IS ZERO IN EVERY PRESET, on purpose. It depends on how this
+// source's face compares to this target's, which no preset can know. A number
+// there would be a guess wearing a preset's name.
+
 const BUILTIN_PRESETS = [
   { name: 'Default', values: TRACKER_DEFAULT_VALUES },
+
+  // Match the plate as exactly as possible. Grain is highest here because
+  // "too clean" is the tell this preset exists to beat; motion blur is on
+  // because a real face smears with the camera; sharpen stays neutral.
   preset('Ultra Realism', {
     blend_ratio: 0.85,
     detail_transfer_strength: 0.4,
@@ -52,10 +78,16 @@ const BUILTIN_PRESETS = [
     num_swap_steps: 2,
     jaw_reshape_strength: 0.4,
     stabilize_enhancer_strength: 0.6,
-    merger_grain_match: 0.6,
-    merger_hist_match: 0.3,
-    merger_sharpen: 0.1,
+    merger_grain_match: 0.75,
+    merger_hist_match: 0.45,
+    merger_motion_blur: 0.35,
+    merger_sharpen: 0,
+    merger_degrade: 0,
   }),
+
+  // A film look, which is a specific set of artefacts: 180-degree shutter
+  // (the most motion blur of any preset), grain, and an image that is NOT
+  // video-sharp — hence the negative sharpen and a little degrade.
   preset('Cinematic', {
     blend_ratio: 0.9,
     detail_transfer_strength: 0.25,
@@ -63,10 +95,16 @@ const BUILTIN_PRESETS = [
     face_mask_blend: 30,
     num_swap_steps: 2,
     stabilize_enhancer_strength: 0.5,
-    merger_grain_match: 0.5,
-    merger_motion_blur: 0.3,
-    merger_degrade: 0.15,
+    merger_grain_match: 0.6,
+    merger_motion_blur: 0.55,
+    merger_sharpen: -0.15,
+    merger_degrade: 0.2,
+    merger_hist_match: 0.35,
   }),
+
+  // Minimal intervention: every core slider is the lowest of any preset, so
+  // the merger half matches. Just enough grain not to read as pasted, and
+  // nothing that restyles the face.
   preset('Subtle Touchup', {
     blend_ratio: 0.6,
     detail_transfer_strength: 0.15,
@@ -74,8 +112,15 @@ const BUILTIN_PRESETS = [
     face_mask_blend: 15,
     jaw_reshape_strength: 0.2,
     stabilize_enhancer_strength: 0.3,
-    merger_grain_match: 0.3,
+    merger_grain_match: 0.25,
+    merger_hist_match: 0.15,
   }),
+
+  // Maximum source identity — blend 1.0, three swap passes, jaw 0.75. So the
+  // merger half must not undo that: histogram match is near zero because it
+  // pulls tonality back toward the target, and motion blur and degrade are
+  // off because both throw away the likeness detail the preset just paid
+  // three passes for. Sharpen goes positive to hold it.
   preset('Strong Likeness', {
     blend_ratio: 1.0,
     detail_transfer_strength: 0.5,
@@ -83,9 +128,17 @@ const BUILTIN_PRESETS = [
     num_swap_steps: 3,
     jaw_reshape_strength: 0.75,
     stabilize_enhancer_strength: 0.7,
-    merger_grain_match: 0.4,
+    merger_grain_match: 0.35,
+    merger_hist_match: 0.1,
     merger_sharpen: 0.2,
+    merger_motion_blur: 0,
+    merger_degrade: 0,
   }),
+
+  // "Soft" is the instruction: the widest mask feather of any preset (40px),
+  // so the merger half is the only one with a strongly negative sharpen, plus
+  // a touch of degrade. Histogram match is high because "natural" here means
+  // sitting in the scene rather than standing out of it.
   preset('Natural Soft', {
     blend_ratio: 0.75,
     detail_transfer_strength: 0.2,
@@ -93,7 +146,10 @@ const BUILTIN_PRESETS = [
     face_mask_blend: 40,
     jaw_reshape_strength: 0.3,
     merger_grain_match: 0.4,
-    merger_sharpen: -0.2,
+    merger_sharpen: -0.35,
+    merger_hist_match: 0.4,
+    merger_degrade: 0.15,
+    merger_motion_blur: 0.2,
   }),
 ];
 
