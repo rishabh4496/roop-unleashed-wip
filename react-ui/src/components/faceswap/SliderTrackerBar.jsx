@@ -606,8 +606,15 @@ export default function SliderTrackerBar({
                       </span>
                     </button>
 
+                    {/* The grid stops at 4 columns until the ultrawide
+                        breakpoints. The bar sits between the two side panels,
+                        so its container is well under the viewport width — six
+                        columns at 2xl left about 105px for the label, which
+                        truncates "Original / Enhanced Blend" to nothing useful.
+                        3xl/4xl are this project's own ultrawide steps
+                        (1920/2560px), added for exactly this kind of layout. */}
                     {!collapsed && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-2 mt-1.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2 mt-1.5">
                         {g.sliders.map((s) => (
                           <TrackerSlider
                             key={s.key}

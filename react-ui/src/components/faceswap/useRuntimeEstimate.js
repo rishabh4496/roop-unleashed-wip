@@ -29,6 +29,17 @@ const sigPayload = (p) => ({
   // Both are whole GPU stages and part of the calibration signature.
   expression_restore_strength: num(p.expression_restore_strength, 0),
   upscale_after_swap: p.upscale_after_swap,
+  // The merger post-ops cost up to 15 ms/face, so runtime_calib folds a COUNT
+  // of the active ones into the signature. They have to be sent here as well:
+  // the RECORD side builds its signature from the full swap payload, so if the
+  // estimate request omitted them the two would key different buckets and the
+  // estimate would never find the run it just measured. output_face_scale is
+  // deliberately absent — it costs nothing and does not move the signature.
+  merger_hist_match: num(p.merger_hist_match, 0),
+  merger_sharpen: num(p.merger_sharpen, 0),
+  merger_motion_blur: num(p.merger_motion_blur, 0),
+  merger_grain_match: num(p.merger_grain_match, 0),
+  merger_degrade: num(p.merger_degrade, 0),
 });
 
 // Rough wall-clock cost of a frame from the settings alone, used before there
@@ -80,7 +91,9 @@ export default function useRuntimeEstimate({
       p.swap_model, p.selected_enhancer, p.face_detection_mode, p.face_detector_size,
       p.detector_engine, p.num_swap_steps, p.subsample_upscale, p.track_identities,
       p.temporal_detection, p.mask_engine, p.stabilize_face, p.stabilize_enhancer,
-      p.expression_restore_strength, p.upscale_after_swap]);
+      p.expression_restore_strength, p.upscale_after_swap,
+      p.merger_hist_match, p.merger_sharpen, p.merger_motion_blur,
+      p.merger_grain_match, p.merger_degrade]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const heuristicPerFrame = heuristicMsPerFrame(p, threads);

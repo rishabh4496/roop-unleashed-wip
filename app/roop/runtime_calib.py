@@ -65,6 +65,18 @@ _SIG_FIELDS = [
     ("upscale_after",     ["upscale_after_swap"]),
 ]
 
+# Merger post-ops (roop/procmgr_merger.py). Measured 0.6-7.5 ms each and 15.3 ms
+# with all five on — half the expression restorer, which is in the table above
+# for exactly this reason. Without them, a run with the whole chain enabled and
+# one with it off fold into the SAME EMA bucket and the estimate settles on a
+# blend of two pipelines.
+#
+# Only the five that COST something. `output_face_scale` is a change to the
+# paste matrix with no measurable cost, so letting it move the signature would
+# split buckets for nothing.
+_MERGER_COST_KEYS = ("merger_hist_match", "merger_sharpen", "merger_motion_blur",
+                     "merger_grain_match", "merger_degrade")
+
 
 def _path():
     return resolve_relative_path('../runtime_calibration.json')
@@ -153,6 +165,24 @@ def signature_from_payload(payload, gpu="", threads="", precision=""):
                 val = payload[k]
                 break
         parts.append(f"{name}={_norm(val)}")
+
+    # Appended ONLY when something is on, and as a COUNT rather than five more
+    # fields. Both halves of that matter:
+    #   * omitting it when neutral leaves every signature already on disk
+    #     byte-identical, since all of them were recorded before these existed
+    #     and with them off — so no _VERSION bump and no lost calibration;
+    #   * five continuous sliders as five fields would give almost every run its
+    #     own bucket, and a bucket with one sample never learns anything.
+    active = 0
+    for key in _MERGER_COST_KEYS:
+        try:
+            if float(payload.get(key) or 0.0) != 0.0:
+                active += 1
+        except (TypeError, ValueError):
+            pass
+    if active:
+        parts.append(f"merger={active}")
+
     parts.append(f"threads={_norm(threads)}")
     parts.append(f"precision={_norm(precision)}")
     parts.append(f"gpu={_norm(gpu)}")

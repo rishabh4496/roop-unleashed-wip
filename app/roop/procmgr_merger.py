@@ -13,6 +13,13 @@ returns its input object unchanged when all of them are neutral. That is the
 whole cost story when the features are off: one attribute read each, measured
 at 0.00 ms for the whole chain.
 
+These run AFTER the mask engines, on the whole crop — so wherever a mask has
+restored original plate pixels (a hand, hair over the face) those pixels get
+grain or blur applied on top of grain they already had. DFL's merger behaves
+the same way, and at usable strengths the doubled amount over a small occluded
+region is not visible, but it is why these are strength sliders rather than
+a switch.
+
 Switched ON they are NOT free. Measured on a 512x512 crop, one face, CPU:
 
     sharpen      0.6 ms      degrade      0.8 ms

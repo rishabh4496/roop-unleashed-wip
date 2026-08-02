@@ -153,3 +153,84 @@ class ChunkedBarRecordsItsRateTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SignatureAgreesBetweenRecordAndEstimate(unittest.TestCase):
+    """The estimate and the record must key the SAME bucket.
+
+    Two independent payloads reach `signature_from_payload`: the full swap body
+    on the record side, and the frontend's small `sigPayload` on the estimate
+    side. Nothing connected them, so a field added to _SIG_FIELDS but not to
+    sigPayload would make the estimate look up a signature the record never
+    writes — the estimate silently falls back to the global average forever, and
+    every measurement still lands correctly, so nothing looks broken.
+    """
+
+    def setUp(self):
+        import re
+        from pathlib import Path
+        repo = Path(__file__).resolve().parents[2]
+        self.calib = (repo / 'app' / 'roop' / 'runtime_calib.py').read_text(encoding='utf-8')
+        hook = (repo / 'react-ui' / 'src' / 'components' / 'faceswap'
+                / 'useRuntimeEstimate.js').read_text(encoding='utf-8')
+        body = hook[hook.index('const sigPayload'):hook.index('const heuristicMsPerFrame')]
+        self.sent = set(re.findall(r'^\s+([a-z_0-9]+):', body, re.M))
+        self.re = re
+
+    def test_every_signature_field_is_sent_by_the_estimate(self):
+        fields = self.re.search(r'_SIG_FIELDS = \[(.*?)\n\]', self.calib, self.re.S).group(1)
+        # ("canonical", ["payload", "keys"]) — any ONE of the keys satisfies it.
+        rows = self.re.findall(r'\(\s*"[a-z_]+",\s*\[([^\]]*)\]', fields)
+        self.assertGreaterEqual(len(rows), 10, '_SIG_FIELDS not parsed')
+        for row in rows:
+            keys = self.re.findall(r'"([a-z_0-9]+)"', row)
+            with self.subTest(field=keys):
+                self.assertTrue(self.sent & set(keys),
+                                f"signature reads one of {keys}, but sigPayload sends none "
+                                f"of them — estimate and record would key different buckets")
+
+    def test_the_merger_count_is_sent_too(self):
+        """Appended outside _SIG_FIELDS, so the loop above cannot see it."""
+        keys = self.re.findall(r'"(merger_[a-z_]+)"',
+                               self.re.search(r'_MERGER_COST_KEYS = \((.*?)\)',
+                                              self.calib, self.re.S).group(1))
+        self.assertEqual(len(keys), 5)
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertIn(key, self.sent)
+
+    def test_face_size_never_moves_the_signature(self):
+        """It costs nothing, so splitting buckets on it would only starve them.
+
+        Asserted on BEHAVIOUR rather than on the name being absent from the
+        source — it is named there, in the comment explaining this very rule.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from roop import runtime_calib
+        base = {'swap_model': 'inswapper', 'selected_enhancer': 'GPEN'}
+        ref = runtime_calib.signature_from_payload(base)
+        for value in (-0.2, -0.05, 0.0, 0.05, 0.2):
+            with self.subTest(output_face_scale=value):
+                self.assertEqual(
+                    runtime_calib.signature_from_payload({**base, 'output_face_scale': value}),
+                    ref)
+
+    def test_a_neutral_payload_signs_exactly_as_before(self):
+        """The merger part is appended only when active, which is what keeps
+        every calibration entry already on disk valid without a _VERSION bump."""
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from roop import runtime_calib
+        base = {'swap_model': 'inswapper', 'selected_enhancer': 'GPEN'}
+        off = runtime_calib.signature_from_payload(base)
+        zeros = runtime_calib.signature_from_payload(
+            {**base, 'merger_grain_match': 0, 'merger_sharpen': 0.0,
+             'output_face_scale': 0.15})
+        self.assertEqual(off, zeros, 'a neutral merger changed the signature')
+        on = runtime_calib.signature_from_payload({**base, 'merger_grain_match': 0.5})
+        self.assertNotEqual(off, on, 'an active merger did NOT change the signature')
+        self.assertIn('merger=1', on)
+        two = runtime_calib.signature_from_payload(
+            {**base, 'merger_grain_match': 0.5, 'merger_degrade': 0.2})
+        self.assertIn('merger=2', two)
