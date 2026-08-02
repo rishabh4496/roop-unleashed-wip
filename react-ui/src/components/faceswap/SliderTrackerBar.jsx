@@ -1,18 +1,23 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TRACKER_SLIDERS, TRACKER_DEFAULT_VALUES } from './trackerConfig';
+import { TRACKER_SLIDERS, TRACKER_DEFAULT_VALUES, TRACKER_GROUPS } from './trackerConfig';
 import { Icon } from '../../icons';
 
 const STORAGE_KEY = 'roop_user_slider_presets';
+const GROUPS_KEY = 'roop_slider_tracker_collapsed';
 
 const num = (v, fallback) => (typeof v === 'number' && !isNaN(v) ? v : fallback);
 
-// Slider steps are 0.01/0.05, so values that came back through parseFloat or
-// JSON can be a float ULP off what the preset table holds. Compare with a
-// tolerance rather than ===, or a preset would never register as "active".
+// Slider steps are 0.01/0.05, so a value that has been through parseFloat or a
+// JSON round trip can sit a float ULP off the table it is compared against.
+// Both users of that fact need the same tolerance: a preset would never
+// register as "active", and the per-slider "modified" ring would light on a
+// slider nobody touched.
+const isOff = (a, b) => Math.abs(a - b) >= 1e-6;
+
 const valuesMatch = (params, values) =>
   TRACKER_SLIDERS.every((s) =>
-    Math.abs(num(params[s.key], s.defaultVal) - num(values[s.key], s.defaultVal)) < 1e-6);
+    !isOff(num(params[s.key], s.defaultVal), num(values[s.key], s.defaultVal)));
 
 // Custom presets come from localStorage, which is user-writable and survives
 // across versions — anything malformed in there would otherwise crash the whole
@@ -30,74 +35,149 @@ const sanitizeCustomPresets = (raw) => {
     }));
 };
 
+// Spread over the defaults rather than respelling every key: a preset that
+// omitted one would leave that slider untouched on apply while `valuesMatch`
+// still compared it, so the pill you just clicked would read "Custom". Listing
+// only what a preset actually CHANGES also makes the recipe readable.
+const preset = (name, overrides) =>
+  ({ name, values: { ...TRACKER_DEFAULT_VALUES, ...overrides } });
+
 const BUILTIN_PRESETS = [
   { name: 'Default', values: TRACKER_DEFAULT_VALUES },
-  {
-    name: 'Ultra Realism',
-    values: {
-      blend_ratio: 0.85,
-      detail_transfer_strength: 0.4,
-      expression_restore_strength: 0.8,
-      face_mask_blend: 25,
-      max_face_distance: 0.75,
-      num_swap_steps: 2,
-      jaw_reshape_strength: 0.4,
-      stabilize_enhancer_strength: 0.6,
-    },
-  },
-  {
-    name: 'Cinematic',
-    values: {
-      blend_ratio: 0.9,
-      detail_transfer_strength: 0.25,
-      expression_restore_strength: 1.2,
-      face_mask_blend: 30,
-      max_face_distance: 0.75,
-      num_swap_steps: 2,
-      jaw_reshape_strength: 0.5,
-      stabilize_enhancer_strength: 0.5,
-    },
-  },
-  {
-    name: 'Subtle Touchup',
-    values: {
-      blend_ratio: 0.6,
-      detail_transfer_strength: 0.15,
-      expression_restore_strength: 0.4,
-      face_mask_blend: 15,
-      max_face_distance: 0.75,
-      num_swap_steps: 1,
-      jaw_reshape_strength: 0.2,
-      stabilize_enhancer_strength: 0.3,
-    },
-  },
-  {
-    name: 'Strong Likeness',
-    values: {
-      blend_ratio: 1.0,
-      detail_transfer_strength: 0.5,
-      expression_restore_strength: 0.9,
-      face_mask_blend: 20,
-      max_face_distance: 0.75,
-      num_swap_steps: 3,
-      jaw_reshape_strength: 0.75,
-      stabilize_enhancer_strength: 0.7,
-    },
-  },
-  {
-    name: 'Natural Soft',
-    values: {
-      blend_ratio: 0.75,
-      detail_transfer_strength: 0.2,
-      expression_restore_strength: 0.6,
-      face_mask_blend: 40,
-      max_face_distance: 0.75,
-      num_swap_steps: 1,
-      jaw_reshape_strength: 0.3,
-      stabilize_enhancer_strength: 0.5,
-    },
-  },
+  preset('Ultra Realism', {
+    blend_ratio: 0.85,
+    detail_transfer_strength: 0.4,
+    expression_restore_strength: 0.8,
+    face_mask_blend: 25,
+    num_swap_steps: 2,
+    jaw_reshape_strength: 0.4,
+    stabilize_enhancer_strength: 0.6,
+    merger_grain_match: 0.6,
+    merger_hist_match: 0.3,
+    merger_sharpen: 0.1,
+  }),
+  preset('Cinematic', {
+    blend_ratio: 0.9,
+    detail_transfer_strength: 0.25,
+    expression_restore_strength: 1.2,
+    face_mask_blend: 30,
+    num_swap_steps: 2,
+    stabilize_enhancer_strength: 0.5,
+    merger_grain_match: 0.5,
+    merger_motion_blur: 0.3,
+    merger_degrade: 0.15,
+  }),
+  preset('Subtle Touchup', {
+    blend_ratio: 0.6,
+    detail_transfer_strength: 0.15,
+    expression_restore_strength: 0.4,
+    face_mask_blend: 15,
+    jaw_reshape_strength: 0.2,
+    stabilize_enhancer_strength: 0.3,
+    merger_grain_match: 0.3,
+  }),
+  preset('Strong Likeness', {
+    blend_ratio: 1.0,
+    detail_transfer_strength: 0.5,
+    expression_restore_strength: 0.9,
+    num_swap_steps: 3,
+    jaw_reshape_strength: 0.75,
+    stabilize_enhancer_strength: 0.7,
+    merger_grain_match: 0.4,
+    merger_sharpen: 0.2,
+  }),
+  preset('Natural Soft', {
+    blend_ratio: 0.75,
+    detail_transfer_strength: 0.2,
+    expression_restore_strength: 0.6,
+    face_mask_blend: 40,
+    jaw_reshape_strength: 0.3,
+    merger_grain_match: 0.4,
+    merger_sharpen: -0.2,
+  }),
 ];
+
+// ── One slider ────────────────────────────────────────────────────────────
+// Two rows, not four. The old card spent a whole row on a "min / def: x / max"
+// footer; min and max now sit inline beside the track and the default is a pip
+// ON it, which is where you were looking anyway. The value badge absorbed the
+// footer's other job — click it to reset. That is ~48px per slider instead of
+// ~92px, which is what makes fourteen of them fit without the bar swallowing
+// the workspace.
+function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
+  const span = s.max - s.min;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - s.min) / span) * 100));
+  const percent = pct(value);
+  const modified = isOff(value, s.defaultVal);
+  // A pip is only information when the default sits somewhere you would not
+  // guess. At either end of the track it marks the track's own edge, half of
+  // it hanging outside the rail — so it is dropped there.
+  const showPip = isOff(s.defaultVal, s.min) && isOff(s.defaultVal, s.max);
+
+  return (
+    <div
+      className={`group/card rounded-lg bg-black/40 border px-2.5 py-2 transition-all duration-200 ${
+        modified && enabled
+          ? 'border-[var(--accent)]/40 bg-black/60'
+          : 'border-white/5 hover:border-white/15'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-1.5">
+        <span
+          className="text-mini font-semibold text-white/75 truncate group-hover/card:text-white transition-colors"
+          title={s.info}
+        >
+          {s.label}
+        </span>
+        <button
+          type="button"
+          onClick={() => enabled && onSetParam && onSetParam(s.key, s.defaultVal)}
+          disabled={!enabled || !modified}
+          title={modified ? `Reset to ${s.format(s.defaultVal)}` : 'At default'}
+          aria-label={modified
+            ? `${s.label} is ${s.format(value)}. Reset to ${s.format(s.defaultVal)}`
+            : `${s.label} is ${s.format(value)}, the default`}
+          className={`shrink-0 text-mini font-mono font-bold tabular-nums px-1.5 py-0.5 rounded border transition-colors ${
+            modified && enabled
+              ? 'text-[var(--accent)] bg-[var(--accent)]/10 border-[var(--accent)]/30 hover:bg-[var(--accent)]/20 cursor-pointer'
+              : 'text-white/45 bg-white/[0.03] border-white/10 cursor-default'
+          }`}
+        >
+          {s.format(value)}
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <span className="text-nano font-mono text-white/25 tabular-nums shrink-0">{s.min}</span>
+        <div className="relative flex-1 flex items-center">
+          <input
+            type="range"
+            min={s.min}
+            max={s.max}
+            step={s.step}
+            value={value}
+            disabled={!enabled}
+            aria-label={s.label}
+            onChange={(e) => onSetParam && onSetParam(s.key, parseFloat(e.target.value))}
+            className="w-full h-1 rounded-lg appearance-none bg-white/10 cursor-pointer accent-[var(--accent)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed"
+            style={{
+              background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${percent}%, rgba(255,255,255,0.1) ${percent}%, rgba(255,255,255,0.1) 100%)`,
+            }}
+          />
+          {/* Where the slider ships. Not a control — the value badge resets. */}
+          {showPip && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-2 w-px bg-white/40"
+              style={{ left: `${pct(s.defaultVal)}%` }}
+            />
+          )}
+        </div>
+        <span className="text-nano font-mono text-white/25 tabular-nums shrink-0">{s.max}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function SliderTrackerBar({
   params = {},
@@ -108,6 +188,17 @@ export default function SliderTrackerBar({
   onRefreshPreview,
 }) {
   const [expanded, setExpanded] = useState(true);
+  // Per-section folds, remembered across reloads. Stored as the COLLAPSED list
+  // so a section added later starts open — storing the open ones would hide
+  // every new group from anyone with an existing saved value.
+  const [collapsedGroups, setCollapsedGroups] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(GROUPS_KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter((n) => typeof n === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
   const [customPresets, setCustomPresets] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
@@ -130,6 +221,18 @@ export default function SliderTrackerBar({
     } catch {
       /* ignore */
     }
+  };
+
+  const toggleGroup = (name) => {
+    setCollapsedGroups((prev) => {
+      const next = prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name];
+      try {
+        localStorage.setItem(GROUPS_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
   };
 
   const allPresets = useMemo(() => [...BUILTIN_PRESETS, ...customPresets], [customPresets]);
@@ -405,77 +508,62 @@ export default function SliderTrackerBar({
             className="overflow-hidden"
           >
             <div
-              className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-3 pt-3 border-t border-white/5 transition-opacity duration-300 ${
+              className={`mt-3 pt-3 border-t border-white/5 transition-opacity duration-300 ${
                 sliderEffectEnabled ? 'opacity-100' : 'opacity-55 grayscale-[25%]'
               }`}
             >
-              {TRACKER_SLIDERS.map((s) => {
-                const rawVal = params[s.key];
-                const val = num(rawVal, s.defaultVal);
-                const percent = Math.max(
-                  0,
-                  Math.min(100, ((val - s.min) / (s.max - s.min)) * 100)
-                );
-                const isModified = val !== s.defaultVal;
+              {TRACKER_GROUPS.map((g) => {
+                const collapsed = collapsedGroups.includes(g.name);
+                const activeCount = g.sliders.filter(
+                  (s) => isOff(num(params[s.key], s.defaultVal), s.defaultVal)).length;
 
                 return (
-                  <div
-                    key={s.key}
-                    className={`group/card relative p-3 rounded-xl bg-black/40 border transition-all duration-200 ${
-                      isModified && sliderEffectEnabled
-                        ? 'border-[var(--accent)]/40 bg-black/60 shadow-[0_0_12px_rgba(233,69,96,0.08)]'
-                        : 'border-white/5 hover:border-white/15'
-                    }`}
-                  >
-                    {/* Card Header: Label, Value */}
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span
-                          className="text-mini font-semibold text-white/80 truncate group-hover/card:text-white transition-colors"
-                          title={s.info}
-                        >
-                          {s.label}
-                        </span>
-                      </div>
-                      <span className="text-xs font-mono font-bold tabular-nums text-[var(--accent)] shrink-0 bg-[var(--accent)]/10 px-1.5 py-0.5 rounded border border-[var(--accent)]/20">
-                        {s.format(val)}
-                      </span>
-                    </div>
-
-                    {/* Range Input Slider with gradient background fill */}
-                    <div className="relative flex items-center">
-                      <input
-                        type="range"
-                        min={s.min}
-                        max={s.max}
-                        step={s.step}
-                        value={val}
-                        disabled={!sliderEffectEnabled}
-                        onChange={(e) => onSetParam && onSetParam(s.key, parseFloat(e.target.value))}
-                        className="w-full h-1.5 rounded-lg appearance-none bg-white/10 cursor-pointer accent-[var(--accent)] focus:outline-none disabled:cursor-not-allowed"
-                        style={{
-                          background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${percent}%, rgba(255,255,255,0.1) ${percent}%, rgba(255,255,255,0.1) 100%)`,
-                        }}
-                      />
-                    </div>
-
-                    {/* Footer: Min, Default indicator, Max */}
-                    <div className="flex items-center justify-between text-nano font-mono text-white/35 mt-1.5">
-                      <span>{s.min}</span>
-                      <button
-                        type="button"
-                        onClick={() => sliderEffectEnabled && onSetParam && onSetParam(s.key, s.defaultVal)}
-                        disabled={!sliderEffectEnabled}
-                        className={`hover:text-white transition-colors cursor-pointer ${
-                          isModified ? 'text-[var(--accent)] font-bold' : ''
+                  <section key={g.name} className="mt-2 first:mt-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(g.name)}
+                      aria-expanded={!collapsed}
+                      className="w-full flex items-center gap-2 py-1 text-left group/sec"
+                    >
+                      <svg
+                        className={`w-2.5 h-2.5 shrink-0 text-white/40 transition-transform duration-200 ${
+                          collapsed ? '-rotate-90' : 'rotate-0'
                         }`}
-                        title="Click to reset to default"
+                        viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
                       >
-                        def: {s.defaultVal}
-                      </button>
-                      <span>{s.max}</span>
-                    </div>
-                  </div>
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                      <span className="text-micro font-bold uppercase tracking-[0.14em] text-white/45 group-hover/sec:text-white/70 transition-colors">
+                        {g.name}
+                      </span>
+                      {/* Survives collapsing: a folded section must still say
+                          that something inside it is doing work, or a knob can
+                          be left on with nothing on screen admitting it. */}
+                      {activeCount > 0 && (
+                        <span className="px-1.5 py-px rounded-full text-nano font-bold tabular-nums bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30">
+                          {activeCount} active
+                        </span>
+                      )}
+                      <span className="flex-1 h-px bg-white/5" />
+                      <span className="text-nano font-mono text-white/25 tabular-nums">
+                        {g.sliders.length}
+                      </span>
+                    </button>
+
+                    {!collapsed && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-2 mt-1.5">
+                        {g.sliders.map((s) => (
+                          <TrackerSlider
+                            key={s.key}
+                            slider={s}
+                            value={num(params[s.key], s.defaultVal)}
+                            enabled={sliderEffectEnabled}
+                            onSetParam={onSetParam}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </section>
                 );
               })}
             </div>

@@ -40,9 +40,14 @@ def _py_list(src, key):
 
 
 def _blocks(src, opener):
-    """Every `opener {...}` object literal body, brace-matched."""
+    """Every `opener {...}` object literal body, brace-matched.
+
+    `opener` is a REGEX, not a literal, so a preset spelled as a helper call
+    (`preset('Name', { … })`) can be matched as readily as a bare `values:`
+    property. It has been both.
+    """
     out = []
-    for m in re.finditer(re.escape(opener) + r'\s*\{', src):
+    for m in re.finditer(opener + r'\s*\{', src):
         i, depth = m.end() - 1, 0
         for j in range(i, len(src)):
             if src[j] == '{':
@@ -138,7 +143,9 @@ class PresetKeysTest(unittest.TestCase):
 
     def test_slider_tracker_builtin_presets(self):
         src = _read(UI, 'faceswap', 'SliderTrackerBar.jsx')
-        presets = _blocks(src, 'values:')
+        # Both spellings: the `preset(name, {…})` helper the built-ins use now,
+        # and a bare `values: {…}` in case one is ever written by hand again.
+        presets = _blocks(src, r"(?:preset\('[^']+',|values:)")
         self.assertGreaterEqual(len(presets), 4, 'built-in presets not parsed')
         for i, body in enumerate(presets):
             self._check(f'SliderTrackerBar preset {i}', _pairs(body))
