@@ -50,10 +50,17 @@ PROVIDERS = [('TensorrtExecutionProvider', TRT_OPTS),
 
 # `note` carries what the raw ms/call does NOT tell you on its own.
 STAGES = {
+    # GPEN 1024/2048 are deliberately absent. The app forces them onto a FP32
+    # TensorRT engine (they overflow in FP16 and return a black face, see
+    # Enhance_GPEN._fp32_trt_providers), so timing them under the FP16 options
+    # below would report a configuration that never runs — flatteringly. They
+    # need their own FP32 cache to be measured honestly. DMDNet is absent too:
+    # it is a .pth torch model, not single-file ONNX.
     'enhancer': [
-        ('RestoreFormer++', 'models/restoreformer_plus_plus.onnx', ''),
-        ('CodeFormer',      'models/CodeFormer/CodeFormerv0.1.onnx', ''),
+        ('RestoreFormer++', 'models/restoreformer_plus_plus.onnx', 'app default'),
+        ('CodeFormer',      'models/CodeFormer/CodeFormerv0.1.onnx', 'has a fidelity input'),
         ('GPEN-BFR-512',    'models/GPEN-BFR-512.onnx', ''),
+        ('GPEN-BFR-256',    'models/gpen_bfr_256.onnx', 'output resized back to crop size'),
         ('GFPGAN v1.4',     'models/GFPGANv1.4.onnx', ''),
     ],
     'mask': [
