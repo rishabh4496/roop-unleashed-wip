@@ -172,21 +172,29 @@ class RetinaFace3Output:
             scores = softmax(conf)[:, 1]
         priors = _generate_priors((input_size[1], input_size[0]))
 
-        boxes = _decode_boxes(loc, priors)
-        boxes[:, 0::2] *= input_size[0]
-        boxes[:, 1::2] *= input_size[1]
-        boxes /= det_scale
-
-        kpss = _decode_landmarks(landms, priors)
-        kpss[:, 0::2] *= input_size[0]
-        kpss[:, 1::2] *= input_size[1]
-        kpss /= det_scale
-        kpss = kpss.reshape((kpss.shape[0], -1, 2))
-
+        # Threshold BEFORE decoding. Decoding is elementwise per anchor — row i of
+        # the output depends only on row i of loc/landms/priors — so decoding the
+        # 16,800 anchors and then keeping the 1-3 above threshold produced exactly
+        # the same numbers as decoding only those rows, at ~90x the cost: measured
+        # 2.838 ms/call vs 0.031 ms, against a ~43 ms detect. That is CPU time
+        # spent inside the detect call with the GPU idle, and the pre-pass runs
+        # this once per frame per worker, so it is worth the reorder.
         pos_inds = np.where(scores >= self.det_thresh)[0]
         pos_scores = scores[pos_inds]
-        pos_boxes = boxes[pos_inds]
-        pos_kpss = kpss[pos_inds]
+        pos_priors = priors[pos_inds]
+
+        pos_boxes = _decode_boxes(loc[pos_inds], pos_priors)
+        pos_boxes[:, 0::2] *= input_size[0]
+        pos_boxes[:, 1::2] *= input_size[1]
+        pos_boxes /= det_scale
+
+        pos_kpss = _decode_landmarks(landms[pos_inds], pos_priors)
+        pos_kpss[:, 0::2] *= input_size[0]
+        pos_kpss[:, 1::2] *= input_size[1]
+        pos_kpss /= det_scale
+        # (-1, 5, 2), not (n, -1, 2): numpy cannot infer -1 from a zero-sized
+        # array, and a frame with no face above threshold reaches here with n=0.
+        pos_kpss = pos_kpss.reshape((-1, 5, 2))
 
         order = pos_scores.argsort()[::-1]
         pos_scores = pos_scores[order]
