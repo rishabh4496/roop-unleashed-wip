@@ -175,22 +175,32 @@ The way out is that a hysteresis latch is equivalent to a **query** —
 *"the value of the most recent decisive frame at or before t"* — which is a pure
 function of the frame index, not an evolving state. Workers publish decisive
 frames into one shared index-keyed log and all read the same answer back,
-whatever order they arrive in. Flips on a head nodding across the threshold
-(600 frames, 7 genuine crossings, so 8 is the correct answer):
+whatever order they arrive in.
 
-| | no latch | 1 thread | 4 | 8 | 16 |
-|---|---|---|---|---|---|
-| state machine per worker | 20 | 8 | 22 | 22 | 22 |
-| shared event log | 20 | **8** | **~14** | **~11** | **~11** |
+Flips on a head nodding across the threshold (400 frames, 4 genuine crossings,
+so **8** is the correct answer and **16** is what no latch gives):
 
-Single-threaded is exact. Multi-threaded, ~98% of frames match the sequential
-answer; the residual is a worker occasionally querying frame *t* before a
-sibling has published a decisive frame in *(t−N, t]*. `ProcessMgr.process_face`
-calls `observe()` as soon as the pose is known — a whole swap and enhance before
-the verdict is needed — which shrinks that window but cannot close it entirely
-without making workers wait on each other, which is not worth a stall in the
-render loop. The residual sits at genuine transitions, where the two mask paths
-agree most closely.
+| arrival order | flips |
+|---|---|
+| sequential (1 thread) | **8** — exact |
+| reordered within 4–48 frames (worst of 30 runs) | **11** |
+| reordered without limit | 28 — *worse than no latch* |
+
+Only the first two can happen. Reordering is bounded by the pipeline's own
+plumbing: one reader deals frames round-robin into per-thread `Queue(3)` and
+blocks when any of them fills, so drift stays around three rounds — 24 frames at
+8 threads. The unbounded row is what a microbenchmark with no per-frame work
+produces, and is listed only because it is the reason the test pins a window
+instead of shuffling freely.
+
+The residual is a worker querying frame *t* before a sibling has published a
+decisive frame in *(t−N, t]*, and it sits at genuine transitions, where the two
+mask paths agree most closely anyway. `ProcessMgr.process_face` calls
+`observe()` as soon as the pose is known — a whole swap and enhance before the
+verdict is needed — which shrinks that window; once a frame's neighbours are in
+the log, the result is completely order-independent. Closing it entirely would
+mean workers waiting on each other, which is not worth a stall in the render
+loop.
 | `ROOP_OCCLUDER_RAW` | 0 | `1` skips the Face Occluder mask inversion (flip polarity if the mask is inverted). |
 | `ROOP_XSEG3_RAW` | 0 | `1` skips the XSeg3 mask inversion. |
 

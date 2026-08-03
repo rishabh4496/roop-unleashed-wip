@@ -376,15 +376,14 @@ class MaskingMixin:
         if target_face is not None and getattr(target_face, 'kps', None) is not None:
             if len(target_face.kps) == 5:
                 kps = target_face.kps
-        score = nonfrontal_score(kps, tgt_pitch_deg)
         router = getattr(self, '_nonfrontal_router', None)
         if router is not None and not _NO_HYST:
+            # verdict() scores the face itself — do not score it again here just
+            # to hand it over; this runs per face per mask processor.
             is_non_frontal = router.verdict(
                 kps, tgt_pitch_deg, getattr(self._tls, 'frame_idx', None))
         else:
-            is_non_frontal = score > 1.0
-        # Kept for the ROOP_DEBUG_ANGLE print below.
-        yaw_ratio, pitch_ratio = kps_pose_ratios(kps) if kps is not None else (None, None)
+            is_non_frontal = nonfrontal_score(kps, tgt_pitch_deg) > 1.0
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
 
@@ -422,11 +421,16 @@ class MaskingMixin:
                 _w = cv2.warpAffine(_probe, M, (_cw, _ch), flags=cv2.INTER_NEAREST,
                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
                 cov = float(_w.mean())
+            # Scored here rather than above so the normal path pays nothing for
+            # a diagnostic that is off by default.
+            score = nonfrontal_score(kps, tgt_pitch_deg)
+            yaw_ratio, pitch_ratio = (kps_pose_ratios(kps) if kps is not None
+                                      else (None, None))
             print(f"[ANGLE] {p_name} yaw_ratio="
                   f"{'n/a' if yaw_ratio is None else f'{yaw_ratio:.3f}'} "
                   f"pitch_ratio={'n/a' if pitch_ratio is None else f'{pitch_ratio:.3f}'} "
                   f"pitch_deg={tgt_pitch_deg:+.1f} score={score:.3f} "
-                  f"{'(latched)' if is_non_frontal != (score > 1.0) else ''}"
+                  f"{'(latched) ' if is_non_frontal != (score > 1.0) else ''}"
                   f"non_frontal={is_non_frontal} "
                   f"path={'unwarped-box' if crop_box is not None else 'canonical-crop'}"
                   f"{'' if cov is None else f' box_covers={cov * 100:.1f}% of crop'}",

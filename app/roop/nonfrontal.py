@@ -201,6 +201,14 @@ class NonFrontalRouter:
         if pos and idxs[pos - 1] == t:
             vals[pos - 1] = value      # same frame re-scored: idempotent
             return
+        # An event older than everything retained is already reflected in
+        # `baseline` and must not be inserted: it would immediately evict as the
+        # oldest entry and drag `baseline` BACKWARDS to a staler verdict than the
+        # one already there. Only reachable if a worker falls `history` frames
+        # behind, which nothing in the pipeline does — but the failure would be
+        # silent, so it is refused rather than trusted not to happen.
+        if len(idxs) >= self.history and idxs and t < idxs[0]:
+            return
         idxs.insert(pos, t)
         vals.insert(pos, value)
         # Evicting from the front in index order leaves `baseline` holding the

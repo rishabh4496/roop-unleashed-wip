@@ -301,6 +301,14 @@ class TestPoseTemplate(YawAlignCase):
                 self.assertGreaterEqual(w, 0.0)
                 self.assertLessEqual(w, 1.0)
 
+    @staticmethod
+    def _target_template(kps, dst):
+        """The template estimate_norm actually aimed at for these keypoints."""
+        from roop.face_util import _pose_template, pose_align_weight, solve_pose_5pt
+        yaw, pitch, _ = solve_pose_5pt(kps)
+        w = pose_align_weight(kps)
+        return (1.0 - w) * dst + w * _pose_template(yaw, dst, pitch)
+
     def test_cuts_the_fit_residual_at_high_yaw(self):
         """The point of the mode: a template congruent to the input makes the
         similarity fit well posed instead of a shear/rotation compromise."""
@@ -312,22 +320,22 @@ class TestPoseTemplate(YawAlignCase):
             roop.globals.yaw_align = 'pose'
             posed = estimate_norm(kps, 512, "arcface")
             # Residual is measured against the POSE template the fit targeted.
-            from roop.face_util import _pose_template, _yaw_from_ratio
-            target = _pose_template(_yaw_from_ratio(kps_pose_ratios(kps)[0]), dst)
-            improved = fit_residual(posed, kps, target)
+            improved = fit_residual(posed, kps, self._target_template(kps, dst))
             self.assertLess(improved, plain * 0.6,
                             f"yaw={yaw}: residual {plain:.1f} -> {improved:.1f} px")
 
-    def test_exact_fit_at_zero_pitch(self):
+    def test_exact_fit_at_the_solved_pose(self):
         """At the pose the template was built for, input and template are
-        congruent, so the residual should collapse to ~0."""
-        from roop.face_util import _pose_template, _yaw_from_ratio
+        congruent, so the residual should collapse to ~0. Now that pitch is
+        modelled this must hold off-level too, which is what the old yaw-only
+        template could not do."""
         dst = reference_template(512, "arcface")
         for yaw in (60, 75, 90):
-            kps = project_kps(yaw)
-            m = estimate_norm(kps, 512, "arcface")
-            target = _pose_template(_yaw_from_ratio(kps_pose_ratios(kps)[0]), dst)
-            self.assertLess(fit_residual(m, kps, target), 1.0, f"yaw={yaw}")
+            for pitch in (-40, -20, 0, 20, 40):
+                kps = project_kps(yaw, pitch)
+                m = estimate_norm(kps, 512, "arcface")
+                self.assertLess(fit_residual(m, kps, self._target_template(kps, dst)),
+                                1.0, f"yaw={yaw} pitch={pitch}")
 
     def test_face_size_stays_constant_through_a_turn(self):
         """Scale is taken from the FRONTAL reference so the head does not appear
@@ -505,33 +513,39 @@ class TestNonFrontalMaskRouting(unittest.TestCase):
                              f"yaw=0 pitch={pitch} newly non-frontal")
 
 
-class TestYawLookup(unittest.TestCase):
-    def test_inverts_accurately_where_it_is_actually_used(self):
-        """Only the near-profile range matters: the pose template is gated to
-        yaw_ratio < YAW_ALIGN_RATIO, i.e. roughly 65 deg and above."""
-        from roop.face_util import _yaw_from_ratio
-        for yaw in (65, 70, 75, 80, 85, 90):
-            ratio = kps_pose_ratios(project_kps(yaw))[0]
-            self.assertLess(ratio, YAW_ALIGN_RATIO)      # confirms it is in range
-            self.assertAlmostEqual(_yaw_from_ratio(ratio), yaw, delta=1.0)
+class TestTheYawRatioCannotDoThePoseSolvesJob(unittest.TestCase):
+    """A yaw-ratio -> yaw lookup used to stand where solve_pose_5pt is now, and
+    these are the two reasons it had to go. Kept as tests rather than a comment
+    so nobody reintroduces the cheaper-looking scalar inversion."""
 
-    def test_is_ill_conditioned_near_frontal_by_construction(self):
-        """Eye separation falls off as cos(yaw), so the ratio's derivative
-        vanishes at 0 deg and the inversion cannot be sharp there. Harmless —
-        that range is gated out — but asserted so nobody 'fixes' the lookup or
-        starts trusting it for frontal poses."""
-        from roop.face_util import _yaw_from_ratio
-        error = abs(_yaw_from_ratio(kps_pose_ratios(project_kps(0))[0]) - 0.0)
-        self.assertGreater(error, 1.0, "inversion is now sharp at frontal — if "
-                                       "that is real, this test can go")
-        self.assertLess(error, 10.0)
+    def test_it_cannot_see_pitch_at_all(self):
+        """One scalar, two unknowns. Heads at the same yaw and wildly different
+        pitch are indistinguishable to it — including a pair straddling level,
+        which the ratio maps to nearly the same number."""
+        a = kps_pose_ratios(project_kps(0, -25))[0]
+        b = kps_pose_ratios(project_kps(0, 25))[0]
+        self.assertAlmostEqual(a, b, delta=0.12)
+        from roop.face_util import solve_pose_5pt
+        self.assertAlmostEqual(solve_pose_5pt(project_kps(0, -25))[1], -25, delta=0.5)
+        self.assertAlmostEqual(solve_pose_5pt(project_kps(0, 25))[1], 25, delta=0.5)
 
-    def test_clamps_outside_the_table(self):
-        from roop.face_util import _yaw_from_ratio
-        self.assertGreaterEqual(_yaw_from_ratio(-5.0), 0.0)
-        self.assertLessEqual(_yaw_from_ratio(-5.0), 90.0)
-        self.assertGreaterEqual(_yaw_from_ratio(99.0), 0.0)
-        self.assertLessEqual(_yaw_from_ratio(99.0), 90.0)
+    def test_pitch_corrupts_the_yaw_it_would_have_reported(self):
+        """Worse than merely blind: a tilted profile reads as a mid-angle face,
+        so the old lookup would have posed the template at the wrong yaw."""
+        level = kps_pose_ratios(project_kps(90, 0))[0]
+        tilted = kps_pose_ratios(project_kps(90, -30))[0]
+        self.assertLess(level, 0.1)          # a profile, correctly
+        self.assertGreater(tilted, 0.4)      # the same profile, read as mid-angle
+        from roop.face_util import solve_pose_5pt
+        for pitch in (-30, 0, 30):
+            self.assertAlmostEqual(abs(solve_pose_5pt(project_kps(90, pitch))[0]),
+                                   90.0, delta=0.5)
+
+    def test_the_lookup_is_gone(self):
+        import roop.face_util as fu
+        for dead in ('_yaw_from_ratio', '_build_yaw_lookup', '_LUT_YAWS'):
+            self.assertFalse(hasattr(fu, dead),
+                             f"{dead} is back — two ways to ask the same question")
 
 
 class TestAlignmentIsIllConditionedAtProfile(unittest.TestCase):

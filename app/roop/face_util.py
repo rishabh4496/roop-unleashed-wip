@@ -1193,23 +1193,12 @@ def offaxis_deg(yaw_deg, pitch_deg):
     return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
 
 
-def _build_yaw_lookup():
-    """yaw (deg) -> yaw_ratio, so a measured ratio can be inverted back to an
-    angle. Monotonically decreasing, so np.interp needs both arrays reversed."""
-    yaws = np.arange(0.0, 90.5, 0.5)
-    ratios = []
-    for y in yaws:
-        q = _project_reference(y)
-        vert = np.linalg.norm((q[3] + q[4]) / 2.0 - (q[0] + q[1]) / 2.0)
-        ratios.append(np.linalg.norm(q[1] - q[0]) / vert)
-    return yaws, np.asarray(ratios)
-
-
-_LUT_YAWS, _LUT_RATIOS = _build_yaw_lookup()
-
-
-def _yaw_from_ratio(ratio):
-    return float(np.interp(ratio, _LUT_RATIOS[::-1], _LUT_YAWS[::-1]))
+# NOTE: a yaw-ratio -> yaw lookup table used to live here, because the 'pose'
+# mode read the head's yaw by inverting that scalar. It has no callers since
+# solve_pose_5pt replaced it: inverting yaw_ratio could not recover pitch at all,
+# and could not even recover YAW on a face that was pitched, because pitch
+# inflates the ratio (see solve_pose_5pt). Removed rather than left as a second,
+# worse way to ask the same question.
 
 
 def _pose_template(yaw_deg, base_dst, pitch_deg=0.0):
