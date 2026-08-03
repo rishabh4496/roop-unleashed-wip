@@ -126,6 +126,32 @@ class TestAuditBuckets(unittest.TestCase):
         _audit_reset()
         self.assertEqual(dict(_audit), {})
 
+    def test_reset_and_report_share_one_scope(self):
+        """The counters must be cleared once per CLIP, in the same function that
+        reports them.
+
+        This was wrong on the first cut: the reset sat in `initialize()`, which
+        core.py calls once before handing batch_process a whole LIST of files,
+        while the report runs at the end of each file. Every clip after the first
+        therefore reported its own counts plus all previous clips' — the exact
+        confusion the audit exists to remove, and invisible on a single-clip run.
+        """
+        with open(_PROCMGR, encoding='utf-8') as fh:
+            tree = ast.parse(fh.read())
+        where = {'_audit_reset': set(), '_audit_report': set()}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for call in ast.walk(node):
+                if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                        and call.func.id in where):
+                    where[call.func.id].add(node.name)
+        self.assertEqual(where['_audit_reset'], where['_audit_report'],
+                         f'reset runs in {where["_audit_reset"]} but report runs '
+                         f'in {where["_audit_report"]} — counters would span clips')
+        self.assertEqual(len(where['_audit_report']), 1,
+                         f'expected exactly one reporting scope, got {where}')
+
 
 if __name__ == '__main__':
     unittest.main()

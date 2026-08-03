@@ -460,9 +460,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
     def initialize(self, input_faces, target_faces, options):
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
-        # Per-run counters — the audit reports one job, not the process lifetime,
-        # so a batch's second clip must not inherit the first one's tallies.
-        _audit_reset()
         # Decide ONCE per run whether AdaFace drives identity matching, and warm
         # every captured target face. All-or-nothing: a run must not compare some
         # pairs on one metric and some on another against a single threshold.
@@ -1019,6 +1016,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # Frame indices restart per clip, so a latch carried over from the last
         # one would match a new face by position and hand it a stale verdict.
         self._nonfrontal_router.reset()
+        # Swap-audit counters. Reset HERE, not in initialize(): core.py calls
+        # initialize() once and then hands batch_process a whole LIST of files,
+        # while the audit is reported at the end of each one — so resetting there
+        # made every clip after the first report its own counts plus every
+        # previous clip's, which is precisely the confusion the report exists to
+        # remove. This block already exists to clear per-clip state.
+        _audit_reset()
         # Temporal detection (anti-flicker): its pre-pass gap-fills detection
         # misses AND applies the kps/lm106 smoothing itself, so the per-frame
         # kps stabilizer and the kps-only 2-pass become redundant — disable
@@ -2230,11 +2234,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         temp_frame = self.process_face(src_index, face, temp_frame)
                         num_faces_found += 1
                     else:
-                        # No veto fired and no entry matched: the appearance gate
-                        # (ROOP_TRACK_EMB_MAX) refused every track for this face,
-                        # or the pre-pass recorded no track on this frame at all.
+                        # Distinguish the two no-veto ways of arriving here, or the
+                        # report points at the wrong thing. best_j < 0 means the
+                        # appearance gate (ROOP_TRACK_EMB_MAX) refused every track
+                        # for this face, or the pre-pass recorded no track on this
+                        # frame. best_j >= 0 means a track DID match but carries no
+                        # usable source — it never passed the assignment gate — a
+                        # different problem with a different knob.
                         if veto is None:
-                            _audit_hit('no track entry matched')
+                            _audit_hit('no track entry matched' if best_j < 0
+                                       else 'track matched but has no source')
                         # Fall back to per-frame multi-angle matching — the same
                         # logic live preview uses — so these frames still swap
                         # instead of being silently skipped. Threshold-gated and
