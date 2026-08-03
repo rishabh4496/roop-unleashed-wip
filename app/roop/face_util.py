@@ -14,6 +14,7 @@ import numpy as np
 from skimage import transform as trans
 from roop.capturer import get_video_frame
 from roop.utilities import resolve_relative_path, conditional_download
+from roop.nms import bind_instance_nms
 
 # Pool of independent insightface FaceAnalysis instances (opt-in, ROOP_DETMASK_POOL).
 #
@@ -94,6 +95,13 @@ def _build_face_analyser():
     if _hybrid_engine_active():
         fa.models.pop('detection', None)
         fa.det_model = None
+    else:
+        # SCRFD decodes and suppresses inside insightface, so its own nms() is
+        # the one that would delete the second of two touching faces. Give this
+        # INSTANCE the shared rule the other engines use (identical signature
+        # and contract; site-packages untouched) — otherwise the default engine
+        # would be the only one still dropping them. See roop/nms.py.
+        bind_instance_nms(fa.det_model)
     return fa
 
 

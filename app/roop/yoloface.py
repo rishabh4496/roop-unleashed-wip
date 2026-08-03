@@ -23,6 +23,7 @@ import onnxruntime
 
 import roop.globals
 from roop.utilities import resolve_relative_path, conditional_download
+from roop.nms import nms_keep
 
 _YOLO_URL = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/yoloface_8n.onnx"
 
@@ -31,26 +32,18 @@ _detector_lock = threading.Lock()   # guards pool CONSTRUCTION only
 
 
 def _nms(boxes, scores, iou_thresh=0.4):
-    """Plain IoU non-max suppression. boxes: (N,4) x1y1x2y2."""
+    """IoU non-max suppression. boxes: (N,4) x1y1x2y2.
+
+    Delegates to the shared rule so this engine agrees with the others about
+    when two overlapping boxes are two touching faces rather than one face
+    detected twice — see roop/nms.py. offset=0 keeps this engine's own area
+    convention (no +1), so the IoU numbers are unchanged.
+    """
     if len(boxes) == 0:
         return []
-    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        inter = w * h
-        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
-        order = order[1:][iou <= iou_thresh]
-    return keep
+    dets = np.concatenate([np.asarray(boxes, np.float32),
+                           np.asarray(scores, np.float32).reshape(-1, 1)], axis=1)
+    return nms_keep(dets, iou_thresh, offset=0.0)
 
 
 class YoloFaceDetector:

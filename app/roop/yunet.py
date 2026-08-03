@@ -7,6 +7,13 @@ from queue import Queue
 
 import roop.globals
 from roop.utilities import resolve_relative_path, conditional_download
+from roop.nms import nms_keep, CENTER_FRAC
+
+# What OpenCV's internal NMS is set to when the shared rule is doing the real
+# suppression: high enough that it cannot pre-delete a pair the rule would have
+# kept (the rule tops out around IoU 0.60), low enough that exact-duplicate
+# boxes still collapse inside OpenCV rather than being carried out and back.
+_RAW_NMS = 0.85
 
 _MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 _MODEL_FILE = "face_detection_yunet_2023mar.onnx"
@@ -93,10 +100,17 @@ def detect(frame, det_size=640, det_thresh=0.5):
     resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
+    # YuNet suppresses inside OpenCV, where the rule cannot be replaced — so it
+    # is asked not to decide. With the shared face-vs-duplicate rule active,
+    # OpenCV runs permissively and the real suppression happens below, on boxes
+    # this module owns; otherwise it keeps deciding exactly as before. Without
+    # this, yunet would be the one engine still deleting a touching face. See
+    # roop/nms.py.
+    raw_nms = max(nms_thresh, _RAW_NMS) if CENTER_FRAC > 0 else nms_thresh
     with lease_detector() as det:
         det.setInputSize((new_w, new_h))
         det.setScoreThreshold(det_thresh)
-        det.setNMSThreshold(nms_thresh)
+        det.setNMSThreshold(raw_nms)
         _, faces = det.detect(resized)
 
 
@@ -121,8 +135,18 @@ def detect(frame, det_size=640, det_thresh=0.5):
         # Convert landmarks to shape (5, 2)
         lm = face[4:14].reshape((5, 2)) / scale
         kpss.append(lm)
-        
-    return np.array(bboxes, dtype=np.float32), np.array(kpss, dtype=np.float32)
+
+    bboxes = np.array(bboxes, dtype=np.float32)
+    kpss = np.array(kpss, dtype=np.float32)
+
+    if CENTER_FRAC > 0 and len(bboxes) > 1:
+        # The suppression OpenCV was told to skip, at the configured threshold —
+        # same greedy-by-score algorithm, plus the concentricity requirement, so
+        # with the rule disabled this reduces to what OpenCV was doing.
+        keep = nms_keep(bboxes, nms_thresh, offset=0.0)
+        bboxes, kpss = bboxes[keep], kpss[keep]
+
+    return bboxes, kpss
 
 
 def release_detector():

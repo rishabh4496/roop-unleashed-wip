@@ -29,6 +29,7 @@ import numpy as np
 import onnxruntime
 import roop.globals
 from roop.utilities import resolve_relative_path, conditional_download
+from roop.nms import nms_keep, bind_instance_nms
 
 def softmax(z):
     assert len(z.shape) == 2
@@ -210,34 +211,10 @@ class RetinaFace3Output:
         return det, kpss
 
     def nms(self, dets):
-        thresh = self.nms_thresh
-        x1 = dets[:, 0]
-        y1 = dets[:, 1]
-        x2 = dets[:, 2]
-        y2 = dets[:, 3]
-        scores = dets[:, 4]
-
-        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-        order = scores.argsort()[::-1]
-
-        keep = []
-        while order.size > 0:
-            i = order[0]
-            keep.append(i)
-            xx1 = np.maximum(x1[i], x1[order[1:]])
-            yy1 = np.maximum(y1[i], y1[order[1:]])
-            xx2 = np.minimum(x2[i], x2[order[1:]])
-            yy2 = np.minimum(y2[i], y2[order[1:]])
-
-            w = np.maximum(0.0, xx2 - xx1 + 1)
-            h = np.maximum(0.0, yy2 - yy1 + 1)
-            inter = w * h
-            ovr = inter / (areas[i] + areas[order[1:]] - inter)
-
-            inds = np.where(ovr <= thresh)[0]
-            order = order[inds + 1]
-
-        return keep
+        # Shared with SCRFD, yoloface and yunet so one face-vs-duplicate rule
+        # governs every engine — see roop/nms.py. offset=1 keeps this lineage's
+        # (x2 - x1 + 1) area convention, so the numbers are unchanged.
+        return nms_keep(dets, self.nms_thresh, offset=1.0)
 
 
 _MODEL_10G_URL = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/retinaface_10g.onnx"
@@ -272,6 +249,11 @@ def _build_one(model_type, model_path, providers, file):
         det = get_model(model_path, providers=providers)
         if det is None or not hasattr(det, 'detect'):
             raise RuntimeError(f'insightface could not route {file} to a detector')
+        # 10g decodes inside insightface, whose nms() would otherwise delete one
+        # of two touching faces on a rule the other engines no longer use. Same
+        # signature and contract; bound per instance, so site-packages is
+        # untouched. See roop/nms.py.
+        bind_instance_nms(det)
     return det
 
 
