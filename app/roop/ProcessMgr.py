@@ -425,6 +425,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._tls = local()
         self._kps_stab_factory = None
         self._enh_stab_factory = None
+        # Latches the non-frontal mask-routing verdict per face across frames so
+        # it cannot chatter on detector noise. Unlike the stabilizers above this
+        # is NOT opt-in and NOT per-thread: the routing decision has to agree
+        # between ADJACENT frames, and adjacent frames go to different workers
+        # (round-robin), so the state is shared and internally locked. Built
+        # here rather than per-run so the attribute always exists; reset() is
+        # what clears it between clips.
+        from roop.nonfrontal import NonFrontalRouter
+        self._nonfrontal_router = NonFrontalRouter()
         # Temporal detection (anti-flicker): when active, swap_faces consumes
         # the pre-pass faces per frame instead of re-detecting.
         # _temporal_faces: {frame_idx (0-based within trim): [Face, ...]}
@@ -502,6 +511,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._stab_t = 0
         self._stab_warmup = 0
         self._stab_frame_bytes = None   # set once the clip's dimensions are known
+        self._nonfrontal_router.reset()
 
         # Only request the analysis sub-models actually needed → faster detection.
         # landmark_3d_68 (the 1k3d68 model, run per face on every frame) is consumed
@@ -1003,6 +1013,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._precomputed_kps = None
         self._stab_active = False
         self._parallel_stab = False
+        # Frame indices restart per clip, so a latch carried over from the last
+        # one would match a new face by position and hand it a stale verdict.
+        self._nonfrontal_router.reset()
         # Temporal detection (anti-flicker): its pre-pass gap-fills detection
         # misses AND applies the kps/lm106 smoothing itself, so the per-frame
         # kps stabilizer and the kps-only 2-pass become redundant — disable

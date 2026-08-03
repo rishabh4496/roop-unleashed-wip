@@ -17,8 +17,8 @@ import numpy as np
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop.face_util import (clamp_cut_values, kps_pose_ratios, offaxis_deg,
-                            solve_pose_5pt)
+from roop.face_util import clamp_cut_values, kps_pose_ratios
+from roop.nonfrontal import nonfrontal_score
 
 
 # Per-face angle/mask-routing diagnostic (ROOP_DEBUG_ANGLE=1). Prints the yaw and
@@ -26,6 +26,12 @@ from roop.face_util import (clamp_cut_values, kps_pose_ratios, offaxis_deg,
 # the canonical crop the unwarped box covers. Use on a single preview frame — it
 # prints per face per processor, so it is noisy on a video.
 _DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
+
+# Isolation switch for the routing latch (ROOP_NONFRONTAL_HYST=0). Falls back to
+# the bare per-frame threshold, which is what shipped before — use it to check
+# whether a routing decision you disagree with came from the latch holding on to
+# a stale verdict, or from the score itself.
+_NO_HYST = os.environ.get('ROOP_NONFRONTAL_HYST', '1').strip().lower() in ('0', 'off', 'false')
 
 
 class MaskingMixin:
@@ -347,100 +353,38 @@ class MaskingMixin:
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
         p_name = getattr(processor, 'processorname', None)
 
-        # Check if face is in lateral/side profile OR upside-down position.
-        # Lateral: nose x-coordinate is strongly asymmetric relative to the two eyes.
-        # Upside-down: eyes y-coordinate is BELOW mouth y-coordinate.
-        # Both cases cause the standard affine-aligned crop to be distorted, so the
-        # mask model (trained on frontal crops) will mis-label the face region.
-        is_non_frontal = False
-        yaw_ratio = pitch_ratio = None   # stay defined for the ROOP_DEBUG_ANGLE print
+        # Is the face angled enough that the standard affine-aligned crop is too
+        # distorted for a frontal-trained mask model to label correctly?
+        #
+        # The heuristics live in roop/nonfrontal.py, collapsed into one
+        # continuous score where 1.0 is the threshold. They cover: nose-vs-eyes
+        # asymmetry (turned), eye-separation over eye-to-mouth (turned, and
+        # monotonic all the way to 90 deg where asymmetry collapses back to 0),
+        # the pitch proxy (tilted), the solved off-axis angle (turned AND
+        # tilted, which defeats all three scalars at once), eyes-below-mouth
+        # (upside down), and the exact landmark_3d_68 pitch when that model
+        # happens to be loaded.
+        #
+        # `score > 1.0` is the same verdict the previous OR-of-booleans gave,
+        # exactly. What the score buys is a temporal one: the router below can
+        # LATCH it. A bare threshold on a per-frame score flickers — the two
+        # mask paths derive the mask differently, so a face parked near the
+        # boundary alternates between them and the mask edge visibly moves on a
+        # head that is not moving at all (measured: up to 123 verdict flips per
+        # 400 frames on a still head tilted up 30 deg).
+        kps = None
         if target_face is not None and getattr(target_face, 'kps', None) is not None:
-            kps = target_face.kps
-            if len(kps) == 5:
-                # ── Lateral detection ──────────────────────────────────────
-                lex, rex = kps[0][0], kps[1][0]
-                nx = kps[2][0]
-                d_le = abs(nx - lex)
-                d_re = abs(nx - rex)
-                if d_le + d_re > 1e-5:
-                    asymmetry = abs(d_le - d_re) / (d_le + d_re)
-                    if asymmetry > 0.25:   # lowered from 0.35: catch more side profiles
-                        is_non_frontal = True
-                # ── Near-profile detection (the asymmetry test's blind spot) ─
-                # The asymmetry ratio above is NOT monotonic in yaw: it peaks in
-                # the mid angles and collapses back to ~0 at a true profile.
-                # A face is left-right symmetric, so at 90 deg yaw both eyes
-                # project to the SAME x — which puts the nose exactly equidistant
-                # from both and drives the ratio to zero. Measured against the
-                # project's own 3D reference face (face_3d_recon._REF3D_68):
-                #
-                #   yaw       0     30     60     75     85     90
-                #   asym    .000   .652   .511   .237   .078   .000
-                #   fires     no    YES    YES     NO     NO     NO   (thr 0.25)
-                #
-                # So 30-60 deg got the unwarped-crop masking path below while
-                # 75-90 deg silently fell through to the frontal path and had its
-                # mask computed on a badly-warped crop.
-                #
-                # yaw_ratio (eye separation over eye->mouth distance) IS monotonic
-                # all the way to 90 deg, and is roll-invariant so a tilted head
-                # does not perturb it. At 0.55 it fires 15/15 over a pitch x roll
-                # grid for yaw >= 55 and 0/15 for yaw <= 40, so it extends coverage
-                # upward without disturbing the mid angles the old test handles.
-                yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
-                if yaw_ratio is not None and yaw_ratio < 0.55:
-                    is_non_frontal = True
-                # ── Extreme pitch, from the keypoints alone ─────────────────
-                # The tgt_pitch_deg check further down is exact but needs
-                # landmark_3d_68, which is only loaded when one of the optional
-                # pose features is enabled — in the DEFAULT config it is absent,
-                # tgt_pitch_deg stays 0.0 and that check can never fire. This
-                # proxy needs nothing beyond the 5 keypoints already in hand.
-                # Neutral sits at ~0.52; the bounds below correspond to roughly
-                # |pitch| > 30 deg at low yaw, matching the exact check's intent.
-                if pitch_ratio is not None and not (0.32 < pitch_ratio < 0.70):
-                    is_non_frontal = True
-                # ── Turned AND tilted: the gap all three proxies fall through ─
-                # Each test above is a scalar contaminated by the other angle,
-                # and combining yaw with pitch defeats all of them at once:
-                # asymmetry collapses to ~0 at profile (it is not monotonic in
-                # yaw), while pitch pushes yaw_ratio UP over 0.55 and drags
-                # pitch_ratio back inside the 0.32-0.70 neutral band. Swept over
-                # yaw 0-90 x pitch +/-45, sixteen cells came out "frontal" while
-                # being 79-90 deg off-axis — every one of them a profile head
-                # also tilted up or down, i.e. the most extreme poses in the
-                # whole range, masked as if they were looking at the camera.
-                #
-                # A real yaw+pitch solve has no such blind spot. Added as an
-                # extra OR term rather than replacing the proxies: they are
-                # stable where they do fire, and swapping them out for a single
-                # threshold measured WORSE (a face parked near that one
-                # threshold chatters, where the OR keeps at least one term
-                # firing firmly).
-                if not is_non_frontal:
-                    pose = solve_pose_5pt(kps)
-                    if pose is not None and offaxis_deg(pose[0], pose[1]) > 50.0:
-                        is_non_frontal = True
-                # ── Upside-down detection ──────────────────────────────────
-                # Eye centers should be ABOVE (lower y value) than mouth corners.
-                # If not, the face is inverted or severely tilted.
-                eye_y = (kps[0][1] + kps[1][1]) / 2.0
-                mouth_y = (kps[3][1] + kps[4][1]) / 2.0
-                if eye_y > mouth_y + 5.0:   # 5px tolerance for near-horizontal
-                    is_non_frontal = True
-        # ── Extreme-pitch detection (head tilted far back/forward) ──────────
-        # The two kps-based checks above only see 2D in-plane position, so a
-        # face pitched back steeply (chin toward camera, forehead away — e.g.
-        # head thrown back) can keep eyes-above-mouth in image space and pass
-        # both checks, yet estimate_norm's SimilarityTransform (2D rotation +
-        # uniform scale only, no true 3D pose) still fits M poorly for that
-        # pose. The mask, warped back into the frame via that same poor-fit M,
-        # then lands on the wrong region — a visible seam down the face where
-        # the mask boundary misses the actual swapped-region boundary. Reuse
-        # the yaw/pitch estimate process_face already computes (from
-        # landmark_3d_68, no extra cost) to catch this case too.
-        if abs(tgt_pitch_deg) > 30.0:
-            is_non_frontal = True
+            if len(target_face.kps) == 5:
+                kps = target_face.kps
+        score = nonfrontal_score(kps, tgt_pitch_deg)
+        router = getattr(self, '_nonfrontal_router', None)
+        if router is not None and not _NO_HYST:
+            is_non_frontal = router.verdict(
+                kps, tgt_pitch_deg, getattr(self._tls, 'frame_idx', None))
+        else:
+            is_non_frontal = score > 1.0
+        # Kept for the ROOP_DEBUG_ANGLE print below.
+        yaw_ratio, pitch_ratio = kps_pose_ratios(kps) if kps is not None else (None, None)
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
 
@@ -481,7 +425,9 @@ class MaskingMixin:
             print(f"[ANGLE] {p_name} yaw_ratio="
                   f"{'n/a' if yaw_ratio is None else f'{yaw_ratio:.3f}'} "
                   f"pitch_ratio={'n/a' if pitch_ratio is None else f'{pitch_ratio:.3f}'} "
-                  f"pitch_deg={tgt_pitch_deg:+.1f} non_frontal={is_non_frontal} "
+                  f"pitch_deg={tgt_pitch_deg:+.1f} score={score:.3f} "
+                  f"{'(latched)' if is_non_frontal != (score > 1.0) else ''}"
+                  f"non_frontal={is_non_frontal} "
                   f"path={'unwarped-box' if crop_box is not None else 'canonical-crop'}"
                   f"{'' if cov is None else f' box_covers={cov * 100:.1f}% of crop'}",
                   flush=True)

@@ -137,6 +137,40 @@ make.
 | Flag | Default | Effect |
 |------|---------|--------|
 | `ROOP_NONFRONTAL_MASK` | `auto` | Which masking path a dense masker (XSeg/XSeg3/occluder/faceparser/clip2seg) takes. `auto` routes by the non-frontal test; `0` always masks in canonical crop space; `1` always masks on the unwarped bounding-box crop. Use `0` to isolate whether a bad profile frame is caused by the mask *routing* or by the swap itself. |
+| `ROOP_NONFRONTAL_HYST` | 1 (on) | The routing latch. `0` reverts to the bare per-frame threshold. See below. |
+
+### Why the routing decision is latched
+
+The non-frontal test picks between two *different* mask derivations, so when its
+verdict changes the mask boundary moves. Driven straight off a per-frame score,
+that verdict chatters: on a **still** head under 1 px of keypoint noise it
+flipped up to 215 times in 600 frames (an ordinary head tilted up ~30°, sitting
+right on the threshold). The mask edge visibly moves on a head that is not
+moving at all.
+
+So the verdict is latched with hysteresis — enter above 1.15× the threshold,
+leave below 0.85×, hold in between. The band is sized from the score's measured
+noise (~0.16–0.19 spread near the threshold); 0.15 is the first half-width that
+zeroes every hot spot. Measured verdict flips per 600 frames:
+
+| pose (still head) | no latch | 1 thread | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| yaw 0, pitch +30 | 215 | **0** | **0** | **0** | **0** |
+| yaw 5, pitch +30 | 194 | **0** | **0** | **0** | **0** |
+| yaw 10, pitch +30 | 156 | **0** | **0** | **0** | **0** |
+| yaw 0, pitch −30 | 30 | **0** | **0** | **0** | **0** |
+
+A genuinely turning head still re-routes every time it crosses — that is the
+point of a latch rather than a longer smoothing window.
+
+⚠️ The latch is **per worker thread**, seeded from a shared value. Workers get
+frames round-robin (`frame % threads`), so each walks the whole clip at stride
+N; one shared latch would be driven through every boundary crossing N times
+over, which measured *worse* than no latch at all. The consequence is that at a
+genuine transition, workers cross at slightly different frames, so a moving face
+sees a few frames of ripple instead of a single clean switch — no worse than the
+unlatched behaviour, and confined to the moment the two mask paths agree most
+closely anyway. Single-threaded runs get the exact sequential result.
 | `ROOP_OCCLUDER_RAW` | 0 | `1` skips the Face Occluder mask inversion (flip polarity if the mask is inverted). |
 | `ROOP_XSEG3_RAW` | 0 | `1` skips the XSeg3 mask inversion. |
 

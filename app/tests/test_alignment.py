@@ -433,15 +433,16 @@ class TestNonFrontalMaskRouting(unittest.TestCase):
                 non_frontal = True
         return non_frontal
 
-    def test_the_added_term_matches_what_procmgr_masking_ships(self):
+    def test_the_added_term_matches_what_the_router_ships(self):
         """This file re-implements the rule, so it can drift from the real one.
-        Pin the parts that matter to the source."""
+        Pin the parts that matter to the source — which now lives in
+        roop/nonfrontal.py, alongside the latch that consumes it."""
         import inspect
-        from roop.procmgr_masking import MaskingMixin
-        src = inspect.getsource(MaskingMixin.process_mask)
+        import roop.nonfrontal
+        src = inspect.getsource(roop.nonfrontal)
         self.assertIn("solve_pose_5pt", src)
         self.assertIn("offaxis_deg", src)
-        self.assertIn("50.0", src)
+        self.assertEqual(roop.nonfrontal._OFFAXIS_MAX, 50.0)
 
     def test_no_extreme_pose_is_routed_as_frontal(self):
         from roop.face_util import offaxis_deg, solve_pose_5pt
