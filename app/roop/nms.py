@@ -110,16 +110,23 @@ def _instance_nms(self, dets):
 
 
 def bind_instance_nms(detector):
-    """Give an insightface detector (SCRFD, or the 10g RetinaFace router) the
-    shared rule.
+    """Give an insightface detector the shared rule.
 
-    Their `nms(self, dets)` takes the same (N,5) array and returns the same keep
-    list, so this is a like-for-like substitution — and with
-    ROOP_NMS_CENTER_FRAC=0 it computes exactly what theirs did. Bound onto the
-    INSTANCE, not the class: nothing in site-packages is modified, other
-    insightface users in the process are unaffected, and rebuilding the pool
-    returns to stock. Returns the detector for convenience; a detector without
-    an `nms` to replace is left alone rather than gaining one.
+    Which CLASS that is depends on what insightface routes the model file to,
+    not on the engine name in our UI: buffalo_l's `det_10g.onnx` — the engine
+    this app calls "scrfd" — arrives as `insightface.model_zoo.retinaface.
+    RetinaFace`, and other model files arrive as `SCRFD`. Verified against the
+    real stack rather than assumed. It does not matter here because both expose
+    the identical `nms(self, dets)` -> keep-list contract and both call it as
+    `self.nms(pre_det)` from inside `detect()`, which is what makes an instance
+    binding take effect at all; the `hasattr` check below is what keeps this
+    honest if a future model routes somewhere else again.
+
+    With ROOP_NMS_CENTER_FRAC=0 this computes exactly what theirs did. Bound
+    onto the INSTANCE, not the class: nothing in site-packages is modified,
+    other insightface users in the process are unaffected, and rebuilding the
+    pool returns to stock. Returns the detector for convenience; a detector with
+    no `nms` to replace is left alone rather than gaining one.
     """
     if detector is None or not hasattr(detector, 'nms'):
         return detector

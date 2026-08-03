@@ -96,11 +96,13 @@ def _build_face_analyser():
         fa.models.pop('detection', None)
         fa.det_model = None
     else:
-        # SCRFD decodes and suppresses inside insightface, so its own nms() is
-        # the one that would delete the second of two touching faces. Give this
-        # INSTANCE the shared rule the other engines use (identical signature
-        # and contract; site-packages untouched) — otherwise the default engine
-        # would be the only one still dropping them. See roop/nms.py.
+        # The default engine decodes and suppresses inside insightface (det_10g
+        # routes to its RetinaFace class, whatever our engine name says), so its
+        # own nms() is the one that would delete the second of two touching
+        # faces. Give this INSTANCE the shared rule the other engines use
+        # (identical signature and contract; site-packages untouched) —
+        # otherwise the DEFAULT engine would be the only one still dropping
+        # them. See roop/nms.py.
         bind_instance_nms(fa.det_model)
     return fa
 

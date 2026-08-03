@@ -29,7 +29,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from roop.face_quality import image_quality, score_face, blur_outlier   # noqa: E402
+from roop.face_quality import (image_quality, score_face, blur_outlier,   # noqa: E402
+                               BLUR_FRAC, BLUR_WARMUP)
 
 
 def _face_image(size=200):
@@ -141,6 +142,25 @@ class RelativeBlurRuleTest(unittest.TestCase):
     def test_disabled_by_zero(self):
         self.assertFalse(blur_outlier(0.0, [0.9] * 20, frac=0))
 
+    def test_the_shipped_default_is_on(self):
+        """Every other assertion here passes `frac` explicitly, so all of them
+        would still pass with the gate disabled by env — which is exactly how a
+        gate ends up dead with a green suite. This one calls it the way api.py
+        does, with no override, so it fails if the default is ever turned off.
+        """
+        self.assertGreater(BLUR_FRAC, 0)
+        self.assertGreaterEqual(BLUR_WARMUP, 1)
+        self.assertTrue(blur_outlier(0.02, [0.9] * BLUR_WARMUP))
+
+    def test_the_call_site_passes_no_second_default(self):
+        """api.py must forward the request override or None, never re-read the
+        env — two owners of one threshold is how a gate ends up on in one place
+        and off in another."""
+        src = open(os.path.join(os.path.dirname(__file__), '..', 'api.py'),
+                   encoding='utf-8').read()
+        self.assertNotIn("os.environ.get('ROOP_ANGLE_BLUR_FRAC'", src)
+        self.assertIn('BLUR_FRAC = payload.get("blur_frac")', src)
+
     def test_median_not_mean(self):
         """One pristine frame among blurred ones must not drag the bar up: the
         median ignores it, a mean would not."""
@@ -172,6 +192,23 @@ class EndpointWiringTest(unittest.TestCase):
         i_append = self.src.index('sharp_samples.append(sharp)')
         i_gate = self.src.index('blur_outlier(sharp, sharp_samples')
         self.assertLess(i_append, i_gate, 'sample must be recorded before the gate')
+
+    def test_the_blur_median_is_sampled_before_the_pose_budget(self):
+        """The gate was DEAD when first written, and a green suite said nothing.
+
+        Sampling sat after the novelty and per-bin-cap returns, which skip most
+        frames on a clip without much pose variety — so the median collected a
+        handful of values, the warm-up count was never reached, blur_outlier
+        returned False every time and blurred frames were banked. Only driving
+        the endpoint showed it. These two orderings are what keep the gate fed.
+        """
+        i_append = self.src.index('sharp_samples.append(sharp)')
+        i_novelty = self.src.index('if best_d < NOVELTY and bin_counts.get')
+        i_cap = self.src.index('if bin_counts.get(pose_bin, 0) >= PER_BIN_CAP')
+        self.assertLess(i_append, i_novelty,
+                        'novelty skip must not starve the blur median')
+        self.assertLess(i_append, i_cap,
+                        'the per-bin cap must not starve the blur median')
 
     def test_the_unguarded_frame_gate_is_present(self):
         self.assertIn("if len(scored) == 1 and not other_embeddings and best_d > LONE_ACCEPT",

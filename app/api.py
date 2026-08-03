@@ -178,9 +178,10 @@ _ANGLE_SEED_MAX   = float(os.environ.get('ROOP_ANGLE_SEED_MAX', '0.85'))    # /t
 # track measure ~0 to that person and inherit their source.
 _ANGLE_MIN_QUALITY = float(os.environ.get('ROOP_ANGLE_MIN_QUALITY', '0.35'))
 _ANGLE_MIN_PX      = float(os.environ.get('ROOP_ANGLE_MIN_PX', '64'))
-_ANGLE_BLUR_FRAC   = float(os.environ.get('ROOP_ANGLE_BLUR_FRAC', '0.5'))
-# Candidates needed before the relative blur gate has a median worth trusting.
-_ANGLE_BLUR_WARMUP = int(os.environ.get('ROOP_ANGLE_BLUR_WARMUP', '8'))
+# ROOP_ANGLE_BLUR_FRAC / ROOP_ANGLE_BLUR_WARMUP are owned by face_quality, which
+# applies them; re-reading them here would be a second source of truth for the
+# same gate. Only a per-request override is resolved below, and None means "use
+# the module default".
 _ANGLE_LONE_ACCEPT = float(os.environ.get('ROOP_ANGLE_LONE_ACCEPT', '0.45'))
 # Banked angles this far from the seed are the ones nearest the drift limit, so
 # they are listed for review. NOT a rejection — a true extreme profile lands
@@ -1381,8 +1382,8 @@ def target_auto_angles(payload: dict = Body(...)):
     # review cutoff for the report — see the constants for the reasoning.
     MIN_QUALITY = float(payload.get("min_quality", _ANGLE_MIN_QUALITY))
     MIN_PX = float(payload.get("min_px", _ANGLE_MIN_PX))
-    BLUR_FRAC = float(payload.get("blur_frac", _ANGLE_BLUR_FRAC))
-    BLUR_WARMUP = int(payload.get("blur_warmup", _ANGLE_BLUR_WARMUP))
+    BLUR_FRAC = payload.get("blur_frac")            # None -> face_quality default
+    BLUR_WARMUP = payload.get("blur_warmup")
     LONE_ACCEPT = float(payload.get("lone_accept", _ANGLE_LONE_ACCEPT))
     REVIEW = float(payload.get("review", _ANGLE_REVIEW))
     PER_BIN_CAP = int(payload.get("per_bin_cap", payload.get("per_pose_cap", 3)))
@@ -1474,14 +1475,6 @@ def target_auto_angles(payload: dict = Body(...)):
         pose_bin = _pose_bin(kps) if kps is not None else None
         if pose_bin is None:
             return None
-        if not allow_add:
-            return pose_bin
-        # Skip only when it's BOTH a near-duplicate embedding AND that bin is
-        # already represented — otherwise a new pose is always worth adding.
-        if best_d < NOVELTY and bin_counts.get(pose_bin, 0) >= 1:
-            return pose_bin
-        if bin_counts.get(pose_bin, 0) >= PER_BIN_CAP:
-            return pose_bin
         (sx, sy, ex, ey) = best_f["bbox"].astype("int")
         sx, ex, sy, ey = clamp_cut_values(sx, ex, sy, ey, img)
         crop = img[sy:ey, sx:ex]
@@ -1490,12 +1483,21 @@ def target_auto_angles(payload: dict = Body(...)):
         # Intake quality — the picture, never the pose. A blurred or tiny crop
         # has an embedding that sits near everybody, which is the realistic way
         # a face that is not this person gets past the absolute gates above.
+        #
+        # Measured for EVERY identity-accepted candidate, and deliberately
+        # BEFORE the allow_add / novelty / per-bin-cap returns below. Those skip
+        # most frames on a clip without much pose variety, so sampling after
+        # them fed the blur median a handful of values, the warm-up count was
+        # never reached, and the gate sat inert while blurred frames were banked
+        # — verified by driving the endpoint, not by reading it. The median has
+        # to describe what the clip OFFERS, not what survived the pose budget.
+        # Cost is a crop slice and a Laplacian on an image already decoded, next
+        # to the detection that produced it.
         qual, qbits = image_quality(best_f, crop)
         sharp = float(qbits.get('sharpness', 1.0))
-        # Recorded for EVERY candidate that gets this far, blurred ones
-        # included — the median has to describe what the clip offers, not what
-        # was accepted from it.
         sharp_samples.append(sharp)
+        if not allow_add:
+            return pose_bin
         if qbits.get('face_px', 0) < MIN_PX:
             rejected['too small'] += 1
             return pose_bin
@@ -1504,6 +1506,12 @@ def target_auto_angles(payload: dict = Body(...)):
             return pose_bin
         if qual < MIN_QUALITY:
             rejected['low quality'] += 1
+            return pose_bin
+        # Skip only when it's BOTH a near-duplicate embedding AND that bin is
+        # already represented — otherwise a new pose is always worth adding.
+        if best_d < NOVELTY and bin_counts.get(pose_bin, 0) >= 1:
+            return pose_bin
+        if bin_counts.get(pose_bin, 0) >= PER_BIN_CAP:
             return pose_bin
         _attach_source_crops(best_f, img)
         roop_globals.TARGET_FACES.append(best_f)

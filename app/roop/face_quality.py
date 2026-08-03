@@ -132,7 +132,14 @@ def image_quality(face, crop_bgr):
     return _clamp01(sum(comps[k] * weights[k] for k in comps) / tw), out
 
 
-def blur_outlier(sharpness, samples, frac=0.5, warmup=8):
+# Owned here rather than in api.py so there is one source of truth: a second
+# env read at the call site is how a gate ends up on in one place and off in
+# another, and how a test can pass while the default is disabled.
+BLUR_FRAC = _envf("ROOP_ANGLE_BLUR_FRAC", 0.5)
+BLUR_WARMUP = int(_envf("ROOP_ANGLE_BLUR_WARMUP", 8))
+
+
+def blur_outlier(sharpness, samples, frac=None, warmup=None):
     """True when this candidate is far blurrier than what the clip is offering.
 
     Blur has to be judged relatively. Measured on face-like crops the sharpness
@@ -146,6 +153,8 @@ def blur_outlier(sharpness, samples, frac=0.5, warmup=8):
     median describes what was accepted rather than what was available. Below
     `warmup` samples there is no median worth trusting and nothing is refused.
     """
+    frac = BLUR_FRAC if frac is None else frac
+    warmup = BLUR_WARMUP if warmup is None else warmup
     if frac <= 0 or len(samples) < max(1, warmup):
         return False
     return float(sharpness) < frac * statistics.median(samples)
