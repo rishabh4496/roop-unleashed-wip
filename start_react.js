@@ -19,6 +19,21 @@ module.exports = async (kernel) => {
             // thread recovers most of the idle-thread imbalance (25-59% of chunk
             // time on static splits) for ~+19% warm-up recompute. See ProcessMgr.
             ROOP_STAB_BLOCKS_PER_THREAD: "2",
+            // Scan stride for the "Analyzing faces" pre-pass. That pass is
+            // detection-bound — profiled at track_wait 10.81ms/frame against
+            // track_detect 43.52ms across a 4-instance pool, i.e. the main
+            // thread is blocked on the detector ~97% of the time — so halving
+            // the number of scanned frames takes roughly half the pre-pass
+            // wall clock off, and the pre-pass is ~30% of a long run.
+            // The cost: frames 1, 3, 5... are never detected, they are filled
+            // by LINEAR interpolation between their neighbours. That is exact
+            // for a head moving steadily and lags on a fast turn, where the
+            // interpolated box trails the real one by up to half a frame of
+            // motion. Set back to "1" for footage with quick head movement,
+            // hand-held whip pans, or fast cuts. Capped at ROOP_TEMPORAL_GAP
+            // (10) by the script, since a stride past the gap limit would
+            // leave the skipped frames with no faces at all.
+            ROOP_TEMPORAL_STEP: "2",
             // ROOP_EXPR_POOL is deliberately NOT set here. It used to be pinned
             // to "2" — measured +28% on the expression stage for +654MB — but
             // this file ships to every install, and forcing two extra restorer
