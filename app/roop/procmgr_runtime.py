@@ -116,10 +116,20 @@ _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 # observations before letting one update emb_mean. A detection too far off to
 # inform an identity should not be able to claim one with no spatial evidence.
 #
+# SCOPE — this applies ONLY to Re-ID against a RETIRED track (unseen for STALE
+# frames). A track seen within STALE frames keeps _TRACK_EMB_MAX, because
+# recency is itself evidence and because the faces that reach Re-ID with a
+# recently-seen track are the occluded/blurred/partially-detected ones this
+# tracker exists to carry. Applying the tighter bar to those was the earlier
+# draft of this fix: it breaks an occluded face out into a track of its own, and
+# a swap that blinks off whenever an object or another face crosses the subject
+# is the exact regression _TRACK_VETO_SINGLE was reverted for. The bar follows
+# the evidence, and an occlusion has plenty of it.
+#
 # A refused Re-ID does not drop the face — it starts a track of its own, judged
 # on its own mean by the source assignment, so a genuine re-acquisition still
 # locks. The cost is more fragments; raise toward _TRACK_EMB_MAX if a target
-# stops locking after every turn, and see the `[Track]` refusal count.
+# stops locking after re-entering a shot, and see the `[Track]` refusal count.
 _TRACK_REID_MAX = float(os.environ.get('ROOP_TRACK_REID_MAX', '0.5'))
 
 

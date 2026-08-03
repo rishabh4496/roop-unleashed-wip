@@ -206,6 +206,58 @@ class ReidStillReconnectsTest(unittest.TestCase):
         self.assertEqual(_src_at(mgr, 15), 0)
 
 
+class OcclusionSurvivesTest(unittest.TestCase):
+    """An object or another face crossing the subject must not blink the swap.
+
+    This is the regression that got `ROOP_TRACK_VETO_SINGLE` reverted, and the
+    tighter Re-ID bar can cause it by a different route: a partially occluded
+    face is detected on a SHRUNKEN box that misses the predicted one, so it
+    falls out of the IoU path into Re-ID carrying a degraded embedding. Break it
+    out into a track of its own and those frames lose identity locking and can
+    fail per-frame matching too — the swap disappears for exactly the frames the
+    tracker exists to carry.
+
+    So the bar follows the evidence: a track seen within STALE frames keeps the
+    primary gate. Only a track that has been gone that long takes the tight one.
+    """
+
+    def _occlusion_script(self, degraded_distance):
+        """The subject stays put; something passes in front, so for a stretch the
+        detector returns a small off-centre box (IoU below the 0.2 gate) with a
+        corrupted embedding."""
+        degraded = _at_distance(TARGET, degraded_distance)
+        script = [[_Face(TARGET, NEAR)] for _ in range(15)]
+        # Partial detection: a third of the size, offset — IoU with the full box
+        # is far below IOU_MIN, so the primary path cannot hold it.
+        script += [[_Face(degraded, (NEAR[0] + 70, NEAR[1] + 70), size=30.0)]
+                   for _ in range(6)]
+        script += [[_Face(TARGET, NEAR)] for _ in range(15)]
+        return script
+
+    def test_occluded_frames_stay_on_the_same_track(self):
+        """0.62 is past the Re-ID gate but within the primary one; the track was
+        seen a frame ago, so it keeps the face."""
+        script = self._occlusion_script(0.62)
+        mgr, tracks = _run_scan(script)
+        self.assertEqual(len(tracks), 1,
+                         'the occluded frames must not become their own track')
+        self.assertEqual(_src_at(mgr, 17), 0, 'the swap must not blink off')
+
+    def test_the_geometry_really_defeats_the_iou_path(self):
+        """Guard on the fixture: if these boxes still overlapped enough, the test
+        above would be passing through the primary path and proving nothing."""
+        mgr = _Mgr([TARGET])
+        full = _Face(TARGET, NEAR).bbox
+        partial = _Face(TARGET, (NEAR[0] + 70, NEAR[1] + 70), size=30.0).bbox
+        self.assertLess(mgr._bbox_iou(partial, full), 0.2)
+
+    def test_recovery_after_the_object_passes(self):
+        """And the track is still the target's afterwards, not a fresh one."""
+        mgr, tracks = _run_scan(self._occlusion_script(0.62))
+        self.assertEqual(_src_at(mgr, 30), 0)
+        self.assertEqual(len(tracks), 1)
+
+
 class GateRelationTest(unittest.TestCase):
 
     def test_fallback_gate_is_tighter_than_the_primary_one(self):

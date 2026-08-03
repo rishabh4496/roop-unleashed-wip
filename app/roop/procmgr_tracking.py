@@ -211,40 +211,54 @@ class TrackingMixin:
                 is_reid = False
                 if best is None:
                     # Re-ID lookup: search active (not yet matched this frame) and
-                    # retired tracklets for returning/moved faces. Runs only once
-                    # spatial continuity is already lost (occlusion, motion blur,
-                    # a fast turn, a face that left and came back), so it matches
-                    # on appearance ALONE — no IoU, no position, no recency.
+                    # retired tracklets for returning/moved faces. Runs once
+                    # spatial continuity is lost, so it cannot use IoU — but the
+                    # two things that get here are not equally well evidenced,
+                    # and the bar follows the evidence:
                     #
-                    # Searched at EMB_MAX so a near miss can be counted below, but
-                    # ACCEPTED only within the tighter REID_MAX: see the constant.
-                    # An association with no spatial evidence behind it cannot be
-                    # held to the same bar as one with it.
-                    best_reid, best_reid_dist = None, EMB_MAX
+                    #  * an ACTIVE track was seen within STALE frames. Something
+                    #    is briefly wrong with the geometry — an object or another
+                    #    face crossing the subject, motion blur, a fast turn, a
+                    #    partial detection whose box shrank off the predicted one.
+                    #    Recency stands in for the missing IoU, and the appearance
+                    #    is degraded by the very event we are trying to survive,
+                    #    so this keeps the primary path's EMB_MAX. Tightening it
+                    #    here is what breaks occluded frames out into tracks of
+                    #    their own and blinks the swap off exactly when something
+                    #    passes in front of the face.
+                    #
+                    #  * a RETIRED track has not been seen for STALE frames. No
+                    #    spatial evidence, no temporal evidence, and a face that
+                    #    has been gone that long is generally re-acquired
+                    #    UNoccluded, so there is no hard-frame allowance to make.
+                    #    This is the claim that let a newcomer inherit a track —
+                    #    see _TRACK_REID_MAX — and it takes the tighter bar.
+                    best_reid, best_reid_dist = None, float('inf')
                     is_retired = False
+                    near_miss = False
 
                     for t in active:
                         if t['id'] in used:
                             continue
                         dist = compute_cosine_distance(t['emb_mean'], emb)
-                        if dist < best_reid_dist:
+                        if dist <= EMB_MAX and dist < best_reid_dist:
                             best_reid, best_reid_dist = t, dist
                             is_retired = False
 
                     for t in retired:
                         dist = compute_cosine_distance(t['emb_mean'], emb)
+                        if dist > REID_MAX:
+                            # Would have been claimed under the old shared bar.
+                            near_miss = near_miss or dist <= EMB_MAX
+                            continue
                         if dist < best_reid_dist:
                             best_reid, best_reid_dist = t, dist
                             is_retired = True
 
-                    # A face this far from the track is not good enough to update
-                    # that track's own identity (the emb_mean outlier filter
-                    # below), so it is not good enough to CLAIM it either. The
-                    # face is not lost: it starts a track of its own, which the
-                    # source assignment then judges on its own mean.
-                    if best_reid is not None and best_reid_dist > REID_MAX:
+                    if best_reid is None and near_miss:
+                        # Not lost: the face starts a track of its own below,
+                        # which the source assignment then judges on its own mean.
                         reid_refused += 1
-                        best_reid = None
 
                     if best_reid is not None:
                         best = best_reid
