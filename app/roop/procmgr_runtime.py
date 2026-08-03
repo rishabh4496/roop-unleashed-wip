@@ -93,6 +93,36 @@ _TRACK_EMB_MAX = float(os.environ.get('ROOP_TRACK_EMB_MAX', '0.7'))
 _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 
 
+# ── Re-ID (appearance-only) association gate ─────────────────────────────────
+# The tracking scan associates a detection to a track on TWO kinds of evidence:
+# spatial continuity (IoU against the track's predicted box) AND appearance
+# (<= _TRACK_EMB_MAX). When the spatial half fails — occlusion, a fast turn, a
+# face that left and came back — it falls back to Re-ID, which matches on
+# appearance ALONE: no position, no recency, nothing else.
+#
+# Both stages used the same 0.7 bar, so the association with the LEAST evidence
+# behind it was held to exactly the standard of the one with the most. Standard
+# tracking-by-detection does the opposite (BoT-SORT/ByteTrack hold the fallback
+# association stage to a stricter appearance threshold than the primary one),
+# and the symmetric version is how an unselected face joined the target's track:
+# somebody entering the shot for the first time has no track of their own to win
+# the nearest-match comparison, so the single 0.7 is all that stands between
+# them and the target's (by then retired) track. Different people normally
+# measure 0.93-1.07, but a profile or a motion-blurred frame drops well under
+# 0.7. Once absorbed they inherit the target's source for every frame they
+# appear in, and with one selected person NO swap-time veto runs to catch it.
+#
+# 0.5 is not a new number: it is the bar the track already applies to its own
+# observations before letting one update emb_mean. A detection too far off to
+# inform an identity should not be able to claim one with no spatial evidence.
+#
+# A refused Re-ID does not drop the face — it starts a track of its own, judged
+# on its own mean by the source assignment, so a genuine re-acquisition still
+# locks. The cost is more fragments; raise toward _TRACK_EMB_MAX if a target
+# stops locking after every turn, and see the `[Track]` refusal count.
+_TRACK_REID_MAX = float(os.environ.get('ROOP_TRACK_REID_MAX', '0.5'))
+
+
 # ── Gap-fill continuity ──────────────────────────────────────────────────────
 # The temporal pre-pass fills a track's detection misses by LINEARLY
 # INTERPOLATING between the two observations either side of the gap, and the
@@ -174,6 +204,20 @@ _TRACK_OVERLAP_FRAC = float(os.environ.get('ROOP_TRACK_OVERLAP_FRAC', '0.15'))
 # it just loses identity LOCKING and falls through to per-frame matching at the
 # full threshold, so a genuine target fragment still swaps. 0 disables.
 _TRACK_ASSIGN_MARGIN = float(os.environ.get('ROOP_TRACK_ASSIGN_MARGIN', '0.15'))
+
+
+# Floor under the margin above. The margin is relative to the person's best
+# track, so an unusually GOOD anchor makes it unusually strict: a clean frontal
+# capture matching a clean frontal track can anchor at 0.15, which would then
+# refuse that same person's profile-heavy fragment at 0.40 — a distance nothing
+# else in the pipeline treats as a stranger. Below this floor the margin never
+# binds, so any track this close to the captured person is bound whatever the
+# anchor. Typical anchors (0.30-0.40 measured) put the margin at 0.45-0.55
+# anyway, so this only takes effect at the good end, and it stays well clear of
+# the 0.5-0.6 band where the bystander tracks that motivated the margin sit.
+# It matters most alongside _TRACK_REID_MAX, which deliberately trades a tighter
+# Re-ID for MORE fragments — each of which then has to pass this gate.
+_TRACK_ASSIGN_FLOOR = float(os.environ.get('ROOP_TRACK_ASSIGN_FLOOR', '0.45'))
 
 
 _prof_lock = Lock()

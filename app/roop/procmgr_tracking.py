@@ -18,7 +18,8 @@ import cv2
 import numpy as np
 
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
-                                  _TRACK_ASSIGN_MARGIN,
+                                  _TRACK_ASSIGN_MARGIN, _TRACK_ASSIGN_FLOOR,
+                                  _TRACK_REID_MAX,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -119,9 +120,13 @@ class TrackingMixin:
         active, retired = [], []
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
+        # Detections the appearance-only fallback was not allowed to claim.
+        reid_refused = 0
         # EMB_MAX is shared with the swap-time re-association in ProcessMgr so the
         # two halves of the tracker cannot drift apart (see _TRACK_EMB_MAX).
+        # REID_MAX is the tighter bar for association WITHOUT spatial evidence.
         IOU_MIN, EMB_MAX, STALE = 0.2, (_TRACK_EMB_MAX or 0.7), 15
+        REID_MAX = _TRACK_REID_MAX if _TRACK_REID_MAX > 0 else EMB_MAX
         print(f'[Track] {desc}: scanning frames (step={TRACK_STEP})...')
 
         def _predict_bbox(t, f_idx):
@@ -174,7 +179,7 @@ class TrackingMixin:
                 return _run_detect(fr, crop_bbox)
 
         def _consume(f_idx, faces):
-            nonlocal active, retired, next_id
+            nonlocal active, retired, next_id, reid_refused
             # Retire tracks not seen for STALE frames so matching stays O(active).
             if active:
                 fresh = []
@@ -205,12 +210,16 @@ class TrackingMixin:
 
                 is_reid = False
                 if best is None:
-                    # Re-ID lookup: search active (not yet matched this frame) and retired tracklets for returning/moved faces.
-                    # Cutoff matches EMB_MAX (the primary spatial-match path's embedding gate) rather than being
-                    # stricter than it — Re-ID only runs once spatial continuity is already lost (occlusion/motion
-                    # blur/fast turn), so it's the fallback for exactly the hard frames where embeddings also drift
-                    # most; being stricter than the path it falls back from just fragments one real face into many
-                    # short-lived tracks instead of reconnecting them.
+                    # Re-ID lookup: search active (not yet matched this frame) and
+                    # retired tracklets for returning/moved faces. Runs only once
+                    # spatial continuity is already lost (occlusion, motion blur,
+                    # a fast turn, a face that left and came back), so it matches
+                    # on appearance ALONE — no IoU, no position, no recency.
+                    #
+                    # Searched at EMB_MAX so a near miss can be counted below, but
+                    # ACCEPTED only within the tighter REID_MAX: see the constant.
+                    # An association with no spatial evidence behind it cannot be
+                    # held to the same bar as one with it.
                     best_reid, best_reid_dist = None, EMB_MAX
                     is_retired = False
 
@@ -227,6 +236,15 @@ class TrackingMixin:
                         if dist < best_reid_dist:
                             best_reid, best_reid_dist = t, dist
                             is_retired = True
+
+                    # A face this far from the track is not good enough to update
+                    # that track's own identity (the emb_mean outlier filter
+                    # below), so it is not good enough to CLAIM it either. The
+                    # face is not lost: it starts a track of its own, which the
+                    # source assignment then judges on its own mean.
+                    if best_reid is not None and best_reid_dist > REID_MAX:
+                        reid_refused += 1
+                        best_reid = None
 
                     if best_reid is not None:
                         best = best_reid
@@ -504,7 +522,9 @@ class TrackingMixin:
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
               f'{matched} matched to a source (gate {assign_max:.2f})'
               + (f', {refused_margin} refused as too far from their person\'s '
-                 f'closest track (margin {_TRACK_ASSIGN_MARGIN})' if refused_margin else ''))
+                 f'closest track (margin {_TRACK_ASSIGN_MARGIN})' if refused_margin else '')
+              + (f'; {reid_refused} detections refused by the appearance-only '
+                 f'fallback (Re-ID gate {REID_MAX})' if reid_refused else ''))
         return tracks
 
     def _person_angle_indices(self):
@@ -593,9 +613,12 @@ class TrackingMixin:
             if track_src[tid] is not None:
                 continue
             # Gate 3 — checked before the concurrency work because it is a
-            # comparison of two floats and refuses outright.
+            # comparison of two floats and refuses outright. Never tighter than
+            # _TRACK_ASSIGN_FLOOR: a very good anchor must not turn the margin
+            # into a stricter gate than anything else applies to this person.
             if (_TRACK_ASSIGN_MARGIN > 0 and g in person_anchor
-                    and d > person_anchor[g] + _TRACK_ASSIGN_MARGIN):
+                    and d > max(person_anchor[g] + _TRACK_ASSIGN_MARGIN,
+                                _TRACK_ASSIGN_FLOOR)):
                 refused_margin += 1
                 continue
             t = track_map[tid]

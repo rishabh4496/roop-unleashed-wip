@@ -149,6 +149,32 @@ class BystanderInheritsSourceTest(unittest.TestCase):
         self.assertIsNone(track_src[1])
         self.assertEqual(refused, 0, 'refused by the absolute gate, not the margin')
 
+    def test_floor_protects_a_fragment_when_the_anchor_is_unusually_good(self):
+        """The margin is relative, so a very good anchor makes it very strict —
+        a clean frontal capture matching a clean frontal track anchors near 0.10,
+        which would refuse that same person's profile-heavy fragment at 0.40, a
+        distance nothing else in the pipeline calls a stranger. The floor stops
+        the margin binding there. This matters because ROOP_TRACK_REID_MAX
+        deliberately produces MORE fragments, each of which lands here."""
+        tracks = [
+            _track(1, _at_distance(TARGET, 0.10), 0, 199),
+            _track(2, _at_distance(TARGET, 0.40), 200, 400),
+        ]
+        track_src, refused = self._assign(tracks)
+        self.assertEqual(track_src[2], 0, 'anchor + margin would have refused it')
+        self.assertEqual(refused, 0)
+
+    def test_floor_does_not_reach_the_band_the_margin_targets(self):
+        """The floor must not undo the fix: a bystander in the 0.5-0.6 band is
+        still refused however good the target's anchor is."""
+        tracks = [
+            _track(1, _at_distance(TARGET, 0.10), 0, 199),
+            _track(2, _at_distance(TARGET, 0.55), 200, 400),
+        ]
+        track_src, refused = self._assign(tracks)
+        self.assertIsNone(track_src[2])
+        self.assertEqual(refused, 1)
+
     def test_single_track_is_unaffected(self):
         """One track means no anchor to compare against — the common case must
         behave exactly as before."""
