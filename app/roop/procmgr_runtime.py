@@ -186,6 +186,70 @@ def _prof_report():
     print("=============================================================================\n", flush=True)
 
 
+# ── Swap audit ───────────────────────────────────────────────────────────────
+# "The swap flickers on and off" is the hardest class of report to act on,
+# because every one of the identity gates below can produce it and they all look
+# identical in the output: a frame where the face was found but nothing was
+# painted. There is no way to tell from the video which gate refused it.
+#
+# So count them. Each refusal path tags itself here, and the run prints a
+# breakdown at the end. A clip that flickers then says WHICH gate to touch —
+# a run of `veto:single-person` is the absolute veto misfiring on hard frames,
+# `no track entry` is the appearance gate (ROOP_TRACK_EMB_MAX) refusing to
+# associate at all, and `fallback missed` is per-frame matching failing after
+# one of those handed the face to it.
+#
+# Deliberately NOT gated on ROOP_PROFILE: this has to be on when the user first
+# notices the flicker, not after a second run with a flag set. The cost is one
+# dict increment per face per frame. Increments race across worker threads and
+# are not locked — a lost count is harmless for a breakdown that exists to show
+# relative magnitude, the same trade ProcessMgr.total_swaps already makes.
+_audit = _defaultdict(int)
+
+
+def _audit_hit(key, n=1):
+    _audit[key] += n
+
+
+def _audit_reset():
+    _audit.clear()
+
+
+# Bucket names for the four refusals swap_faces can raise. The veto MESSAGES
+# interpolate measured distances, so they cannot be counted directly — but they
+# must not be pattern-matched either: two of them open with nearly the same
+# words ("face is 0.91 from its assigned person" / "face is 1.23 from the
+# selected person") and the token that separates them sits at the tail of a
+# two-part concatenation. Matching on that is one rewording away from blaming
+# the wrong gate, which is worse than no audit at all. So each veto site names
+# its own bucket from this list and the message is only ever shown to a human.
+VETO_SOURCE_REUSED = 'veto: source used twice in frame'
+VETO_SINGLE_ABS    = 'veto: single-person absolute'
+VETO_OTHER_FITS    = 'veto: another person fits better'
+VETO_FAR_FROM_OWN  = 'veto: far from assigned person'
+
+VETO_BUCKETS = (VETO_SOURCE_REUSED, VETO_SINGLE_ABS,
+                VETO_OTHER_FITS, VETO_FAR_FROM_OWN)
+
+
+def _audit_report():
+    """Print the swap-decision breakdown for the run just finished."""
+    seen = _audit.get('faces seen', 0)
+    if not seen:
+        return          # track mode never ran — nothing was gated
+    swapped = _audit.get('swapped (identity lock)', 0) + _audit.get('swapped (per-frame match)', 0)
+    print("\n==== SWAP AUDIT — why each detected face was or was not swapped ====", flush=True)
+    for k in sorted(_audit, key=lambda x: -_audit[x]):
+        print(f"  {k:34s} {_audit[k]:8d} {100.0 * _audit[k] / seen:6.1f}%", flush=True)
+    missed = seen - swapped
+    if missed > 0:
+        print(f"  -> {missed} of {seen} detected faces ({100.0 * missed / seen:.1f}%) were NOT swapped.",
+              flush=True)
+        print("     Frames where a face was found but left un-swapped are what reads as "
+              "flicker. The largest refusal line above is the gate to loosen.", flush=True)
+    print("===================================================================\n", flush=True)
+
+
 def _gpu_guard(pooled=False):
     """Return the GPU lock only when the active provider needs serialising
     (TensorRT); otherwise a no-op context so threads run concurrently.

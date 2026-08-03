@@ -20,7 +20,7 @@ from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -460,6 +460,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
     def initialize(self, input_faces, target_faces, options):
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
+        # Per-run counters — the audit reports one job, not the process lifetime,
+        # so a batch's second clip must not inherit the first one's tallies.
+        _audit_reset()
         # Decide ONCE per run whether AdaFace drives identity matching, and warm
         # every captured target face. All-or-nothing: a run must not compare some
         # pairs on one metric and some on another against a single threshold.
@@ -1305,6 +1308,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             self._temporal_faces = None
             self._temporal_covered = 0
         _prof_report()
+        _audit_report()
 
 
     def _make_swap_batcher(self, threads):
@@ -2095,6 +2099,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     _dist_to_any_person(f)))
 
                 for face in faces:
+                    _audit_hit('faces seen')
+                    # Same isinstance guard the claim-ordering sort above uses —
+                    # a Face is a dict subclass, but the sort does not assume it.
+                    if isinstance(face, dict) and face.get('_interpolated'):
+                        _audit_hit('  of those, gap-filled')
                     best_j, best_cost = -1, float('inf')
                     if entries:
                         bb = face.bbox
@@ -2175,11 +2184,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             # shaking. There is no bystander risk to trade against
                             # when only one person is selected, so skip it.
                             multi_person = len(rank_to_tis) > 1
+                            # veto = the human-readable reason (carries measured
+                            # distances, for the debug log); veto_kind = the audit
+                            # bucket, named explicitly so the breakdown can never
+                            # drift from the message wording. Always set together.
+                            veto_kind = None
                             if src_index in claimed_sources_in_frame:
                                 veto = 'source already used this frame'
+                                veto_kind = VETO_SOURCE_REUSED
                             elif (multi_person and d_own is not None
                                     and d_own > _ada.scale(_TRACK_VETO_DIST, threshold)):
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
+                                veto_kind = VETO_FAR_FROM_OWN
                             elif (not multi_person and _TRACK_VETO_SINGLE > 0
                                     and d_own is not None
                                     and d_own > _ada.scale(_TRACK_VETO_SINGLE, threshold)):
@@ -2187,11 +2203,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 # only one person is selected — see the constant.
                                 veto = (f'face is {d_own:.2f} from the selected person '
                                         f'(> {_TRACK_VETO_SINGLE}, single-person veto)')
+                                veto_kind = VETO_SINGLE_ABS
                             elif (d_own is not None and d_other is not None
                                     and d_other + _ada.scale(_TRACK_VETO_MARGIN, threshold) < d_own):
                                 veto = f'another person fits better ({d_other:.2f} vs {d_own:.2f})'
+                                veto_kind = VETO_OTHER_FITS
                             if veto:
                                 src_index = None
+                                _audit_hit(veto_kind)
                         # Claim the entry even when its source is unresolved, so a
                         # second face this frame can't re-match the same track —
                         # but NOT when we vetoed on identity, because then this
@@ -2206,10 +2225,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                   + (f" VETO: {veto}" if veto else ""))
 
                     if src_index is not None:
+                        _audit_hit('swapped (identity lock)')
                         claimed_sources_in_frame.add(src_index)
                         temp_frame = self.process_face(src_index, face, temp_frame)
                         num_faces_found += 1
                     else:
+                        # No veto fired and no entry matched: the appearance gate
+                        # (ROOP_TRACK_EMB_MAX) refused every track for this face,
+                        # or the pre-pass recorded no track on this frame at all.
+                        if veto is None:
+                            _audit_hit('no track entry matched')
                         # Fall back to per-frame multi-angle matching — the same
                         # logic live preview uses — so these frames still swap
                         # instead of being silently skipped. Threshold-gated and
@@ -2251,6 +2276,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 claimed_sources_in_frame.add(src_index)
                                 temp_frame = self.process_face(src_index, face, temp_frame)
                                 num_faces_found += 1
+                                _audit_hit('swapped (per-frame match)')
+                            else:
+                                _audit_hit('fallback missed (no source for person)')
+                        else:
+                            # Nothing above matched within the (tighter) match
+                            # threshold. This face is now left un-swapped for this
+                            # frame — the terminal state that reads as flicker.
+                            _audit_hit('fallback missed (over match threshold)')
 
             elif self.options.swap_mode == "selected":
                 # Multi-angle matching: assign each captured target PERSON their

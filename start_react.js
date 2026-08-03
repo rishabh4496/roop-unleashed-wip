@@ -53,17 +53,37 @@ module.exports = async (kernel) => {
             // when a wrong-face question comes up again. (It no longer breaks
             // the progress bar either way — these go through bar_write now.)
             ROOP_DEBUG_MATCH: "0",
-            // Closes the one path max_face_distance cannot reach: with a single
-            // selected person the tracked swap applies the source by SPATIAL
-            // association with no identity check at all, so a tracker ID switch
-            // keeps swapping the wrong face. 1.0 is the conservative setting —
-            // it vetoes unambiguous strangers (measured ~0.93-1.07) while
-            // leaving even a full profile of the right person alone. Tighten
-            // toward 0.9 if strangers still get through AND several angles of
-            // the target are captured (the check takes the closest angle, so a
-            // multi-angle bank keeps same-person distances low). Too tight and
-            // hard frames blink off instead. "0" restores the old behaviour.
-            ROOP_TRACK_VETO_SINGLE: "1.0",
+            // OFF (the code default). This was set to "1.0" to close a hole that
+            // no longer exists: at the time, a single-person tracked swap applied
+            // its source "by SPATIAL association with no identity check at all",
+            // so a tracker ID switch kept swapping the wrong face and only an
+            // absolute per-frame distance test could catch it.
+            //
+            // ROOP_TRACK_EMB_MAX (0.7) has since become exactly that missing
+            // swap-time check, and it runs FIRST — a face must be within 0.7 of a
+            // track's mean embedding before that track's entry can even be
+            // considered (ProcessMgr, the appearance gate in the entry loop),
+            // and the track's mean must itself have passed ROOP_TRACK_ASSIGN_MAX
+            // (0.6) against the captured person. So by the time the single-person
+            // veto is reached, identity has already been established twice over,
+            // from the track MEAN — a far cleaner measurement than any one frame.
+            //
+            // What was left was the failure mode its own comment warns about:
+            // "anything near the match threshold will make hard frames blink
+            // instead." The distance it tests is computed from the CURRENT
+            // frame's embedding, which is exactly what occlusion corrupts — a
+            // hand, a mic or another face across the subject pushes it past 1.0,
+            // the source is vetoed, the face drops to per-frame matching at the
+            // TIGHTER threshold, that fails too, and the frame is left unswapped.
+            // Object passes, swap returns. That on/off is the flicker.
+            //
+            // Note it also refused only REAL detections: a gap-filled face
+            // carries the track mean as its embedding by construction, so its
+            // distance here is the track's own and it was never vetoed. The gate
+            // was therefore hardest on the frames where detection had actually
+            // succeeded. Set back to "1.0" only if strangers get swapped AND the
+            // SWAP AUDIT at the end of a run shows no `veto: single-person`.
+            ROOP_TRACK_VETO_SINGLE: "0",
             OMP_NUM_THREADS: "1",
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",

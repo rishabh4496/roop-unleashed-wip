@@ -245,6 +245,39 @@ loop.
 | `ROOP_DEBUG_MATCH` | unset | Prints identity-matching diagnostics during the swap pass. |
 | `ROOP_DEBUG_ANGLE` | 0 | `1` prints, per face per masker: the yaw/pitch keypoint proxies, the non-frontal verdict, which masking path ran, and what fraction of the canonical crop the unwarped box covers. Noisy on video — use on a single preview frame. |
 
+### SWAP AUDIT (always on, no flag)
+
+Every run in identity-tracking mode prints a breakdown at the end of why each
+detected face was or was not swapped:
+
+```
+==== SWAP AUDIT — why each detected face was or was not swapped ====
+  faces seen                          48210  100.0%
+  swapped (identity lock)             44907   93.1%
+  veto: single-person absolute         2611    5.4%
+  fallback missed (over match thr…)    2611    5.4%
+  ...
+  -> 3303 of 48210 detected faces (6.9%) were NOT swapped.
+```
+
+This exists because *"the swap flickers on and off"* is indistinguishable in the
+output between the gates that can cause it — a frame where a face was found but
+nothing was painted looks the same whichever gate refused it. The largest
+refusal line names the gate to loosen:
+
+| Line | Gate to look at |
+|------|-----------------|
+| `veto: single-person absolute` | `ROOP_TRACK_VETO_SINGLE` — the per-frame absolute veto misfiring on occluded/hard frames |
+| `veto: far from assigned person` | `ROOP_TRACK_VETO` (multi-person) |
+| `veto: another person fits better` | `ROOP_TRACK_VETO_MARGIN` |
+| `veto: source used twice in frame` | Two faces claimed one source — overlapping faces, or a false detection claiming first |
+| `no track entry matched` | `ROOP_TRACK_EMB_MAX` refused to associate the face with any track |
+| `fallback missed (over match threshold)` | Per-frame matching also failed — raise **max face distance** |
+| `  of those, gap-filled` | How many swapped faces were *invented* by gap-fill rather than detected (see `ROOP_INTERP_MAX_SCALE` / `ROOP_TEMPORAL_GAP`) |
+
+Counters are unsynchronised increments across worker threads — a lost count is
+harmless for a breakdown meant to show relative magnitude.
+
 ## Identity tracking
 
 Cosine distances are scipy convention (0..2). A same-person **profile** frame sits
@@ -259,7 +292,7 @@ not by tightening these absolute cutoffs.
 | `ROOP_TRACK_EMB_MAX` | 0.7 | Appearance gate for track association, shared by the tracking scan and the swap-time re-association. A detection this far from the track's identity is refused outright rather than merely penalised — standard tracking-by-detection practice (BoT-SORT `appearance_thresh`). The scan always did this; the swap-time side did not, which is how a track could hand its source to whoever stood closest. `0` disables the swap-time gate. |
 | `ROOP_ADAFACE` | off | Use **AdaFace** (matching-only) instead of w600k to decide who is who. w600k still feeds the swapper, so swap output is unchanged. All-or-nothing per run: if any captured target face has no aligned crop, the run stays on w600k. Requires a calibrated `ROOP_ADAFACE_DIST` — measure it first with `tools/calibrate_identity.py`. |
 | `ROOP_ADAFACE_DIST` | 0.5 | Match threshold on AdaFace's **own** distance scale. `max_face_distance` does not apply to it. The tuned veto constants are rescaled automatically by the ratio to this value, preserving "the veto is looser than the match gate". The 0.5 default is a placeholder — calibrate it. |
-| `ROOP_TRACK_VETO_SINGLE` | 0 (off) | Absolute veto for the **single selected person** case, which `ROOP_TRACK_VETO` deliberately skips. Catches a tracker identity switch (two people cross; one leaves and another stands where the track was), which otherwise keeps swapping the wrong face for a run of frames with no identity check at all. Set only high enough to catch unambiguous mismatches — different people measured ~0.93–1.07, so `1.0` is a reasonable trial; values near the match threshold make hard poses blink instead. |
+| `ROOP_TRACK_VETO_SINGLE` | 0 (off) | Absolute veto for the **single selected person** case, which `ROOP_TRACK_VETO` deliberately skips. Written to catch a tracker identity switch back when a single-person tracked swap had *no* swap-time identity check at all. `ROOP_TRACK_EMB_MAX` is now that check and runs first, so a face reaching this veto has already been matched within 0.7 of a track mean that itself passed `ROOP_TRACK_ASSIGN_MAX` against the captured person — identity is established twice over, from the track mean rather than one frame. What remains is the failure its own comment warns about: the distance is computed from the **current** frame, which is exactly what occlusion corrupts, so a hand or a passing face pushes it over, the source is vetoed, the face falls to per-frame matching at the tighter threshold, that fails too, and the frame goes unswapped — visible as flicker. It also never refused gap-filled faces (they carry the track mean by construction), so it was hardest on frames where detection had succeeded. The launcher previously pinned this to `1.0`; it is now left off. Re-enable only if strangers get swapped **and** the run's SWAP AUDIT shows no `veto: single-person absolute`. |
 | `ROOP_TRACK_ASSIGN_MAX` | 0.6 | Gate for binding a **track** to a source, capped by `max_face_distance` (the tighter wins). Deliberately stricter than per-frame matching: the decision is durable (every face on that track is swapped for as long as it runs) and is made from the track's *mean* embedding, which is much cleaner evidence than one frame. Measured: a real person's track mean sat at 0.36 while background/blur false detections clustered at 0.85–1.0 — i.e. right where the per-frame threshold sits, which is how a 33k-frame clip bound 16 of its 81 tracks to one selected person. A refused track is not dropped; its frames fall through to per-frame matching. `0` restores the old behaviour (gate == `max_face_distance`). |
 | `ROOP_TRACK_OVERLAP_FRAC` | 0.15 | Fraction of a track's frames that must overlap an already-assigned track of the same person before it counts as a genuinely concurrent second body rather than an occlusion handoff. |
 | `ROOP_TRACK_TRUEMEAN` | 1 (on) | Identity-lock matches on the true mean embedding. `0` restores the old recency-biased EMA (the "only the first faceset swaps" behaviour). |
