@@ -894,5 +894,71 @@ class TestRotationActionIsSharedNotDuplicated(unittest.TestCase):
                           f"{where} turns the frame without checking the result")
 
 
+class TestClippedFaceCrop(unittest.TestCase):
+    """align_crop must not feed the swap model a black wedge.
+
+    A face running off the edge of the frame — "only part of the face is
+    visible" — makes the aligned crop sample outside the image. That used to be
+    filled with pure black (BORDER_CONSTANT/0), putting a third of the swap
+    model's input far outside the distribution it was trained on. The border is
+    replicated instead.
+
+    This is invisible on any face that is fully inside the frame, which is why
+    it needs a test: nothing in normal footage would catch a regression here.
+    """
+
+    @staticmethod
+    def _img():
+        rng = np.random.default_rng(7)
+        # No pure-black pixels anywhere, so any black in a crop came from the
+        # border fill rather than from the source frame.
+        return rng.integers(40, 255, (720, 1280, 3), dtype=np.uint8)
+
+    INTERIOR = [[600, 300], [680, 300], [640, 350], [605, 400], [675, 400]]
+    OFF_LEFT = [[8, 300], [88, 300], [48, 350], [13, 400], [83, 400]]
+    OFF_TOP = [[600, 8], [680, 8], [640, 40], [605, 70], [675, 70]]
+
+    def test_clipped_face_crop_has_no_black_fill(self):
+        from roop.face_util import align_crop
+        img = self._img()
+        for name, kps in (("off left", self.OFF_LEFT), ("off top", self.OFF_TOP)):
+            crop, _ = align_crop(img, np.asarray(kps, np.float32), 256, "arcface")
+            black = int((crop.reshape(-1, 3).sum(axis=1) == 0).sum())
+            self.assertEqual(black, 0,
+                             f"{name}: {black} pure-black px fed to the swap model")
+
+    def test_interior_face_is_unaffected_by_the_border_mode(self):
+        """The fix must be a no-op wherever it is not needed.
+
+        warpAffine only consults the border mode for samples outside the source,
+        so a face fully inside the frame has to come out bit-identical to the
+        old BORDER_CONSTANT call — otherwise this quietly changed every render.
+        """
+        import cv2
+        from roop.face_util import align_crop
+        img = self._img()
+        kps = np.asarray(self.INTERIOR, np.float32)
+        new_crop, M = align_crop(img, kps, 256, "arcface")
+        old_crop = cv2.warpAffine(img, M, (256, 256), borderValue=0.0)
+        self.assertTrue(np.array_equal(new_crop, old_crop),
+                        "border mode changed the crop of a face that is not clipped")
+
+    def test_the_old_behaviour_really_was_black(self):
+        """Guards the premise: without the fix these crops DO fill with black.
+
+        If a future template change moved the crop fully inside the frame, the
+        test above would pass vacuously and stop protecting anything.
+        """
+        import cv2
+        from roop.face_util import estimate_norm
+        img = self._img()
+        M = estimate_norm(np.asarray(self.OFF_LEFT, np.float32), 256, "arcface")
+        old = cv2.warpAffine(img, M, (256, 256), borderValue=0.0)
+        black = int((old.reshape(-1, 3).sum(axis=1) == 0).sum())
+        self.assertGreater(black, 1000,
+                           "off-left keypoints no longer produce a clipped crop — "
+                           "pick coordinates that do, or this suite proves nothing")
+
+
 if __name__ == "__main__":
     unittest.main()
