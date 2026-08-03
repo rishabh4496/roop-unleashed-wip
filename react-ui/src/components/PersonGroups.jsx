@@ -123,8 +123,30 @@ export default function PersonGroups({
       const detail = res.scanned
         ? ` — scanned ${res.scanned} frames in ${res.seconds}s, ${res.bins} pose bin${res.bins === 1 ? '' : 's'} covered`
         : '';
-      if (res.count) notify(`Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}${detail}`);
-      else notify((res.message || 'No new angles found') + detail, 'warning');
+      if (res.count) {
+        notify(`Auto-captured ${res.count} new angle${res.count === 1 ? '' : 's'} for ${labelFor(rank)}${detail}`);
+        // A wrong angle looks like any other thumbnail, and its cost lands much
+        // later as the wrong person being swapped — every match takes the
+        // minimum over a person's angles, so one bad entry speaks for all of
+        // them. The backend ranks the ones furthest from the original capture;
+        // saying how many turns "check every thumbnail" into "check these two".
+        // Not an accusation: a true extreme profile lands here too.
+        const n = res.review?.length || 0;
+        if (n) {
+          notify(
+            `${n} of them sit far from your original capture — worth checking the thumbnails for ${labelFor(rank)}, and removing any that aren't them.`,
+            'warning',
+          );
+        }
+      } else {
+        // Distinguish "nobody matched" from "everybody who matched was too
+        // blurred or too small to bank", which the count alone cannot.
+        const why = Object.entries(res.rejected || {})
+          .map(([reason, count]) => `${count} ${reason}`)
+          .join(', ');
+        notify((res.message || 'No new angles found') + detail
+               + (why ? ` (turned away: ${why})` : ''), 'warning');
+      }
     } catch (e) {
       notify(e.message, 'error');
     } finally {

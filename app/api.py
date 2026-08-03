@@ -9,6 +9,7 @@ The Gradio UI (app/ui/) is the frozen legacy/backup UI and is NOT touched here.
 
 import os
 import io
+import collections
 import hashlib
 from collections import OrderedDict
 import sys
@@ -136,6 +137,55 @@ os.makedirs(API_TEMP, exist_ok=True)
 _ANGLE_MANUAL_MAX = float(os.environ.get('ROOP_ANGLE_MANUAL_MAX', '0.90'))  # /target/add_angle
 _ANGLE_ACCEPT     = float(os.environ.get('ROOP_ANGLE_ACCEPT', '0.60'))      # /target/auto_angles
 _ANGLE_SEED_MAX   = float(os.environ.get('ROOP_ANGLE_SEED_MAX', '0.85'))    # /target/auto_angles
+
+# ── Auto-angles intake, for the frames where the relative guards go silent ───
+# The cross-person and runner-up checks in consider_frame are RELATIVE, which is
+# why they can be strict without punishing a hard pose. But both need a second
+# face to compare against: the runner-up check is literally `len(scored) > 1`,
+# and the cross-person one needs ANOTHER captured person. On a frame holding one
+# face — thousands of them in a long clip, and by definition every frame where
+# the target has walked off — neither can run, and the only things left are two
+# absolute distances against the target's own bank.
+#
+# A typical stranger (0.93-1.07 measured) fails those. What crosses them is a
+# DEGRADED frame, where the embedding collapses toward the middle of the space
+# and lands near everybody. Hence the two gates below, which cost nothing on a
+# clean frame:
+#
+#   BLUR_FRAC / MIN_PX / MIN_QUALITY — refuse to bank a blurred or tiny crop at
+#     all. Judged on image quality only (face_quality.image_quality), never on
+#     pose, or the gate would reject the profiles this feature exists to collect.
+#
+#     Blur is gated RELATIVE to what this clip actually offers — a candidate
+#     less than BLUR_FRAC of the median sharpness of the faces scanned so far.
+#     An absolute cutoff cannot work at both ends: measured on face-like crops,
+#     a clean face scores 0.96-1.00 on the sharpness axis and a mildly blurred
+#     one 0.03, but the numbers move wholesale with grain, compression and
+#     focus, so a fixed line either passes everything on a crisp clip or rejects
+#     everything on a soft one. The composite score cannot carry this either —
+#     a heavily blurred 200px face still totals 0.505, because size and detector
+#     confidence prop up exactly the frame whose embedding is worthless. Hence a
+#     dedicated blur gate, with MIN_QUALITY left as a weak backstop.
+#   LONE_ACCEPT — on those unguarded frames, require the face to be closer to
+#     the bank than the usual ACCEPT. Deliberately tightens the BANK distance
+#     rather than the seed distance: a genuine profile arrives by chaining, so
+#     it sits near an intermediate angle already banked and its bank distance is
+#     small, while a marginal admission sits out near the limit. Tightening the
+#     seed distance instead would have hit the profiles hardest.
+#
+# Pollution matters more than one bad thumbnail: every swap-time gate takes the
+# MINIMUM over a person's angles, so one wrong angle makes a stranger's whole
+# track measure ~0 to that person and inherit their source.
+_ANGLE_MIN_QUALITY = float(os.environ.get('ROOP_ANGLE_MIN_QUALITY', '0.35'))
+_ANGLE_MIN_PX      = float(os.environ.get('ROOP_ANGLE_MIN_PX', '64'))
+_ANGLE_BLUR_FRAC   = float(os.environ.get('ROOP_ANGLE_BLUR_FRAC', '0.5'))
+# Candidates needed before the relative blur gate has a median worth trusting.
+_ANGLE_BLUR_WARMUP = int(os.environ.get('ROOP_ANGLE_BLUR_WARMUP', '8'))
+_ANGLE_LONE_ACCEPT = float(os.environ.get('ROOP_ANGLE_LONE_ACCEPT', '0.45'))
+# Banked angles this far from the seed are the ones nearest the drift limit, so
+# they are listed for review. NOT a rejection — a true extreme profile lands
+# here too; the point is that a polluted bank stops being invisible.
+_ANGLE_REVIEW      = float(os.environ.get('ROOP_ANGLE_REVIEW', '0.70'))
 
 # ── Shared server-side state (mirrors the Gradio module globals) ──────────────
 list_files_process: list = []          # list[ProcessEntry] – the target media queue
@@ -1266,6 +1316,7 @@ def target_auto_angles(payload: dict = Body(...)):
     the UI. The swap already matches min-distance across a person's angles, so a
     fuller bank directly improves pose robustness."""
     from roop.face_util import get_all_faces, _attach_source_crops, clamp_cut_values
+    from roop.face_quality import image_quality, blur_outlier
     if _progress["processing"]:
         return JSONResponse(status_code=409, content={"message": "busy processing"})
 
@@ -1326,6 +1377,14 @@ def target_auto_angles(payload: dict = Body(...)):
     # before the profiles. `per_pose_cap` is still accepted as the old spelling.
     MAX_ADD = int(payload.get("max_add", 40))
     MAX_SAMPLES = int(payload.get("samples", 150))
+    # Intake gates for the frames where the relative guards go silent, and the
+    # review cutoff for the report — see the constants for the reasoning.
+    MIN_QUALITY = float(payload.get("min_quality", _ANGLE_MIN_QUALITY))
+    MIN_PX = float(payload.get("min_px", _ANGLE_MIN_PX))
+    BLUR_FRAC = float(payload.get("blur_frac", _ANGLE_BLUR_FRAC))
+    BLUR_WARMUP = int(payload.get("blur_warmup", _ANGLE_BLUR_WARMUP))
+    LONE_ACCEPT = float(payload.get("lone_accept", _ANGLE_LONE_ACCEPT))
+    REVIEW = float(payload.get("review", _ANGLE_REVIEW))
     PER_BIN_CAP = int(payload.get("per_bin_cap", payload.get("per_pose_cap", 3)))
     REFINE_STEPS = int(payload.get("refine_steps", 6))          # sub-samples per interval
     MAX_REFINE = int(payload.get("refine_intervals", 24))       # intervals to revisit
@@ -1340,6 +1399,13 @@ def target_auto_angles(payload: dict = Body(...)):
     t0 = time.time()
     added = 0
     scanned = 0
+    # What was banked (for the review report) and why faces were turned away.
+    # Both are reported: a run that adds nothing because every candidate was
+    # blurred is a different problem from one that found no matching face, and
+    # without the counts the two are indistinguishable from the toast.
+    banked = []
+    rejected = collections.Counter()
+    sharp_samples = []      # sharpness of every candidate, for the blur median
     # Phase 1 gets a soft share of the budget. Past it, the coarse pass keeps
     # SCANNING (the timeline has to span the whole video or phase 2 is blind to
     # the tail) but stops ADDING, so the targeted pass always has room left to
@@ -1398,6 +1464,12 @@ def target_auto_angles(payload: dict = Body(...)):
         # grabbing the wrong one would poison the bank for the whole swap run.
         if len(scored) > 1 and scored[1][0] < best_d + AMBIG_MARGIN:
             return None
+        # Neither guard above could run: one face in the frame and no other
+        # captured person to compare against. Nothing relative is watching, so
+        # require a closer match to the bank — see _ANGLE_LONE_ACCEPT.
+        if len(scored) == 1 and not other_embeddings and best_d > LONE_ACCEPT:
+            rejected['unguarded frame'] += 1
+            return None
         kps = getattr(best_f, 'kps', None)
         pose_bin = _pose_bin(kps) if kps is not None else None
         if pose_bin is None:
@@ -1415,12 +1487,37 @@ def target_auto_angles(payload: dict = Body(...)):
         crop = img[sy:ey, sx:ex]
         if crop.size < 1:
             return pose_bin
+        # Intake quality — the picture, never the pose. A blurred or tiny crop
+        # has an embedding that sits near everybody, which is the realistic way
+        # a face that is not this person gets past the absolute gates above.
+        qual, qbits = image_quality(best_f, crop)
+        sharp = float(qbits.get('sharpness', 1.0))
+        # Recorded for EVERY candidate that gets this far, blurred ones
+        # included — the median has to describe what the clip offers, not what
+        # was accepted from it.
+        sharp_samples.append(sharp)
+        if qbits.get('face_px', 0) < MIN_PX:
+            rejected['too small'] += 1
+            return pose_bin
+        if blur_outlier(sharp, sharp_samples, BLUR_FRAC, BLUR_WARMUP):
+            rejected['blurred'] += 1
+            return pose_bin
+        if qual < MIN_QUALITY:
+            rejected['low quality'] += 1
+            return pose_bin
         _attach_source_crops(best_f, img)
         roop_globals.TARGET_FACES.append(best_f)
         roop_globals.TARGET_FACE_GROUP.append(raw_group)
         ui_globals.ui_target_thumbs.append(util.convert_to_gradio(crop))
         bank.append(best_e)
         bin_counts[pose_bin] = bin_counts.get(pose_bin, 0) + 1
+        banked.append({
+            "index": len(roop_globals.TARGET_FACES) - 1,
+            "seed_d": round(seed_d, 3),
+            "quality": round(qual, 3),
+            "face_px": qbits.get('face_px', 0),
+            "frame": int(fpos),
+        })
         added += 1
         return pose_bin
 
@@ -1442,12 +1539,40 @@ def target_auto_angles(payload: dict = Body(...)):
                 break
             consider_frame(fpos)
 
+    # ── Review report ────────────────────────────────────────────────────────
+    # Pollution used to be silent: a wrong angle looks like any other thumbnail,
+    # and its damage only shows up much later as the wrong person being swapped
+    # (every swap-time gate takes the MINIMUM over a person's angles, so one bad
+    # entry makes a stranger's whole track measure ~0 to this person). Surfacing
+    # the angles nearest the drift limit turns "check all 30 thumbnails" into
+    # "check these two". A true extreme profile lands here as well — this ranks
+    # what to look at, it does not claim anything is wrong.
+    review = sorted((b for b in banked if b["seed_d"] > REVIEW),
+                    key=lambda b: -b["seed_d"])
+    seed_ds = sorted(b["seed_d"] for b in banked)
+    if banked:
+        print(f'[AutoAngles] +{added} angles over {len(bin_counts)} pose bins, '
+              f'{scanned} frames scanned; distance from the original capture '
+              f'min {seed_ds[0]:.2f} / median {seed_ds[len(seed_ds) // 2]:.2f} / '
+              f'max {seed_ds[-1]:.2f}'
+              + (f'; {len(review)} angle(s) past {REVIEW} — worth a look'
+                 if review else ''))
+    if rejected:
+        print('[AutoAngles] turned away: '
+              + ', '.join(f'{n} {why}' for why, n in rejected.most_common()))
+
     return _target_faces_payload({
         "count": added,
         "scanned": scanned,
         "bins": len(bin_counts),
         "refined": min(len(intervals), MAX_REFINE),
         "seconds": round(time.time() - t0, 1),
+        "banked": banked,
+        "review": review,
+        "rejected": dict(rejected),
+        "seed_span": ({"min": seed_ds[0],
+                       "median": seed_ds[len(seed_ds) // 2],
+                       "max": seed_ds[-1]} if seed_ds else None),
     })
 
 
