@@ -1022,10 +1022,17 @@ def kps_pose_ratios(kps):
 # overridden per run by the Face Swap toggle) rather than captured here at import
 # time, so flipping the toggle takes effect on the next run without an app
 # restart — the point of an opt-in visual change is being able to A/B it.
-# Engage only on near-profile faces (~70 deg+). Deliberately TIGHTER than the
-# 0.55 gate the masking path uses: the constrained fit disagrees with the plain
-# least-squares fit by up to ~9 deg even at yaw 55, so a looser gate here would
-# visibly change mid-angle faces that already look correct.
+# Gate for 'stabilize' mode ONLY. Engages on near-profile faces (~70 deg+),
+# deliberately TIGHTER than the 0.55 gate the masking path uses: the constrained
+# fit disagrees with the plain least-squares fit by up to ~9 deg even at yaw 55,
+# so a looser gate here would visibly change mid-angle faces that already look
+# correct.
+#
+# 'pose' mode does NOT use this. It is keyed on a real yaw+pitch solve and fades
+# in over an angle band instead — see POSE_ALIGN_ONSET_DEG. A yaw_ratio gate
+# cannot serve it, because pitch inflates yaw_ratio: at yaw 90 / pitch -30 the
+# ratio reads 0.411, above this threshold, so the most extreme pose in the range
+# was being treated as a mid-angle face and left uncorrected.
 YAW_ALIGN_RATIO = 0.40
 
 # Three modes, selected by roop.globals.yaw_align:
@@ -1033,7 +1040,8 @@ YAW_ALIGN_RATIO = 0.40
 #   'stabilize' — keep the frontal template, but take the rotation from the
 #                 eye->mouth axis so pitch stops leaking into in-plane roll
 #   'pose'      — replace the template itself with the reference head projected
-#                 at the estimated yaw (see _pose_template)
+#                 at the SOLVED yaw and pitch (see _pose_template), faded in
+#                 over an off-axis band so the crop never jumps
 # Booleans are accepted for backwards compatibility: True == 'stabilize'.
 YAW_ALIGN_MODES = ('off', 'stabilize', 'pose')
 
@@ -1063,14 +1071,108 @@ def _reference_5pt():
     ])
 
 
-def _project_reference(yaw_deg):
-    """The reference head's 5 points at a given yaw, orthographic, image axes."""
-    y = np.radians(yaw_deg)
-    rot = np.array([[np.cos(y), 0.0, np.sin(y)],
-                    [0.0, 1.0, 0.0],
-                    [-np.sin(y), 0.0, np.cos(y)]])
-    pts = _reference_5pt() @ rot.T
+def _project_reference(yaw_deg, pitch_deg=0.0):
+    """The reference head's 5 points at a given yaw/pitch, orthographic, image
+    axes. Pitch is applied after yaw (R = Rx @ Ry), matching the convention the
+    pose solve below decomposes back out."""
+    y, p = np.radians(yaw_deg), np.radians(pitch_deg)
+    ry = np.array([[np.cos(y), 0.0, np.sin(y)],
+                   [0.0, 1.0, 0.0],
+                   [-np.sin(y), 0.0, np.cos(y)]])
+    rx = np.array([[1.0, 0.0, 0.0],
+                   [0.0, np.cos(p), -np.sin(p)],
+                   [0.0, np.sin(p), np.cos(p)]])
+    pts = _reference_5pt() @ (rx @ ry).T
     return np.column_stack([pts[:, 0], -pts[:, 1]])
+
+
+# The reference head centred and flipped into image axes (+y DOWN), which is the
+# space the observed keypoints live in. Built once: the pose solve runs per face
+# per frame, and this is a constant.
+def _reference_5pt_image():
+    ref = np.asarray(_reference_5pt(), dtype=np.float64)
+    ref = ref - ref.mean(axis=0)
+    return ref * np.array([1.0, -1.0, 1.0])
+
+
+_REF5_IMAGE = _reference_5pt_image()
+
+
+def solve_pose_5pt(kps):
+    """(yaw, pitch, roll) in degrees from the 5 arcface keypoints, or None.
+
+    Why not the ratio lookups above: `yaw_ratio` and `pitch_ratio` are scalar
+    proxies, and each is contaminated by the OTHER angle. Measured on the
+    project's own reference head, pitch pushes yaw_ratio UP —
+
+        yaw_ratio   yaw 0   yaw 45   yaw 75   yaw 90
+        pitch   0    0.721    0.508    0.185    0.000
+        pitch -30    0.906    0.693    0.460    0.411
+        pitch -40    1.066    0.855    0.643    0.596
+
+    — so a profile head that is ALSO tilted reads like a mid-angle head, and
+    every gate keyed on yaw_ratio silently disengages on exactly the pose that
+    needs it most (see `_maybe_constrained`, and the mask router's
+    `is_non_frontal`). No threshold on a contaminated scalar can fix that; the
+    two angles have to be separated.
+
+    This solves for them jointly instead, by weak perspective (scaled
+    orthographic): the observed points are x = s·R₂ₓ₃·X for the reference head
+    X, so least-squares gives the 2x3 matrix directly, and orthonormalising its
+    rows recovers R and s. Five points against six unknowns is well posed
+    because the reference points are not coplanar — the nose tip stands proud of
+    the eye/mouth plane, which is what carries the pitch and yaw signal.
+
+    Accurate to <0.05 deg against synthetic projections over the whole
+    yaw 0-90 x pitch +/-40 x roll +/-30 grid, including a true 90 deg profile
+    where the eye separation has collapsed to zero and the ratio proxies are
+    degenerate.
+    """
+    try:
+        if kps is None:
+            return None
+        x = np.asarray(kps, dtype=np.float64)
+        if x.shape != (5, 2) or not np.isfinite(x).all():
+            return None
+        x = x - x.mean(axis=0)
+        if float((x ** 2).sum()) < 1e-9:
+            return None            # all five points coincide
+
+        # A maps the reference head onto the observed points; rows are s*r1, s*r2.
+        A = np.linalg.lstsq(_REF5_IMAGE, x, rcond=None)[0].T
+        if not np.isfinite(A).all():
+            return None
+        n1 = float(np.linalg.norm(A[0]))
+        if n1 < 1e-9:
+            return None
+        # Nearest orthonormal pair: normalise the first row, then remove its
+        # component from the second (Gram-Schmidt). r3 completes the frame.
+        r1 = A[0] / n1
+        r2 = A[1] - float(np.dot(A[1], r1)) * r1
+        n2 = float(np.linalg.norm(r2))
+        if n2 < 1e-9:
+            return None
+        r2 = r2 / n2
+        R = np.vstack([r1, r2, np.cross(r1, r2)])
+
+        pitch = np.degrees(np.arcsin(float(np.clip(-R[2, 1], -1.0, 1.0))))
+        yaw = -np.degrees(np.arctan2(float(R[2, 0]), float(R[2, 2])))
+        roll = np.degrees(np.arctan2(float(R[0, 1]), float(R[1, 1])))
+        if not all(np.isfinite(v) for v in (yaw, pitch, roll)):
+            return None
+        return float(yaw), float(pitch), float(roll)
+    except Exception:
+        return None
+
+
+def offaxis_deg(yaw_deg, pitch_deg):
+    """How far the head has turned away from the camera, combining yaw and pitch
+    into the single angle between the face's forward axis and the view axis.
+
+    Using this instead of |yaw| is what makes a turned-AND-tilted head rank as
+    the extreme pose it is: yaw 75 / pitch 40 is 79 deg off-axis, not 75."""
+    c = (np.cos(np.radians(yaw_deg)) * np.cos(np.radians(pitch_deg)))
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
 
 
 def _build_yaw_lookup():
@@ -1092,9 +1194,9 @@ def _yaw_from_ratio(ratio):
     return float(np.interp(ratio, _LUT_RATIOS[::-1], _LUT_YAWS[::-1]))
 
 
-def _pose_template(yaw_deg, base_dst):
-    """The destination points for a head at `yaw_deg`, placed to match the
-    frontal template's centroid and scale.
+def _pose_template(yaw_deg, base_dst, pitch_deg=0.0):
+    """The destination points for a head at `yaw_deg`/`pitch_deg`, placed to
+    match the frontal template's centroid and scale.
 
     The fixed frontal template asks a 90 deg profile — whose two eyes project to
     the SAME point — to land on two well-separated template positions. No
@@ -1109,9 +1211,21 @@ def _pose_template(yaw_deg, base_dst):
     appear to zoom during a turn. Measured placement barely moves versus the
     fixed template (nose 295.5 -> 300.0 px at 90 deg yaw), so this corrects the
     distortion without re-framing the face.
+
+    Pitch matters as much as yaw and used to be missing here. A head tilted up
+    or down foreshortens the eye->mouth distance, and the fixed frontal template
+    answers by stretching the crop to put the mouth back where a level head's
+    would be. Measured crop scale over yaw 0-90 x pitch +/-40:
+
+        fixed template   0.864 .. 1.199   (1.39x swing)
+        this template    1.004 .. 1.005   (1.00x swing)
+
+    A 39% swing means the pasted face changes size as the head moves — it
+    breathes — which reads as both misalignment and per-frame wobble. Holding
+    the crop scale flat is most of what makes an angled swap sit still.
     """
-    posed = _project_reference(yaw_deg)
-    frontal = _project_reference(0.0)
+    posed = _project_reference(yaw_deg, pitch_deg)
+    frontal = _project_reference(0.0, 0.0)
     frontal_vert = np.linalg.norm((frontal[3] + frontal[4]) / 2.0
                                   - (frontal[0] + frontal[1]) / 2.0)
     base_vert = np.linalg.norm((base_dst[3] + base_dst[4]) / 2.0
@@ -1170,32 +1284,122 @@ def _constrained_norm(lmk, dst):
     return M
 
 
+# Where the 'pose' template fades in and out, as an off-axis angle in degrees
+# (see offaxis_deg). Below ONSET the result is bit-identical to the default fit;
+# above FULL the template is entirely pose-matched; between, the two templates
+# are crossfaded.
+#
+# There is a band rather than a threshold because a threshold FLICKERS. The
+# crop geometry either side of a hard gate differs by a finite jump, so a head
+# sitting near it — or detector noise on a head that is not moving at all —
+# pops between two different transforms frame to frame. A crossfade makes the
+# alignment a continuous function of pose, so no per-frame pose wobble can
+# produce a discontinuous crop. Measured worst per-frame crop jump along a
+# 0->90 deg turn with a nod riding on it: 1.09 deg rotation / 0.77% scale with
+# the fixed template, 0.00 / 0.00% with this one.
+#
+# The band is also not free at the low end, which is what stops it starting at
+# zero. This template is the REFERENCE head's projection, while arcface_dst is
+# an empirical template, and the two differ even at zero pose — mean 7.7 px,
+# max 12.2 px on a 512 crop, worth -1.28% of crop scale. That gap is a fixed
+# cost paid by every face, and real faces vary in eye-separation and
+# eye-to-mouth proportion, so near frontal the fixed template is the safer of
+# the two: its least-squares fit spreads the discrepancy over all five points
+# instead of forcing one head's proportions onto everybody.
+#
+# So engage where the pose error clearly exceeds that fixed cost. Pose error
+# grows with off-axis angle (crop scale is ~2% off at 20 deg, ~4.5% at 30,
+# ~10% at 40) while the shape mismatch stays ~1.3%. Measured crop-scale swing
+# over yaw 0-90 x pitch +/-40, and per-frame jitter under 1 px keypoint noise:
+#
+#   band            swing    frontal   jitter @frontal / @yaw45 / @yaw90+tilt
+#   fixed template  1.389x       —        0.423%   0.479%   0.907%
+#   onset 20 full 50 1.080x    unchanged  0.451%   0.609%   0.587%
+#   onset 15 full 40 1.071x    unchanged  0.413%   0.538%   0.582%
+#
+# 15/40 is the better of the two on every measure, and reaches full correction
+# by 40 deg — which matters because a head tilted up or down 40 deg is exactly
+# the case that used to get no correction at all.
+POSE_ALIGN_ONSET_DEG = 15.0
+POSE_ALIGN_FULL_DEG = 40.0
+
+
+def _smoothstep(edge0, edge1, x):
+    """Hermite 3t^2-2t^3 ramp. Chosen over a linear ramp because its derivative
+    is zero at BOTH ends, so the template blend has no slope kink where it
+    starts or finishes — a kink would show up as a small but visible change in
+    how the crop tracks a turning head."""
+    if edge1 <= edge0:
+        return 0.0 if x < edge1 else 1.0
+    t = (float(x) - edge0) / (edge1 - edge0)
+    t = min(max(t, 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _weight_for_pose(yaw, pitch):
+    return _smoothstep(POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG,
+                       offaxis_deg(yaw, pitch))
+
+
+def pose_align_weight(lmk):
+    """How much pose-matched template to blend in for these keypoints, 0..1.
+
+    Returns 0.0 for frontal faces, which is what keeps the alignment bit-exact
+    where nothing needs correcting."""
+    pose = solve_pose_5pt(lmk)
+    if pose is None:
+        return 0.0
+    return _weight_for_pose(pose[0], pose[1])
+
+
 def _maybe_constrained(lmk, dst):
-    """Profile-specific alignment for near-profile faces, per the selected mode.
-    Returns None to mean 'use the normal fit' — which is every frontal and
-    mid-angle face, and every face at all when the mode is 'off'."""
+    """Pose-specific alignment, per the selected mode. Returns None to mean
+    'use the normal fit' — which is every frontal face, and every face at all
+    when the mode is 'off'."""
     mode = _yaw_align_mode()
     if mode == 'off':
-        return None
-    yaw_ratio, _ = kps_pose_ratios(lmk)
-    if yaw_ratio is None or yaw_ratio >= YAW_ALIGN_RATIO:
         return None
 
     lmk = np.asarray(lmk, dtype=np.float64)
     dst = np.asarray(dst, dtype=np.float64)
 
     if mode == 'pose':
-        posed = _pose_template(_yaw_from_ratio(yaw_ratio), dst)
+        # Solve yaw and pitch properly rather than inverting a yaw-only scalar.
+        # The old path read yaw from `yaw_ratio`, which pitch inflates, so it
+        # both missed tilted profiles entirely and modelled every face as
+        # perfectly level — leaving the up/down case uncorrected.
+        # Solved once and reused: this runs per face per frame, and
+        # pose_align_weight would otherwise repeat the whole solve.
+        pose = solve_pose_5pt(lmk)
+        if pose is None:
+            return None
+        yaw, pitch, _ = pose
+        w = _weight_for_pose(yaw, pitch)
+        if w <= 0.0:
+            return None                      # frontal: leave the default fit alone
+        posed = _pose_template(yaw, dst, pitch)
         if posed is None:
             return None
+        # Blend the TEMPLATES, not the two fitted matrices. Interpolating target
+        # landmark positions is a geometric operation that stays a valid
+        # configuration at every w; averaging two affine matrices is not, and
+        # can shear the result mid-blend.
+        target = (1.0 - w) * dst + w * np.asarray(posed, dtype=np.float64)
         # A pose-matched template is congruent to the input, so the ordinary
         # least-squares similarity is already well posed — no rotation
         # constraint needed on top.
         tform = trans.SimilarityTransform()
-        tform.estimate(lmk, posed)
+        tform.estimate(lmk, target)
         m = tform.params[0:2, :]
         return m if np.isfinite(m).all() else None
 
+    # 'stabilize' keeps its own tighter near-profile gate: unlike the pose
+    # template, its rotation constraint does NOT converge to the default fit as
+    # the face approaches frontal (it disagrees by ~9 deg even at yaw 55), so it
+    # cannot be faded in from a low angle without visibly changing mid angles.
+    yaw_ratio, _ = kps_pose_ratios(lmk)
+    if yaw_ratio is None or yaw_ratio >= YAW_ALIGN_RATIO:
+        return None
     return _constrained_norm(lmk, dst)
 
 

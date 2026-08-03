@@ -17,7 +17,8 @@ import numpy as np
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop.face_util import clamp_cut_values, kps_pose_ratios
+from roop.face_util import (clamp_cut_values, kps_pose_ratios, offaxis_deg,
+                            solve_pose_5pt)
 
 
 # Per-face angle/mask-routing diagnostic (ROOP_DEBUG_ANGLE=1). Prints the yaw and
@@ -399,6 +400,27 @@ class MaskingMixin:
                 # |pitch| > 30 deg at low yaw, matching the exact check's intent.
                 if pitch_ratio is not None and not (0.32 < pitch_ratio < 0.70):
                     is_non_frontal = True
+                # ── Turned AND tilted: the gap all three proxies fall through ─
+                # Each test above is a scalar contaminated by the other angle,
+                # and combining yaw with pitch defeats all of them at once:
+                # asymmetry collapses to ~0 at profile (it is not monotonic in
+                # yaw), while pitch pushes yaw_ratio UP over 0.55 and drags
+                # pitch_ratio back inside the 0.32-0.70 neutral band. Swept over
+                # yaw 0-90 x pitch +/-45, sixteen cells came out "frontal" while
+                # being 79-90 deg off-axis — every one of them a profile head
+                # also tilted up or down, i.e. the most extreme poses in the
+                # whole range, masked as if they were looking at the camera.
+                #
+                # A real yaw+pitch solve has no such blind spot. Added as an
+                # extra OR term rather than replacing the proxies: they are
+                # stable where they do fire, and swapping them out for a single
+                # threshold measured WORSE (a face parked near that one
+                # threshold chatters, where the OR keeps at least one term
+                # firing firmly).
+                if not is_non_frontal:
+                    pose = solve_pose_5pt(kps)
+                    if pose is not None and offaxis_deg(pose[0], pose[1]) > 50.0:
+                        is_non_frontal = True
                 # ── Upside-down detection ──────────────────────────────────
                 # Eye centers should be ABOVE (lower y value) than mouth corners.
                 # If not, the face is inverted or severely tilted.

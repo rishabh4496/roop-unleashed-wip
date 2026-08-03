@@ -188,15 +188,118 @@ class TestPoseTemplate(YawAlignCase):
         super().setUp()
         roop.globals.yaw_align = 'pose'
 
-    def test_gated_off_for_frontal_and_mid_angles(self):
+    def test_frontal_faces_are_left_bit_exact(self):
+        """The pose template is the REFERENCE head's projection while the
+        default is an empirical template, and the two differ by ~7.7px even at
+        zero pose. That gap is a fixed cost, so faces with nothing to correct
+        must not pay it."""
         roop.globals.yaw_align = 'off'
-        baseline = {y: estimate_norm(project_kps(y), 512, "arcface")
-                    for y in (0, 15, 30, 45, 55)}
+        baseline = {(y, p): estimate_norm(project_kps(y, p), 512, "arcface")
+                    for y, p in ((0, 0), (5, 0), (10, 0), (0, 10), (0, -10))}
         roop.globals.yaw_align = 'pose'
-        for yaw, expected in baseline.items():
+        for (yaw, pitch), expected in baseline.items():
             np.testing.assert_array_equal(
-                estimate_norm(project_kps(yaw), 512, "arcface"), expected,
-                f"pose template leaked into yaw={yaw}")
+                estimate_norm(project_kps(yaw, pitch), 512, "arcface"), expected,
+                f"pose template leaked into yaw={yaw} pitch={pitch}")
+
+    def test_pitch_alone_is_corrected(self):
+        """The blind spot this mode shipped with: the template was built from
+        yaw only, so a head tilted up or down — no turn at all — was modelled
+        as perfectly level and got no correction. `pitch` reaching the template
+        is the whole fix for the up/down case."""
+        from roop.face_util import pose_align_weight
+        for pitch in (-45, -40, -30, 30, 40, 45):
+            kps = project_kps(0, pitch)
+            self.assertGreater(pose_align_weight(kps), 0.5,
+                               f"pure pitch={pitch} barely engages")
+            roop.globals.yaw_align = 'off'
+            plain = estimate_norm(kps, 512, "arcface")
+            roop.globals.yaw_align = 'pose'
+            self.assertFalse(
+                np.array_equal(estimate_norm(kps, 512, "arcface"), plain),
+                f"pitch={pitch} still aligned as if the head were level")
+
+    def test_turned_and_tilted_is_no_longer_invisible(self):
+        """A yaw_ratio gate cannot see this pose. Pitch inflates yaw_ratio, so
+        a profile head that is ALSO tilted reads as a mid-angle face and the
+        old gate stayed shut on the most extreme poses in the range."""
+        from roop.face_util import pose_align_weight
+        for yaw, pitch in ((90, -30), (90, -40), (90, 40), (75, 40), (85, -45)):
+            kps = project_kps(yaw, pitch)
+            self.assertGreaterEqual(kps_pose_ratios(kps)[0], YAW_ALIGN_RATIO,
+                                    f"yaw={yaw} pitch={pitch} would have been "
+                                    f"caught by the old gate; pick a harder pose")
+            self.assertEqual(pose_align_weight(kps), 1.0,
+                             f"yaw={yaw} pitch={pitch} still not fully corrected")
+
+    def test_crop_scale_stays_flat_across_the_whole_pose_grid(self):
+        """What the user actually sees. The fixed template makes the pasted
+        face BREATHE — it swings 1.39x in size over yaw 0-90 x pitch +/-40,
+        changing as the head moves. Holding it flat is most of what makes an
+        angled swap sit still."""
+        grid = [(y, p) for y in (0, 15, 30, 45, 60, 75, 90)
+                for p in (-40, -20, 0, 20, 40)]
+
+        def swing():
+            s = [decompose(estimate_norm(project_kps(y, p), 512, "arcface"))[0]
+                 for y, p in grid]
+            return max(s) / min(s)
+
+        roop.globals.yaw_align = 'off'
+        plain = swing()
+        roop.globals.yaw_align = 'pose'
+        posed = swing()
+        self.assertGreater(plain, 1.3, "the fixed template stopped breathing — "
+                                       "re-check this test's premise")
+        self.assertLess(posed, 1.10, f"crop scale still swings {posed:.3f}x")
+
+    def test_engagement_is_continuous_so_it_cannot_flicker(self):
+        """The anti-flicker guarantee, and the reason this is a band and not a
+        threshold.
+
+        A hard gate puts a finite jump in the crop geometry at the boundary, so
+        a head sitting near it — or just detector noise on a head that is not
+        moving — pops between two different transforms frame to frame. Sweeping
+        a turn with a nod riding on it, no single step may move the crop more
+        than a hair.
+        """
+        for mode in ('off', 'pose'):
+            roop.globals.yaw_align = mode
+            prev, worst_s, worst_r = None, 0.0, 0.0
+            for i in range(1801):
+                yaw = i * 90.0 / 1800.0
+                pitch = 40.0 * np.sin(np.radians(i * 0.5))
+                scale, rot = decompose(
+                    estimate_norm(project_kps(yaw, pitch), 512, "arcface"))
+                if prev is not None:
+                    worst_s = max(worst_s, abs(scale - prev[0]) / prev[0])
+                    worst_r = max(worst_r, abs(rot - prev[1]))
+                prev = (scale, rot)
+            if mode == 'pose':
+                self.assertLess(worst_s, 0.004,
+                                f"crop scale jumps {worst_s * 100:.2f}% in one step")
+                self.assertLess(worst_r, 0.10,
+                                f"crop rotation jumps {worst_r:.3f} deg in one step")
+
+    def test_no_hard_edge_at_the_band_boundaries(self):
+        """Continuity specifically WHERE a gate would have been: straddling the
+        onset and the full-engagement angle must be smooth, since that is
+        exactly where a threshold implementation would pop."""
+        from roop.face_util import (POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG,
+                                    pose_align_weight)
+        for edge in (POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG):
+            lo = pose_align_weight(project_kps(edge - 0.25, 0))
+            hi = pose_align_weight(project_kps(edge + 0.25, 0))
+            self.assertLess(abs(hi - lo), 0.02,
+                            f"weight steps {abs(hi - lo):.3f} across {edge} deg")
+
+    def test_weight_never_leaves_its_range(self):
+        from roop.face_util import pose_align_weight
+        for yaw in range(0, 91, 3):
+            for pitch in range(-60, 61, 10):
+                w = pose_align_weight(project_kps(yaw, pitch, 25))
+                self.assertGreaterEqual(w, 0.0)
+                self.assertLessEqual(w, 1.0)
 
     def test_cuts_the_fit_residual_at_high_yaw(self):
         """The point of the mode: a template congruent to the input makes the
@@ -243,6 +346,162 @@ class TestPoseTemplate(YawAlignCase):
                     self.assertTrue(np.isfinite(m).all())
                     self.assertGreater(decompose(m)[0], 1e-6)
                     cv2.invertAffineTransform(m)
+
+
+class TestPoseSolve(unittest.TestCase):
+    """`solve_pose_5pt` replaces the scalar ratio proxies for anything that has
+    to reason about yaw and pitch together."""
+
+    def test_recovers_every_angle_over_the_whole_grid(self):
+        from roop.face_util import solve_pose_5pt
+        worst = [0.0, 0.0, 0.0]
+        for yaw in range(0, 91, 5):
+            for pitch in range(-45, 50, 5):
+                for roll in (-30, -10, 0, 10, 30):
+                    got = solve_pose_5pt(project_kps(yaw, pitch, roll))
+                    self.assertIsNotNone(got, f"{yaw}/{pitch}/{roll}")
+                    for i, truth in enumerate((yaw, pitch, roll)):
+                        worst[i] = max(worst[i], abs(got[i] - truth))
+        for i, name in enumerate(("yaw", "pitch", "roll")):
+            self.assertLess(worst[i], 0.5, f"{name} off by {worst[i]:.2f} deg")
+
+    def test_works_at_a_true_profile_where_the_ratios_are_degenerate(self):
+        """At 90 deg the eyes project to the same point, so eye separation — the
+        thing every ratio proxy divides by — has collapsed to zero. The solve
+        leans on the nose tip standing proud of the eye/mouth plane instead."""
+        from roop.face_util import solve_pose_5pt
+        kps = project_kps(90, 0)
+        self.assertAlmostEqual(
+            float(np.linalg.norm(kps[1] - kps[0])), 0.0, places=3)
+        yaw, pitch, _ = solve_pose_5pt(kps)
+        self.assertAlmostEqual(abs(yaw), 90.0, delta=0.5)
+        self.assertAlmostEqual(pitch, 0.0, delta=0.5)
+
+    def test_pitch_does_not_leak_into_the_reported_yaw(self):
+        """The defect that made the ratio proxies unusable: pitch inflates
+        yaw_ratio, so a tilted profile reads as a mid-angle face."""
+        from roop.face_util import solve_pose_5pt
+        self.assertGreaterEqual(kps_pose_ratios(project_kps(90, -30))[0],
+                                YAW_ALIGN_RATIO)   # the proxy is fooled
+        for pitch in (-40, -20, 0, 20, 40):
+            yaw, _, _ = solve_pose_5pt(project_kps(90, pitch))
+            self.assertAlmostEqual(abs(yaw), 90.0, delta=0.5,
+                                   msg=f"pitch={pitch} corrupted the yaw solve")
+
+    def test_degenerate_input_returns_none_rather_than_guessing(self):
+        from roop.face_util import solve_pose_5pt
+        self.assertIsNone(solve_pose_5pt(None))
+        self.assertIsNone(solve_pose_5pt(np.zeros((5, 2), np.float32)))
+        self.assertIsNone(solve_pose_5pt(np.zeros((3, 2), np.float32)))
+        self.assertIsNone(solve_pose_5pt(np.full((5, 2), np.nan, np.float32)))
+
+    def test_offaxis_combines_the_two_angles(self):
+        """|yaw| alone under-ranks a turned AND tilted head, which is how the
+        worst poses kept passing for mid-angle ones."""
+        from roop.face_util import offaxis_deg
+        self.assertAlmostEqual(offaxis_deg(0, 0), 0.0, places=3)
+        self.assertAlmostEqual(offaxis_deg(40, 0), 40.0, places=3)
+        self.assertAlmostEqual(offaxis_deg(0, 40), 40.0, places=3)
+        self.assertGreater(offaxis_deg(40, 40), 50.0)
+        self.assertGreater(offaxis_deg(75, 40), 75.0)
+
+
+class TestNonFrontalMaskRouting(unittest.TestCase):
+    """The mask router picks between two different mask derivations. It read the
+    same contaminated scalars the alignment gate did, and had the same blind
+    spot — sixteen cells over yaw 0-90 x pitch +/-45 came out "frontal" while
+    being 79-90 deg off-axis, every one a profile head also tilted up or down.
+    """
+
+    @staticmethod
+    def _rule(kps):
+        """The shipped test, exercised through the real helpers."""
+        from roop.face_util import offaxis_deg, solve_pose_5pt
+        non_frontal = False
+        lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+        d_le, d_re = abs(nx - lex), abs(nx - rex)
+        if d_le + d_re > 1e-5 and abs(d_le - d_re) / (d_le + d_re) > 0.25:
+            non_frontal = True
+        yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
+        if yaw_ratio is not None and yaw_ratio < 0.55:
+            non_frontal = True
+        if pitch_ratio is not None and not (0.32 < pitch_ratio < 0.70):
+            non_frontal = True
+        if not non_frontal:
+            pose = solve_pose_5pt(kps)
+            if pose is not None and offaxis_deg(pose[0], pose[1]) > 50.0:
+                non_frontal = True
+        return non_frontal
+
+    def test_the_added_term_matches_what_procmgr_masking_ships(self):
+        """This file re-implements the rule, so it can drift from the real one.
+        Pin the parts that matter to the source."""
+        import inspect
+        from roop.procmgr_masking import MaskingMixin
+        src = inspect.getsource(MaskingMixin.process_mask)
+        self.assertIn("solve_pose_5pt", src)
+        self.assertIn("offaxis_deg", src)
+        self.assertIn("50.0", src)
+
+    def test_no_extreme_pose_is_routed_as_frontal(self):
+        from roop.face_util import offaxis_deg, solve_pose_5pt
+        blind = []
+        for yaw in range(0, 91, 5):
+            for pitch in range(-45, 50, 5):
+                kps = project_kps(yaw, pitch)
+                pose = solve_pose_5pt(kps)
+                if offaxis_deg(pose[0], pose[1]) >= 50.0 and not self._rule(kps):
+                    blind.append((yaw, pitch))
+        self.assertEqual(blind, [], f"still routed as frontal: {blind}")
+
+    def test_the_old_proxies_really_were_blind_there(self):
+        """Records the defect, so the extra term cannot be dropped as redundant."""
+        for yaw, pitch in ((75, 40), (85, -45), (90, -40), (90, 45)):
+            kps = project_kps(yaw, pitch)
+            yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
+            lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+            asym = abs(abs(nx - lex) - abs(nx - rex)) / (abs(nx - lex) + abs(nx - rex))
+            self.assertLess(asym, 0.25, f"asymmetry saw yaw={yaw} pitch={pitch}")
+            self.assertGreaterEqual(yaw_ratio, 0.55)
+            self.assertTrue(0.32 < pitch_ratio < 0.70)
+            self.assertTrue(self._rule(kps), "the new term did not rescue it")
+
+    @staticmethod
+    def _rule_without_the_new_term(kps):
+        non_frontal = False
+        lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+        d_le, d_re = abs(nx - lex), abs(nx - rex)
+        if d_le + d_re > 1e-5 and abs(d_le - d_re) / (d_le + d_re) > 0.25:
+            non_frontal = True
+        yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
+        if yaw_ratio is not None and yaw_ratio < 0.55:
+            non_frontal = True
+        if pitch_ratio is not None and not (0.32 < pitch_ratio < 0.70):
+            non_frontal = True
+        return non_frontal
+
+    def test_the_added_term_changes_nothing_below_its_threshold(self):
+        """The term is additive and must stay that way: everything under 50 deg
+        off-axis has to keep whatever verdict it already had. Otherwise closing
+        the blind spot would quietly re-route ordinary faces as well."""
+        from roop.face_util import offaxis_deg, solve_pose_5pt
+        checked = 0
+        for yaw in range(0, 91, 5):
+            for pitch in range(-45, 50, 5):
+                kps = project_kps(yaw, pitch)
+                pose = solve_pose_5pt(kps)
+                if offaxis_deg(pose[0], pose[1]) >= 50.0:
+                    continue
+                self.assertEqual(self._rule(kps),
+                                 self._rule_without_the_new_term(kps),
+                                 f"yaw={yaw} pitch={pitch} re-routed")
+                checked += 1
+        self.assertGreater(checked, 100)
+
+    def test_a_dead_frontal_face_is_still_frontal(self):
+        for pitch in (-15, 0, 15):
+            self.assertFalse(self._rule(project_kps(0, pitch)),
+                             f"yaw=0 pitch={pitch} newly non-frontal")
 
 
 class TestYawLookup(unittest.TestCase):
