@@ -163,14 +163,34 @@ zeroes every hot spot. Measured verdict flips per 600 frames:
 A genuinely turning head still re-routes every time it crosses — that is the
 point of a latch rather than a longer smoothing window.
 
-⚠️ The latch is **per worker thread**, seeded from a shared value. Workers get
-frames round-robin (`frame % threads`), so each walks the whole clip at stride
-N; one shared latch would be driven through every boundary crossing N times
-over, which measured *worse* than no latch at all. The consequence is that at a
-genuine transition, workers cross at slightly different frames, so a moving face
-sees a few frames of ripple instead of a single clean switch — no worse than the
-unlatched behaviour, and confined to the moment the two mask paths agree most
-closely anyway. Single-threaded runs get the exact sequential result.
+**How it survives multithreading.** Workers get frames round-robin
+(`frame % threads`), so each walks the whole clip at stride N and adjacent
+frames belong to different workers. A latch is an evolving state, and neither
+obvious way of sharing one works: one shared state machine gets driven through
+every crossing N times over (measured *worse* than no latch), while a state
+machine per worker makes each worker cross at a slightly different frame, so a
+moving face ripples at every transition.
+
+The way out is that a hysteresis latch is equivalent to a **query** —
+*"the value of the most recent decisive frame at or before t"* — which is a pure
+function of the frame index, not an evolving state. Workers publish decisive
+frames into one shared index-keyed log and all read the same answer back,
+whatever order they arrive in. Flips on a head nodding across the threshold
+(600 frames, 7 genuine crossings, so 8 is the correct answer):
+
+| | no latch | 1 thread | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| state machine per worker | 20 | 8 | 22 | 22 | 22 |
+| shared event log | 20 | **8** | **~14** | **~11** | **~11** |
+
+Single-threaded is exact. Multi-threaded, ~98% of frames match the sequential
+answer; the residual is a worker occasionally querying frame *t* before a
+sibling has published a decisive frame in *(t−N, t]*. `ProcessMgr.process_face`
+calls `observe()` as soon as the pose is known — a whole swap and enhance before
+the verdict is needed — which shrinks that window but cannot close it entirely
+without making workers wait on each other, which is not worth a stall in the
+render loop. The residual sits at genuine transitions, where the two mask paths
+agree most closely.
 | `ROOP_OCCLUDER_RAW` | 0 | `1` skips the Face Occluder mask inversion (flip polarity if the mask is inverted). |
 | `ROOP_XSEG3_RAW` | 0 | `1` skips the XSeg3 mask inversion. |
 

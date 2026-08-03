@@ -18,6 +18,7 @@ Hysteresis takes that to 0.
 """
 
 import threading
+from bisect import bisect_right
 
 import numpy as np
 
@@ -114,97 +115,134 @@ class NonFrontalRouter:
     each worker walks the WHOLE timeline at stride N, in order, and adjacent
     frames belong to different workers.
 
-    A single shared latch is therefore wrong, and measurably so. Eight workers
-    walking the same trajectory drive one latch through every boundary crossing
-    eight times over, interleaved: on a head nodding across the threshold the
-    shared latch changed state 64 times where the correct answer is 8, and the
-    output flickered WORSE than having no latch at all.
+    That rules out running the latch as a state machine. Driven by one shared
+    machine, eight workers push it through every boundary crossing eight times
+    over, interleaved: 64 state changes where the answer is 8, flickering worse
+    than no latch at all. Given a machine per worker instead, each worker is
+    internally consistent, but they cross the boundary at slightly different
+    frames and a moving face ripples for a few frames at every transition.
 
-    So the latch is per-thread — each worker's stride-N subsequence is properly
-    ordered, so its latch evolves correctly — while the track IDENTITY and a
-    seed verdict are shared under a lock. The shared seed is what stops the
-    other failure mode: with each worker seeding its own latch from its own
-    first frame, a head parked mid-band would have workers disagreeing forever,
-    which is a period-N flicker. Seeding every worker from one shared value
-    means an in-band score is a no-op for all of them and they cannot diverge.
+    The way out is to stop treating it as a state machine at all. A hysteresis
+    latch is exactly equivalent to a QUERY:
 
-    The seed tracks the last STRONGLY determined verdict, so a worker that
-    starts late on a clip seeds from something current rather than from
-    whatever the face was doing in frame 0.
+        verdict(t) = the value of the most recent DECISIVE frame at or before t
 
-    Note the frame index is deliberately NOT used to match or expire tracks. An
-    earlier attempt did that, and a late-arriving frame then looked like a face
-    that had been missing for 190 frames, so it forked a fresh unlatched track
-    and the chatter came straight back. Recency is counted in arrivals instead
-    and the track list is a bounded LRU; the frame index survives only as the
-    "is there a temporal dimension at all" flag.
+    where decisive means the score cleared the band in one direction or the
+    other. (Asserted against a sequential latch in the tests.) Put that way it
+    is a pure function of the frame index over a set of events, not an evolving
+    state — so every worker can publish the decisive frames it sees into one
+    shared, index-keyed log and read the same answer back out of it, whatever
+    order they arrive in. That recovers the exact single-threaded result at 1,
+    4, 8 and 16 threads.
+
+    Ordering only matters in the narrow case where a worker queries frame t
+    before another worker has published a decisive frame in (t - N, t]. That
+    window is bounded by the frames in flight, and it can only bite at a genuine
+    transition — never on the parked head that produced the chatter, which has
+    no decisive frames at all to race over.
+
+    `observe` exists to shrink that window to near nothing. The score depends
+    only on the keypoints, which are known as soon as the face is detected,
+    while the verdict is not needed until the mask stage — a whole swap and
+    enhance later. Publishing at the first opportunity and reading at the last
+    gives every other worker most of a frame's processing time to get its own
+    events in. See ProcessMgr.process_face, which calls it as soon as the pose
+    is known.
+
+    Note the frame index is used ONLY to order events. It is deliberately not
+    used to match or expire tracks: an earlier attempt did that, and a
+    late-arriving frame then looked like a face that had been missing for 190
+    frames, so it forked a fresh unlatched track and the chatter came straight
+    back. Track recency is counted in arrivals instead.
     """
 
     # Faces per frame is small, so this holds several frames of history while
     # staying O(1). Tracks are evicted least-recently-used.
     MAX_TRACKS = 32
+    # Decisive frames retained per track. A query only looks back as far as the
+    # slowest in-flight worker, i.e. a few frames, so this is ample headroom;
+    # anything older is folded into the track's baseline.
+    HISTORY = 256
 
     def __init__(self, margin=NONFRONTAL_MARGIN, max_tracks=MAX_TRACKS,
-                 match_scale=0.6):
+                 match_scale=0.6, history=HISTORY):
         self.margin = float(margin)
         self.max_tracks = int(max_tracks)
         self.match_scale = float(match_scale)
-        self._tracks = []        # [{id, centroid, strong, seq}] — shared
+        self.history = int(history)
+        # [{centroid, idxs, vals, baseline, seq}] — idxs/vals are that face's
+        # decisive-frame log, kept sorted by frame index.
+        self._tracks = []
         self._seq = 0
-        self._next_id = 0
-        self._generation = 0
         self._lock = threading.Lock()
-        self._tls = threading.local()
 
     def reset(self):
-        # Bumping the generation invalidates every worker's thread-local latch
-        # without needing to reach into other threads to clear them.
         with self._lock:
             self._tracks = []
             self._seq = 0
-            self._next_id = 0
-            self._generation += 1
 
-    def _local_latches(self, generation):
-        store = getattr(self._tls, 'latches', None)
-        if store is None or store[0] != generation:
-            store = (generation, {})
-            self._tls.latches = store
-        latches = store[1]
-        # Track ids only ever increase, so over a long clip with faces coming and
-        # going this dict would accumulate an entry per retired track. Keep the
-        # newest ids — the shared side already caps itself at max_tracks, so
-        # anything older than that cannot be matched again anyway.
-        cap = self.max_tracks * 4
-        if len(latches) > cap:
-            for dead in sorted(latches)[:len(latches) - self.max_tracks]:
-                del latches[dead]
-        return latches
+    def _match(self, centroid, size, bare):
+        best, best_d = None, float('inf')
+        for tr in self._tracks:
+            d = float(np.linalg.norm(tr['centroid'] - centroid))
+            if d < best_d:
+                best_d, best = d, tr
+        if best is not None and best_d <= self.match_scale * size:
+            return best
+        tr = {'centroid': centroid, 'idxs': [], 'vals': [],
+              'baseline': bare, 'seq': 0}
+        self._tracks.append(tr)
+        return tr
 
-    def _shared_track(self, centroid, size, score, bare):
-        """Match or create this face's shared track. Returns (id, seed, gen)."""
+    def _record(self, tr, t, value):
+        """Add a decisive frame to the log, keeping it sorted by frame index."""
+        idxs, vals = tr['idxs'], tr['vals']
+        pos = bisect_right(idxs, t)
+        if pos and idxs[pos - 1] == t:
+            vals[pos - 1] = value      # same frame re-scored: idempotent
+            return
+        idxs.insert(pos, t)
+        vals.insert(pos, value)
+        # Evicting from the front in index order leaves `baseline` holding the
+        # highest-index event dropped, which is what a query that falls below
+        # the retained window must inherit.
+        while len(idxs) > self.history:
+            tr['baseline'] = vals[0]
+            del idxs[0]
+            del vals[0]
+
+    @staticmethod
+    def _geometry(kps):
+        pts = np.asarray(kps, dtype=np.float64)
+        centroid = pts.mean(axis=0)
+        if not np.isfinite(centroid).all():
+            return None, None
+        size = max(float(np.ptp(pts[:, 0])), float(np.ptp(pts[:, 1])), 1.0)
+        return centroid, size
+
+    def _touch(self, kps, tgt_pitch_deg, t, want_verdict):
+        score = nonfrontal_score(kps, tgt_pitch_deg)
+        bare = score > 1.0
+        if t is None or self.margin <= 0.0:
+            return bare
+        try:
+            centroid, size = self._geometry(kps)
+        except Exception:
+            return bare
+        if centroid is None:
+            return bare
+
         with self._lock:
-            best, best_d = None, float('inf')
-            for tr in self._tracks:
-                d = float(np.linalg.norm(tr['centroid'] - centroid))
-                if d < best_d:
-                    best_d, best = d, tr
+            tr = self._match(centroid, size, bare)
 
-            if best is not None and best_d <= self.match_scale * size:
-                tr = best
-            else:
-                tr = {'id': self._next_id, 'centroid': centroid,
-                      'strong': bare, 'seq': 0}
-                self._next_id += 1
-                self._tracks.append(tr)
-
-            # Only a decisive score updates the shared seed, so in-band noise
-            # cannot move it and late-starting workers still seed from
-            # something recent.
+            # Publish first, then read — so a worker always sees at least its
+            # own decisive frame, and re-scoring the same face in the same frame
+            # (process_mask runs once per mask processor, and observe() has
+            # usually logged it already) is a no-op.
             if score > 1.0 + self.margin:
-                tr['strong'] = True
+                self._record(tr, t, True)
             elif score < 1.0 - self.margin:
-                tr['strong'] = False
+                self._record(tr, t, False)
 
             self._seq += 1
             tr['centroid'] = centroid
@@ -212,41 +250,26 @@ class NonFrontalRouter:
             if len(self._tracks) > self.max_tracks:
                 self._tracks.sort(key=lambda x: x['seq'])
                 del self._tracks[:len(self._tracks) - self.max_tracks]
-            return tr['id'], tr['strong'], self._generation
+
+            if not want_verdict:
+                return bare
+            pos = bisect_right(tr['idxs'], t)
+            return bool(tr['vals'][pos - 1] if pos else tr['baseline'])
+
+    def observe(self, kps, tgt_pitch_deg=0.0, t=None):
+        """Log this face's decisive frame without asking for a verdict.
+
+        Called as early as the keypoints allow, so that by the time any worker
+        needs a verdict for a nearby frame, this event is already in the log.
+        Cheap and side-effect-free otherwise; safe to call more than once.
+        """
+        self._touch(kps, tgt_pitch_deg, t, want_verdict=False)
 
     def verdict(self, kps, tgt_pitch_deg=0.0, t=None):
-        """Latched non-frontal verdict for this face.
+        """Latched non-frontal verdict for this face at frame `t`.
 
         `t=None` means there is no temporal dimension to exploit — a still
         image, or a caller that does not know its frame index — so it falls
         straight through to the bare threshold and behaves exactly as before.
         """
-        score = nonfrontal_score(kps, tgt_pitch_deg)
-        bare = score > 1.0
-        if t is None or self.margin <= 0.0:
-            return bare
-        try:
-            pts = np.asarray(kps, dtype=np.float64)
-            centroid = pts.mean(axis=0)
-            size = max(float(np.ptp(pts[:, 0])), float(np.ptp(pts[:, 1])), 1.0)
-            if not np.isfinite(centroid).all():
-                return bare
-        except Exception:
-            return bare
-
-        track_id, seed, generation = self._shared_track(centroid, size, score, bare)
-
-        # The latch itself, thread-local so it advances along THIS worker's
-        # ordered subsequence. Applying the same score twice is a no-op, which
-        # is what makes it safe for process_mask to be called more than once for
-        # the same face in a frame (once per mask processor) — a "flip after N
-        # consecutive frames" debounce would have counted those repeats as
-        # evidence.
-        latches = self._local_latches(generation)
-        latched = latches.get(track_id, seed)
-        if score > 1.0 + self.margin:
-            latched = True
-        elif score < 1.0 - self.margin:
-            latched = False
-        latches[track_id] = latched
-        return bool(latched)
+        return self._touch(kps, tgt_pitch_deg, t, want_verdict=True)

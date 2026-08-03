@@ -152,6 +152,37 @@ class TestHysteresisKillsTheChatter(unittest.TestCase):
                 self.assertEqual(router.verdict(kps, 0.0, None), legacy_or(kps))
 
 
+class TestLatchIsAQuery(unittest.TestCase):
+    """The identity the whole threading design rests on: a hysteresis latch is
+    the same thing as "the value of the most recent decisive frame at or before
+    t". A latch is an evolving state and cannot be shared across out-of-order
+    workers; a query over an index-keyed event log can."""
+
+    @staticmethod
+    def _sequential_latch(scores, margin=NONFRONTAL_MARGIN):
+        lo, hi = 1.0 - margin, 1.0 + margin
+        latch = scores[0] > 1.0
+        out = []
+        for value in scores:
+            latch = True if value > hi else (False if value < lo else latch)
+            out.append(latch)
+        return out
+
+    def test_the_router_matches_a_sequential_latch_frame_for_frame(self):
+        rng = np.random.default_rng(21)
+        for yaw, pitch, amp in ((0, 30, 12.0), (75, -35, 10.0), (45, 0, 25.0)):
+            frames, scores = [], []
+            for t in range(400):
+                p = pitch + amp * np.sin(2 * np.pi * t / 90.0)
+                kps = project_kps(yaw, p) + rng.normal(0, 1.0, (5, 2)).astype(np.float32)
+                frames.append(kps)
+                scores.append(nonfrontal_score(kps))
+            router = NonFrontalRouter()
+            got = [router.verdict(k, 0.0, t) for t, k in enumerate(frames)]
+            self.assertEqual(got, self._sequential_latch(scores),
+                             f"diverged from a sequential latch at yaw={yaw}")
+
+
 class TestOrderIndependence(unittest.TestCase):
     """Adjacent frames go to different worker threads (`frame % num_threads`),
     so scores reach the router out of order. The guarantee that has to survive
@@ -201,6 +232,76 @@ class TestOrderIndependence(unittest.TestCase):
             self.assertEqual(len(router._tracks), 1,
                              f"frame {late} forked the track")
 
+    def test_round_robin_workers_reproduce_the_sequential_result(self):
+        """The regression this design exists for. Workers get frames
+        `frame % threads`, so each walks the whole clip at stride N and
+        adjacent frames come from different workers. With a per-worker latch a
+        MOVING face rippled at every transition — 22 flips against the correct
+        8 — because workers crossed the boundary at slightly different frames.
+        Sharing an index-keyed event log instead has to give the same answer at
+        every thread count.
+        """
+        rng = np.random.default_rng(7)
+        frames = []
+        for t in range(400):
+            pitch = 30.0 + 12.0 * np.sin(2 * np.pi * t / 100.0)
+            frames.append(project_kps(0, pitch)
+                          + rng.normal(0, 1.0, (5, 2)).astype(np.float32))
+
+        router = NonFrontalRouter()
+        expected = [router.verdict(k, 0.0, t) for t, k in enumerate(frames)]
+
+        for num_threads in (2, 4, 8, 16):
+            router = NonFrontalRouter()
+            got = [None] * len(frames)
+            barrier = threading.Barrier(num_threads)
+
+            def worker(tid):
+                barrier.wait()                    # maximise real contention
+                for t in range(tid, len(frames), num_threads):
+                    got[t] = router.verdict(frames[t], 0.0, t)
+
+            threads = [threading.Thread(target=worker, args=(i,))
+                       for i in range(num_threads)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            flips = sum(1 for i in range(1, len(got)) if got[i] != got[i - 1])
+            ideal = sum(1 for i in range(1, len(expected))
+                        if expected[i] != expected[i - 1])
+            self.assertLessEqual(
+                flips, ideal + 2,
+                f"{num_threads} threads rippled to {flips} flips vs {ideal}")
+
+    def test_observe_publishes_without_answering(self):
+        """observe() exists to get an event into the log early. It must record
+        the same thing verdict() would, and must not itself be a decision."""
+        router = NonFrontalRouter()
+        kps = project_kps(90, 0)
+        self.assertIsNone(router.observe(kps, 0.0, 5))
+        self.assertEqual(router._tracks[0]['idxs'], [5])
+        self.assertEqual(router._tracks[0]['vals'], [True])
+        # And having observed, the verdict for that frame is unchanged.
+        self.assertTrue(router.verdict(kps, 0.0, 5))
+        self.assertEqual(router._tracks[0]['idxs'], [5], "observe double-logged")
+
+    def test_observing_first_never_changes_the_answer(self):
+        """It may only make a query BETTER informed, never different — so a
+        single-threaded run must be identical with and without it."""
+        rng = np.random.default_rng(31)
+        frames = []
+        for t in range(300):
+            pitch = 30.0 + 12.0 * np.sin(2 * np.pi * t / 80.0)
+            frames.append(project_kps(0, pitch)
+                          + rng.normal(0, 1.0, (5, 2)).astype(np.float32))
+        plain = NonFrontalRouter()
+        early = NonFrontalRouter()
+        for t, kps in enumerate(frames):
+            want = plain.verdict(kps, 0.0, t)
+            early.observe(kps, 0.0, t)
+            self.assertEqual(early.verdict(kps, 0.0, t), want, f"frame {t}")
+
     def test_concurrent_access_is_safe(self):
         router = NonFrontalRouter()
         rng = np.random.default_rng(3)
@@ -244,26 +345,21 @@ class TestMultipleFaces(unittest.TestCase):
             router.verdict(project_kps(45, 0) + offset, 0.0, t)
         self.assertLessEqual(len(router._tracks), 8)
 
-    def test_the_thread_local_latches_stay_bounded_too(self):
-        """Track ids only increase, so a long clip with faces coming and going
-        would otherwise leave one dict entry per retired track, per thread."""
-        router = NonFrontalRouter(max_tracks=8)
+    def test_the_event_log_stays_bounded(self):
+        """A long clip must not accumulate one entry per decisive frame."""
+        router = NonFrontalRouter(history=32)
         for t in range(600):
-            offset = np.array([(t * 311) % 6000, (t * 97) % 3000], dtype=np.float32)
-            router.verdict(project_kps(45, 0) + offset, 0.0, t)
-        self.assertLessEqual(len(router._tls.latches[1]), 8 * 4)
+            router.verdict(project_kps(90, 0), 0.0, t)
+        self.assertLessEqual(len(router._tracks[0]['idxs']), 32)
 
-    def test_reset_invalidates_thread_local_state(self):
-        """reset() cannot reach into other threads, so it bumps a generation
-        that each thread checks lazily."""
-        router = NonFrontalRouter()
-        kps = project_kps(90, 0)
-        router.verdict(kps, 0.0, 0)
-        self.assertEqual(len(router._tls.latches[1]), 1)
-        router.reset()
-        router.verdict(project_kps(0, 0), 0.0, 0)
-        self.assertEqual(len(router._tls.latches[1]), 1,
-                         "stale latches survived the reset")
+    def test_evicted_history_survives_as_the_baseline(self):
+        """Dropping old events must not lose what they decided — a face that
+        went profile at frame 0 and stayed in-band since is still profile."""
+        router = NonFrontalRouter(history=4)
+        router.verdict(project_kps(90, 0), 0.0, 0)          # decisive: True
+        for t in range(1, 40):                               # push it out
+            router.verdict(project_kps(90, 0), 0.0, t)
+        self.assertTrue(router._tracks[0]['baseline'])
 
     def test_reset_clears_everything(self):
         router = NonFrontalRouter()
@@ -289,6 +385,18 @@ class TestWiring(unittest.TestCase):
         self.assertIn("_nonfrontal_router.reset",
                       inspect.getsource(ProcessMgr.run_batch_inmem),
                       "state would leak between clips")
+
+    def test_process_face_publishes_early(self):
+        """The whole point of observe() is the GAP between publishing and
+        querying. If the call migrates into process_mask it buys nothing."""
+        import inspect
+        from roop.ProcessMgr import ProcessMgr
+        from roop.procmgr_masking import MaskingMixin
+        self.assertIn("_nonfrontal_router.observe",
+                      inspect.getsource(ProcessMgr.process_face),
+                      "nothing publishes the score early any more")
+        self.assertNotIn("_nonfrontal_router.observe",
+                         inspect.getsource(MaskingMixin.process_mask))
 
     def test_the_old_inline_heuristics_are_gone(self):
         """They lived in process_mask as four hand-rolled booleans. Leaving a

@@ -2479,6 +2479,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         except Exception:
             pass   # landmarks unavailable — features that need pose will no-op
 
+        # Publish this face's non-frontal score to the mask router NOW, at the
+        # first point the pose is known. The verdict is not needed until
+        # process_mask, a whole swap and enhance later; the gap is what lets
+        # workers on neighbouring frames see each other's events instead of
+        # racing, which is what removes the routing ripple on a moving face.
+        try:
+            self._nonfrontal_router.observe(
+                getattr(target_face, 'kps', None), tgt_pitch_deg,
+                getattr(self._tls, 'frame_idx', None))
+        except Exception:
+            pass   # the router re-scores in process_mask regardless
+
         # ── Option 1: Multi-angle source bank ────────────────────────────────
         # Select the source face whose pose best matches this target frame.
         # Falls back to faces[0] when the feature is off or poses are absent.
