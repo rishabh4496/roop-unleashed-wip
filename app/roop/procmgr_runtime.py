@@ -149,6 +149,33 @@ _TRACK_ASSIGN_MAX = float(os.environ.get('ROOP_TRACK_ASSIGN_MAX', '0.6'))
 _TRACK_OVERLAP_FRAC = float(os.environ.get('ROOP_TRACK_OVERLAP_FRAC', '0.15'))
 
 
+# ── Second-and-later track per person ────────────────────────────────────────
+# A person may legitimately own SEVERAL tracks: tracking fragments constantly
+# (a 23k-frame clip produced 60-130 tracks), so the assignment binds every
+# track under _TRACK_ASSIGN_MAX, refusing only those that run CONCURRENTLY with
+# a track the person already owns (_TRACK_OVERLAP_FRAC — one person cannot be in
+# two places at once).
+#
+# The contrapositive does not hold, and that was the hole: a track that does NOT
+# overlap is not thereby the same person. A bystander's track fragment that
+# happens to lie entirely in a stretch where the target is OFF SCREEN is disjoint
+# from every track the target owns, so the concurrency guard has nothing to say
+# about it, and an absolute gate cannot separate "target on a bad stretch" from
+# "different person who scrapes under 0.6". The bystander inherited the target's
+# source for exactly the frames the target was absent — the reported "when the
+# target is not in the frame, the other face gets swapped".
+#
+# So a person's FIRST (closest) accepted track sets the anchor, and every later
+# one must land within this margin of it. That is the measurement that separates
+# them: the target's own fragments cluster around its anchor (measured 0.36 /
+# 0.361) while a stranger squeaking under the absolute gate sits near it (0.5-0.6).
+#
+# Cost of being wrong is bounded and one-sided: a refused track is not dropped,
+# it just loses identity LOCKING and falls through to per-frame matching at the
+# full threshold, so a genuine target fragment still swaps. 0 disables.
+_TRACK_ASSIGN_MARGIN = float(os.environ.get('ROOP_TRACK_ASSIGN_MARGIN', '0.15'))
+
+
 _prof_lock = Lock()
 
 

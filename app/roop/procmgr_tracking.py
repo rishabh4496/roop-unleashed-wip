@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
+                                  _TRACK_ASSIGN_MARGIN,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -481,15 +482,68 @@ class TrackingMixin:
                     t['emb_mean'] = (np.asarray(t['emb_sum'], np.float64) / float(n)).astype(np.float32)
 
         # Assign each track to a source (person rank), once, by mean embedding.
+        track_map = {t['id']: t for t in tracks}
+        track_src, assign_max, refused_margin = self._assign_track_sources(tracks)
+
+        self._track_assignments = {
+            f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
+        }
+        persons = self._person_angle_indices()
+        if _DEBUG_MATCH:
+            for t in tracks:
+                dd = {}
+                for g, tis in persons.items():
+                    embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
+                    embs = [e for e in embs if e is not None]
+                    if embs and t.get('emb_mean') is not None:
+                        dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
+                bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
+                          f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
+                          f"-> src={track_src.get(t['id'])}")
+        matched = sum(1 for v in track_src.values() if v is not None)
+        print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
+              f'{matched} matched to a source (gate {assign_max:.2f})'
+              + (f', {refused_margin} refused as too far from their person\'s '
+                 f'closest track (margin {_TRACK_ASSIGN_MARGIN})' if refused_margin else ''))
+        return tracks
+
+    def _person_angle_indices(self):
+        """person group id -> the indices of its captured target angles."""
+        groups = self.target_face_groups
+        persons = {}
+        for i, g in enumerate(groups[:len(self.target_face_datas)]):
+            persons.setdefault(g, []).append(i)
+        return persons
+
+    def _assign_track_sources(self, tracks):
+        """Bind each tracklet to at most one source (person rank) by mean embedding.
+
+        Returns (track_src, assign_max, refused_by_margin).
+
+        Three gates, in the order they run:
+
+        1. ABSOLUTE (_TRACK_ASSIGN_MAX): the track's mean must be close enough to
+           one of the person's captured angles at all. Tighter than per-frame
+           matching because this decision is durable — see the constant.
+        2. CONCURRENCY (_TRACK_OVERLAP_FRAC): a track that runs at the same time
+           as one this person already owns is a second body, not a handoff.
+        3. MARGIN (_TRACK_ASSIGN_MARGIN): a person's later tracks must sit near
+           its FIRST (closest) one. Gate 2 is silent about a track that never
+           coincides with the target — which is exactly a bystander's track
+           fragment during a stretch where the target is off screen, the case
+           where the wrong face was inheriting the swap.
+
+        A track refused by any gate keeps its frames; they fall through to
+        per-frame matching in the swap loop, so a genuine face still swaps — it
+        just doesn't get identity locking.
+        """
         groups = self.target_face_groups
         uniq = sorted(set(groups)) if groups else []
         rank = {g: r for r, g in enumerate(uniq)}
         single_person = len(uniq) <= 1
         threshold = self.options.face_distance_threshold
 
-        persons = {}
-        for i, g in enumerate(groups[:len(self.target_face_datas)]):
-            persons.setdefault(g, []).append(i)
+        persons = self._person_angle_indices()
 
         # Binding a track to a source is durable and is decided from the track's
         # MEAN embedding, so it is gated tighter than one-frame matching — the
@@ -529,10 +583,20 @@ class TrackingMixin:
         # screen at the same time?").
         person_assigned_frames = {g: set() for g in persons}
         person_assigned_spans = {g: [] for g in persons}
+        # Distance of the closest track this person accepted. candidates is sorted
+        # ascending, so the first acceptance is that person's best evidence.
+        person_anchor = {}
         track_src = {t['id']: None for t in tracks}
+        refused_margin = 0
 
         for d, g, tid in candidates:
             if track_src[tid] is not None:
+                continue
+            # Gate 3 — checked before the concurrency work because it is a
+            # comparison of two floats and refuses outright.
+            if (_TRACK_ASSIGN_MARGIN > 0 and g in person_anchor
+                    and d > person_anchor[g] + _TRACK_ASSIGN_MARGIN):
+                refused_margin += 1
                 continue
             t = track_map[tid]
             obs = t.get('obs') or {}
@@ -556,29 +620,13 @@ class TrackingMixin:
             if overlap and overlap > _TRACK_OVERLAP_FRAC * t_len:
                 continue
             track_src[tid] = self.options.selected_index if single_person else rank[g]
+            person_anchor.setdefault(g, d)
             if obs:
                 person_assigned_frames[g].update(t_frames)
             else:
                 person_assigned_spans[g].append((lo, hi))
 
-        self._track_assignments = {
-            f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
-        }
-        if _DEBUG_MATCH:
-            for t in tracks:
-                dd = {}
-                for g, tis in persons.items():
-                    embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
-                    embs = [e for e in embs if e is not None]
-                    if embs and t.get('emb_mean') is not None:
-                        dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
-                bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
-                          f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
-                          f"-> src={track_src.get(t['id'])}")
-        matched = sum(1 for v in track_src.values() if v is not None)
-        print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
-              f'{matched} matched to a source (gate {assign_max:.2f})')
-        return tracks
+        return track_src, assign_max, refused_margin
 
     def _precompute_temporal(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Temporal detection pre-pass (anti-flicker).
