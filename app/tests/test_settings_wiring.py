@@ -83,7 +83,8 @@ def _function_body(src, marker, from_index=0):
 # is enough, with no allowlist here to remember to update (and none to go stale
 # if a knob is ever removed). Both literal forms are accepted so a helper that
 # reads one key directly is not silently missed.
-SETTINGS_HELPERS = ("_apply_merger_settings", "_apply_eye_restore_settings")
+SETTINGS_HELPERS = ("_apply_merger_settings", "_apply_eye_restore_settings",
+                    "_apply_parser_region_settings")
 
 
 def _helper_keys(name):

@@ -54,6 +54,10 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
     const el = containerRef.current;
     if (!el) return undefined;
     const onWheel = (e) => {
+      // Ctrl/Cmd + wheel is the APP zoom, claimed on window in App.jsx. An
+      // element listener runs before the event reaches window, so without this
+      // one gesture zoomed the grid AND the whole UI at once.
+      if (e.ctrlKey || e.metaKey) return;
       const next = wheelZoom(e.deltaY, zoomRef.current, ZOOM_MAX);
       if (next === null) return;    // nothing left to zoom — let the page scroll
       e.preventDefault();
@@ -68,13 +72,12 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
+  // Derived from the refs, not from inside a setZoom updater: an updater must
+  // be pure, and React calls it twice in StrictMode.
   const zoomBy = useCallback((factor) => {
-    setZoom((z) => {
-      const nz = Math.min(Math.max(1, z * factor), ZOOM_MAX);
-      if (nz === 1) setPan({ x: 0, y: 0 });
-      else setPan((p) => clampPan(p, nz, cellRef.current));
-      return nz;
-    });
+    const nz = Math.min(Math.max(1, zoomRef.current * factor), ZOOM_MAX);
+    setZoom(nz);
+    setPan(nz === 1 ? { x: 0, y: 0 } : clampPan(panRef.current, nz, cellRef.current));
   }, []);
 
   // `+` / `-` are documented in the shortcuts HUD under "Compare & Zoom", but
@@ -102,7 +105,12 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
   const dragRef = useRef(null);
 
   const handlePointerDown = (e) => {
-    containerRef.current?.focus?.({ preventScroll: true });   // arm the +/- keys
+    // Arm the +/- keys. Skipped when the press landed on a real control, or
+    // clicking Expand/Reset would move focus off the button that was just
+    // pressed and its focus ring would land on the grid instead.
+    if (!e.target?.closest?.('button, a, input, textarea, select')) {
+      containerRef.current?.focus?.({ preventScroll: true });
+    }
     if (zoomRef.current <= 1 || e.button > 0) return;
     const stage = stageUnder(e.target);
     dragRef.current = {
@@ -132,7 +140,10 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
   const endPan = (e) => {
     if (!dragRef.current) return;
     dragRef.current = null;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    // pointercancel means the browser has ALREADY released the capture, and
+    // releasing an id it no longer holds throws NotFoundError — which would
+    // escape as an unhandled error out of an event handler.
+    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* already released */ }
     setIsPanning(false);
   };
 

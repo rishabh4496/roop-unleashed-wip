@@ -31,6 +31,7 @@ ZOOMPAN = os.path.join(FS, 'zoomPan.js')
 GRID = os.path.join(FS, 'CompareGrid.jsx')
 PREVIEW = os.path.join(FS, 'InteractivePreview.jsx')
 APP_JSX = os.path.join(SRC, 'App.jsx')
+TIMELINE = os.path.join(FS, 'Timeline.jsx')
 
 STAGES = {'CompareGrid.jsx': GRID, 'InteractivePreview.jsx': PREVIEW}
 
@@ -153,6 +154,22 @@ class AppZoomCompensation(unittest.TestCase):
             'App must claim Ctrl+wheel as a non-passive listener, or the '
             'browser zooms the page on top of the app zoom and the toolbar '
             'percentage goes stale')
+
+    def test_no_inner_wheel_surface_also_acts_on_ctrl_wheel(self):
+        """App.jsx's Ctrl+wheel listener is on WINDOW, and an element listener
+        runs before the event gets there — so a surface that does not bail on
+        the modifier fires alongside it, and one gesture zooms both that
+        surface and the entire UI. Every element-level wheel listener in the
+        app has to stand down for the modified gesture."""
+        for name, path in list(STAGES.items()) + [('Timeline.jsx', TIMELINE)]:
+            src = _code(path)
+            handler = src.split('const onWheel = (e) => {', 1)
+            self.assertEqual(len(handler), 2, f'{name}: no native wheel handler found')
+            head = handler[1][:600]
+            self.assertRegex(
+                head, r'if\s*\(e\.ctrlKey \|\| e\.metaKey\)\s*return',
+                f'{name} does not yield Ctrl/Cmd+wheel to the app zoom, so one '
+                'gesture zooms this surface AND the whole UI')
 
 
 class GridSizing(unittest.TestCase):

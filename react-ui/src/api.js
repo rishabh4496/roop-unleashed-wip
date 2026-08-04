@@ -85,7 +85,14 @@ const xhrUpload = (path, fd, { onProgress, signal } = {}) => new Promise((resolv
 
   const onAbort = () => xhr.abort();
   if (signal) {
-    if (signal.aborted) { xhr.abort(); return; }
+    // Reject explicitly rather than calling xhr.abort() here: abort() on a
+    // request that has been open()ed but not send()t fires no abort event, so
+    // the handler below never runs and the promise would never settle — a
+    // caller awaiting it would hang forever with no error to show.
+    if (signal.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'));
+      return;
+    }
     signal.addEventListener('abort', onAbort, { once: true });
   }
   const cleanup = () => signal?.removeEventListener('abort', onAbort);

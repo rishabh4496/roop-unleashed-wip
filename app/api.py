@@ -780,10 +780,20 @@ def source_refresh_thumbs():
 
 
 # ── Target media ─────────────────────────────────────────────────────────────
-_MEDIA_EXTS = {
-    '.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.wmv',
-    '.gif', '.webp', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff',
-}
+def _is_usable_target(path):
+    """Exactly what the pipeline itself will accept as a target.
+
+    Asked of roop.utilities rather than of a list of extensions kept here. A
+    private list is guaranteed to drift: it started out missing .ts, .mts and
+    .mxf — all of which /api/target/add would have taken happily, because an
+    upload is never checked at all — so the path route would have been the
+    stricter of the two ways to add the same file.
+
+    is_image() deliberately returns False for animated GIF and WebP, which ARE
+    valid targets; _refresh_target_frames makes the same three-way test.
+    """
+    return (util.is_video(path) or util.is_image(path)
+            or path.lower().endswith('.gif') or util.is_animated_webp(path))
 
 
 @app.post("/api/target/add_path")
@@ -817,15 +827,26 @@ def target_add_path(payload: dict = Body(...)):
         if not os.path.isfile(path):
             rejected.append({"path": p, "why": "not a file on this machine"})
             continue
-        if os.path.splitext(path)[1].lower() not in _MEDIA_EXTS:
+        if not _is_usable_target(path):
             rejected.append({"path": p, "why": "not a supported image or video"})
             continue
         list_files_process.append(ProcessEntry(path, 0, 0, 0))
         added.append(path)
 
+    # Nothing landed — leave the selection alone. Unlike the upload route, this
+    # one can legitimately add zero entries (every path was a typo), and the
+    # expression below would then read `first_new == len(...)` and fall to 0,
+    # yanking the user off the target they were working on as the reward for
+    # mistyping a path.
+    if not added:
+        out = _target_list_payload()
+        out["added"] = []
+        out["rejected"] = rejected
+        return out
+
     for i in range(first_new, len(list_files_process)):
         _refresh_target_frames(i)
-    state.selected_target_index = first_new if first_new < len(list_files_process) else 0
+    state.selected_target_index = first_new
     out = _target_list_payload()
     out["added"] = added
     out["rejected"] = rejected
@@ -1983,9 +2004,15 @@ def _apply_eye_restore_settings(payload):
             value = default
         setattr(roop_globals, key, value)
 
-    # Face Parser mask regions. Not numbers, so they sit outside the loop
-    # above: a list of group names and a {group: grow_px} map. Kept in this
-    # helper anyway so preview and run cannot apply different masks.
+
+def _apply_parser_region_settings(payload):
+    """Push the Face Parser region selection onto roop.globals.
+
+    Its own helper rather than a tail on the eye one: these are not numbers —
+    a list of group names and a {group: grow_px} map — and a helper whose name
+    says "eye restore" while it also decides the mask is the kind of thing
+    nobody finds until it is wrong.
+    """
     regions = payload.get("parser_regions", getattr(roop_globals.CFG, "parser_regions", None))
     roop_globals.parser_regions = list(regions) if isinstance(regions, (list, tuple)) else None
     grow = payload.get("parser_region_grow", getattr(roop_globals.CFG, "parser_region_grow", None))
@@ -2029,6 +2056,7 @@ def preview(payload: dict = Body(...)):
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
     _apply_merger_settings(payload)
     _apply_eye_restore_settings(payload)
+    _apply_parser_region_settings(payload)
 
     faces_list = []
     person_ids = []
@@ -2256,6 +2284,7 @@ def _run_swap(payload):
         roop_globals.temporal_detection = bool(payload.get("temporal_detection", getattr(roop_globals.CFG, "temporal_detection", False)))
         _apply_merger_settings(payload)
         _apply_eye_restore_settings(payload)
+        _apply_parser_region_settings(payload)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

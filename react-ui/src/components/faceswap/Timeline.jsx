@@ -290,6 +290,10 @@ export default function Timeline({
     const onWheel = (e) => {
       const W = wheelRef.current;
       if (!W || W.maxFrames < 2) return;
+      // Ctrl/Cmd + wheel is the app zoom (App.jsx, on window), which this
+      // listener would otherwise fire alongside — zooming the track and the
+      // whole UI on one gesture.
+      if (e.ctrlKey || e.metaKey) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       if (!rect.width) return;

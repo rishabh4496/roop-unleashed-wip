@@ -273,6 +273,11 @@ export default function InteractivePreview({
     const el = containerRef.current;
     if (!el) return undefined;
     const onWheel = (e) => {
+      // Ctrl/Cmd + wheel belongs to the app zoom (App.jsx, on window). This
+      // listener runs first, so without the bail one gesture zoomed the stage
+      // AND the whole UI — the same split as the keyboard, where Ctrl +/- is
+      // the app and bare +/- is the stage.
+      if (e.ctrlKey || e.metaKey) return;
       const next = wheelZoom(e.deltaY, zoomRef.current, ZOOM_MAX);
       // At either end of the range the stage has nothing to do with this event,
       // so it must NOT swallow it — otherwise scrolling the settings column
@@ -596,26 +601,32 @@ export default function InteractivePreview({
 
   const zoomToActual = () => {
     const el = imageRef.current || containerRef.current;
-    const box = el?.getBoundingClientRect();
-    if (!box || !imgDim || !box.width) return;
-    // The rect ALREADY includes the current zoom (it is inside the transformed
-    // subtree) and the app-level CSS zoom, so both have to be divided back out
-    // — otherwise 1:1 landed at 1/zoom of actual size and pressing it twice
-    // gave two different answers.
-    const cssWidth = box.width / (uiScale(el) * zoom);
-    setZoom(Math.min(Math.max(imgDim.w / cssWidth, 1), ZOOM_MAX));
+    // offsetWidth, NOT getBoundingClientRect().
+    //
+    // This element lives inside the transformed subtree, so its rect already
+    // carries the current zoom — measuring it and then solving for a new zoom
+    // makes 1:1 depend on the zoom you happened to be at, and pressing it twice
+    // gives two different answers. (An earlier attempt at this divided the zoom
+    // back out of the rect AND out of uiScale(el), which is the same factor
+    // twice, so it overshot by exactly `zoom`.) offsetWidth is layout, which no
+    // transform touches, so the arithmetic has nothing to undo.
+    const w = el?.offsetWidth;
+    if (!w || !imgDim) return;
+    setZoom(Math.min(Math.max(imgDim.w / w, 1), ZOOM_MAX));
     setPan({ x: 0, y: 0 });
   };
 
   // Multiplicative, matching the wheel: the old additive ±0.5 needed 15 clicks
   // to cross the range and moved 50% at 1x but 6% at 8x.
-  const zoomBy = (factor) =>
-    setZoom((z) => {
-      const nz = Math.min(Math.max(1, z * factor), ZOOM_MAX);
-      if (nz === 1) setPan({ x: 0, y: 0 });
-      else setPan((p) => clampPan(p, nz, containerRef.current));
-      return nz;
-    });
+  // A state updater must be pure — React may call it more than once for one
+  // update (it does, in StrictMode), so setPan cannot live inside setZoom's
+  // updater. The next zoom is derived from the ref instead, which is the same
+  // value the wheel handler reads.
+  const zoomBy = (factor) => {
+    const nz = Math.min(Math.max(1, zoomRef.current * factor), ZOOM_MAX);
+    setZoom(nz);
+    setPan(nz === 1 ? { x: 0, y: 0 } : clampPan(panRef.current, nz, containerRef.current));
+  };
 
   // Main HUD Control Bar inside Preview Box
   const hudBar = () => (

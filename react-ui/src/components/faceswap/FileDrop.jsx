@@ -64,25 +64,38 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
   };
 
   // Rate and ETA are derived here rather than passed in, so the caller only has
-  // to forward what the XHR reports. Sampled against the FIRST observation of
+  // to forward what the XHR reports. Measured against the FIRST observation of
   // this upload, not the previous one: per-event deltas over a fast local
   // socket are tiny and noisy enough that the number flickers unreadably.
-  const rateRef = useRef(null);
+  //
+  // Computed in an effect, not in the render body. Rendering must be pure, and
+  // the obvious version of this both read Date.now() and seeded a ref mid-
+  // render — which StrictMode's double render would then anchor against a
+  // timestamp from a pass that was thrown away.
+  const anchorRef = useRef(null);
+  const [speed, setSpeed] = useState({ rate: 0, eta: 0 });
   const uploading = !!progress && progress.phase === 'upload';
+
   useEffect(() => {
-    if (!busy) rateRef.current = null;
+    if (!busy) { anchorRef.current = null; setSpeed({ rate: 0, eta: 0 }); }
   }, [busy]);
-  let rate = 0;
-  let eta = 0;
-  if (uploading && progress.loaded > 0) {
-    if (!rateRef.current) rateRef.current = { t: Date.now(), loaded: progress.loaded };
-    const dt = (Date.now() - rateRef.current.t) / 1000;
-    const db = progress.loaded - rateRef.current.loaded;
-    if (dt > 0.4 && db > 0) {
-      rate = db / dt;
-      if (progress.total) eta = (progress.total - progress.loaded) / rate;
+
+  useEffect(() => {
+    if (!uploading || !(progress.loaded > 0)) return;
+    if (!anchorRef.current) {
+      anchorRef.current = { t: Date.now(), loaded: progress.loaded };
+      return;
     }
-  }
+    const dt = (Date.now() - anchorRef.current.t) / 1000;
+    const db = progress.loaded - anchorRef.current.loaded;
+    // Below about half a second the sample is mostly jitter, so leave the
+    // previous number on screen rather than showing a wild one.
+    if (dt <= 0.4 || db <= 0) return;
+    const rate = db / dt;
+    setSpeed({ rate, eta: progress.total ? (progress.total - progress.loaded) / rate : 0 });
+  }, [uploading, progress?.loaded, progress?.total, busy]);
+
+  const { rate, eta } = speed;
   const pct = uploading && progress.total
     ? Math.min(100, (progress.loaded / progress.total) * 100)
     : 0;
