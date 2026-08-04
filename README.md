@@ -267,6 +267,15 @@ value from the launcher terminal rather than assuming `8001`; the examples below
 - `GET /api/state` — Full UI state: loaded source facesets, target files, selection.
 - `POST /api/source/add` — Add source face image(s) (multipart upload).
 - `POST /api/target/add` — Add target image/video file(s) (multipart upload).
+- `POST /api/target/add_path` — Add target file(s) **already on this machine**, by
+  path, with no upload and no second copy in `temp/`. Body `{"paths": [...]}` (a bare
+  string is accepted too). Prefer this over `/api/target/add` for anything large: the
+  server is on `127.0.0.1`, so uploading a multi-gigabyte clip to it transfers the
+  whole file over a loopback socket and then writes it to disk again. Returns the
+  usual target list plus `added` (absolute paths accepted) and `rejected`
+  (`[{path, why}]` — a path that is not a file, or not a media type the pipeline can
+  open). Adds nothing and leaves the current selection alone when every path is
+  rejected.
 - `POST /api/swap` — Start a job over the loaded sources/targets. Body is the run
   config (JSON object; every key is optional and falls back to the saved settings).
   Returns `409` if a job is already running, `400` if no target media or no source
@@ -288,6 +297,10 @@ API=http://127.0.0.1:${ROOP_API_PORT:-8001}
 
 curl -F "files=@face.jpg"  "$API/api/source/add"
 curl -F "files=@clip.mp4"  "$API/api/target/add"
+
+# Or, for a file that is already on this machine — no transfer, no second copy:
+curl -X POST "$API/api/target/add_path" -H 'Content-Type: application/json' \
+     -d '{"paths":["/abs/path/clip.mp4"]}'
 curl -X POST "$API/api/swap" -H 'Content-Type: application/json' \
      -d '{"enhancer":"GFPGAN","detection":"All faces"}'
 
@@ -323,8 +336,11 @@ API = f"http://127.0.0.1:{os.environ.get('ROOP_API_PORT', '8001')}"
 
 with open("face.jpg", "rb") as f:
     requests.post(f"{API}/api/source/add", files={"files": f})
-with open("clip.mp4", "rb") as f:
-    requests.post(f"{API}/api/target/add", files={"files": f})
+
+# The target is on the same machine as the server, so reference it rather than
+# uploading it — a multi-gigabyte clip would otherwise cross a loopback socket
+# and be written to disk a second time.
+requests.post(f"{API}/api/target/add_path", json={"paths": [os.path.abspath("clip.mp4")]})
 
 requests.post(f"{API}/api/swap", json={"enhancer": "GFPGAN", "detection": "All faces"})
 
