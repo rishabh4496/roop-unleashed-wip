@@ -6,6 +6,7 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path
+from roop.processors.enhance_common import is_usable, sized
 
 
 # THREAD_LOCK = threading.Lock()
@@ -44,6 +45,7 @@ class Enhance_GFPGAN():
         # preprocess
         input_size = temp_frame.shape[1]
         temp_frame = cv2.resize(temp_frame, (512, 512), interpolation=cv2.INTER_CUBIC)
+        fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
 
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
         temp_frame = temp_frame.astype('float32') / 255.0
@@ -57,14 +59,20 @@ class Enhance_GFPGAN():
         ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]
 
+        # np.clip does not remove NaN and uint8(NaN) is 0, so a single
+        # overflowed value paints black and a saturated graph paints a black
+        # FACE — silently. See enhance_common.is_usable.
+        if not is_usable(result):
+            print("[GFPGAN] non-finite output — using unenhanced frame "
+                  "(FP16 overflow? try an fp32 provider)")
+            return sized(fallback_bgr.astype(np.uint8), input_size)
+
         # post-process
         result = np.clip(result, -1, 1)
         result = (result + 1) / 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        # max(1, ...) — see Enhance_CodeFormer for why a 0 here blanks the face.
-        scale_factor = max(1, int(result.shape[1] / input_size))
-        return result.astype(np.uint8), scale_factor
+        return sized(result.astype(np.uint8), input_size)
 
 
     def Release(self):

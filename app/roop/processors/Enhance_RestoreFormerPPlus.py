@@ -6,6 +6,7 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path
+from roop.processors.enhance_common import is_usable, sized
 from roop import session_pool
 
 class Enhance_RestoreFormerPPlus():
@@ -57,6 +58,7 @@ class Enhance_RestoreFormerPPlus():
         # preprocess
         input_size = temp_frame.shape[1]
         temp_frame = cv2.resize(temp_frame, (512, 512), interpolation=cv2.INTER_CUBIC)
+        fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
         temp_frame = temp_frame.astype('float32') / 255.0
         temp_frame = (temp_frame - 0.5) / 0.5
@@ -75,14 +77,20 @@ class Enhance_RestoreFormerPPlus():
             ort_outs = self.io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]
         del ort_outs
-        
+
+        # np.clip does not remove NaN and uint8(NaN) is 0 — see
+        # enhance_common.is_usable. This one runs on a POOL of TensorRT
+        # contexts, so it also covers a torn session, not just an overflow.
+        if not is_usable(result):
+            print("[RestoreFormer++] non-finite output — using unenhanced frame "
+                  "(FP16 overflow? try an fp32 provider)")
+            return sized(fallback_bgr.astype(np.uint8), input_size)
+
         result = np.clip(result, -1, 1)
         result = (result + 1) / 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        # max(1, ...) — see Enhance_CodeFormer for why a 0 here blanks the face.
-        scale_factor = max(1, int(result.shape[1] / input_size))
-        return result.astype(np.uint8), scale_factor
+        return sized(result.astype(np.uint8), input_size)
 
 
     def Release(self):

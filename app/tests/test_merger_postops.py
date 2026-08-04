@@ -241,13 +241,18 @@ class GpenSizeContract(unittest.TestCase):
 
     paste_upscale multiplies the paste matrix by scale_factor, so a model
     SMALLER than the crop giving int(256/512) = 0 would collapse that matrix
-    and blank the face. Tested on the static helper, so it needs no weights.
+    and blank the face. Tested on the helper, so it needs no weights.
+
+    The helper was GPEN's own `_sized` and is now enhance_common.sized: every
+    restorer needed the same contract, and three of them had grown a private
+    `max(1, int(...))` instead. Kept pointing here rather than deleted, because
+    the 256-tier registration below is GPEN-specific.
     """
 
     @staticmethod
     def _helper():
-        from roop.processors.Enhance_GPEN import Enhance_GPEN
-        return Enhance_GPEN._sized
+        from roop.processors.enhance_common import sized
+        return sized
 
     def test_the_256_tier_is_registered(self):
         from roop.processors.Enhance_GPEN import GPEN_MODELS

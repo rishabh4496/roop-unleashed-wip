@@ -13,6 +13,7 @@ from math import sqrt
 from torchvision.transforms.functional import normalize
 
 from roop.typing import Face, Frame, FaceSet
+from roop.processors.enhance_common import is_usable, sized
 
 
 THREAD_LOCK_DMDNET = threading.Lock()
@@ -44,9 +45,13 @@ class Enhance_DMDNet():
         input_size = temp_frame.shape[1]
 
         result = self.enhance_face(source_faceset, temp_frame, target_face)
-        # max(1, ...) — see Enhance_CodeFormer for why a 0 here blanks the face.
-        scale_factor = max(1, int(result.shape[1] / input_size))
-        return result.astype(np.uint8), scale_factor
+        # uint8(NaN) is 0, so a non-finite result here is a silent black face —
+        # see enhance_common.is_usable. DMDNet runs in torch rather than ORT,
+        # but the cast at the end is the same one.
+        if not is_usable(result):
+            print("[DMDNet] non-finite output — using unenhanced frame")
+            return sized(temp_frame.astype(np.uint8), input_size)
+        return sized(result.astype(np.uint8), input_size)
 
 
     def Release(self):

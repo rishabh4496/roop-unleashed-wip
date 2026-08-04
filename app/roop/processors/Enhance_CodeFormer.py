@@ -6,6 +6,7 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path
+from roop.processors.enhance_common import is_usable, sized
 
 
 # THREAD_LOCK = threading.Lock()
@@ -83,6 +84,7 @@ class Enhance_CodeFormer():
         input_size = temp_frame.shape[1]
         # preprocess
         temp_frame = cv2.resize(temp_frame, (512, 512), interpolation=cv2.INTER_CUBIC)
+        fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
         temp_frame = temp_frame.astype('float32') / 255.0
         temp_frame = (temp_frame - 0.5) / 0.5
@@ -105,6 +107,15 @@ class Enhance_CodeFormer():
         result = np.asarray(ort_outs[0][0], dtype=np.float32)
         del ort_outs
 
+        # np.clip does not remove NaN and uint8(NaN) is 0, so a single
+        # overflowed value paints black and a saturated graph paints a black
+        # FACE — silently. See enhance_common.is_usable. Especially worth
+        # having on the fp16 tier, which is a half-precision graph.
+        if not is_usable(result):
+            print("[CodeFormer] non-finite output — using unenhanced frame "
+                  "(FP16 overflow? try the fp32 tier)")
+            return sized(fallback_bgr.astype(np.uint8), input_size)
+
         # post-process
         result = result.transpose((1, 2, 0))
 
@@ -115,14 +126,7 @@ class Enhance_CodeFormer():
 
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
         result = (result * 255.0).round()
-        # max(1, ...): paste_upscale does `M * scale_factor`, so a 0 collapses
-        # the paste matrix and blanks the face. int(512/1024) is 0, which cannot
-        # happen while the largest swapper output and the largest pixel-boost
-        # are both 512 — but the day a 1024 model lands it would, and the
-        # symptom (a blank face, not an error) points nowhere near here. GPEN's
-        # _sized() carries the full reasoning; KEEP already guards the same way.
-        scale_factor = max(1, int(result.shape[1] / input_size))
-        return result.astype(np.uint8), scale_factor
+        return sized(result.astype(np.uint8), input_size)
 
 
     def Release(self):
