@@ -20,6 +20,9 @@ class Enhance_GFPGAN():
 
     processorname = 'gfpgan'
     type = 'enhance'
+    # FFHQ-trained — see Enhance_CodeFormer.model_template for the measured
+    # mismatch against each swapper's crop, and ProcessMgr for the re-warp.
+    model_template = 'ffhq_512'
 
 
     def Initialize(self, plugin_options:dict):
@@ -59,7 +62,8 @@ class Enhance_GFPGAN():
         result = (result + 1) / 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        scale_factor = int(result.shape[1] / input_size)       
+        # max(1, ...) — see Enhance_CodeFormer for why a 0 here blanks the face.
+        scale_factor = max(1, int(result.shape[1] / input_size))
         return result.astype(np.uint8), scale_factor
 
 

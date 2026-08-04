@@ -44,7 +44,8 @@ class Enhance_DMDNet():
         input_size = temp_frame.shape[1]
 
         result = self.enhance_face(source_faceset, temp_frame, target_face)
-        scale_factor = int(result.shape[1] / input_size)       
+        # max(1, ...) — see Enhance_CodeFormer for why a 0 here blanks the face.
+        scale_factor = max(1, int(result.shape[1] / input_size))
         return result.astype(np.uint8), scale_factor
 
 

@@ -493,9 +493,9 @@ def get_meta():
         "git_version": _get_git_version(),
         "providers": providers,
         "trt_precisions": ["fp32", "fp16", "mixed"],
-        "enhancers": ["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN 256",
-                       "GPEN", "GPEN 1024", "GPEN 2048", "Restoreformer++",
-                       "KEEP (sidecar)"],
+        "enhancers": ["None", "Codeformer", "Codeformer (fp16)", "DMDNet",
+                       "GFPGAN", "GPEN 256", "GPEN", "GPEN 1024", "GPEN 2048",
+                       "Restoreformer++", "KEEP (sidecar)"],
         "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
                          "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
                          "simswap", "simswap_512", "hififace", "blendswap", "uniface"],
@@ -2005,6 +2005,18 @@ def _apply_eye_restore_settings(payload):
         setattr(roop_globals, key, value)
 
 
+def _apply_enhancer_settings(payload):
+    """Enhancer alignment + the second colour pass, onto roop.globals.
+
+    Both are opt-in and both change pixels, so preview and run must agree —
+    same reason as the other helpers here.
+    """
+    for key, default in (("enhancer_align", False),
+                         ("color_match_after_enhance", False)):
+        fallback = getattr(roop_globals.CFG, key, default)
+        setattr(roop_globals, key, bool(payload.get(key, fallback)))
+
+
 def _apply_parser_region_settings(payload):
     """Push the Face Parser region selection onto roop.globals.
 
@@ -2057,6 +2069,7 @@ def preview(payload: dict = Body(...)):
     _apply_merger_settings(payload)
     _apply_eye_restore_settings(payload)
     _apply_parser_region_settings(payload)
+    _apply_enhancer_settings(payload)
 
     faces_list = []
     person_ids = []
@@ -2285,6 +2298,7 @@ def _run_swap(payload):
         _apply_merger_settings(payload)
         _apply_eye_restore_settings(payload)
         _apply_parser_region_settings(payload)
+        _apply_enhancer_settings(payload)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

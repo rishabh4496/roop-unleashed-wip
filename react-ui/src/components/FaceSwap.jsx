@@ -591,6 +591,8 @@ export default function FaceSwap({
       use_frontalization: activeParams.use_frontalization, frontalization_threshold: num(activeParams.frontalization_threshold, 30),
       jaw_reshape: activeParams.jaw_reshape, jaw_reshape_strength: num(activeParams.jaw_reshape_strength, 0.5),
       detail_transfer_strength: num(activeParams.detail_transfer_strength, 0),
+      enhancer_align: activeParams.enhancer_align,
+      color_match_after_enhance: activeParams.color_match_after_enhance,
       restore_original_eyes: activeParams.restore_original_eyes,
       eyes_blend_amount: num(activeParams.eyes_blend_amount, 1),
       eyes_feather_blend: num(activeParams.eyes_feather_blend, 25),
@@ -2249,16 +2251,35 @@ export default function FaceSwap({
                 <Slider label="Eyes height" info="Stretches the region vertically only. Raise it to include the brow line and lower lid; keep it low to avoid pulling the target's eyebrows back in." min={0.3} max={2} step={0.05} value={num(p.eyes_radius_y, 1)} onChange={(v) => set('eyes_radius_y', v)} />
               </>
             )}
-            {p.selected_enhancer && p.selected_enhancer.toLowerCase() === 'codeformer' && (
+            {/* startsWith, not ===: the fp16 tier is the same model at half
+                precision and takes the same fidelity input, so gating on an
+                exact name would have hidden the slider for it. */}
+            {p.selected_enhancer && p.selected_enhancer.toLowerCase().startsWith('codeformer') && (
               <Slider
                 label="CodeFormer fidelity weight"
-                info="Balances restoration quality vs original identity. 0.1 = maximum sharpness (may shift face geometry), 0.9 = maximum similarity to source (but less restoration detail)."
+                info="Balances restoration quality vs original identity. 0.1 = maximum sharpness (may shift face geometry), 0.9 = maximum similarity to source (but less restoration detail). Verified live against this export — many CodeFormer ONNX conversions bake the weight in as a constant and the slider silently does nothing; measured here, w=0 and w=1 differ by a mean of 0.20 in the model's -1..1 output range."
                 min={0.1}
                 max={0.9}
                 step={0.05}
                 value={num(p.codeformer_fidelity, 0.5)}
                 onChange={(v) => set('codeformer_fidelity', v)}
               />
+            )}
+            {p.selected_enhancer && p.selected_enhancer !== 'None' && (
+              <>
+                <Toggle
+                  label="Align crop for the enhancer"
+                  info="Re-crops the face into the alignment the RESTORER was trained on before enhancing, then puts it back. CodeFormer, GFPGAN, RestoreFormer++ and GPEN all learned their priors from FFHQ-aligned 512 faces — but the crop they are handed is whatever the SWAPPER's template produced, because the enhancer reuses the swap crop. Measured against ffhq_512 at 512px: the inswapper family is 0.856 scale and 22.1px mean landmark error (the face arrives ~17% larger than the prior expects and the eyes sit 31px too high), ghost/simswap 0.828 / 16.3px, blendswap's source template 0.744 / 30.7px, hififace 0.875 / 13.2px. Only uniface and blendswap already match exactly, and for those this does nothing. It matters most for CodeFormer, whose codebook lookup is a discrete nearest neighbour into a learned dictionary — an off-distribution input retrieves the wrong entries. Costs two extra 512 warps per face (~2ms), and those are two extra resampling passes, so A/B it: better prior match against slightly softer resampling. OFF keeps every render bit-identical to before."
+                  checked={!!p.enhancer_align}
+                  onChange={(v) => set('enhancer_align', v)}
+                />
+                <Toggle
+                  label="Re-match colour after enhancing"
+                  info="Runs the colour/lighting match a second time, on the enhancer's output. The first pass runs on the SWAP, before the restorer — and the restorers regrade what they are given, because they were trained to produce a plausible face rather than to preserve the plate's exposure. So some of the tone match is spent by the time the crop is pasted back. This does not replace the first pass: that one also feeds the enhancer a better-exposed input, which is worth keeping. Uses whichever colour mode is selected above. Cheap (one more transfer on a crop already in memory), but how much it changes depends entirely on how far your restorer moves the grade, so judge it on your own footage."
+                  checked={!!p.color_match_after_enhance}
+                  onChange={(v) => set('color_match_after_enhance', v)}
+                />
+              </>
             )}
           </Section>
 

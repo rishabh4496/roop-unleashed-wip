@@ -84,7 +84,7 @@ def _function_body(src, marker, from_index=0):
 # if a knob is ever removed). Both literal forms are accepted so a helper that
 # reads one key directly is not silently missed.
 SETTINGS_HELPERS = ("_apply_merger_settings", "_apply_eye_restore_settings",
-                    "_apply_parser_region_settings")
+                    "_apply_parser_region_settings", "_apply_enhancer_settings")
 
 
 def _helper_keys(name):

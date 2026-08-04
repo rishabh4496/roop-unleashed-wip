@@ -8,6 +8,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
+from roop.face_util import estimate_norm
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -345,6 +346,24 @@ def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
         face.landmark_3d_68 = lm3d
 
     return face
+
+
+def _invert_affine(M):
+    """Inverse of a 2x3 affine, as a 2x3."""
+    return cv2.invertAffineTransform(np.asarray(M, dtype=np.float64))
+
+
+def _compose_affine(A, B):
+    """The 2x3 affine that applies B and then A.
+
+    cv2 has no 2x3 matmul, and getting this wrong is silent: a composition in
+    the other order still produces a plausible-looking crop, just of the wrong
+    part of the face. Promoting both to 3x3, multiplying, and taking the top
+    two rows is the version that reads unambiguously.
+    """
+    A3 = np.vstack([np.asarray(A, dtype=np.float64), [0.0, 0.0, 1.0]])
+    B3 = np.vstack([np.asarray(B, dtype=np.float64), [0.0, 0.0, 1.0]])
+    return (A3 @ B3)[:2, :]
 
 
 class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin, TrackingMixin):
@@ -2739,8 +2758,51 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool
                 # (GFPGAN/GPEN/CodeFormer/DMDNet) must take the global lock, or
                 # concurrent threads corrupt/hang their single TensorRT context.
+                # ── Enhancer alignment ────────────────────────────────────────
+                # The restorers learned their priors on FFHQ-aligned 512 faces,
+                # but the crop they get is whatever the SWAPPER's template
+                # produced, because the enhancer reuses the swap crop. Off by
+                # ~17% in scale and 31 px in eye height for the inswapper
+                # family; see Enhance_CodeFormer.model_template for the table.
+                #
+                # A single affine takes the swap crop into the enhancer's own
+                # space and another brings the result back, so nothing
+                # downstream has to know: `enhanced_frame` stays registered to
+                # the swap crop at `scale_factor`, exactly as before.
+                #
+                # Opt-in, because two extra warps means two extra resampling
+                # passes, and whether the better-matched prior is worth that is
+                # a judgement to make on real footage rather than on paper.
+                _tmpl = getattr(p, 'model_template', None)
+                _realign = (roop.globals.enhancer_align and _tmpl
+                            and _tmpl != swap_template)
+                _A = None
+                enh_input = fake_frame
+                if _realign:
+                    try:
+                        _ss = fake_frame.shape[1]
+                        _M_e = estimate_norm(target_face.kps, _ss, mode=_tmpl)
+                        _A = _compose_affine(_M_e, _invert_affine(M))
+                        enh_input = cv2.warpAffine(fake_frame, _A, (_ss, _ss),
+                                                   borderMode=cv2.BORDER_REPLICATE)
+                    except Exception as e:
+                        bar_write(f"[ProcessMgr] enhancer re-align failed: {e}")
+                        _A, enh_input = None, fake_frame
+
                 with _prof('enhance'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):
-                    enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
+                    enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, enh_input)
+
+                if _A is not None and enhanced_frame is not None:
+                    # Back to swap-crop space. The enhancer may have returned a
+                    # larger buffer (scale_factor), and an affine expressed for
+                    # a k-times larger canvas is the same rotation/scale with a
+                    # k-times larger TRANSLATION — so scale only the last column.
+                    _B = cv2.invertAffineTransform(_A)
+                    _B[:, 2] *= float(scale_factor)
+                    enhanced_frame = cv2.warpAffine(
+                        enhanced_frame, _B,
+                        (enhanced_frame.shape[1], enhanced_frame.shape[0]),
+                        borderMode=cv2.BORDER_REPLICATE)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
         # enhanced_frame is registered to the canonical face template, so a
@@ -2804,6 +2866,27 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     fake_frame = self.apply_detail_transfer(fake_frame, aligned_img, _dt)
             except Exception as e:
                 bar_write(f"[ProcessMgr] Detail transfer failed: {e}")
+
+        # ── Colour match, again, after the restorer ───────────────────────────
+        # The colour transfer above runs on the SWAP, before the enhancer. The
+        # restorers then regrade what they are given — they were trained to
+        # produce a plausible face, not to preserve the plate's exposure — and
+        # nothing put the tone back, so the match the first pass established is
+        # partly spent by the time the crop is pasted.
+        #
+        # Opt-in and separate from the first pass rather than replacing it: the
+        # first one also feeds the enhancer a better-exposed input, which is
+        # worth keeping, and how much the restorer actually moves the grade
+        # depends on the footage.
+        if getattr(roop.globals, 'color_match_after_enhance', False) and enhanced_frame is not None:
+            try:
+                ref = aligned_img
+                if ref.shape[:2] != enhanced_frame.shape[:2]:
+                    ref = cv2.resize(ref, (enhanced_frame.shape[1], enhanced_frame.shape[0]),
+                                     interpolation=cv2.INTER_AREA)
+                enhanced_frame = self.apply_color_transfer(enhanced_frame, ref)
+            except Exception as e:
+                bar_write(f"[ProcessMgr] Post-enhance color match failed: {e}")
 
         # ── DFL merger post-ops ───────────────────────────────────────────────
         # Histogram match, sharpen/soften, motion blur, grain match, degrade —

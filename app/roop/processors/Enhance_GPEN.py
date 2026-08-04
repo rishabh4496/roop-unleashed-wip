@@ -73,6 +73,8 @@ class Enhance_GPEN():
 
     processorname = 'gpen'
     type = 'enhance'
+    # FFHQ-trained — see Enhance_CodeFormer.model_template.
+    model_template = 'ffhq_512'
 
     def __init__(self):
         self.model_size = 512

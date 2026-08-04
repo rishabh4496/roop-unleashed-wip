@@ -98,6 +98,8 @@ export const FACESWAP_DEFAULTS = {
   eyes_radius_y: 1,
   parser_regions: ['skin', 'brows', 'eyes', 'nose', 'mouth'],
   parser_region_grow: {},
+  enhancer_align: false,
+  color_match_after_enhance: false,
 
   // Output
   output_method: 'File',

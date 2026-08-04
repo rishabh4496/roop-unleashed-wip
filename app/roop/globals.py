@@ -86,6 +86,14 @@ eyes_radius_y = 1.0         # height only
 # of the 512x512 parse.
 parser_regions = None
 parser_region_grow = None
+# Re-warp the swap crop into the enhancer's own training alignment before
+# restoring, and back afterwards. See Enhance_CodeFormer.model_template for the
+# measured mismatch. Off = the crop is handed over as-is, which is what every
+# render before this did.
+enhancer_align = False
+# Run the colour transfer a SECOND time, on the enhancer's output — the first
+# pass runs before it and the restorer regrades what it is given.
+color_match_after_enhance = False
 # ── DeepFaceLab merger post-ops (roop/procmgr_merger.py) ─────────────────────
 # Cheap CPU passes over the merged crop, applied just before paste-back. Every
 # one is a bit-identical no-op at the value below, and the chain short-circuits
