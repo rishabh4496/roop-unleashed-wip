@@ -28,9 +28,10 @@ APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(os.path.dirname(APP), 'react-ui', 'src')
 
 BUTTON_OPEN = re.compile(r'<button\b')
+INPUT_OPEN = re.compile(r'<input\b')
 # A form control hidden with display:none is unreachable; `sr-only` is the
 # visually-hidden-but-focusable idiom and is what these must use instead.
-HIDDEN_INPUT = re.compile(r'<input\b(?:[^>]|\n)*?className="[^"]*\bhidden\b[^"]*"', re.S)
+HIDDEN_CLASS = re.compile(r'className="[^"]*\bhidden\b[^"]*"')
 
 
 def _jsx_files():
@@ -44,14 +45,15 @@ def _rel(path):
     return os.path.relpath(path, SRC).replace('\\', '/')
 
 
-def _buttons(src):
-    """Yield (line, attrs, body) for each <button>, splitting them correctly.
+def _tags(src, opener):
+    """Yield (line, attrs, end_index) for each JSX tag `opener` matches.
 
-    This was a regex — `<button\\b([^>]*?)>(.*?)</button>` — and it quietly got
-    the split wrong on the most common shape in this codebase: an inline arrow
-    handler. In `onClick={(e) => setX(1)}` the FIRST `>` belongs to the arrow,
-    not to the tag, so the attribute half was cut at `onClick={(e) =` and
-    everything after it, `aria-label` included, was treated as the button's
+    The attribute half of a JSX tag cannot be found by scanning to the first
+    `>`. This was a regex — `<button\\b([^>]*?)>(.*?)</button>` — and it quietly
+    got the split wrong on the most common shape in this codebase: an inline
+    arrow handler. In `onClick={(e) => setX(1)}` the FIRST `>` belongs to the
+    arrow, not to the tag, so the attribute half was cut at `onClick={(e) =`
+    and everything after it, `aria-label` included, was treated as the button's
     BODY. The name check then found the letters in `aria-label="Close"` sitting
     in the body text and concluded the button had a visible label, so 100+
     controls were passing for entirely the wrong reason.
@@ -60,12 +62,19 @@ def _buttons(src):
 
     Backticks count as a quote context, and that is not a detail: a template
     literal like `Copy part ${tab}'s log` contains an APOSTROPHE. Treating `'`
-    as a quote opener there desynchronises everything after it, and the button
-    is dropped from the scan entirely — silently exempting it from the check.
+    as a quote opener there desynchronises everything after it, and the tag is
+    dropped from the scan entirely — silently exempting it from the check.
     Opening a backtick context and running to its partner skips the apostrophe,
     and any `>` inside the string with it, which is also correct.
+
+    Shared by both checks below. It used to be inlined in the button scan while
+    the hidden-input scan kept a hand-written `(?:[^>]|\\n)*?` regex — which is
+    the naive form, with the identical arrow-function blind spot. It could not
+    see FileDrop's picker (`onChange={(e) => …}` sits before its className), so
+    the app's two primary upload zones were exempt from the one check that
+    would have caught them being keyboard-unreachable.
     """
-    for m in BUTTON_OPEN.finditer(src):
+    for m in opener.finditer(src):
         i, depth, quote = m.end(), 0, None
         while i < len(src):
             ch = src[i]
@@ -83,13 +92,18 @@ def _buttons(src):
             i += 1
         else:
             continue
-        attrs = src[m.end():i]
+        yield src[:m.start()].count('\n') + 1, src[m.end():i], i
+
+
+def _buttons(src):
+    """Yield (line, attrs, body) for each <button> that has a body."""
+    for line, attrs, i in _tags(src, BUTTON_OPEN):
         if src[i - 1] == '/':          # self-closing, so it has no body
             continue
         end = src.find('</button>', i)
         if end == -1:
             continue
-        yield src[:m.start()].count('\n') + 1, attrs, src[i + 1:end]
+        yield line, attrs, src[i + 1:end]
 
 
 # Text a `{…}` expression can be seen to render: any string literal inside it,
@@ -167,15 +181,22 @@ class FocusableControls(unittest.TestCase):
         here did — is hiding the input inside a bare <label>: a <label> is not a
         tab stop, so nothing focusable was left and the picker could not be
         opened from a keyboard at all.
+
+        FileDrop was the last one, and it survived because the scan could not
+        see it, not because it complied: its `onChange={(e) => …}` arrow ended
+        the old regex's attribute match before `className`. Since FileDrop is
+        both upload zones, and source faces have no other entry point, adding a
+        face was impossible without a mouse.
         """
         offenders = []
         for path in _jsx_files():
             with open(path, encoding='utf-8') as fh:
                 src = fh.read()
-            for m in HIDDEN_INPUT.finditer(src):
-                if 'ref=' in m.group(0):
+            for line, attrs, _i in _tags(src, INPUT_OPEN):
+                if not HIDDEN_CLASS.search(attrs):
                     continue
-                line = src[:m.start()].count('\n') + 1
+                if 'ref=' in attrs:
+                    continue
                 offenders.append(f'{_rel(path)}:{line}')
         self.assertEqual(offenders, [],
                          'these inputs use `hidden` (display:none), which removes '

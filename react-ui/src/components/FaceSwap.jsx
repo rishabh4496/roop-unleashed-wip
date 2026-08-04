@@ -102,6 +102,13 @@ export default function FaceSwap({
   const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
+  // Live {loaded, total, phase} from the XHR uploader, plus the controller that
+  // cancels it. A multi-GB target used to post with no progress at all — see
+  // api.js for why that could not be fixed without leaving fetch.
+  const [srcProgress, setSrcProgress] = useState(null);
+  const [tgtProgress, setTgtProgress] = useState(null);
+  const srcAbortRef = useRef(null);
+  const tgtAbortRef = useRef(null);
 
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
@@ -137,7 +144,7 @@ export default function FaceSwap({
 
   // Chime + optional OS notification on the processing -> idle edge.
   const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
-    processing: progress.processing, notify,
+    processing: progress.processing, error: progress.error, notify,
   });
 
   // Keeps the UI from competing with the render for the GPU while a job runs —
@@ -930,27 +937,44 @@ export default function FaceSwap({
   }, [progress.processing]);
 
   // ── source / target file handling ──
+  // A cancelled upload is an outcome, not a failure: the user asked for it, so
+  // it gets no red toast. Everything else still reports.
+  const reportUploadError = (err) => {
+    if (err?.name === 'AbortError') { notify('Upload cancelled', 'info'); return; }
+    notify(err.message, 'error');
+  };
+
   const onAddSource = async (files) => {
     if (!files || !files.length) return;
     const before = sourceFaces.length;
+    const ctrl = new AbortController();
+    srcAbortRef.current = ctrl;
     setUploadingSrc(true);
+    setSrcProgress(null);
     try {
-      const res = checkDesync(await postFiles('/api/source/add', files));
+      const res = checkDesync(await postFiles('/api/source/add', files, undefined, {
+        onProgress: setSrcProgress, signal: ctrl.signal,
+      }));
       setSourceFaces(res.source_faces);
       if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
       const added = res.source_faces.length - before;
       if (added > 0) notify(`Loaded ${added} face(s) — ${res.faceset_count} faceset(s) total`);
       else notify('No face detected in the uploaded file(s)', 'error');
-    } catch (err) { notify(err.message, 'error'); }
-    finally { setUploadingSrc(false); }
+    } catch (err) { reportUploadError(err); }
+    finally { setUploadingSrc(false); setSrcProgress(null); srcAbortRef.current = null; }
   };
 
   const onAddTarget = async (files) => {
     if (!files || !files.length) return;
+    const ctrl = new AbortController();
+    tgtAbortRef.current = ctrl;
     setUploadingTgt(true);
+    setTgtProgress(null);
     try {
       const beforeCount = targets.length;
-      const res = await postFiles('/api/target/add', files);
+      const res = await postFiles('/api/target/add', files, undefined, {
+        onProgress: setTgtProgress, signal: ctrl.signal,
+      });
       const newTargetsList = res.targets || [];
       setTargets(newTargetsList);
       setSelTarget(res.selected_target_index || 0);
@@ -972,8 +996,8 @@ export default function FaceSwap({
         })));
         notify(`Automatically queued ${newVideos.length} uploaded videos`, 'success');
       }
-    } catch (err) { notify(err.message, 'error'); }
-    finally { setUploadingTgt(false); }
+    } catch (err) { reportUploadError(err); }
+    finally { setUploadingTgt(false); setTgtProgress(null); tgtAbortRef.current = null; }
   };
 
   const removeTarget = async (i) => {
@@ -2176,7 +2200,8 @@ export default function FaceSwap({
           </Section>
 
           <Section title="Target file(s)">
-            <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here" />
+            <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here"
+                      progress={tgtProgress} onCancel={() => tgtAbortRef.current?.abort()} />
             {targets.length === 0 ? (
               <div className="h-24 flex items-center justify-center rounded-xl border border-dashed border-white/10 text-xs text-white/35 bg-black/10 select-none">No target media loaded</div>
             ) : (
@@ -2253,7 +2278,8 @@ export default function FaceSwap({
           </Section>
           
           <Section title="Source images / facesets">
-          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here" />
+          <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here"
+                    progress={srcProgress} onCancel={() => srcAbortRef.current?.abort()} />
           <FacesetLibrary
             canSave={sourceFaces.length > 0}
             onLoaded={(r) => { setSourceFaces(r.source_faces || []); if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info); }}

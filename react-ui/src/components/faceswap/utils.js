@@ -33,6 +33,34 @@ export const playChime = () => {
   } catch { /* audio not available */ }
 };
 
+// The counterpart for a run that did NOT finish: two descending notes on a
+// lower, duller waveform. It has to be audible from another room and instantly
+// distinguishable from the success chime without being listened to — the whole
+// job of these sounds is to be understood while you are looking elsewhere.
+export const playFailTone = () => {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const now = ctx.currentTime;
+    [415.30, 311.13].forEach((f, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'triangle';
+      o.frequency.value = f;
+      o.connect(g);
+      g.connect(ctx.destination);
+      const t = now + i * 0.19;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.11, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.42);
+      o.start(t);
+      o.stop(t + 0.44);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 1400);
+  } catch { /* audio not available */ }
+};
+
 export const notifyDesktop = (title, body) => {
   try {
     if (!('Notification' in window)) return;
