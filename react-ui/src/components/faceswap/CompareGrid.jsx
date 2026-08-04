@@ -1,4 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  clampPan, panAnchoredAt, panCenteringAt, transformFor, uiScale, wheelZoom,
+} from './zoomPan';
+
+const ZOOM_MAX = 8;
 
 /**
  * Generic side-by-side comparison grid with a single shared zoom/pan, used by
@@ -19,76 +24,169 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+  const [expanded, setExpanded] = useState(false);
   const containerRef = useRef(null);
+  const cellRef = useRef(null);          // first cell — the geometry pan is clamped against
 
+  // The wheel listener below is attached once and never re-bound, and a drag
+  // reads the pan it started from, so both need the live values rather than the
+  // ones captured when they were created.
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  useEffect(() => { panRef.current = pan; }, [pan]);
+
+  const reset = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
+
+  // Any change to what is being compared invalidates the framing — the old pan
+  // was chosen against a different image.
+  const itemKey = items.join('|');
+  useEffect(() => { reset(); }, [itemKey, reset]);
+
+  /** The cell the pointer is over, so wheel/double-click anchor to ITS centre. */
+  const stageUnder = (target) =>
+    (target?.closest?.('[data-cmp-cell]')) || cellRef.current || containerRef.current;
+
+  // Wheel zoom must be a NATIVE non-passive listener. React attaches `wheel` at
+  // the root as passive, so the preventDefault() this used to call from onWheel
+  // was a no-op: every notch zoomed the grid AND scrolled the page behind it.
   useEffect(() => {
-    const handleUp = () => setIsPanning(false);
-    window.addEventListener('mouseup', handleUp);
-    window.addEventListener('touchend', handleUp);
-    return () => {
-      window.removeEventListener('mouseup', handleUp);
-      window.removeEventListener('touchend', handleUp);
+    const el = containerRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      const next = wheelZoom(e.deltaY, zoomRef.current, ZOOM_MAX);
+      if (next === null) return;    // nothing left to zoom — let the page scroll
+      e.preventDefault();
+      const stage = stageUnder(e.target);
+      if (next === 1) { setZoom(1); setPan({ x: 0, y: 0 }); return; }
+      const p = panAnchoredAt({ x: e.clientX, y: e.clientY }, stage,
+                              zoomRef.current, next, panRef.current);
+      setZoom(next);
+      setPan(clampPan(p, next, stage));
     };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const zoomSpeed = 0.15;
-    const newZoom = Math.min(Math.max(1, zoom + (e.deltaY < 0 ? zoomSpeed : -zoomSpeed)), 8);
-    if (newZoom === 1) setPan({ x: 0, y: 0 });
-    setZoom(newZoom);
+  const zoomBy = useCallback((factor) => {
+    setZoom((z) => {
+      const nz = Math.min(Math.max(1, z * factor), ZOOM_MAX);
+      if (nz === 1) setPan({ x: 0, y: 0 });
+      else setPan((p) => clampPan(p, nz, cellRef.current));
+      return nz;
+    });
+  }, []);
+
+  // `+` / `-` are documented in the shortcuts HUD under "Compare & Zoom", but
+  // they were only ever implemented on InteractivePreview — which is precisely
+  // the component a comparison grid REPLACES, so in compare mode the documented
+  // keys did nothing.
+  //
+  // Bound on the grid ELEMENT (which is focusable, and takes focus on the first
+  // click or scroll), not on window. Every other keydown handler in this app is
+  // global, and InteractivePreview already owns bare `+`/`-` there — a second
+  // window listener for the same key does not override the first, it runs
+  // alongside it, so the two would double-step each other's zoom the moment
+  // both were ever mounted together. Scoping to the element also means the keys
+  // only act on the surface you are actually looking at.
+  const handleKeyDown = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;   // Ctrl +/- is the app zoom
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomBy(1.4); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomBy(1 / 1.4); }
+    else if (e.key === '0') { e.preventDefault(); reset(); }
   };
 
+  // Panning uses pointer CAPTURE, so a drag that leaves the grid — trivially
+  // easy once zoomed — keeps tracking instead of stopping dead at the border
+  // and needing a fresh grab.
+  const dragRef = useRef(null);
+
   const handlePointerDown = (e) => {
-    if (zoom > 1) {
-      setIsPanning(true);
-      setStartPan({ x: (e.clientX ?? e.touches?.[0]?.clientX) - pan.x, y: (e.clientY ?? e.touches?.[0]?.clientY) - pan.y });
-    }
+    containerRef.current?.focus?.({ preventScroll: true });   // arm the +/- keys
+    if (zoomRef.current <= 1 || e.button > 0) return;
+    const stage = stageUnder(e.target);
+    dragRef.current = {
+      stage,
+      scale: uiScale(stage),
+      ox: e.clientX,
+      oy: e.clientY,
+      pan: panRef.current,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setIsPanning(true);
   };
 
   const handlePointerMove = (e) => {
-    if (!isPanning || zoom <= 1) return;
-    const cx = e.clientX ?? e.touches?.[0]?.clientX;
-    const cy = e.clientY ?? e.touches?.[0]?.clientY;
-    setPan({ x: cx - startPan.x, y: cy - startPan.y });
+    const d = dragRef.current;
+    if (!d) return;
+    // Divide by the app zoom: clientX deltas are visual pixels, translate() is
+    // layout pixels, and without this the image lags or outruns the cursor by
+    // the app-zoom ratio at any setting other than 100%.
+    const next = {
+      x: d.pan.x + (e.clientX - d.ox) / d.scale,
+      y: d.pan.y + (e.clientY - d.oy) / d.scale,
+    };
+    setPan(clampPan(next, zoomRef.current, d.stage));
   };
 
-  // Double click toggles fit ↔ 2.5x centered near the clicked spot of that cell
+  const endPan = (e) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    setIsPanning(false);
+  };
+
+  // Double click toggles fit ↔ 2.5x centred on the clicked spot of that cell.
   const handleDoubleClick = (e) => {
-    if (zoom > 1) {
-      setZoom(1);
-      setPan({ x: 0, y: 0 });
-    } else {
-      setZoom(2.5);
-      const cell = e.currentTarget;
-      const rect = cell.getBoundingClientRect();
-      const clickX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
-      const clickY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
-      setPan({
-        x: (rect.width / 2 - clickX) * 1.5,
-        y: (rect.height / 2 - clickY) * 1.5
-      });
-    }
+    if (zoomRef.current > 1) { reset(); return; }
+    const z = 2.5;
+    setZoom(z);
+    setPan(panCenteringAt({ x: e.clientX, y: e.clientY }, stageUnder(e.target), z));
   };
 
-  const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
-  const transformStyle = { transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`, transformOrigin: 'center' };
+  const transformStyle = transformFor(zoom, pan);
+
+  // Layout. The grid used to be `aspect-video max-h-[45vh]`, which on a 2x2
+  // comparison left each variant about 200px tall — too small to judge the
+  // pixel-level differences the grid exists to show. Height is now driven by
+  // the ROW count (a 2x2 needs twice the box of a single row to give each cell
+  // the same size) and the rows are explicit `1fr`, since auto rows let a slow
+  // cell that is still rendering collapse to its spinner.
+  const cols = /grid-cols-1(?!\d)/.test(gridColsClass || '') ? 1 : 2;
+  const rows = Math.max(1, Math.ceil(Math.max(items.length, 1) / cols));
+  const height = useMemo(() => {
+    if (expanded) return rows > 1 ? 'min(88vh, 1240px)' : 'min(82vh, 920px)';
+    return rows > 1 ? 'clamp(420px, 74vh, 1000px)' : 'clamp(300px, 56vh, 720px)';
+  }, [expanded, rows]);
 
   return (
     <div
       ref={containerRef}
-      className={`relative grid ${gridColsClass} gap-3 aspect-video max-h-[45vh] rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2`}
-      onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
-      style={{ touchAction: 'none', cursor: zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'zoom-in' }}
+      className={`relative grid ${gridColsClass} gap-3 rounded-2xl overflow-hidden bg-black/45 border border-white/5 p-2 outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]/40`}
+      tabIndex={0}
+      role="group"
+      aria-label="Comparison grid — scroll to zoom all variants together"
+      onKeyDown={handleKeyDown}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={endPan}
+      onPointerCancel={endPan}
+      style={{
+        height,
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+        touchAction: 'none',
+        cursor: zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'zoom-in',
+      }}
     >
       {items.length === 0 && emptyHint && (
         <div className="col-span-full flex items-center justify-center text-xs text-white/40 font-semibold p-6 text-center">
           {emptyHint}
         </div>
       )}
-      {items.map((label) => (
-        <div key={label} className="relative rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center"
+      {items.map((label, i) => (
+        <div key={label} data-cmp-cell
+             ref={i === 0 ? cellRef : undefined}
+             className="relative min-h-0 min-w-0 rounded-xl overflow-hidden bg-black/50 border border-white/5 flex items-center justify-center"
              onDoubleClick={handleDoubleClick}>
           {previews[label] ? (
             <div className="w-full h-full flex items-center justify-center transition-transform duration-75 select-none" style={transformStyle}>
@@ -113,21 +211,33 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
           )}
         </div>
       ))}
-      {zoom > 1 && (
-        <button
-          type="button"
-          onClick={resetZoom}
-          className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur border border-white/10 text-mini font-bold text-white/80 hover:text-white hover:border-white/30 transition-all"
-          title="Reset zoom (or double-click)"
-        >
-          {zoom.toFixed(1)}× — Reset
-        </button>
-      )}
-      {zoom === 1 && items.length > 0 && (
-        <span className="absolute top-3 right-3 z-30 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-micro font-semibold text-white/40 pointer-events-none select-none">
-          Scroll or double-click to zoom all
-        </span>
-      )}
+      <div className="absolute top-3 right-3 z-30 flex items-center gap-1.5">
+        {zoom > 1 ? (
+          <button
+            type="button"
+            onClick={reset}
+            className="px-2.5 py-1 rounded-full bg-black/70 backdrop-blur border border-white/10 text-mini font-bold text-white/80 hover:text-white hover:border-white/30 transition-all"
+            title="Reset zoom (or double-click)"
+          >
+            {zoom.toFixed(1)}× — Reset
+          </button>
+        ) : items.length > 0 && (
+          <span className="px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-micro font-semibold text-white/40 pointer-events-none select-none">
+            Scroll or double-click to zoom all
+          </span>
+        )}
+        {items.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="px-2.5 py-1 rounded-full bg-black/70 backdrop-blur border border-white/10 text-mini font-bold text-white/70 hover:text-white hover:border-white/30 transition-all"
+            title={expanded ? 'Shrink the comparison box' : 'Expand the comparison box to fill the screen'}
+            aria-pressed={expanded}
+          >
+            {expanded ? 'Shrink' : 'Expand'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

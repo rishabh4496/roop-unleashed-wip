@@ -1,5 +1,8 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import AIScannerOverlay from './AIScannerOverlay';
+import {
+  clampPan, panAnchoredAt, panCenteringAt, transformFor, uiScale, wheelZoom,
+} from './zoomPan';
 
 // Cross-fades between src changes using TWO persistent <img> layers that are
 // never remounted.
@@ -171,21 +174,26 @@ export default function InteractivePreview({
     return () => cancelAnimationFrame(animId);
   }, [autoSwipeRuns]);
 
-  useEffect(() => {
-    const handleMouseUp = () => {
-      setIsDraggingSlider(false);
-      setIsPanning(false);
-      setIsPeekingOriginal(false);
-      setIsDrawingMask(false);
-      lastPtRef.current = null;   // next press starts a new stroke
-    };
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('touchend', handleMouseUp);
-    return () => {
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('touchend', handleMouseUp);
-    };
+  // Ends any drag — slider, pan, peek or brush stroke. Bound both on window
+  // (so a release anywhere lands) and on the stage as a pointer handler, since
+  // `mouseup`/`touchend` are compatibility events a pen never emits: with a
+  // stylus the stage stayed latched in panning mode after lifting off.
+  const endDrag = useCallback(() => {
+    setIsDraggingSlider(false);
+    setIsPanning(false);
+    setIsPeekingOriginal(false);
+    setIsDrawingMask(false);
+    lastPtRef.current = null;   // next press starts a new stroke
   }, []);
+
+  useEffect(() => {
+    window.addEventListener('mouseup', endDrag);
+    window.addEventListener('touchend', endDrag);
+    return () => {
+      window.removeEventListener('mouseup', endDrag);
+      window.removeEventListener('touchend', endDrag);
+    };
+  }, [endDrag]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
@@ -221,14 +229,10 @@ export default function InteractivePreview({
 
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
-        setZoom((z) => Math.min(z + 0.5, ZOOM_MAX));
-      } else if (e.key === '-') {
+        zoomBy(1.4);
+      } else if (e.key === '-' || e.key === '_') {
         e.preventDefault();
-        setZoom((z) => {
-          const nz = Math.max(1, z - 0.5);
-          if (nz === 1) setPan({ x: 0, y: 0 });
-          return nz;
-        });
+        zoomBy(1 / 1.4);
       } else if (e.key.toLowerCase() === 'g' && !splitMode) {
         setMagnifierActive((m) => !m);
       } else if (e.key.toLowerCase() === 'b' && !splitMode) {
@@ -247,17 +251,31 @@ export default function InteractivePreview({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [compare, compareMode, splitMode]);
 
+  // The wheel listener is bound once per compare/split layout but reads the
+  // live zoom/pan through refs. Reading them from the closure meant a fast
+  // wheel spin — which fires a burst of events well inside one React commit —
+  // computed every step from the same stale base, so most of the burst was
+  // thrown away and the zoom stuttered instead of accelerating.
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  useEffect(() => { panRef.current = pan; }, [pan]);
+
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el) return undefined;
     const onWheel = (e) => {
+      const next = wheelZoom(e.deltaY, zoomRef.current, ZOOM_MAX);
+      // At either end of the range the stage has nothing to do with this event,
+      // so it must NOT swallow it — otherwise scrolling the settings column
+      // stops dead the moment the pointer crosses the preview.
+      if (next === null) return;
       e.preventDefault();
-      const dir = e.deltaY < 0 ? 0.15 : -0.15;
-      setZoom((z) => {
-        const nz = Math.min(Math.max(1, z + dir), ZOOM_MAX);
-        if (nz === 1) setPan({ x: 0, y: 0 });
-        return nz;
-      });
+      if (next === 1) { setZoom(1); setPan({ x: 0, y: 0 }); return; }
+      const p = panAnchoredAt({ x: e.clientX, y: e.clientY }, el,
+                              zoomRef.current, next, panRef.current);
+      setZoom(next);
+      setPan(clampPan(p, next, el));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -271,10 +289,21 @@ export default function InteractivePreview({
     }
     if (zoom > 1 && !isDraggingSlider) {
       setIsPanning(true);
+      // `??`, not `||`: a grab exactly on the left/top edge gives clientX 0,
+      // which `||` treated as absent and fell through to a touches list that a
+      // pointer event does not have — landing NaN in the pan and blanking the
+      // stage.
       setStartPan({
-        x: (e.clientX || e.touches?.[0]?.clientX) - pan.x,
-        y: (e.clientY || e.touches?.[0]?.clientY) - pan.y,
+        x: e.clientX ?? e.touches?.[0]?.clientX,
+        y: e.clientY ?? e.touches?.[0]?.clientY,
+        panX: pan.x,
+        panY: pan.y,
+        // clientX deltas are VISUAL pixels (the app-level CSS zoom scales
+        // them); translate() is in layout pixels. Without dividing by this the
+        // image drifts away from the cursor at any app zoom but 100%.
+        scale: uiScale(containerRef.current),
       });
+      e.currentTarget.setPointerCapture?.(e.pointerId);
     }
   };
 
@@ -326,7 +355,11 @@ export default function InteractivePreview({
       if (isDraggingSlider) {
         handleSliderMove(p.cx, p.cy);
       } else if (isPanning && zoom > 1) {
-        setPan({ x: p.cx - startPan.x, y: p.cy - startPan.y });
+        const s = startPan.scale || 1;
+        setPan(clampPan({
+          x: startPan.panX + (p.cx - startPan.x) / s,
+          y: startPan.panY + (p.cy - startPan.y) / s,
+        }, zoom, containerRef.current));
       }
     });
   };
@@ -416,16 +449,12 @@ export default function InteractivePreview({
       setZoom(1);
       setPan({ x: 0, y: 0 });
     } else {
-      setZoom(2.5);
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const clickX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
-        const clickY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
-        setPan({
-          x: (rect.width / 2 - clickX) * 1.5,
-          y: (rect.height / 2 - clickY) * 1.5,
-        });
-      }
+      const z = 2.5;
+      setZoom(z);
+      setPan(panCenteringAt(
+        { x: e.clientX ?? e.touches?.[0]?.clientX, y: e.clientY ?? e.touches?.[0]?.clientY },
+        containerRef.current, z,
+      ));
     }
   };
 
@@ -467,8 +496,7 @@ export default function InteractivePreview({
 
   const interacting = isPanning || isDraggingSlider;
   const transformStyle = {
-    transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-    transformOrigin: 'center',
+    ...transformFor(zoom, pan),
     willChange: zoom > 1 || interacting ? 'transform' : 'auto',
   };
   const aspectStyle = { aspectRatio: imgDim ? `${imgDim.w}/${imgDim.h}` : '1', maxHeight: '100%', maxWidth: '100%', display: 'flex' };
@@ -486,16 +514,25 @@ export default function InteractivePreview({
   const isVideo = maxFrames > 1;
 
   const zoomToActual = () => {
-    const box = (imageRef.current || containerRef.current)?.getBoundingClientRect();
+    const el = imageRef.current || containerRef.current;
+    const box = el?.getBoundingClientRect();
     if (!box || !imgDim || !box.width) return;
-    setZoom(Math.min(Math.max(imgDim.w / box.width, 1), ZOOM_MAX));
+    // The rect ALREADY includes the current zoom (it is inside the transformed
+    // subtree) and the app-level CSS zoom, so both have to be divided back out
+    // — otherwise 1:1 landed at 1/zoom of actual size and pressing it twice
+    // gave two different answers.
+    const cssWidth = box.width / (uiScale(el) * zoom);
+    setZoom(Math.min(Math.max(imgDim.w / cssWidth, 1), ZOOM_MAX));
     setPan({ x: 0, y: 0 });
   };
 
-  const zoomBy = (d) =>
+  // Multiplicative, matching the wheel: the old additive ±0.5 needed 15 clicks
+  // to cross the range and moved 50% at 1x but 6% at 8x.
+  const zoomBy = (factor) =>
     setZoom((z) => {
-      const nz = Math.min(Math.max(1, z + d), ZOOM_MAX);
+      const nz = Math.min(Math.max(1, z * factor), ZOOM_MAX);
       if (nz === 1) setPan({ x: 0, y: 0 });
+      else setPan((p) => clampPan(p, nz, containerRef.current));
       return nz;
     });
 
@@ -505,7 +542,7 @@ export default function InteractivePreview({
       <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-70 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300 shadow-2xl border border-white/10">
         {/* View Zoom controls */}
         <button
-          onClick={() => zoomBy(-0.5)}
+          onClick={() => zoomBy(1 / 1.4)}
           disabled={zoom <= 1}
           className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
           title="Zoom out (−)"
@@ -526,7 +563,7 @@ export default function InteractivePreview({
           {zoom > 1 ? `${zoom.toFixed(1)}×` : 'FIT'}
         </button>
         <button
-          onClick={() => zoomBy(0.5)}
+          onClick={() => zoomBy(1.4)}
           disabled={zoom >= ZOOM_MAX}
           className="grid place-items-center h-7 w-7 rounded-lg hud-glass-button text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
           title="Zoom in (+)"
@@ -730,6 +767,8 @@ export default function InteractivePreview({
         }`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
         onDoubleClick={handleDoubleClick}
         style={{ touchAction: 'none' }}
       >
@@ -779,6 +818,8 @@ export default function InteractivePreview({
       ref={containerRef}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
       onDoubleClick={handleDoubleClick}
       style={{ touchAction: 'none' }}
     >

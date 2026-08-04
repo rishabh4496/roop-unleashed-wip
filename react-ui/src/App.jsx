@@ -245,6 +245,22 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [bumpZoom]);
 
+  // Ctrl/⌘ + wheel is the other half of the same gesture, and left alone it ran
+  // the BROWSER's page zoom instead — stacking on top of the CSS zoom above, so
+  // the UI scaled twice while the toolbar readout still claimed 100%, and
+  // Ctrl-0 only undid one of the two. Routing it here keeps one zoom, one
+  // number, one reset. Must be non-passive on window to be able to cancel the
+  // browser's own handling.
+  useEffect(() => {
+    const onWheel = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      bumpZoom(e.deltaY < 0 ? 0.05 : -0.05);
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, [bumpZoom]);
+
   // ── Theme resolution ─────────────────────────────────────────────────────
   // Declared above the command palette because that memo lists themes too.
   //
