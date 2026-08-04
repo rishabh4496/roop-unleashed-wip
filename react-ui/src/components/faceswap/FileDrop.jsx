@@ -23,8 +23,11 @@ const fmtEta = (s) => {
  * spinner into a real bar; leaving it undefined keeps the old behaviour, which
  * is what the callers that upload small files still do.
  */
-export default function FileDrop({ label, accept, multiple, onFiles, busy, hint, progress, onCancel }) {
+export default function FileDrop({ label, accept, multiple, onFiles, busy, hint, progress, onCancel, onPaths }) {
   const [drag, setDrag] = useState(false);
+  const [pathOpen, setPathOpen] = useState(false);
+  const [pathText, setPathText] = useState('');
+
   const onDrop = (e) => {
     e.preventDefault(); setDrag(false);
     // Mark the native event as consumed so App.jsx's global drop handler
@@ -32,7 +35,32 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
     // on top of a drop that this zone already handled).
     e.nativeEvent.roopConsumed = true;
     if (busy) return;
-    if (e.dataTransfer.files && e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+    const files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+
+    // The server is on 127.0.0.1, on this disk. If the runtime will tell us
+    // where the dropped file actually LIVES, hand over the path and skip the
+    // upload and its second copy in temp/ entirely. Pinokio's shell is
+    // Electron, which historically exposed File.path and now exposes it via
+    // webUtils.getPathForFile — try both, require ALL of them to resolve (a
+    // partial answer would silently drop files), and fall back to uploading.
+    if (onPaths) {
+      const getPath = window.webUtils?.getPathForFile;
+      const paths = Array.from(files)
+        .map((f) => { try { return f.path || getPath?.(f) || ''; } catch { return ''; } })
+        .filter(Boolean);
+      if (paths.length === files.length) { onPaths(paths); return; }
+    }
+    onFiles(files);
+  };
+
+  const submitPaths = () => {
+    // One per line, so pasting a column out of Explorer or a shell just works.
+    const list = pathText.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!list.length) return;
+    onPaths(list);
+    setPathText('');
+    setPathOpen(false);
   };
 
   // Rate and ETA are derived here rather than passed in, so the caller only has
@@ -61,6 +89,7 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
   const determinate = uploading && progress.total > 0;
 
   return (
+    <>
     <label
       onDragOver={(e) => { e.preventDefault(); if (!busy) setDrag(true); }}
       onDragLeave={() => setDrag(false)}
@@ -159,5 +188,55 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
         )}
       </motion.div>
     </label>
+
+    {/* Add by path. The whole upload exists only because the browser will not
+        say where a file is; when the user simply KNOWS the path, there is no
+        reason to move gigabytes across a loopback socket to a process that
+        could open it directly. Offered as a quiet second option rather than
+        replacing the drop zone, because most of the time dragging is easier. */}
+    {onPaths && !busy && (
+      <div className="mt-1.5">
+        {pathOpen ? (
+          <div className="space-y-1.5">
+            <textarea
+              autoFocus
+              rows={2}
+              value={pathText}
+              onChange={(e) => setPathText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitPaths(); }
+                if (e.key === 'Escape') { e.preventDefault(); setPathOpen(false); }
+                // Every shortcut in this app is a bare key on window, so an
+                // un-stopped keystroke here toggles the magnifier, sets a
+                // marker, or starts a render while you type a path.
+                e.stopPropagation();
+              }}
+              placeholder={'G:\\clips\\take01.mp4\nOne path per line'}
+              spellCheck={false}
+              aria-label="Media file paths, one per line"
+              className="w-full px-2.5 py-2 rounded-lg bg-black/40 border border-white/15 focus:border-[var(--accent)]/60 focus:outline-none text-mini font-mono text-white/85 placeholder:text-white/25 resize-y"
+            />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={submitPaths} disabled={!pathText.trim()}
+                      className="px-2.5 py-1 rounded-lg text-mini font-bold bg-[var(--accent)]/15 border border-[var(--accent)]/40 text-white hover:bg-[var(--accent)]/25 disabled:opacity-40 transition-colors">
+                Add without copying
+              </button>
+              <button type="button" onClick={() => { setPathOpen(false); setPathText(''); }}
+                      className="px-2.5 py-1 rounded-lg text-mini font-semibold text-white/50 hover:text-white border border-white/10 hover:border-white/25 transition-colors">
+                Cancel
+              </button>
+              <span className="text-micro text-white/30">Ctrl + Enter</span>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setPathOpen(true)}
+                  className="text-micro font-semibold text-white/35 hover:text-[var(--accent)] transition-colors"
+                  title="Reference a file already on this machine instead of uploading a copy of it">
+            or add by path — no copy, no wait
+          </button>
+        )}
+      </div>
+    )}
+    </>
   );
 }

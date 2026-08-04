@@ -7,6 +7,7 @@ import PersonGroups from './PersonGroups';
 import QualityReport from './QualityReport';
 import FileDrop from './faceswap/FileDrop';
 import CompareGrid from './faceswap/CompareGrid';
+import ParserRegions from './faceswap/ParserRegions';
 import InteractivePreview from './faceswap/InteractivePreview';
 import useQueue from './faceswap/useQueue';
 import QueuePanel from './faceswap/QueuePanel';
@@ -89,6 +90,10 @@ export default function FaceSwap({
   const [previewFaces, setPreviewFaces] = useState([]);
   const [previewPersonIds, setPreviewPersonIds] = useState([]);
   const [previewKps, setPreviewKps] = useState([]);
+  // (yaw, pitch, roll) per face, solved server-side by the SAME solve_pose_5pt
+  // the yaw_align crossfade and the non-frontal mask router gate on — see the
+  // preview endpoint for why it is not re-derived here.
+  const [previewPose, setPreviewPose] = useState([]);
   // Manual mask painted in the preview box (PNG data URL) + the face keypoints
   // it was painted against. maskVersion is a cheap token for the preview cache
   // key so the multi-KB data URL never has to be stringified per render.
@@ -486,6 +491,10 @@ export default function FaceSwap({
   // p = the swap parameters, seeded from CFG (settings) and patched locally.
   const p = settings || {};
   const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  // Several keys in ONE update. Two sequential set() calls each build off the
+  // same stale snapshot, so the second silently drops the first — which for
+  // the region panel would mean toggling a region also reverted its grow.
+  const setMany = (patch) => setSettings((s) => ({ ...s, ...patch }));
 
   // The knobs that actually decide a run's speed and look, shown alongside the
   // live diagnostics so a screenshot of a slow or wrong-looking run says what
@@ -582,6 +591,14 @@ export default function FaceSwap({
       use_frontalization: activeParams.use_frontalization, frontalization_threshold: num(activeParams.frontalization_threshold, 30),
       jaw_reshape: activeParams.jaw_reshape, jaw_reshape_strength: num(activeParams.jaw_reshape_strength, 0.5),
       detail_transfer_strength: num(activeParams.detail_transfer_strength, 0),
+      restore_original_eyes: activeParams.restore_original_eyes,
+      eyes_blend_amount: num(activeParams.eyes_blend_amount, 1),
+      eyes_feather_blend: num(activeParams.eyes_feather_blend, 25),
+      eyes_size_factor: num(activeParams.eyes_size_factor, 1),
+      eyes_radius_x: num(activeParams.eyes_radius_x, 1),
+      eyes_radius_y: num(activeParams.eyes_radius_y, 1),
+      parser_regions: activeParams.parser_regions,
+      parser_region_grow: activeParams.parser_region_grow,
       merger_hist_match: num(activeParams.merger_hist_match, 0),
       merger_sharpen: num(activeParams.merger_sharpen, 0),
       merger_motion_blur: num(activeParams.merger_motion_blur, 0),
@@ -728,6 +745,7 @@ export default function FaceSwap({
         setPreviewFaces(cached.faces);
         setPreviewPersonIds(cached.personIds || []);
         setPreviewKps(cached.kps || []);
+        setPreviewPose(cached.pose || []);
         setPreviewSrc(cached.image);
         setPreviewFor(`${idx}_${fr}`);
         return;
@@ -757,10 +775,11 @@ export default function FaceSwap({
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewPersonIds(res.person_ids || []);
       setPreviewKps(res.kps || []);
+      setPreviewPose(res.pose || []);
       setPreviewSrc(res.image || '');
       setPreviewFor(res.image ? `${idx}_${fr}` : '');
       if (res.image) {
-        setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], kps: res.kps || [], image: res.image });
+        setCachedPreview(idx, fr, { faces: res.faces || [], personIds: res.person_ids || [], kps: res.kps || [], pose: res.pose || [], image: res.image });
       }
     } catch (e) {
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
@@ -964,17 +983,10 @@ export default function FaceSwap({
     finally { setUploadingSrc(false); setSrcProgress(null); srcAbortRef.current = null; }
   };
 
-  const onAddTarget = async (files) => {
-    if (!files || !files.length) return;
-    const ctrl = new AbortController();
-    tgtAbortRef.current = ctrl;
-    setUploadingTgt(true);
-    setTgtProgress(null);
-    try {
-      const beforeCount = targets.length;
-      const res = await postFiles('/api/target/add', files, undefined, {
-        onProgress: setTgtProgress, signal: ctrl.signal,
-      });
+  // Everything that happens once the backend has accepted new targets, however
+  // they arrived — uploaded, or referenced by path. Shared so the two routes
+  // cannot drift on the auto-queue rule or the preview refresh.
+  const applyTargetAdd = async (res, beforeCount) => {
       const newTargetsList = res.targets || [];
       setTargets(newTargetsList);
       setSelTarget(res.selected_target_index || 0);
@@ -996,8 +1008,37 @@ export default function FaceSwap({
         })));
         notify(`Automatically queued ${newVideos.length} uploaded videos`, 'success');
       }
+  };
+
+  const onAddTarget = async (files) => {
+    if (!files || !files.length) return;
+    const ctrl = new AbortController();
+    tgtAbortRef.current = ctrl;
+    setUploadingTgt(true);
+    setTgtProgress(null);
+    try {
+      const beforeCount = targets.length;
+      await applyTargetAdd(await postFiles('/api/target/add', files, undefined, {
+        onProgress: setTgtProgress, signal: ctrl.signal,
+      }), beforeCount);
     } catch (err) { reportUploadError(err); }
     finally { setUploadingTgt(false); setTgtProgress(null); tgtAbortRef.current = null; }
+  };
+
+  // Targets that are already on this machine. No transfer and no second copy
+  // in temp/ — see /api/target/add_path for why that matters on a loopback app.
+  const onAddTargetPaths = async (paths) => {
+    if (!paths || !paths.length) return;
+    setUploadingTgt(true);
+    try {
+      const beforeCount = targets.length;
+      const res = await postJSON('/api/target/add_path', { paths });
+      // Report rejects individually: with several paths pasted at once, a
+      // silent drop looks like the app ignored the whole thing.
+      (res.rejected || []).forEach((r) => notify(`Skipped ${r.path} — ${r.why}`, 'error'));
+      if ((res.added || []).length) await applyTargetAdd(res, beforeCount);
+    } catch (err) { notify(err.message, 'error'); }
+    finally { setUploadingTgt(false); }
   };
 
   const removeTarget = async (i) => {
@@ -1971,6 +2012,13 @@ export default function FaceSwap({
 
         <Section title="Masking parameters" collapsible defaultOpen={false}>
           <Select label="Masking engine" info="Choose this one on quality, not speed — the models are all cheap and within a few ms of each other. Measured on an RTX 4070, TensorRT FP16, isolated: Face Parser 2.4ms, DFL XSeg 2.9ms, XSeg-3 4.7ms, Face Occluder 5.0ms, MobileSAM 5.8ms+decoder, FastSAM 5.8ms. The whole spread is ~3ms against a masking stage that costs ~42ms per face, because almost all of that stage is the CPU work around the model — the landmark hull, the mouth mask, the blurs and the non-frontal unwarp — not the model itself. So switching engines to go faster will not work; switch when one of them handles YOUR occlusions better. SAM2 (tracked) is not comparable here: it runs a whole-clip pre-pass instead of per-crop inference." value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
+          {String(p.mask_engine || '').startsWith('Face Parser') && (
+            <ParserRegions
+              regions={p.parser_regions}
+              grow={p.parser_region_grow}
+              onChange={({ regions, grow }) => setMany({ parser_regions: regions, parser_region_grow: grow })}
+            />
+          )}
           {p.mask_engine === 'Clip2Seg' && (
             <TextInput label="Objects to mask & restore" value={p.mask_clip_text} onChange={(v) => set('mask_clip_text', v)} placeholder="cup,hands,hair" />
           )}
@@ -2186,6 +2234,21 @@ export default function FaceSwap({
               </>
             )}
             <Toggle label="Restore original mouth area" checked={!!p.restore_original_mouth} onChange={(v) => set('restore_original_mouth', v)} />
+            <Toggle
+              label="Restore original eyes"
+              info="Brings the TARGET's own eyes back over the swap. Every identity swapper here works from a 112–128px aligned crop, so the eyes — the smallest high-frequency detail in a face, and the first thing a viewer looks at — come back soft, with the gaze nudged toward wherever the source person was looking. This keeps the plate's gaze direction, catchlights and eyelash detail while everything else stays swapped. Built from the two eye keypoints, not the 106-point landmarks the mouth restore uses, so it works on every detector engine. It fades out past 25° of yaw or pitch and switches off at a true profile, because there the far eye is edge-on and the near one sits over the nose bridge — pasting the plate there doubles the socket. Costs one ellipse and a blur, so it is effectively free. Note that it undoes the swapper's eye SHAPE too, which is part of the identity: if the two people's eyes differ a lot, back the amount off rather than running it at 1."
+              checked={!!p.restore_original_eyes}
+              onChange={(v) => set('restore_original_eyes', v)}
+            />
+            {p.restore_original_eyes && (
+              <>
+                <Slider label="Eyes blend amount" info="How much of the original eyes comes back. 1 = fully the plate's eyes, 0.5 = half-way, which keeps some of the swapped eye shape while recovering the sharpness." min={0} max={1} step={0.05} value={num(p.eyes_blend_amount, 1)} onChange={(v) => set('eyes_blend_amount', v)} />
+                <Slider label="Eyes feather" info="Edge softness, as a percentage of the eye radius rather than a pixel count — a 15px feather is most of a distant face's eye and a hairline on a close-up, so a pixel value would need retuning every shot. Raise it if you can see where the restore stops." min={0} max={100} step={1} value={num(p.eyes_feather_blend, 25)} onChange={(v) => set('eyes_feather_blend', v)} />
+                <Slider label="Eyes region size" info="Scales both ellipses together. The default covers the eye and lashes; raise it to take in the lid and socket, lower it to restore the iris alone." min={0.3} max={2} step={0.05} value={num(p.eyes_size_factor, 1)} onChange={(v) => set('eyes_size_factor', v)} />
+                <Slider label="Eyes width" info="Stretches the region horizontally only — useful for wide or almond eyes where the default ellipse clips the outer corner." min={0.3} max={2} step={0.05} value={num(p.eyes_radius_x, 1)} onChange={(v) => set('eyes_radius_x', v)} />
+                <Slider label="Eyes height" info="Stretches the region vertically only. Raise it to include the brow line and lower lid; keep it low to avoid pulling the target's eyebrows back in." min={0.3} max={2} step={0.05} value={num(p.eyes_radius_y, 1)} onChange={(v) => set('eyes_radius_y', v)} />
+              </>
+            )}
             {p.selected_enhancer && p.selected_enhancer.toLowerCase() === 'codeformer' && (
               <Slider
                 label="CodeFormer fidelity weight"
@@ -2201,7 +2264,8 @@ export default function FaceSwap({
 
           <Section title="Target file(s)">
             <FileDrop accept="image/*,video/*,.webp" multiple label="Add target media" onFiles={onAddTarget} busy={uploadingTgt} hint="drop images or videos here"
-                      progress={tgtProgress} onCancel={() => tgtAbortRef.current?.abort()} />
+                      progress={tgtProgress} onCancel={() => tgtAbortRef.current?.abort()}
+                      onPaths={onAddTargetPaths} />
             {targets.length === 0 ? (
               <div className="h-24 flex items-center justify-center rounded-xl border border-dashed border-white/10 text-xs text-white/35 bg-black/10 select-none">No target media loaded</div>
             ) : (
@@ -2869,6 +2933,8 @@ export default function FaceSwap({
                     onMaskChange={applyManualMask}
                     maskApplied={!!manualMask}
                     faces={previewFaces}
+                    kps={previewKps}
+                    pose={previewPose}
                     personIds={previewPersonIds}
                     onSelectPerson={addPersonFromBox}
                     splitView={splitView}
@@ -3185,6 +3251,7 @@ export default function FaceSwap({
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Preview Tools</h4>
                 <div className="flex items-center justify-between"><span className="text-white/60">Magnifier lens</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">G</kbd></div>
                 <div className="flex items-center justify-between"><span className="text-white/60">Mask brush</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">B</kbd></div>
+                <div className="flex items-center justify-between"><span className="text-white/60">Keypoints &amp; pose</span> <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs font-mono text-white">D</kbd></div>
               </div>
               <div className="space-y-2.5">
                 <h4 className="font-bold text-[var(--accent)] text-xs uppercase tracking-wider">Queue & Process</h4>

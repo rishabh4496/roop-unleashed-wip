@@ -70,6 +70,22 @@ jaw_reshape_strength = 0.5
 # Skin detail transfer: inject the original footage's high-frequency texture
 # (pores, grain) onto the swapped/enhanced face. 0 = off (no-op), 0..1 = amount.
 detail_transfer_strength = 0.0
+# Eye restore: composite the TARGET's own eyes back over the swapped result.
+# See ProcessMgr.apply_eyes_area. Radii are fractions of interocular distance;
+# feather is a percentage of the eye radius, so none of these need a per-clip
+# retune as the face changes size on screen.
+restore_original_eyes = False
+eyes_blend_amount = 1.0     # 0..1 how much of the plate's eyes comes back
+eyes_feather_blend = 25.0   # 0..100 edge softness, % of the eye radius
+eyes_size_factor = 1.0      # overall scale of both ellipses
+eyes_radius_x = 1.0         # width only
+eyes_radius_y = 1.0         # height only
+# Face Parser mask regions — see roop/processors/Mask_FaceParser.py.
+# None means "the default set", which is the inner face; a list of group names
+# overrides it. parser_region_grow dilates a group before the union, in pixels
+# of the 512x512 parse.
+parser_regions = None
+parser_region_grow = None
 # ── DeepFaceLab merger post-ops (roop/procmgr_merger.py) ─────────────────────
 # Cheap CPU passes over the merged crop, applied just before paste-back. Every
 # one is a bit-identical no-op at the value below, and the chain short-circuits

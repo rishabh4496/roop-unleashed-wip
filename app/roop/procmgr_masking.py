@@ -562,6 +562,103 @@ class MaskingMixin:
             mouth_mask_points = mouth_points - np.array([min_x, min_y], dtype=np.int32)
         return mouth_cutout, (min_x, min_y, max_x, max_y), mouth_mask_points
 
+    def apply_eyes_area(self, frame, original, face, strength=1.0, feather=25.0,
+                        size=1.0, rx=1.0, ry=1.0, yaw=0.0, pitch=0.0):
+        """Composite the TARGET's own eyes back over the swapped result.
+
+        The counterpart to `restore_original_mouth`, and arguably the more
+        useful of the two: every identity swapper in this app works from a
+        112-128px aligned crop, so the eyes — the smallest high-frequency
+        detail in a face and the first thing a viewer looks at — come back
+        soft, with the gaze subtly redirected toward wherever the source was
+        looking. Bringing the plate's own eyes back keeps the target's gaze and
+        catchlights while the rest of the face stays swapped.
+
+        Built on the 5 arcface keypoints rather than the 106-point landmarks
+        the mouth uses. kps[0]/kps[1] are the eye centres, they are present for
+        EVERY detector engine in this app, and they are what the alignment
+        itself is fitted to — whereas landmark_2d_106 is optional (it is absent
+        unless the 106 model ran) and its index ranges differ between packs. An
+        ellipse about a known centre is also the right primitive here: an eye
+        is not a polygon anyone needs to trace, and VisoMaster's equivalent
+        control is an ellipse for the same reason.
+
+        Radii are expressed as fractions of the INTEROCULAR distance, so the
+        region tracks the face's size on screen without a per-clip retune.
+        """
+        kps = getattr(face, 'kps', None)
+        if kps is None or len(kps) < 2 or strength <= 0:
+            return frame
+        try:
+            eyes = np.asarray(kps, dtype=np.float32)[:2]
+            d = float(np.linalg.norm(eyes[1] - eyes[0]))
+            if d < 2.0:
+                # Eye separation has collapsed — a true profile. There is no
+                # second eye to restore and the first is a sliver; anything
+                # pasted here lands on the side of the nose.
+                return frame
+
+            # An eye spans roughly 0.42x the interocular distance across and
+            # 0.26x tall, measured on the project's reference head. Halved to
+            # radii, then scaled by the user's factors.
+            base_x = d * 0.21 * size * rx
+            base_y = d * 0.13 * size * ry
+            if base_x < 1 or base_y < 1:
+                return frame
+
+            h, w = frame.shape[:2]
+            pad = int(max(base_x, base_y) + feather + 4)
+            min_x = max(0, int(min(eyes[:, 0]) - base_x) - pad)
+            max_x = min(w, int(max(eyes[:, 0]) + base_x) + pad)
+            min_y = max(0, int(min(eyes[:, 1]) - base_y) - pad)
+            max_y = min(h, int(max(eyes[:, 1]) + base_y) + pad)
+            if max_x - min_x < 4 or max_y - min_y < 4:
+                return frame
+
+            mask = np.zeros((max_y - min_y, max_x - min_x), dtype=np.float32)
+            for (ex, ey) in eyes:
+                cv2.ellipse(mask, (int(ex - min_x), int(ey - min_y)),
+                            (int(base_x), int(base_y)), 0, 0, 360, 1.0, -1)
+
+            # Feather is given as a fraction of the eye radius, not in pixels:
+            # a 15px softening is most of a distant face's eye and a hairline on
+            # a close-up, so a pixel value would need retuning per shot.
+            fk = int(max(base_x, base_y) * (feather / 100.0))
+            fk = max(1, min(fk, 99))
+            mask = cv2.GaussianBlur(mask, (fk * 2 + 1, fk * 2 + 1), 0)
+
+            # Same fade the mouth restore uses, for the same reason: past ~25°
+            # the far eye is foreshortened to an edge and the near one sits over
+            # the nose bridge, so pasting the plate there doubles the socket.
+            max_angle = max(abs(yaw), abs(pitch))
+            if max_angle > 25.0:
+                mask *= max(0.0, min(1.0, (38.0 - max_angle) / 13.0))
+
+            mask *= float(strength)
+            if mask.max() <= 0:
+                return frame
+
+            roi = frame[min_y:max_y, min_x:max_x]
+            plate = original[min_y:max_y, min_x:max_x]
+            if plate.shape != roi.shape:
+                return frame
+            # Match the swapped skin's colour before blending, or a restored eye
+            # reads as a patch of the original grade on a regraded face — the
+            # enhancer and any colour transfer have already moved the result.
+            plate = self.apply_color_transfer(plate, roi)
+
+            m = mask[:, :, np.newaxis]
+            frame[min_y:max_y, min_x:max_x] = (plate * m + roi * (1 - m)).astype(np.uint8)
+
+            if self.options.show_face_area_overlay:
+                blue = np.zeros_like(frame[min_y:max_y, min_x:max_x])
+                blue[:, :, 0] = 255      # BGR blue, distinct from the mouth's red
+                frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(
+                    frame[min_y:max_y, min_x:max_x], 0.5, blue, 0.5, 0)
+        except Exception as e:
+            print(f'Error in apply_eyes_area: {e}')
+        return frame
+
     def create_feathered_mask(self, shape, feather_amount=30):
         mask = np.zeros(shape[:2], dtype=np.float32)
         center = (shape[1] // 2, shape[0] // 2)

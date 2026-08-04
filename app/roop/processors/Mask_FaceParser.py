@@ -21,10 +21,81 @@ from roop import session_pool
 # blob at those boundaries; XSeg, however, is trained for arbitrary occluders
 # (hands) which this model has no class for — hence offered as a separate engine.
 _FACE_CLASSES = np.array([1, 2, 3, 4, 5, 10, 11, 12, 13], dtype=np.int64)
+
+# The 19 classes, grouped the way a person thinks about a face rather than the
+# way CelebAMask-HQ numbers them: nobody wants to decide about `l_brow` and
+# `r_brow` separately, and a mask that included one brow and not the other
+# would be a bug in every case. Each group is include/exclude plus a GROW in
+# pixels — grow is what makes the control useful rather than merely present,
+# because the model's boundaries are tight and a swap that stops exactly at
+# the parsed hairline still shows a seam.
+#
+# The default set is exactly _FACE_CLASSES, so an untouched install produces
+# the same mask it always did, down to the bit (see _region_mask below).
+PARSER_REGIONS = {
+    'skin':   [1],
+    'brows':  [2, 3],
+    'eyes':   [4, 5],
+    'nose':   [10],
+    'mouth':  [11, 12, 13],
+    'glasses': [6],
+    'ears':   [7, 8, 9],
+    'neck':   [14, 15],
+    'hair':   [17],
+    'hat':    [18],
+    'cloth':  [16],
+}
+PARSER_DEFAULT_ON = ('skin', 'brows', 'eyes', 'nose', 'mouth')
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 _MODEL_URL = 'https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx'
 _MODEL_FILE = 'resnet18.onnx'
+
+
+def parser_region_settings():
+    """(included group names, {group: grow px}) from roop.globals.
+
+    Read per call rather than cached: the settings are pushed onto globals by
+    the request that is running, and a preview and a render can disagree
+    within one process.
+    """
+    on = getattr(roop.globals, 'parser_regions', None)
+    if not isinstance(on, (list, tuple, set)) or not on:
+        on = PARSER_DEFAULT_ON
+    on = tuple(g for g in on if g in PARSER_REGIONS)
+    grow = getattr(roop.globals, 'parser_region_grow', None)
+    grow = grow if isinstance(grow, dict) else {}
+    return (on or PARSER_DEFAULT_ON), grow
+
+
+def _region_mask(labels):
+    """Binary swap region from the (512,512) class-id map.
+
+    The fast path is the one that matters: with the default groups and no
+    grow, this is `np.isin(labels, _FACE_CLASSES)` — the exact expression this
+    used to be — so nobody who never opens the region panel pays for it or
+    gets a different mask than they did before.
+
+    Growing is per GROUP, dilated separately before the union. Dilating the
+    union instead would be cheaper and wrong: it would push the outer boundary
+    of the whole face outward whichever group you meant to grow, so asking for
+    a little more mouth would also swallow a ring of background.
+    """
+    on, grow = parser_region_settings()
+    ids = sorted({c for g in on for c in PARSER_REGIONS[g]})
+    active_grow = {g: int(grow.get(g) or 0) for g in on}
+    if not any(v > 0 for v in active_grow.values()):
+        return np.isin(labels, np.asarray(ids, dtype=np.int64)).astype(np.float32)
+
+    out = np.zeros(labels.shape, dtype=np.uint8)
+    for g in on:
+        part = np.isin(labels, np.asarray(PARSER_REGIONS[g], dtype=np.int64))
+        px = active_grow[g]
+        if px > 0:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (px * 2 + 1, px * 2 + 1))
+            part = cv2.dilate(part.astype(np.uint8), k, iterations=1)
+        out |= part.astype(np.uint8)
+    return out.astype(np.float32)
 
 
 class Mask_FaceParser():
@@ -87,7 +158,7 @@ class Mask_FaceParser():
         else:
             ort_outs = self.model.run([self.output_name], {self.input_name: blob})
         labels = ort_outs[0][0].argmax(0)                          # (512,512) class ids
-        face = np.isin(labels, _FACE_CLASSES).astype(np.float32)   # 1 inside swap region
+        face = _region_mask(labels)                                # 1 inside swap region
         # Soften edges so the blend matches the smooth XSeg output.
         face = cv2.GaussianBlur(face, (0, 0), sigmaX=3)
         face = np.clip(face, 0.0, 1.0)

@@ -90,6 +90,14 @@ export const FACESWAP_DEFAULTS = {
   stabilize_min_cutoff: 0.05,
   stabilize_beta: 0.02,
   restore_original_mouth: false,
+  restore_original_eyes: false,
+  eyes_blend_amount: 1,
+  eyes_feather_blend: 25,
+  eyes_size_factor: 1,
+  eyes_radius_x: 1,
+  eyes_radius_y: 1,
+  parser_regions: ['skin', 'brows', 'eyes', 'nose', 'mouth'],
+  parser_region_grow: {},
 
   // Output
   output_method: 'File',

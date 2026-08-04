@@ -208,6 +208,16 @@ class Settings:
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
         # Skin detail transfer strength (high-frequency texture from footage)
         self.detail_transfer_strength = self.default_get(data, 'detail_transfer_strength', 0.0)
+        # Eye restore — the counterpart to restore_original_mouth
+        self.restore_original_eyes = self.default_get(data, 'restore_original_eyes', False)
+        self.eyes_blend_amount = self.default_get(data, 'eyes_blend_amount', 1.0)
+        self.eyes_feather_blend = self.default_get(data, 'eyes_feather_blend', 25.0)
+        self.eyes_size_factor = self.default_get(data, 'eyes_size_factor', 1.0)
+        self.eyes_radius_x = self.default_get(data, 'eyes_radius_x', 1.0)
+        self.eyes_radius_y = self.default_get(data, 'eyes_radius_y', 1.0)
+        # Face Parser regions — which parsed parts count as the swap region
+        self.parser_regions = self.default_get(data, 'parser_regions', ['skin', 'brows', 'eyes', 'nose', 'mouth'])
+        self.parser_region_grow = self.default_get(data, 'parser_region_grow', {})
         # DeepFaceLab merger post-ops — see roop/procmgr_merger.py. All neutral
         # by default; each is a bit-identical no-op at 0.
         self.merger_hist_match = self.default_get(data, 'merger_hist_match', 0.0)
@@ -342,6 +352,14 @@ class Settings:
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,
+            'restore_original_eyes': self.restore_original_eyes,
+            'eyes_blend_amount': self.eyes_blend_amount,
+            'eyes_feather_blend': self.eyes_feather_blend,
+            'eyes_size_factor': self.eyes_size_factor,
+            'eyes_radius_x': self.eyes_radius_x,
+            'eyes_radius_y': self.eyes_radius_y,
+            'parser_regions': self.parser_regions,
+            'parser_region_grow': self.parser_region_grow,
             'merger_hist_match': self.merger_hist_match,
             'merger_sharpen': self.merger_sharpen,
             'merger_motion_blur': self.merger_motion_blur,

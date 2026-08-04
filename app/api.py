@@ -780,6 +780,58 @@ def source_refresh_thumbs():
 
 
 # ── Target media ─────────────────────────────────────────────────────────────
+_MEDIA_EXTS = {
+    '.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.wmv',
+    '.gif', '.webp', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff',
+}
+
+
+@app.post("/api/target/add_path")
+def target_add_path(payload: dict = Body(...)):
+    """Add targets that are ALREADY on this machine, by path — no upload.
+
+    The server runs on 127.0.0.1, on the same disk as the media. Posting a
+    4 GB video to it over HTTP and then writing a second 4 GB copy into
+    temp/ (which is what /api/target/add does, via _save_upload) is pure
+    waste: it costs minutes of transfer and doubles the disk footprint of
+    every clip, to arrive at a file the process could simply have opened.
+
+    Referencing the original also means the file is not silently duplicated
+    when you re-add it later, and the run history's target name is the real
+    one rather than a temp copy.
+
+    Paths are taken as given. That is the same trust model the app already
+    operates under — /api/file serves an arbitrary path and /api/reveal opens
+    one — and it is bounded by the server being loopback-only. The checks
+    below are for MISTAKES, not for an attacker: a directory, a typo, or a
+    .txt would otherwise be appended and fail much later, mid-render.
+    """
+    raw = payload.get("paths") or []
+    if isinstance(raw, str):
+        raw = [raw]
+
+    first_new = len(list_files_process)
+    added, rejected = [], []
+    for p in raw:
+        path = os.path.abspath(os.path.expanduser(str(p).strip().strip('"')))
+        if not os.path.isfile(path):
+            rejected.append({"path": p, "why": "not a file on this machine"})
+            continue
+        if os.path.splitext(path)[1].lower() not in _MEDIA_EXTS:
+            rejected.append({"path": p, "why": "not a supported image or video"})
+            continue
+        list_files_process.append(ProcessEntry(path, 0, 0, 0))
+        added.append(path)
+
+    for i in range(first_new, len(list_files_process)):
+        _refresh_target_frames(i)
+    state.selected_target_index = first_new if first_new < len(list_files_process) else 0
+    out = _target_list_payload()
+    out["added"] = added
+    out["rejected"] = rejected
+    return out
+
+
 @app.post("/api/target/add")
 def target_add(files: list[UploadFile] = File(...)):
     first_new = len(list_files_process)
@@ -1908,6 +1960,38 @@ def _apply_merger_settings(payload):
         setattr(roop_globals, key, value)
 
 
+def _apply_eye_restore_settings(payload):
+    """Push the eye-restore knobs from a request onto roop.globals.
+
+    Same reasoning as _apply_merger_settings: /api/preview and /api/swap must
+    apply them identically or the preview stops predicting the render. Kept off
+    the ProcessOptions constructor that `restore_original_mouth` goes through,
+    because that parameter is positional all the way down through
+    core.batch_process_regular and the frozen Gradio tab.
+    """
+    fallback = getattr(roop_globals.CFG, "restore_original_eyes", False)
+    roop_globals.restore_original_eyes = bool(payload.get("restore_original_eyes", fallback))
+    for key, default in (("eyes_blend_amount", 1.0),
+                         ("eyes_feather_blend", 25.0),
+                         ("eyes_size_factor", 1.0),
+                         ("eyes_radius_x", 1.0),
+                         ("eyes_radius_y", 1.0)):
+        fb = getattr(roop_globals.CFG, key, default)
+        try:
+            value = float(payload.get(key, fb))
+        except (TypeError, ValueError):
+            value = default
+        setattr(roop_globals, key, value)
+
+    # Face Parser mask regions. Not numbers, so they sit outside the loop
+    # above: a list of group names and a {group: grow_px} map. Kept in this
+    # helper anyway so preview and run cannot apply different masks.
+    regions = payload.get("parser_regions", getattr(roop_globals.CFG, "parser_regions", None))
+    roop_globals.parser_regions = list(regions) if isinstance(regions, (list, tuple)) else None
+    grow = payload.get("parser_region_grow", getattr(roop_globals.CFG, "parser_region_grow", None))
+    roop_globals.parser_region_grow = dict(grow) if isinstance(grow, dict) else None
+
+
 # ── Live preview swap ────────────────────────────────────────────────────────
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
@@ -1944,12 +2028,14 @@ def preview(payload: dict = Body(...)):
     roop_globals.rescue_small_faces = bool(payload.get("rescue_small_faces", getattr(roop_globals.CFG, "rescue_small_faces", False)))
     roop_globals.detector_engine = payload.get("detector_engine", getattr(roop_globals.CFG, "detector_engine", "scrfd"))
     _apply_merger_settings(payload)
+    _apply_eye_restore_settings(payload)
 
     faces_list = []
     person_ids = []
     kps_list = []
+    pose_list = []
     try:
-        from roop.face_util import get_all_faces
+        from roop.face_util import get_all_faces, solve_pose_5pt
         faces = get_all_faces(current_frame)
         if faces:
             for f in faces:
@@ -1958,13 +2044,24 @@ def preview(payload: dict = Body(...)):
                 # 5-point keypoints, so a mask painted in frame space can carry
                 # ref_kps and be warped into the aligned face crop.
                 k = f.get("kps") if isinstance(f, dict) else getattr(f, "kps", None)
-                kps_list.append(np.asarray(k).astype(float).tolist() if k is not None else None)
+                kps = np.asarray(k).astype(float).tolist() if k is not None else None
+                kps_list.append(kps)
+                # Head pose for the debug overlay.
+                #
+                # Solved HERE rather than in the browser on purpose. The whole
+                # value of showing an angle is that it is the same number the
+                # pipeline gates on — the yaw_align crossfade, the non-frontal
+                # mask router, the angle-bank intake. A second implementation in
+                # JS would drift from this one and quietly become a liar, which
+                # is worse than showing nothing.
+                pose = solve_pose_5pt(k) if k is not None else None
+                pose_list.append([round(float(v), 1) for v in pose] if pose is not None else None)
             person_ids = _preview_person_ids(idx, faces)
     except Exception:
         pass
 
     if not fake or len(roop_globals.INPUT_FACESETS) < 1:
-        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "pose": pose_list}
 
     try:
         from roop.core import live_swap, get_processing_plugins
@@ -2014,11 +2111,11 @@ def preview(payload: dict = Body(...)):
 
         swapped = live_swap(current_frame, options, input_facesets=mapped)
         if swapped is None:
-            return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
-        return {"image": _bgr_to_preview_dataurl(swapped), "faces": faces_list, "person_ids": person_ids, "kps": kps_list}
+            return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "pose": pose_list}
+        return {"image": _bgr_to_preview_dataurl(swapped), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "pose": pose_list}
     except Exception:
         traceback.print_exc()
-        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "error": "swap failed"}
+        return {"image": _bgr_to_preview_dataurl(current_frame), "faces": faces_list, "person_ids": person_ids, "kps": kps_list, "pose": pose_list, "error": "swap failed"}
 
 
 @app.post("/api/preview_upscale")
@@ -2158,6 +2255,7 @@ def _run_swap(payload):
         roop_globals.detector_engine = payload.get("detector_engine", roop_globals.CFG.detector_engine)
         roop_globals.temporal_detection = bool(payload.get("temporal_detection", getattr(roop_globals.CFG, "temporal_detection", False)))
         _apply_merger_settings(payload)
+        _apply_eye_restore_settings(payload)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

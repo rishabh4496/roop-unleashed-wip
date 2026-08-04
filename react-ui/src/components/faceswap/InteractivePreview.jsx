@@ -67,6 +67,8 @@ export default function InteractivePreview({
   beforeSrc,
   afterSrc,
   faces = [],
+  kps = [],
+  pose = [],
   personIds = [],
   onSelectPerson,
   splitView = false,
@@ -101,6 +103,7 @@ export default function InteractivePreview({
   const [isPanning, setIsPanning] = useState(false);
   const [startPan, setStartPan] = useState({ x: 0, y: 0 });
   const [showBoxes, setShowBoxes] = useState(true);
+  const [showDebug, setShowDebug] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPeekingOriginal, setIsPeekingOriginal] = useState(false);
 
@@ -233,6 +236,11 @@ export default function InteractivePreview({
       } else if (e.key === '-' || e.key === '_') {
         e.preventDefault();
         zoomBy(1 / 1.4);
+      } else if (e.key.toLowerCase() === 'd') {
+        // `d` for debug. Free at the time of writing — the bare keys already
+        // spoken for across the app are a b c g h m o q r s x [ ] and the
+        // arrows; test_ui_shortcut_keys enforces that they stay disjoint.
+        setShowDebug((v) => !v);
       } else if (e.key.toLowerCase() === 'g' && !splitMode) {
         setMagnifierActive((m) => !m);
       } else if (e.key.toLowerCase() === 'b' && !splitMode) {
@@ -494,6 +502,79 @@ export default function InteractivePreview({
     });
   }, [faces, imgDim, showBoxes, personIds, onSelectPerson]);
 
+  // ── Debug overlay: the geometry the pipeline actually saw ─────────────────
+  //
+  // The 5 arcface keypoints and the solved head pose drive nearly every
+  // decision downstream — the alignment crop, the yaw_align crossfade, the
+  // non-frontal mask router, whether an angle is worth banking. All of it was
+  // only ever visible as numbers in a log, so "the mask is wrong on this frame"
+  // and "the detector put the nose in the wrong place on this frame" looked
+  // identical from the UI.
+  //
+  // The data was already on the wire: /api/preview has always returned `kps`,
+  // and FaceSwap has always stored it — as the single input to warping a
+  // manually painted mask. It was never drawn. Only the pose is new, and that
+  // is solved server-side so the number here is the one the gates use.
+  //
+  // Drawn as one SVG in the image's own coordinate system with
+  // preserveAspectRatio="none", so it lands correctly under any object-contain
+  // letterboxing without re-deriving the fit.
+  const debugOverlay = useMemo(() => {
+    if (!showDebug || !imgDim || !kps.length) return null;
+    // Eyes, nose, mouth corners — arcface's canonical order.
+    const NAMES = ['eyeL', 'eyeR', 'nose', 'mouthL', 'mouthR'];
+    const COLORS = ['#38bdf8', '#38bdf8', '#fbbf24', '#f472b6', '#f472b6'];
+    const r = Math.max(imgDim.w, imgDim.h) / 320;
+    return (
+      <svg
+        className="absolute inset-0 w-full h-full z-20 pointer-events-none"
+        viewBox={`0 0 ${imgDim.w} ${imgDim.h}`}
+        preserveAspectRatio="none"
+        aria-hidden
+      >
+        {kps.map((k, i) => {
+          if (!k || k.length < 5) return null;
+          const [eyeL, eyeR, nose, mL, mR] = k;
+          const p = pose[i];
+          return (
+            <g key={i}>
+              {/* eye axis and mouth line: the two segments the crop rotation
+                  and the roll estimate are actually built from */}
+              <line x1={eyeL[0]} y1={eyeL[1]} x2={eyeR[0]} y2={eyeR[1]}
+                    stroke="#38bdf8" strokeWidth={r * 0.5} opacity="0.75" />
+              <line x1={mL[0]} y1={mL[1]} x2={mR[0]} y2={mR[1]}
+                    stroke="#f472b6" strokeWidth={r * 0.5} opacity="0.75" />
+              {/* eye-midpoint → mouth-midpoint: the axis 'stabilize' takes the
+                  crop rotation from, and the one the nose must not define */}
+              <line
+                x1={(eyeL[0] + eyeR[0]) / 2} y1={(eyeL[1] + eyeR[1]) / 2}
+                x2={(mL[0] + mR[0]) / 2} y2={(mL[1] + mR[1]) / 2}
+                stroke="#a3e635" strokeWidth={r * 0.4} opacity="0.6"
+                strokeDasharray={`${r * 2} ${r * 1.5}`}
+              />
+              {k.map(([x, y], j) => (
+                <circle key={j} cx={x} cy={y} r={r} fill={COLORS[j]}
+                        stroke="#000" strokeWidth={r * 0.3} opacity="0.95">
+                  <title>{NAMES[j]}</title>
+                </circle>
+              ))}
+              {p && (
+                <text
+                  x={nose[0]} y={nose[1] - r * 4}
+                  fill="#fff" fontSize={r * 5} fontWeight="700"
+                  textAnchor="middle" style={{ paintOrder: 'stroke' }}
+                  stroke="#000" strokeWidth={r * 1.2}
+                >
+                  {`y${p[0]}° p${p[1]}° r${p[2]}°`}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }, [showDebug, imgDim, kps, pose]);
+
   const interacting = isPanning || isDraggingSlider;
   const transformStyle = {
     ...transformFor(zoom, pan),
@@ -597,6 +678,24 @@ export default function InteractivePreview({
           Faces
           {faces.length > 0 && <span className="ml-1 opacity-60 tabular-nums">{faces.length}</span>}
         </button>
+
+        {/* Landmark / pose debug overlay. Only offered when there is something
+            to draw — an inert toggle beside a working one reads as broken. */}
+        {kps.length > 0 && (
+          <button
+            onClick={() => setShowDebug((v) => !v)}
+            title="Show the 5 keypoints and the solved head pose (D) — the geometry every alignment and mask decision is made from"
+            aria-pressed={showDebug}
+            aria-label="Show face keypoints and head pose"
+            className={`px-2 h-7 rounded-lg text-micro font-bold ${
+              showDebug
+                ? 'text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20'
+                : 'hud-glass-button'
+            }`}
+          >
+            Debug
+          </button>
+        )}
 
         {/* COMPARE SWAP FACES Button inside Preview Box */}
         {onToggleCompare && (
@@ -782,7 +881,7 @@ export default function InteractivePreview({
                 className="w-full h-full object-contain pointer-events-none"
                 onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
               />
-              <div className="absolute inset-0 pointer-events-none">{faceBoxes}</div>
+              <div className="absolute inset-0 pointer-events-none">{faceBoxes}{debugOverlay}</div>
             </div>
             <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md text-micro font-bold uppercase tracking-[0.14em] text-white/80 border border-white/10">
               Before (Target Original)
@@ -1023,7 +1122,7 @@ export default function InteractivePreview({
             onLoad={(e) => setImgDim({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
             draggable={false}
           />
-          <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}</div>
+          <div className="absolute inset-0 pointer-events-none z-30">{faceBoxes}{debugOverlay}</div>
 
           {/* Swapped Image Overlay with Multi-Mode Comparison Styling */}
           <div

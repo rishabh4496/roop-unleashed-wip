@@ -2952,6 +2952,21 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
 
+        # Eye restore. Read off globals rather than threaded through
+        # ProcessOptions like restore_original_mouth is: that parameter is
+        # positional through core.batch_process_regular and the frozen Gradio
+        # tab, so adding six more would mean editing app/ui/. Every setting
+        # added since the React UI took over uses this path.
+        if getattr(roop.globals, 'restore_original_eyes', False):
+            result = self.apply_eyes_area(
+                result, frame, target_face,
+                strength=float(getattr(roop.globals, 'eyes_blend_amount', 1.0) or 0.0),
+                feather=float(getattr(roop.globals, 'eyes_feather_blend', 25.0) or 0.0),
+                size=float(getattr(roop.globals, 'eyes_size_factor', 1.0) or 1.0),
+                rx=float(getattr(roop.globals, 'eyes_radius_x', 1.0) or 1.0),
+                ry=float(getattr(roop.globals, 'eyes_radius_y', 1.0) or 1.0),
+                yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+
         # ── Face-shape reshape (post-composite) ───────────────────────────────
         # Warp the target's jaw/chin/cheek silhouette + lower face toward the
         # source person's shape. Applies to ANY swapper: the identity swappers

@@ -60,8 +60,15 @@ def _api_source():
 
 
 def _function_body(src, marker, from_index=0):
+    # `i + 1`, not `i`: rindex searches src[0:i], which EXCLUDES the marker's
+    # own `def ` when the marker is itself a def. It therefore walked back into
+    # whatever function was declared just above and returned that one's text as
+    # well. Harmless while the neighbour above preview() held no string
+    # literals the scans below look for — and then _apply_eye_restore_settings
+    # moved in next door, its one literal payload.get() was read as preview's,
+    # and preview appeared to consume a key the run path did not.
     i = src.index(marker, from_index)
-    start = src.rindex("def ", 0, i)
+    start = src.rindex("def ", 0, i + 1)
     try:
         end = src.index("\n@app.", i)
     except ValueError:
@@ -69,37 +76,42 @@ def _function_body(src, marker, from_index=0):
     return src[start:end]
 
 
-def merger_helper_keys():
-    """Keys consumed by _apply_merger_settings.
+# Helpers that both endpoints delegate settings to. Each reads
+# `payload.get(key, ...)` with a LOOP VARIABLE, so a plain scan of their bodies
+# finds nothing — the key names live in a tuple of string literals instead.
+# Parsing those out keeps this honest automatically: adding a knob to a helper
+# is enough, with no allowlist here to remember to update (and none to go stale
+# if a knob is ever removed). Both literal forms are accepted so a helper that
+# reads one key directly is not silently missed.
+SETTINGS_HELPERS = ("_apply_merger_settings", "_apply_eye_restore_settings")
 
-    That helper reads `payload.get(key, ...)` with a LOOP VARIABLE, so the
-    regex below finds nothing in it — the key names live in a tuple of string
-    literals instead. Parsing them out keeps this honest automatically: adding
-    a knob to the helper is enough, with no allowlist here to remember to
-    update (and none to go stale if a knob is ever removed).
-    """
+
+def _helper_keys(name):
     src = _api_source()
-    start = src.index("def _apply_merger_settings(")
+    start = src.index(f"def {name}(")
     body = src[start:src.index("\ndef ", start + 1)]
-    return set(re.findall(r'\(\s*"([a-z_0-9]+)"\s*,\s*[-0-9.]+\s*\)', body))
+    return (set(re.findall(r'\(\s*"([a-z_0-9]+)"\s*,\s*[-0-9.]+\s*\)', body))
+            | set(re.findall(r'payload\.get\(\s*"([a-z_0-9]+)"', body)))
+
+
+def merger_helper_keys():
+    return _helper_keys("_apply_merger_settings")
+
+
+def _consumed(body):
+    keys = set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
+    for helper in SETTINGS_HELPERS:
+        if f"{helper}(payload)" in body:
+            keys |= _helper_keys(helper)
+    return keys
 
 
 def preview_consumed_keys():
-    src = _api_source()
-    body = _function_body(src, 'def preview(')
-    keys = set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
-    if "_apply_merger_settings(payload)" in body:
-        keys |= merger_helper_keys()
-    return keys
+    return _consumed(_function_body(_api_source(), 'def preview('))
 
 
 def run_consumed_keys():
-    src = _api_source()
-    body = _function_body(src, "batch_process_regular(")
-    keys = set(re.findall(r'payload\.get\(\s*["\']([a-z_0-9]+)["\']', body))
-    if "_apply_merger_settings(payload)" in body:
-        keys |= merger_helper_keys()
-    return keys
+    return _consumed(_function_body(_api_source(), "batch_process_regular("))
 
 
 # Sent by the frontend but not read via payload.get in preview(): these are
