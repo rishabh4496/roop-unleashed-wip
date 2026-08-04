@@ -2783,8 +2783,37 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         _ss = fake_frame.shape[1]
                         _M_e = estimate_norm(target_face.kps, _ss, mode=_tmpl)
                         _A = _compose_affine(_M_e, _invert_affine(M))
-                        enh_input = cv2.warpAffine(fake_frame, _A, (_ss, _ss),
-                                                   borderMode=cv2.BORDER_REPLICATE)
+
+                        # The FFHQ framing is WIDER than every swap template, so
+                        # a straight warp of the swap crop leaves a ring the
+                        # crop simply does not contain — measured 27.8% of the
+                        # destination for the inswapper family (a 38 px border
+                        # on each side of a 512 box), 44.6% for blendswap's.
+                        # Filling that with replicated edge pixels would hand
+                        # the restorer a correctly-framed face inside a thick
+                        # smear, which is the same out-of-distribution input
+                        # this is supposed to remove.
+                        #
+                        # So the ring comes from the PLATE. The original frame
+                        # has real hair, neck and background out there; only the
+                        # face itself needs to be the swapped version. Warp both
+                        # and composite on the swap crop's own footprint.
+                        _ctx = cv2.warpAffine(frame, _M_e, (_ss, _ss),
+                                              borderMode=cv2.BORDER_REPLICATE)
+                        _sw = cv2.warpAffine(fake_frame, _A, (_ss, _ss),
+                                             borderMode=cv2.BORDER_REPLICATE)
+                        _cov = cv2.warpAffine(
+                            np.full(fake_frame.shape[:2], 255, np.uint8), _A,
+                            (_ss, _ss), flags=cv2.INTER_NEAREST,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                        # Feather the join so the restorer does not see a hard
+                        # rectangular edge, which is a strong enough feature for
+                        # a GAN prior to try to reproduce.
+                        _cov = cv2.GaussianBlur(_cov, (0, 0), sigmaX=2)
+                        _cov = (_cov.astype(np.float32) / 255.0)[:, :, None]
+                        enh_input = (_sw.astype(np.float32) * _cov
+                                     + _ctx.astype(np.float32) * (1.0 - _cov)
+                                     ).astype(np.uint8)
                     except Exception as e:
                         bar_write(f"[ProcessMgr] enhancer re-align failed: {e}")
                         _A, enh_input = None, fake_frame

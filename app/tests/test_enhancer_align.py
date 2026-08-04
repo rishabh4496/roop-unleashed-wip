@@ -102,6 +102,58 @@ class MatchingTemplatesAreANoOp(unittest.TestCase):
                            'got {moved:.2f}')
 
 
+class TheBorderComesFromThePlate(unittest.TestCase):
+    """FFHQ framing is WIDER than every swap template, so warping the swap crop
+    into it leaves a ring the crop does not contain. Filling that with
+    replicated edge pixels would hand the restorer a correctly-framed face
+    inside a thick smear — the same out-of-distribution input the re-align
+    exists to remove, just a different flavour of it."""
+
+    def _ring(self, swap):
+        A = realign(size=512, swap=swap)
+        cov = cv2.warpAffine(np.full((512, 512), 255, np.uint8), A, (512, 512),
+                             flags=cv2.INTER_NEAREST,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        return float((cov == 0).mean())
+
+    def test_the_ring_is_far_too_large_to_replicate(self):
+        for swap, floor in (('arcface', 0.20), ('arcface_112_v1', 0.20),
+                            ('arcface_112_v2', 0.30), ('mtcnn_512', 0.15)):
+            got = self._ring(swap)
+            self.assertGreater(
+                got, floor,
+                f'{swap}: {got:.1%} of the enhancer input is outside the swap '
+                'crop — this is why it is composited against the frame rather '
+                'than edge-replicated')
+
+    def test_a_matching_template_leaves_no_ring(self):
+        self.assertLess(self._ring('ffhq_512'), 0.001)
+
+    def test_processmgr_composites_against_the_frame(self):
+        """The regression would be a one-line 'simplification' back to a plain
+        warp with BORDER_REPLICATE, which still produces a plausible crop."""
+        src = open(os.path.join(APP, 'roop', 'ProcessMgr.py'), encoding='utf-8').read()
+        block = src.split('_M_e = estimate_norm', 1)[1][:2000]
+        self.assertIn('warpAffine(frame, _M_e', block,
+                      'the enhancer input must take its outer region from the '
+                      'original frame, which has real hair/neck/background there')
+        self.assertIn('INTER_NEAREST', block,
+                      'the coverage mask must be nearest-neighbour, or its own '
+                      'interpolation softens the footprint it is describing')
+
+    def test_the_swap_crop_survives_the_round_trip(self):
+        """The reverse warp needs the whole swap crop to have landed inside the
+        enhancer's box; anything that fell off the edge is gone for good."""
+        for swap in ('arcface', 'arcface_112_v1', 'arcface_112_v2', 'mtcnn_512'):
+            A = realign(size=512, swap=swap)
+            corners = np.array([[[0, 0], [512, 0], [512, 512], [0, 512]]], np.float32)
+            mapped = cv2.transform(corners, A)[0]
+            self.assertTrue(
+                (mapped >= -0.5).all() and (mapped <= 512.5).all(),
+                f'{swap}: part of the swap crop maps outside the enhancer box, '
+                f'so the trip back cannot restore it — corners {mapped.tolist()}')
+
+
 class Declarations(unittest.TestCase):
     FFHQ = ('Enhance_CodeFormer', 'Enhance_GFPGAN',
             'Enhance_RestoreFormerPPlus', 'Enhance_GPEN')
