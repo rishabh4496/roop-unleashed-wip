@@ -3112,7 +3112,19 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         else:
             result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps)
 
-        if self.options.restore_original_mouth:
+        # Lip-sync and restore_original_mouth write the same bounding box, so at
+        # most one of them may run. Decided once, here, ahead of both: the UI
+        # hides the mouth-restore toggle while lip-sync is on and its tooltip
+        # promises lip-sync wins — but hiding a control does not clear it, so a
+        # user who already had mouth restore ON keeps sending it, and gating
+        # lip-sync on that (which this did) dropped lip-sync entirely, silently.
+        # _lipsync_audio is part of the condition so that lip-sync losing its
+        # driving audio (extraction failed, image mode, no clip audio) hands the
+        # mouth back to restore_original_mouth instead of disabling both.
+        lipsync_wins = (getattr(roop.globals, 'lipsync_enabled', False)
+                        and getattr(self, '_lipsync_audio', None) is not None)
+
+        if self.options.restore_original_mouth and not lipsync_wins:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
 
@@ -3135,12 +3147,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # Same slot as restore_original_mouth/apply_eyes_area: full-frame space,
         # after paste-back, so the generated mouth has the final composited
         # pixels (expression restore included) as its plate. Mutually exclusive
-        # with restore_original_mouth — both write the same bounding box, and
-        # running both would paste the ORIGINAL mouth back over the lip-synced
-        # one, silently discarding the feature. The UI hides one when the other
-        # is on; this is the backstop.
-        if (getattr(roop.globals, 'lipsync_enabled', False)
-                and not self.options.restore_original_mouth):
+        # with restore_original_mouth — see the lipsync_wins comment above the
+        # mouth-restore block, which is where that contest is settled.
+        if lipsync_wins:
             try:
                 frame_idx = getattr(self._tls, 'frame_idx', None)
                 audio_cache = getattr(self, '_lipsync_audio', None)

@@ -684,11 +684,17 @@ class MaskingMixin:
             color_corrected_mouth = self.apply_color_transfer(resized_mouth_cutout, roi)
 
             if mouth_polygon is not None:
-                # Scale polygon from original cutout coords to the resized box
-                scale_x = box_width  / max(1, mouth_cutout.shape[1])
-                scale_y = box_height / max(1, mouth_cutout.shape[0])
-                scaled_pts = (mouth_polygon * [scale_x, scale_y]).astype(np.int32)
-                hull = cv2.convexHull(scaled_pts)
+                # mouth_polygon arrives from create_mouth_mask in mouth_BOX-local
+                # coordinates (the landmarks minus the box origin) — NOT in the
+                # cutout's own pixel space. Those two coincide only when the
+                # cutout IS the box crop, which is true for restore_original_mouth
+                # and false for lip-sync, whose cutout is a slice of a generated
+                # 256x256 face crop. Rescaling by the cutout's size therefore blew
+                # the hull up by ~1.5-2x on a large face (leaving a third of the
+                # mask inside the box) and shrank it toward the top-left on a
+                # small one. The box is the space being drawn into, so the points
+                # are already in the right frame of reference.
+                hull = cv2.convexHull(np.asarray(mouth_polygon, dtype=np.int32))
                 mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.uint8)
                 cv2.fillConvexPoly(mask, hull, 255)
                 # mouth_blend (0-30) controls dilation and edge softness.

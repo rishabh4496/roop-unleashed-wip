@@ -137,6 +137,83 @@ class TestCropBoxToLocal(unittest.TestCase):
         self.assertIsNone(crop_box_to_local((0, 0, 100, 100), None))
 
 
+class TestMouthPolygonIsBoxLocal(unittest.TestCase):
+    """apply_mouth_area's blend hull must depend on the mouth BOX, never on
+    how many pixels the cutout happens to be.
+
+    create_mouth_mask returns its polygon as landmarks minus the box origin —
+    box-local. The cutout it returns alongside is the box crop, so the two
+    spaces coincide and rescaling the polygon by the cutout's size was a
+    no-op nobody could see. Lip-sync is the first caller where they differ:
+    its cutout is a slice of a generated 256x256 face crop, so that rescale
+    became a live 1.5-2x blow-up of the hull (about a third of it left inside
+    the box) on a large face, and a shrink toward the top-left on a small one.
+    Nothing raises — the mouth just blends through the wrong shape.
+    """
+
+    def setUp(self):
+        import roop.globals as g
+        from roop.ProcessMgr import ProcessMgr
+
+        self._prev_ct = g.color_transfer_mode
+        g.color_transfer_mode = 'none'   # keep the composite a pure lerp
+        self.addCleanup(setattr, g, 'color_transfer_mode', self._prev_ct)
+
+        class _Options:
+            show_face_area_overlay = False
+
+        class _Mgr:
+            options = _Options()
+            apply_mouth_area = ProcessMgr.apply_mouth_area
+            apply_color_transfer = ProcessMgr.apply_color_transfer
+            create_feathered_mask = ProcessMgr.create_feathered_mask
+
+        self.mgr = _Mgr()
+        self.box = (100, 100, 240, 200)          # 140 x 100
+        # A mouth hull well inside the box, so a hull that grows or shifts
+        # runs into a corner that must otherwise stay untouched.
+        self.polygon = np.array([[35, 25], [105, 25], [105, 75], [35, 75]],
+                                dtype=np.int32)
+
+    def _composite(self, cut_w, cut_h):
+        frame = np.zeros((300, 400, 3), dtype=np.uint8)
+        cutout = np.full((cut_h, cut_w, 3), 255, dtype=np.uint8)
+        return self.mgr.apply_mouth_area(frame, cutout, self.box, self.polygon,
+                                         mouth_blend=0.0)
+
+    def test_result_is_independent_of_the_cutout_size(self):
+        # 140x100 is the restore_original_mouth case (cutout IS the box);
+        # 90x50 is the shape lip-sync's slice of the 256x256 crop arrives in.
+        box_sized = self._composite(140, 100)
+        lipsync_sized = self._composite(90, 50)
+        np.testing.assert_array_equal(box_sized, lipsync_sized)
+
+    def test_the_hull_lands_where_the_polygon_says(self):
+        for cut_w, cut_h in ((140, 100), (90, 50)):
+            with self.subTest(cutout=(cut_w, cut_h)):
+                out = self._composite(cut_w, cut_h)
+                x1, y1, x2, y2 = self.box
+                roi = out[y1:y2, x1:x2]
+                # Inside the polygon: fully blended.
+                self.assertEqual(roi[50, 70, 0], 255)
+                # Outside it, with room to spare for the 3px blur — the
+                # corners a scaled-up hull would reach into.
+                self.assertEqual(roi[95, 135, 0], 0)   # bottom-right
+                self.assertEqual(roi[5, 5, 0], 0)      # top-left
+
+    def test_a_polygon_touching_the_box_edge_still_fits(self):
+        # Guards the reverse error too: coordinates that already span the box
+        # must not be scaled DOWN when the cutout is larger than the box.
+        poly = np.array([[0, 0], [139, 0], [139, 99], [0, 99]], dtype=np.int32)
+        frame = np.zeros((300, 400, 3), dtype=np.uint8)
+        cutout = np.full((200, 260, 3), 255, dtype=np.uint8)
+        out = self.mgr.apply_mouth_area(frame, cutout, self.box, poly, mouth_blend=0.0)
+        x1, y1, x2, y2 = self.box
+        roi = out[y1:y2, x1:x2]
+        self.assertEqual(roi[50, 70, 0], 255)    # centre
+        self.assertGreater(int(roi[95, 135, 0]), 0)   # near the far corner
+
+
 class TestResolveDevice(unittest.TestCase):
     """roop.utilities.get_device() names ONNX execution providers ('cuda',
     'mps', 'mkl' for OpenVINO, 'cpu'), not torch devices — 'mkl' passed
@@ -166,18 +243,45 @@ class TestDefaultOffIsANoOp(unittest.TestCase):
         src_path = os.path.join(APP, 'roop', 'ProcessMgr.py')
         self.src = open(src_path, encoding='utf-8').read()
 
+    def per_frame_gate(self):
+        """process_face's lip-sync gate: the lipsync_wins decision plus the
+        stage it guards. Anchored on the decision rather than on the stage's
+        own banner comment, because the gate deliberately sits ABOVE that
+        banner — it has to be settled before the mouth-restore block, which
+        runs first and writes the same pixels."""
+        return self.src.split('lipsync_wins = ', 1)[1][:3000]
+
     def test_default_is_off(self):
         import roop.globals as g
         self.assertFalse(g.lipsync_enabled)
         self.assertEqual(g.lipsync_audio_source, 'original')
 
     def test_processface_gates_on_the_global(self):
-        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
-        self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", block)
+        self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)",
+                      self.per_frame_gate())
 
-    def test_processface_is_mutually_exclusive_with_restore_original_mouth(self):
-        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
-        self.assertIn('not self.options.restore_original_mouth', block)
+    def test_lipsync_wins_over_restore_original_mouth_not_the_reverse(self):
+        """The two write the same bounding box, so one must stand down — and
+        the UI decides which: it hides the mouth-restore toggle while lip-sync
+        is on and its tooltip says lip-sync wins. Hiding a toggle does not
+        clear it, though, so a user who already had mouth restore ON keeps
+        sending restore_original_mouth=True. Gating LIP-SYNC on that (which
+        this originally did) meant enabling lip-sync did nothing at all for
+        those users, with no error — so assert the direction, not merely that
+        some exclusion exists."""
+        restore_block = self.src.split('if self.options.restore_original_mouth', 1)[1][:400]
+        self.assertIn('not lipsync_wins', restore_block)
+
+        lipsync_block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
+        self.assertNotIn('not self.options.restore_original_mouth', lipsync_block)
+
+    def test_lipsync_only_wins_when_it_can_actually_run(self):
+        """Losing the contest must not lose the mouth entirely: with lip-sync
+        enabled but no driving audio (extraction failed, image mode, a clip
+        with no soundtrack) the frame would otherwise get neither treatment."""
+        decision = self.src.split('lipsync_wins = ', 1)[1][:300]
+        self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", decision)
+        self.assertIn("_lipsync_audio", decision)
 
     def test_audio_cache_setup_is_itself_gated(self):
         block = self.src.split("self._lipsync_fps = fps", 1)[1][:1200]
@@ -190,7 +294,7 @@ class TestDefaultOffIsANoOp(unittest.TestCase):
         turning the toggle on did nothing, silently, forever. Both gates must
         read the same roop.globals attribute or they can drift apart again."""
         cache_block = self.src.split("self._lipsync_fps = fps", 1)[1][:1200]
-        face_block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
+        face_block = self.per_frame_gate()
         self.assertNotIn("self.options.lipsync_enabled", cache_block)
         for block in (cache_block, face_block):
             self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", block)
