@@ -36,6 +36,7 @@ export default function RunHistory({ notify, setSettings, setTab }) {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [compare, setCompare] = useState([]); // up to two run ids
+  const [presets, setPresets] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -60,6 +61,9 @@ export default function RunHistory({ notify, setSettings, setTab }) {
 
   /* eslint-disable react-hooks/exhaustive-deps -- fetch once on mount */
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    getJSON('/api/export/presets').then((r) => setPresets(r.presets || [])).catch(() => {});
+  }, []);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const toggleCompare = (id) => {
@@ -80,6 +84,15 @@ export default function RunHistory({ notify, setSettings, setTab }) {
   const revealOutput = async (name) => {
     try {
       await postJSON('/api/reveal', { path: `${outputPath}/${name}` });
+    } catch (e) {
+      notify?.(e.message, 'error');
+    }
+  };
+
+  const exportRun = async (name, presetKey) => {
+    try {
+      const res = await postJSON('/api/export/apply', { source: name, preset: presetKey });
+      notify?.(`Exported ${res.name}`);
     } catch (e) {
       notify?.(e.message, 'error');
     }
@@ -189,11 +202,13 @@ export default function RunHistory({ notify, setSettings, setTab }) {
               entry={entry}
               outputPath={outputPath}
               existing={existing}
+              presets={presets}
               selected={compare.includes(entry.id)}
               compareFull={compare.length >= 2 && !compare.includes(entry.id)}
               onToggleCompare={() => toggleCompare(entry.id)}
               onLoad={() => loadRunSettings(entry)}
               onReveal={revealOutput}
+              onExport={exportRun}
               onDelete={() => deleteEntry(entry)}
             />
           ))}
@@ -221,12 +236,25 @@ function Chip({ k, v }) {
   );
 }
 
-function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCompare, onLoad, onReveal, onDelete }) {
+function RunRow({ entry, outputPath, existing, presets, selected, compareFull, onToggleCompare, onLoad, onReveal, onExport, onDelete }) {
   const outputs = entry.outputs || [];
   // Pick the first output that still exists on disk for the thumbnail.
   const liveName = outputs.find((n) => existing[n]);
   const kind = liveName ? existing[liveName] : null;
   const allDeleted = outputs.length > 0 && !liveName;
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportChange = async (e) => {
+    const presetKey = e.target.value;
+    e.target.value = '';
+    if (!presetKey || !liveName) return;
+    setExporting(true);
+    try {
+      await onExport(liveName, presetKey);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const p = primitives(entry.settings);
   const chips = CHIP_KEYS.filter((k) => p[k] !== undefined && p[k] !== '' && p[k] !== null);
@@ -303,6 +331,18 @@ function RunRow({ entry, outputPath, existing, selected, compareFull, onToggleCo
                     className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">
               ↻ Load settings
             </button>
+            {liveName && kind === 'video' && presets.length > 0 && (
+              <select
+                onChange={handleExportChange}
+                disabled={exporting}
+                defaultValue=""
+                title="Export a crop-to-fill copy for a social aspect ratio"
+                className="px-2 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors disabled:opacity-40 cursor-pointer"
+              >
+                <option value="" disabled>{exporting ? 'Exporting…' : 'Export…'}</option>
+                {presets.map((p) => <option key={p.key} value={p.key} className="bg-[#121420]">{p.label}</option>)}
+              </select>
+            )}
             {liveName && (
               <button type="button" onClick={() => onReveal(liveName)}
                       className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.04] border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-colors">

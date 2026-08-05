@@ -295,6 +295,50 @@ def apply_media_transforms(input_path: str, output_path: str,
     return run_ffmpeg(args)
 
 
+def crop_to_fill(source_w: int, source_h: int,
+                 target_ratio_w: float, target_ratio_h: float) -> tuple:
+    """Centered crop percentages (left, right, top, bottom) that bring
+    source_w x source_h to the target_ratio_w:target_ratio_h aspect ratio,
+    trimming whichever axis is oversized relative to that ratio — the
+    "crop-to-fill" behaviour social platforms use, as opposed to letterboxing.
+    All-zero when the source already matches the ratio, or on degenerate input.
+    """
+    if source_w <= 0 or source_h <= 0 or target_ratio_w <= 0 or target_ratio_h <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    source_ar = source_w / source_h
+    target_ar = target_ratio_w / target_ratio_h
+    if source_ar > target_ar:
+        # Wider than the target ratio: trim width, keep full height.
+        keep_w = source_h * target_ar
+        trim_pct = max(0.0, (source_w - keep_w) / source_w * 100.0) / 2
+        return (trim_pct, trim_pct, 0.0, 0.0)
+    if source_ar < target_ar:
+        # Taller than the target ratio: trim height, keep full width.
+        keep_h = source_w / target_ar
+        trim_pct = max(0.0, (source_h - keep_h) / source_h * 100.0) / 2
+        return (0.0, 0.0, trim_pct, trim_pct)
+    return (0.0, 0.0, 0.0, 0.0)
+
+
+def export_preset(input_path: str, output_path: str,
+                  target_w: int, target_h: int) -> bool:
+    """Crop *input_path* to fill the target_w:target_h aspect ratio (centered,
+    no letterboxing), scale to that exact resolution, and re-encode in one
+    ffmpeg pass using the app's own encoder/quality settings."""
+    from roop.capturer import probe_media_dimensions
+    dims = probe_media_dimensions(input_path)
+    if not dims:
+        return False
+    source_w, source_h = dims
+    l, r, t, b = crop_to_fill(source_w, source_h, target_w, target_h)
+    l, r, t, b = l / 100, r / 100, t / 100, b / 100
+    filters = [
+        f"crop=in_w*(1-{l:.4f}-{r:.4f}):in_h*(1-{t:.4f}-{b:.4f}):in_w*{l:.4f}:in_h*{t:.4f}",
+        f"scale={target_w}:{target_h}",
+    ]
+    return apply_media_transforms(input_path, output_path, filters, is_video=True)
+
+
 def apply_media_transforms_webp(input_path: str, output_path: str,
                                 vf_filters: list, fps: float) -> bool:
     """Process animated webp: decode frames via PIL, pipe through ffmpeg with vf filters.

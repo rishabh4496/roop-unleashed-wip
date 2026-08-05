@@ -2884,11 +2884,13 @@ import routes_livecam as _routes_livecam
 import routes_quality as _routes_quality
 import routes_extras as _routes_extras
 import routes_queue as _routes_queue
+import routes_export as _routes_export
 app.include_router(_routes_diagnostics.router)
 app.include_router(_routes_livecam.router)
 app.include_router(_routes_quality.router)
 app.include_router(_routes_extras.router)
 app.include_router(_routes_queue.router)
+app.include_router(_routes_export.router)
 
 # Shared objects the route modules read. All are mutated in place and never
 # rebound here, so these bind one object rather than copying a value.

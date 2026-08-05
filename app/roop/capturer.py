@@ -261,6 +261,24 @@ def _probe_video(video_path: str):
     return info
 
 
+def probe_media_dimensions(path: str):
+    """(width, height) of an image or video file, or None if it can't be read.
+
+    Videos go through _probe_video's ffprobe path (cached per path) rather than
+    opening a cv2.VideoCapture just to read two numbers. Images are decoded
+    directly — there's no cheaper way to get a raster's dimensions than reading
+    it."""
+    import roop.utilities as util
+    if util.is_video(path):
+        info = _probe_video(path)
+        return (info["w"], info["h"]) if info else None
+    img = get_image_frame(path)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    return (w, h)
+
+
 # cv2's HEVC seek was measured against self-labelling clips (each frame a known
 # flat value, so the frame identifies itself). Requesting frame N and checking
 # which frame actually came back:
