@@ -2994,7 +2994,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
             elif _ref_kps is not None:
                 try:
-                    from roop.face_util import estimate_norm
                     # Use original (pre-rotation-rebind) frame dimensions so that
                     # ref_kps — which are always in full-frame coords — map correctly.
                     fh, fw = orig_fh, orig_fw
