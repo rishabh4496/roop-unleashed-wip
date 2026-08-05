@@ -1042,7 +1042,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._lipsync_fps = fps
         self._lipsync_frame_start = frame_start
         self._lipsync_audio = None
-        if getattr(self.options, 'lipsync_enabled', False):
+        if getattr(roop.globals, 'lipsync_enabled', False):
             try:
                 source_mode = getattr(roop.globals, 'lipsync_audio_source', 'original')
                 audio_source = (roop.globals.lipsync_audio_path if source_mode == 'upload'
@@ -3153,7 +3153,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         prepared = restorer.prepare(result, target_face, audio_feat)
                         with _gpu_guard(pooled=getattr(restorer, 'pool', None) is not None):
                             raw = restorer.infer(prepared)
-                        lipsync_cutout = restorer.finish(raw, mouth_cutout)
+                        # raw is the whole generated 256x256 FACE crop — slice
+                        # out just the region under mouth_bb before pasting, or
+                        # apply_mouth_area would resize the entire face to fit
+                        # the (much smaller) mouth box.
+                        crop_box = prepared.get('crop_box') if prepared else None
+                        lipsync_cutout = restorer.finish(raw, crop_box, mouth_bb)
                         result = self.apply_mouth_area(result, lipsync_cutout, mouth_bb, mouth_polygon,
                                                        mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
             except Exception as e:

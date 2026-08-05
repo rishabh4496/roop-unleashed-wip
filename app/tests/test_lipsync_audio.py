@@ -25,7 +25,7 @@ sys.path.insert(0, APP)
 from roop.lipsync_audio import (                                # noqa: E402
     AudioFeatureCache, audio_index_for_frame, frame_time)
 from roop.processors.Lipsync_MuseTalk import (                  # noqa: E402
-    INPUT_SIZE, face_bbox_crop)
+    INPUT_SIZE, crop_box_to_local, face_bbox_crop, resolve_device)
 
 
 class TestFrameTime(unittest.TestCase):
@@ -81,21 +81,79 @@ class TestAudioFeatureCache(unittest.TestCase):
 class TestFaceBboxCrop(unittest.TestCase):
     def test_crop_is_resized_to_input_size(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        crop = face_bbox_crop(frame, (100, 50, 300, 250))
+        crop, crop_box = face_bbox_crop(frame, (100, 50, 300, 250))
         self.assertEqual(crop.shape, (INPUT_SIZE, INPUT_SIZE, 3))
+
+    def test_crop_box_reflects_the_margin_and_is_in_frame_coords(self):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        crop, crop_box = face_bbox_crop(frame, (100, 50, 300, 250), extra_margin=10)
+        self.assertEqual(crop_box, (100, 50, 300, 260))  # y2 + extra_margin
 
     def test_bbox_is_clamped_to_frame_bounds(self):
         # A bbox that overruns the frame on every side must still produce a
         # valid crop rather than an empty/negative slice.
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        crop = face_bbox_crop(frame, (-50, -50, 150, 150))
+        crop, crop_box = face_bbox_crop(frame, (-50, -50, 150, 150))
         self.assertIsNotNone(crop)
         self.assertEqual(crop.shape, (INPUT_SIZE, INPUT_SIZE, 3))
+        self.assertEqual(crop_box, (0, 0, 100, 100))
 
     def test_degenerate_bbox_returns_none(self):
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        self.assertIsNone(face_bbox_crop(frame, (200, 200, 250, 250)))  # entirely outside
-        self.assertIsNone(face_bbox_crop(frame, (50, 50, 40, 40)))      # x2<x1, y2<y1
+        self.assertEqual(face_bbox_crop(frame, (200, 200, 250, 250)), (None, None))  # entirely outside
+        self.assertEqual(face_bbox_crop(frame, (50, 50, 40, 40)), (None, None))      # x2<x1, y2<y1
+
+
+class TestCropBoxToLocal(unittest.TestCase):
+    """The geometry that keeps the composited mouth actually mouth-shaped:
+    mapping the full-frame mouth bounding box into the local pixel space of
+    the 256x256 face crop MuseTalk generated, so only that sub-region gets
+    pasted — not the whole generated face squashed into the mouth box."""
+
+    def test_maps_a_region_at_the_crop_origin(self):
+        # crop_box is a 200x200 region resized to 256x256 -> scale 1.28x.
+        local = crop_box_to_local((100, 100, 300, 300), (100, 100, 150, 150))
+        self.assertEqual(local, (0, 0, 64, 64))
+
+    def test_maps_a_region_in_the_middle_of_the_crop(self):
+        local = crop_box_to_local((0, 0, 256, 256), (64, 64, 192, 192))
+        self.assertEqual(local, (64, 64, 192, 192))  # identity scale (256/256)
+
+    def test_region_partly_outside_the_crop_is_clamped_not_dropped(self):
+        # Mouth padding can extend slightly below a tight detector bbox even
+        # with extra_margin; this must degrade gracefully, not explode.
+        local = crop_box_to_local((0, 0, 256, 256), (200, 200, 300, 300))
+        self.assertIsNotNone(local)
+        lx1, ly1, lx2, ly2 = local
+        self.assertLessEqual(lx2, INPUT_SIZE)
+        self.assertLessEqual(ly2, INPUT_SIZE)
+
+    def test_region_entirely_outside_the_crop_returns_none(self):
+        self.assertIsNone(crop_box_to_local((0, 0, 256, 256), (300, 300, 400, 400)))
+
+    def test_degenerate_crop_box_returns_none(self):
+        self.assertIsNone(crop_box_to_local((100, 100, 100, 100), (0, 0, 50, 50)))
+        self.assertIsNone(crop_box_to_local(None, (0, 0, 50, 50)))
+        self.assertIsNone(crop_box_to_local((0, 0, 100, 100), None))
+
+
+class TestResolveDevice(unittest.TestCase):
+    """roop.utilities.get_device() names ONNX execution providers ('cuda',
+    'mps', 'mkl' for OpenVINO, 'cpu'), not torch devices — 'mkl' passed
+    straight to torch.device() raises, and since Initialize() never sets
+    _ready, that failure repeats on every subsequent frame rather than once."""
+
+    def test_cuda_and_mps_pass_through(self):
+        self.assertEqual(resolve_device('cuda', cuda_available=True), 'cuda')
+        self.assertEqual(resolve_device('mps', cuda_available=False), 'mps')
+
+    def test_onnx_only_provider_names_fall_back_to_a_real_torch_device(self):
+        self.assertEqual(resolve_device('mkl', cuda_available=True), 'cuda')
+        self.assertEqual(resolve_device('mkl', cuda_available=False), 'cpu')
+
+    def test_none_falls_back_to_a_real_torch_device(self):
+        self.assertEqual(resolve_device(None, cuda_available=True), 'cuda')
+        self.assertEqual(resolve_device(None, cuda_available=False), 'cpu')
 
 
 class TestDefaultOffIsANoOp(unittest.TestCase):
@@ -114,21 +172,33 @@ class TestDefaultOffIsANoOp(unittest.TestCase):
         self.assertEqual(g.lipsync_audio_source, 'original')
 
     def test_processface_gates_on_the_global(self):
-        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2200]
+        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
         self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", block)
 
     def test_processface_is_mutually_exclusive_with_restore_original_mouth(self):
-        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2200]
+        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
         self.assertIn('not self.options.restore_original_mouth', block)
 
     def test_audio_cache_setup_is_itself_gated(self):
         block = self.src.split("self._lipsync_fps = fps", 1)[1][:1200]
-        self.assertIn("getattr(self.options, 'lipsync_enabled', False)", block)
+        self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", block)
+
+    def test_both_gates_read_the_same_global_not_processoptions(self):
+        """Regression guard: the audio-cache setup (run_batch_inmem) originally
+        gated on self.options.lipsync_enabled, which ProcessOptions never
+        defines — getattr's False default meant the cache was NEVER built, so
+        turning the toggle on did nothing, silently, forever. Both gates must
+        read the same roop.globals attribute or they can drift apart again."""
+        cache_block = self.src.split("self._lipsync_fps = fps", 1)[1][:1200]
+        face_block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
+        self.assertNotIn("self.options.lipsync_enabled", cache_block)
+        for block in (cache_block, face_block):
+            self.assertIn("getattr(roop.globals, 'lipsync_enabled', False)", block)
 
     def test_lipsync_stage_never_costs_a_frame(self):
         # The whole block must be inside a try/except that falls back silently
         # — same contract every other opt-in post-composite stage here follows.
-        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2200]
+        block = self.src.split('# ── Lip-sync (post-composite)', 1)[1][:2600]
         self.assertIn('try:', block)
         self.assertIn('except Exception as e:', block)
         self.assertIn('bar_write', block)

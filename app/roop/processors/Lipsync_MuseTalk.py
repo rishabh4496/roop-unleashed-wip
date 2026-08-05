@@ -94,7 +94,23 @@ _PAD_RIGHT = 2
 _WINDOW = 2 * (_PAD_LEFT + _PAD_RIGHT + 1)
 
 
-def face_bbox_crop(frame: Frame, bbox, extra_margin: int = 10) -> np.ndarray:
+def resolve_device(devicename, cuda_available: bool) -> str:
+    """devicename comes from roop.utilities.get_device(), which names ONNX
+    EXECUTION PROVIDERS ('cuda', 'mps', 'mkl' for OpenVINO, 'cpu') — this is
+    the one torch-based processor here, and 'mkl' is not a torch device
+    string. Only trust devicename for the two that ARE; anything else falls
+    back to a plain CUDA-availability check.
+
+    Standalone/testable for the same reason face_bbox_crop is: a bad device
+    string doesn't error cleanly here, it makes torch.device() raise inside
+    Initialize(), which retries (and fails again) on every subsequent frame.
+    """
+    if devicename in ('cuda', 'mps'):
+        return devicename
+    return 'cuda' if cuda_available else 'cpu'
+
+
+def face_bbox_crop(frame: Frame, bbox, extra_margin: int = 10):
     """MuseTalk's own crop: a straight bounding-box crop (no landmark-fitted
     similarity transform), resized to INPUT_SIZE with Lanczos.
 
@@ -105,6 +121,12 @@ def face_bbox_crop(frame: Frame, bbox, extra_margin: int = 10) -> np.ndarray:
     Kept as a standalone function (not a method) so the crop math is testable
     without the model class — mirrors why frame_time/audio_index_for_frame
     live in roop.lipsync_audio rather than on the class that uses them.
+
+    Returns (crop, crop_box) where crop_box is the actual (x1, y1, x2, y2)
+    used, post-margin and post-clamp, in full-frame pixel coordinates — the
+    caller needs this to map a full-frame region (e.g. the mouth bounding
+    box) into the resized crop's local coordinates later. Returns (None,
+    None) on a degenerate box.
     """
     x1, y1, x2, y2 = (int(round(v)) for v in bbox)
     h, w = frame.shape[:2]
@@ -112,9 +134,39 @@ def face_bbox_crop(frame: Frame, bbox, extra_margin: int = 10) -> np.ndarray:
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w, x2), min(h, y2)
     if x2 <= x1 or y2 <= y1:
-        return None
+        return None, None
     crop = frame[y1:y2, x1:x2]
-    return cv2.resize(crop, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_LANCZOS4)
+    resized = cv2.resize(crop, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_LANCZOS4)
+    return resized, (x1, y1, x2, y2)
+
+
+def crop_box_to_local(crop_box, region_box, size: int = INPUT_SIZE):
+    """Map region_box (full-frame x1,y1,x2,y2) into the local pixel
+    coordinates of a size x size crop resized from crop_box (also full-frame
+    x1,y1,x2,y2) — e.g. finding where the mouth bounding box landed inside
+    the 256x256 face crop MuseTalk was fed, so its OUTPUT can be sliced back
+    down to just that region before apply_mouth_area resizes it into place.
+
+    Standalone/testable: this is pure geometry, no model involved, and a
+    transposed axis or missing clamp here would not crash — it would
+    composite the wrong part of a generated face (or the whole face,
+    squashed) into the mouth region, silently.
+    """
+    if crop_box is None or region_box is None:
+        return None
+    fx1, fy1, fx2, fy2 = crop_box
+    rx1, ry1, rx2, ry2 = region_box
+    fw, fh = fx2 - fx1, fy2 - fy1
+    if fw <= 0 or fh <= 0:
+        return None
+    sx, sy = size / fw, size / fh
+    lx1 = max(0, min(size, int(round((rx1 - fx1) * sx))))
+    ly1 = max(0, min(size, int(round((ry1 - fy1) * sy))))
+    lx2 = max(0, min(size, int(round((rx2 - fx1) * sx))))
+    ly2 = max(0, min(size, int(round((ry2 - fy1) * sy))))
+    if lx2 <= lx1 or ly2 <= ly1:
+        return None
+    return (lx1, ly1, lx2, ly2)
 
 
 class _PositionalEncoding(nn.Module):
@@ -159,9 +211,9 @@ class Lipsync_MuseTalk:
         from huggingface_hub import hf_hub_download
         from transformers import AutoFeatureExtractor, WhisperModel
 
-        devicename = (plugin_options or {}).get('devicename')
-        self.device = torch.device(devicename if devicename else
-                                   ('cuda' if torch.cuda.is_available() else 'cpu'))
+        devicename = resolve_device((plugin_options or {}).get('devicename'),
+                                    torch.cuda.is_available())
+        self.device = torch.device(devicename)
         cache_dir = resolve_relative_path('../models/musetalk_hf_cache')
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -267,10 +319,10 @@ class Lipsync_MuseTalk:
         bbox = getattr(target_face, 'bbox', None)
         if bbox is None:
             return None
-        crop = face_bbox_crop(frame, bbox)
+        crop, crop_box = face_bbox_crop(frame, bbox)
         if crop is None:
             return None
-        return {"crop": crop, "audio_features": audio_features}
+        return {"crop": crop, "crop_box": crop_box, "audio_features": audio_features}
 
     def infer(self, prepared):
         if prepared is None or not self._ready:
@@ -290,13 +342,23 @@ class Lipsync_MuseTalk:
             pred = self.unet(latents, timesteps, encoder_hidden_states=audio).sample
             return self._decode(pred)
 
-    def finish(self, raw, mouth_cutout_hint: np.ndarray) -> Frame:
-        return raw
+    def finish(self, raw, crop_box, mouth_bb) -> Frame:
+        """Slice the mouth-region sub-crop out of the generated 256x256
+        FACE image, so apply_mouth_area resizes just that region into
+        mouth_bb — not the whole face squashed into a mouth-sized box."""
+        if raw is None:
+            return None
+        local = crop_box_to_local(crop_box, mouth_bb)
+        if local is None:
+            return None
+        lx1, ly1, lx2, ly2 = local
+        return raw[ly1:ly2, lx1:lx2]
 
-    def Run(self, frame: Frame, target_face, audio_features) -> Frame:
+    def Run(self, frame: Frame, target_face, audio_features, mouth_bb) -> Frame:
         prepared = self.prepare(frame, target_face, audio_features)
         raw = self.infer(prepared)
-        return self.finish(raw, None)
+        crop_box = prepared.get("crop_box") if prepared else None
+        return self.finish(raw, crop_box, mouth_bb)
 
     # ── VAE helpers, ported from musetalk/models/vae.py (MIT License,
     #    Copyright (c) 2024 Tencent Music Entertainment Group). ───────────
