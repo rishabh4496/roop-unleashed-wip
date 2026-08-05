@@ -295,6 +295,19 @@ def apply_media_transforms(input_path: str, output_path: str,
     return run_ffmpeg(args)
 
 
+def extract_audio_wav(input_path: str, output_wav_path: str, sample_rate: int = 16000) -> bool:
+    """Mono PCM WAV at *sample_rate* Hz — the driving audio for lip-sync's
+    feature-extraction pass. 16kHz is Whisper's native input rate.
+
+    The only audio-decode entry point in this codebase: every other audio
+    operation here is a stream-copy mux (restore_audio), never a real decode.
+    Staying ffmpeg-subprocess-based keeps that the same for extraction too,
+    rather than adding a librosa/soundfile dependency for one caller.
+    """
+    return run_ffmpeg(['-i', input_path, '-vn', '-ac', '1', '-ar', str(sample_rate),
+                       '-f', 'wav', output_wav_path])
+
+
 def crop_to_fill(source_w: int, source_h: int,
                  target_ratio_w: float, target_ratio_h: float) -> tuple:
     """Centered crop percentages (left, right, top, bottom) that bring

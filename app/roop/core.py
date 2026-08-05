@@ -858,7 +858,15 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
                         if not skip_audio:
-                            ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
+                            # Dubbing against an uploaded track: mux THAT file's audio
+                            # instead of the original clip's. restore_audio only reads
+                            # stream 1's audio (-map 1:a:0?), so any file works here.
+                            audio_source = v.filename
+                            if (getattr(roop.globals, 'lipsync_enabled', False)
+                                    and getattr(roop.globals, 'lipsync_audio_source', 'original') == 'upload'
+                                    and getattr(roop.globals, 'lipsync_audio_path', None)):
+                                audio_source = roop.globals.lipsync_audio_path
+                            ffmpeg.restore_audio(video_file_name, audio_source, v.startframe, v.endframe, destination)
                             if os.path.isfile(destination):
                                 _remove_file_retry(video_file_name)
                         else:

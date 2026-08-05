@@ -100,6 +100,9 @@ export const FACESWAP_DEFAULTS = {
   parser_region_grow: {},
   enhancer_align: false,
   color_match_after_enhance: false,
+  lipsync_enabled: false,
+  lipsync_audio_source: 'original',
+  lipsync_audio_path: null,
 
   // Output
   output_method: 'File',

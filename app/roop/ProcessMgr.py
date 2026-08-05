@@ -9,6 +9,7 @@ from roop.ProcessOptions import ProcessOptions
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import estimate_norm
+from roop.lipsync_audio import frame_time
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -27,6 +28,8 @@ from threading import Thread, Lock, local
 
 # Guards the one-time build of the expression restorer (see _expression_restorer).
 _EXPR_BUILD_LOCK = Lock()
+# Guards the one-time build of the lip-sync restorer (see _lipsync_restorer).
+_LIPSYNC_BUILD_LOCK = Lock()
 from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
 
 # Above this, a stabilizer's warm-up is longer than any block we would be willing
@@ -1032,6 +1035,31 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._precomputed_kps = None
         self._stab_active = False
         self._parallel_stab = False
+        # fps is otherwise a local parameter never retained on self — lip-sync
+        # needs it alongside self._tls.frame_idx to map a frame to a timestamp
+        # in the driving audio (see roop.lipsync_audio.frame_time).
+        self._lipsync_fps = fps
+        self._lipsync_frame_start = frame_start
+        self._lipsync_audio = None
+        if getattr(self.options, 'lipsync_enabled', False):
+            try:
+                source_mode = getattr(roop.globals, 'lipsync_audio_source', 'original')
+                audio_source = (roop.globals.lipsync_audio_path if source_mode == 'upload'
+                                else source_video)
+                if audio_source and os.path.isfile(audio_source):
+                    # Whisper feature extraction reads the whole clip at once and is
+                    # the expensive part here, so cache by source path — a batch that
+                    # dubs several clips against the SAME uploaded track (source_mode
+                    # == 'upload') must not redo it once per clip.
+                    if getattr(self, '_lipsync_audio_cache_key', None) != audio_source:
+                        self._lipsync_audio_cache_val = self._lipsync_restorer().build_audio_cache(audio_source)
+                        self._lipsync_audio_cache_key = audio_source
+                    self._lipsync_audio = self._lipsync_audio_cache_val
+                else:
+                    bar_write(f"[ProcessMgr] lip-sync: no driving audio at {audio_source!r}, skipping this clip")
+            except Exception as e:
+                bar_write(f"[ProcessMgr] lip-sync audio setup failed: {e}")
+                self._lipsync_audio = None
         # Frame indices restart per clip, so a latch carried over from the last
         # one would match a new face by position and hand it a stale verdict.
         self._nonfrontal_router.reset()
@@ -1928,6 +1956,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 r = Expression_LivePortrait()
                 r.Initialize({"devicename": get_device()})
                 self._expr_restorer = r
+        return r
+
+    def _lipsync_restorer(self):
+        """Lazily built and shared across worker threads, mirroring
+        _expression_restorer's construction-locking rationale."""
+        r = getattr(self, '_lipsync_restorer_inst', None)
+        if r is not None:
+            return r
+        with _LIPSYNC_BUILD_LOCK:
+            r = getattr(self, '_lipsync_restorer_inst', None)
+            if r is None:
+                from roop.processors.Lipsync_MuseTalk import Lipsync_MuseTalk
+                from roop.utilities import get_device
+                r = Lipsync_MuseTalk()
+                r.Initialize({"devicename": get_device()})
+                self._lipsync_restorer_inst = r
         return r
 
     def _cur_kps_stab(self):
@@ -3077,6 +3121,34 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 rx=float(getattr(roop.globals, 'eyes_radius_x', 1.0) or 1.0),
                 ry=float(getattr(roop.globals, 'eyes_radius_y', 1.0) or 1.0),
                 yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+
+        # ── Lip-sync (post-composite) ──────────────────────────────────────────
+        # Same slot as restore_original_mouth/apply_eyes_area: full-frame space,
+        # after paste-back, so the generated mouth has the final composited
+        # pixels (expression restore included) as its plate. Mutually exclusive
+        # with restore_original_mouth — both write the same bounding box, and
+        # running both would paste the ORIGINAL mouth back over the lip-synced
+        # one, silently discarding the feature. The UI hides one when the other
+        # is on; this is the backstop.
+        if (getattr(roop.globals, 'lipsync_enabled', False)
+                and not self.options.restore_original_mouth):
+            try:
+                frame_idx = getattr(self._tls, 'frame_idx', None)
+                audio_cache = getattr(self, '_lipsync_audio', None)
+                if frame_idx is not None and audio_cache is not None:
+                    t_s = frame_time(self._lipsync_frame_start, frame_idx, self._lipsync_fps)
+                    audio_feat = audio_cache.features_for_time(t_s)
+                    mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
+                    if audio_feat is not None and mouth_cutout is not None:
+                        restorer = self._lipsync_restorer()
+                        prepared = restorer.prepare(result, target_face, audio_feat)
+                        with _gpu_guard(pooled=getattr(restorer, 'pool', None) is not None):
+                            raw = restorer.infer(prepared)
+                        lipsync_cutout = restorer.finish(raw, mouth_cutout)
+                        result = self.apply_mouth_area(result, lipsync_cutout, mouth_bb, mouth_polygon,
+                                                       mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+            except Exception as e:
+                bar_write(f"[ProcessMgr] lip-sync failed: {e}")
 
         # ── Face-shape reshape (post-composite) ───────────────────────────────
         # Warp the target's jaw/chin/cheek silhouette + lower face toward the

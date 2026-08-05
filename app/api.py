@@ -688,6 +688,18 @@ def source_add(files: list[UploadFile] = File(...)):
 
 
 
+@app.post("/api/lipsync/audio/add")
+def lipsync_audio_add(file: UploadFile = File(...)):
+    """Ingest a dub track for lip-sync's 'upload' audio source.
+
+    A separate small endpoint rather than folding this into /api/swap so that
+    endpoint stays JSON-only, like every other setting on it — the returned
+    path is referenced from the JSON payload afterward via lipsync_audio_path.
+    """
+    path = _save_upload(file)
+    return {"path": path}
+
+
 @app.post("/api/source/remove")
 def source_remove(payload: dict = Body(...)):
     _sources_pop(int(payload.get("index", -1)))
@@ -2017,6 +2029,21 @@ def _apply_enhancer_settings(payload):
         setattr(roop_globals, key, bool(payload.get(key, fallback)))
 
 
+def _apply_lipsync_settings(payload):
+    """Lip-sync (MuseTalk) toggle + audio source, onto roop.globals.
+
+    lipsync_audio_path is deliberately NOT read from payload's own default —
+    it comes only from CFG (there is no durable default for a per-job upload
+    reference) or the payload itself when the client sends one.
+    """
+    for key, default in (("lipsync_enabled", False),
+                         ("lipsync_audio_source", "original")):
+        fallback = getattr(roop_globals.CFG, key, default)
+        value = payload.get(key, fallback)
+        setattr(roop_globals, key, bool(value) if key == "lipsync_enabled" else value)
+    roop_globals.lipsync_audio_path = payload.get("lipsync_audio_path") or None
+
+
 def _apply_parser_region_settings(payload):
     """Push the Face Parser region selection onto roop.globals.
 
@@ -2070,6 +2097,7 @@ def preview(payload: dict = Body(...)):
     _apply_eye_restore_settings(payload)
     _apply_parser_region_settings(payload)
     _apply_enhancer_settings(payload)
+    _apply_lipsync_settings(payload)
 
     faces_list = []
     person_ids = []
@@ -2299,6 +2327,7 @@ def _run_swap(payload):
         _apply_eye_restore_settings(payload)
         _apply_parser_region_settings(payload)
         _apply_enhancer_settings(payload)
+        _apply_lipsync_settings(payload)
         roop_globals.video_encoder = roop_globals.CFG.output_video_codec
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None

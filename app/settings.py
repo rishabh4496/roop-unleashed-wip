@@ -221,6 +221,10 @@ class Settings:
         # Enhancer alignment + a second colour pass after restoration
         self.enhancer_align = self.default_get(data, 'enhancer_align', False)
         self.color_match_after_enhance = self.default_get(data, 'color_match_after_enhance', False)
+        # Lip-sync (MuseTalk) — see roop/globals.py. lipsync_audio_path is a
+        # per-job temp upload reference, not a durable default.
+        self.lipsync_enabled = self.default_get(data, 'lipsync_enabled', False)
+        self.lipsync_audio_source = self.default_get(data, 'lipsync_audio_source', 'original')
         # DeepFaceLab merger post-ops — see roop/procmgr_merger.py. All neutral
         # by default; each is a bit-identical no-op at 0.
         self.merger_hist_match = self.default_get(data, 'merger_hist_match', 0.0)
@@ -365,6 +369,8 @@ class Settings:
             'parser_region_grow': self.parser_region_grow,
             'enhancer_align': self.enhancer_align,
             'color_match_after_enhance': self.color_match_after_enhance,
+            'lipsync_enabled': self.lipsync_enabled,
+            'lipsync_audio_source': self.lipsync_audio_source,
             'merger_hist_match': self.merger_hist_match,
             'merger_sharpen': self.merger_sharpen,
             'merger_motion_blur': self.merger_motion_blur,

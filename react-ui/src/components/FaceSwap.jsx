@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { getJSON, postJSON, postFiles, API } from '../api';
+import { getJSON, postJSON, postFile, postFiles, API } from '../api';
 import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Skeleton } from './ui';
 import { Icon } from '../icons';
 import PersonGroups from './PersonGroups';
@@ -107,6 +107,7 @@ export default function FaceSwap({
   const [fakePreview, setFakePreview] = useState(true);
   const [uploadingSrc, setUploadingSrc] = useState(false);
   const [uploadingTgt, setUploadingTgt] = useState(false);
+  const [uploadingLipsyncAudio, setUploadingLipsyncAudio] = useState(false);
   // Live {loaded, total, phase} from the XHR uploader, plus the controller that
   // cancels it. A multi-GB target used to post with no progress at all — see
   // api.js for why that could not be fixed without leaving fetch.
@@ -593,6 +594,9 @@ export default function FaceSwap({
       detail_transfer_strength: num(activeParams.detail_transfer_strength, 0),
       enhancer_align: activeParams.enhancer_align,
       color_match_after_enhance: activeParams.color_match_after_enhance,
+      lipsync_enabled: activeParams.lipsync_enabled,
+      lipsync_audio_source: activeParams.lipsync_audio_source,
+      lipsync_audio_path: activeParams.lipsync_audio_path,
       restore_original_eyes: activeParams.restore_original_eyes,
       eyes_blend_amount: num(activeParams.eyes_blend_amount, 1),
       eyes_feather_blend: num(activeParams.eyes_feather_blend, 25),
@@ -1025,6 +1029,16 @@ export default function FaceSwap({
       }), beforeCount);
     } catch (err) { reportUploadError(err); }
     finally { setUploadingTgt(false); setTgtProgress(null); tgtAbortRef.current = null; }
+  };
+
+  const onAddLipsyncAudio = async (files) => {
+    if (!files || !files.length) return;
+    setUploadingLipsyncAudio(true);
+    try {
+      const res = await postFile('/api/lipsync/audio/add', files[0]);
+      set('lipsync_audio_path', res.path);
+    } catch (err) { notify(err.message, 'error'); }
+    finally { setUploadingLipsyncAudio(false); }
   };
 
   // Targets that are already on this machine. No transfer and no second copy
@@ -2235,7 +2249,34 @@ export default function FaceSwap({
                 )}
               </>
             )}
-            <Toggle label="Restore original mouth area" checked={!!p.restore_original_mouth} onChange={(v) => set('restore_original_mouth', v)} />
+            {!p.lipsync_enabled && (
+              <Toggle label="Restore original mouth area" checked={!!p.restore_original_mouth} onChange={(v) => set('restore_original_mouth', v)} />
+            )}
+            <Toggle
+              label="Lip-sync (MuseTalk)"
+              info="Regenerates the mouth region to match a driving audio track, after everything else — same slot as 'Restore original mouth area', so the two are mutually exclusive (this one wins when both would apply). 'Original audio' re-syncs the mouth to this clip's own soundtrack, repairing drift the swap itself introduces; 'Uploaded track' dubs against a separate audio file instead."
+              checked={!!p.lipsync_enabled}
+              onChange={(v) => set('lipsync_enabled', v)}
+            />
+            {p.lipsync_enabled && (
+              <>
+                <Select
+                  label="Lip-sync audio source"
+                  value={p.lipsync_audio_source || 'original'}
+                  onChange={(v) => set('lipsync_audio_source', v)}
+                  options={[{ value: 'original', label: 'Original audio' }, { value: 'upload', label: 'Uploaded track' }]}
+                />
+                {p.lipsync_audio_source === 'upload' && (
+                  <FileDrop
+                    accept="audio/*"
+                    label={p.lipsync_audio_path ? `Dub track: ${p.lipsync_audio_path.split(/[\\/]/).pop()}` : 'Add dub audio track'}
+                    onFiles={onAddLipsyncAudio}
+                    busy={uploadingLipsyncAudio}
+                    hint="drop an audio file here"
+                  />
+                )}
+              </>
+            )}
             <Toggle
               label="Restore original eyes"
               info="Brings the TARGET's own eyes back over the swap. Every identity swapper here works from a 112–128px aligned crop, so the eyes — the smallest high-frequency detail in a face, and the first thing a viewer looks at — come back soft, with the gaze nudged toward wherever the source person was looking. This keeps the plate's gaze direction, catchlights and eyelash detail while everything else stays swapped. Built from the two eye keypoints, not the 106-point landmarks the mouth restore uses, so it works on every detector engine. It fades out past 25° of yaw or pitch and switches off at a true profile, because there the far eye is edge-on and the near one sits over the nose bridge — pasting the plate there doubles the socket. Costs one ellipse and a blur, so it is effectively free. Note that it undoes the swapper's eye SHAPE too, which is part of the identity: if the two people's eyes differ a lot, back the amount off rather than running it at 1."
