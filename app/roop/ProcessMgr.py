@@ -10,6 +10,7 @@ from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, 
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import estimate_norm
 from roop.lipsync_audio import frame_time
+import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -1052,7 +1053,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     # dubs several clips against the SAME uploaded track (source_mode
                     # == 'upload') must not redo it once per clip.
                     if getattr(self, '_lipsync_audio_cache_key', None) != audio_source:
-                        self._lipsync_audio_cache_val = self._lipsync_restorer().build_audio_cache(audio_source)
+                        from roop.utilities import get_temp_directory_path
+                        wav_dir = get_temp_directory_path(audio_source)
+                        os.makedirs(wav_dir, exist_ok=True)
+                        wav_path = os.path.join(wav_dir, 'lipsync_audio.wav')
+                        if util_ffmpeg.extract_audio_wav(audio_source, wav_path):
+                            self._lipsync_audio_cache_val = self._lipsync_restorer().build_audio_cache(wav_path, fps)
+                        else:
+                            bar_write(f"[ProcessMgr] lip-sync: audio extraction failed for {audio_source!r}")
+                            self._lipsync_audio_cache_val = None
                         self._lipsync_audio_cache_key = audio_source
                     self._lipsync_audio = self._lipsync_audio_cache_val
                 else:
