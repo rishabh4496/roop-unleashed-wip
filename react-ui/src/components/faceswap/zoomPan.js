@@ -41,19 +41,45 @@ export function stageSize(stage) {
 }
 
 /**
+ * Layout size of an element, via offsetWidth/offsetHeight.
+ *
+ * Unlike `stageSize`, this is safe on an element INSIDE the zoom/pan transform:
+ * a rect there already carries the zoom, layout does not. Same reasoning as
+ * `zoomToActual` — measuring the transformed rect and then solving for a bound
+ * makes the bound depend on the zoom you happened to be at.
+ */
+export function contentSize(el) {
+  if (!el) return { w: 0, h: 0 };
+  return { w: el.offsetWidth, h: el.offsetHeight };
+}
+
+/**
  * The furthest the content can travel before its own edge crosses the stage
  * edge. Without this the content can be flung completely out of the box, and
  * the only way back is the reset button — which is not obviously a zoom control
  * to someone who has just lost the image.
+ *
+ * `content` is the thing actually being looked at, which is NOT the stage
+ * whenever the media is letterboxed inside it — and the preview stage is a
+ * fixed 16:9 box, so anything that is not 16:9 is letterboxed. Bounding against
+ * the stage instead treats the empty bars as image: a 9:16 phone clip is 32% of
+ * the stage width, so at 2x it does not overflow horizontally at all, yet the
+ * stage-derived bound still permitted half a stage-width of travel — far enough
+ * to drag half the picture under the `overflow-hidden` edge. Omit it and the
+ * content is taken to fill the stage, which is the old behaviour exactly.
  */
-export function panBounds(stage, zoom) {
+export function panBounds(stage, zoom, content) {
   if (!stage || zoom <= 1) return { x: 0, y: 0 };
-  const { w, h } = stageSize(stage);
-  return { x: (w * (zoom - 1)) / 2, y: (h * (zoom - 1)) / 2 };
+  const s = stageSize(stage);
+  const c = content ? contentSize(content) : s;
+  return {
+    x: Math.max(0, (c.w * zoom - s.w) / 2),
+    y: Math.max(0, (c.h * zoom - s.h) / 2),
+  };
 }
 
-export function clampPan(pan, zoom, stage) {
-  const b = panBounds(stage, zoom);
+export function clampPan(pan, zoom, stage, content) {
+  const b = panBounds(stage, zoom, content);
   return {
     x: Math.max(-b.x, Math.min(b.x, pan.x)),
     y: Math.max(-b.y, Math.min(b.y, pan.y)),
@@ -90,7 +116,7 @@ export function panAnchoredAt(client, stage, prevZoom, nextZoom, pan) {
  * clicked detail landed 40% of the way off centre — far enough that on a face
  * you would double-click an eye and get the ear.
  */
-export function panCenteringAt(client, stage, zoom) {
+export function panCenteringAt(client, stage, zoom, content) {
   if (!stage) return { x: 0, y: 0 };
   const rect = stage.getBoundingClientRect();
   const s = uiScale(stage);
@@ -98,7 +124,7 @@ export function panCenteringAt(client, stage, zoom) {
     x: (client.x - (rect.left + rect.width / 2)) / s,
     y: (client.y - (rect.top + rect.height / 2)) / s,
   };
-  return clampPan({ x: -u.x * zoom, y: -u.y * zoom }, zoom, stage);
+  return clampPan({ x: -u.x * zoom, y: -u.y * zoom }, zoom, stage, content);
 }
 
 /**

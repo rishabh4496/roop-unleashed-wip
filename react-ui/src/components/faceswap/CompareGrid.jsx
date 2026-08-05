@@ -47,6 +47,13 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
   const stageUnder = (target) =>
     (target?.closest?.('[data-cmp-cell]')) || cellRef.current || containerRef.current;
 
+  /** What is actually being looked at inside a cell. The cell is a grid box of
+   *  whatever shape the layout gives it and the <img> is `object-contain`
+   *  inside it, so clamping the pan against the CELL counts the letterbox bars
+   *  as picture and lets the image be dragged out under the rounded edge. Null
+   *  while the cell is still rendering, which falls back to the cell. */
+  const contentIn = (stage) => stage?.querySelector?.('img') || null;
+
   // Wheel zoom must be a NATIVE non-passive listener. React attaches `wheel` at
   // the root as passive, so the preventDefault() this used to call from onWheel
   // was a no-op: every notch zoomed the grid AND scrolled the page behind it.
@@ -66,7 +73,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
       const p = panAnchoredAt({ x: e.clientX, y: e.clientY }, stage,
                               zoomRef.current, next, panRef.current);
       setZoom(next);
-      setPan(clampPan(p, next, stage));
+      setPan(clampPan(p, next, stage, contentIn(stage)));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -77,7 +84,8 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
   const zoomBy = useCallback((factor) => {
     const nz = Math.min(Math.max(1, zoomRef.current * factor), ZOOM_MAX);
     setZoom(nz);
-    setPan(nz === 1 ? { x: 0, y: 0 } : clampPan(panRef.current, nz, cellRef.current));
+    setPan(nz === 1 ? { x: 0, y: 0 }
+                    : clampPan(panRef.current, nz, cellRef.current, contentIn(cellRef.current)));
   }, []);
 
   // `+` / `-` are documented in the shortcuts HUD under "Compare & Zoom", but
@@ -119,6 +127,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
       ox: e.clientX,
       oy: e.clientY,
       pan: panRef.current,
+      content: contentIn(stage),
     };
     e.currentTarget.setPointerCapture?.(e.pointerId);
     setIsPanning(true);
@@ -134,7 +143,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
       x: d.pan.x + (e.clientX - d.ox) / d.scale,
       y: d.pan.y + (e.clientY - d.oy) / d.scale,
     };
-    setPan(clampPan(next, zoomRef.current, d.stage));
+    setPan(clampPan(next, zoomRef.current, d.stage, d.content));
   };
 
   const endPan = (e) => {
@@ -152,7 +161,8 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
     if (zoomRef.current > 1) { reset(); return; }
     const z = 2.5;
     setZoom(z);
-    setPan(panCenteringAt({ x: e.clientX, y: e.clientY }, stageUnder(e.target), z));
+    const stage = stageUnder(e.target);
+    setPan(panCenteringAt({ x: e.clientX, y: e.clientY }, stage, z, contentIn(stage)));
   };
 
   const transformStyle = transformFor(zoom, pan);

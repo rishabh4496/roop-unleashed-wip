@@ -172,6 +172,78 @@ class AppZoomCompensation(unittest.TestCase):
                 'gesture zooms this surface AND the whole UI')
 
 
+class PanIsBoundedToThePicture(unittest.TestCase):
+    """The bound has to come from the MEDIA, not from the box around it.
+
+    Both surfaces letterbox: the preview stage is a fixed 16:9 box and a grid
+    cell is whatever shape the layout hands it, and in both the image is
+    object-contain inside. A bound derived from the box counts the empty bars as
+    picture — a 9:16 phone clip is ~32% of the stage width, so at 2x it does not
+    overflow horizontally at all, yet the box-derived bound still allowed half a
+    stage-width of travel, i.e. half the picture dragged under the
+    `overflow-hidden` edge.
+    """
+
+    def test_pan_bounds_subtracts_the_stage_from_the_scaled_content(self):
+        src = _code(ZOOMPAN)
+        self.assertRegex(
+            src, r'Math\.max\(0,\s*\(c\.w \* zoom - s\.w\) / 2\)',
+            'panBounds must bound by how far the SCALED CONTENT overflows the '
+            'stage, not by the stage growing against itself')
+
+    def test_content_is_measured_as_layout_not_as_a_rect(self):
+        """The content element sits INSIDE the transform, so its rect already
+        carries the zoom — the same trap zoomToActual was fixed for."""
+        src = _code(ZOOMPAN)
+        body = src.split('export function contentSize', 1)
+        self.assertEqual(len(body), 2, 'zoomPan must export contentSize')
+        head = body[1][:400]
+        self.assertIn('offsetWidth', head)
+        self.assertNotIn('getBoundingClientRect', head)
+
+    def test_both_stages_pass_their_content_element(self):
+        for name, path in STAGES.items():
+            src = _code(path)
+            self.assertRegex(
+                src, r'clampPan\([^;]*,\s*(imageRef\.current|contentIn\(|d\.content)',
+                f'{name} clamps against its own box rather than against the '
+                'image inside it, so letterboxed media can be dragged out')
+
+
+class MagnifierLens(unittest.TestCase):
+    def test_the_lens_divides_out_the_app_zoom(self):
+        """Every lens number comes from a rect (visual px) but is applied as a
+        CSS length inside the app-zoomed subtree (layout px). Undivided, the
+        glass sits at `zoom x` the cursor's distance from the stage corner."""
+        src = _code(PREVIEW)
+        block = src.split('setLensPos({', 1)
+        self.assertEqual(len(block), 2, 'no setLensPos call found')
+        head = block[1][:500]
+        for field in ('x:', 'y:', 'imgW:', 'imgH:', 'imgX:', 'imgY:'):
+            line = [ln for ln in head.splitlines() if ln.strip().startswith(field)]
+            self.assertTrue(line, f'lens field {field} missing')
+            self.assertIn(
+                '/ s', line[0],
+                f'lens {field} is in visual pixels but is applied as a layout '
+                'length — divide by uiScale like the pan and the drag do')
+
+
+class HudIsReachable(unittest.TestCase):
+    def test_the_control_cluster_can_wrap(self):
+        """Sixteen controls in one nowrap row inside an `overflow-hidden`
+        stage: once the row is wider than the stage it is clipped at BOTH ends
+        (it is centred) and the clipped controls cannot be reached at all — the
+        leftmost being zoom-out, the rightmost fullscreen."""
+        src = _code(PREVIEW)
+        cluster = [ln for ln in src.splitlines() if 'spring-cluster' in ln]
+        self.assertTrue(cluster, 'preview HUD cluster not found')
+        self.assertIn('flex-wrap', cluster[0],
+                      'the preview HUD cluster must be allowed to wrap')
+        self.assertIn('max-w-full', cluster[0],
+                      'the preview HUD cluster must be capped at the stage '
+                      'width or wrapping never triggers')
+
+
 class GridSizing(unittest.TestCase):
     def test_the_grid_height_follows_the_row_count(self):
         """A 2x2 comparison needs twice the box of a single row per cell."""

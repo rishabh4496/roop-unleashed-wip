@@ -288,7 +288,7 @@ export default function InteractivePreview({
       const p = panAnchoredAt({ x: e.clientX, y: e.clientY }, el,
                               zoomRef.current, next, panRef.current);
       setZoom(next);
-      setPan(clampPan(p, next, el));
+      setPan(clampPan(p, next, el, imageRef.current));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -341,13 +341,22 @@ export default function InteractivePreview({
     if (magnifierActive && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       const ir = imageRef.current?.getBoundingClientRect();
+      // Every number below is derived from a rect, i.e. VISUAL pixels, but the
+      // lens is positioned and sized in CSS px inside the app-zoomed subtree —
+      // layout pixels. Without dividing by the app zoom the glass sits at
+      // `zoom x` the cursor's distance from the stage corner, so it drifts
+      // further from the pointer the further across the stage you go, and shows
+      // the region at the wrong magnification on top. This was the last place
+      // in the stage still mixing the two spaces; the pan, the drag and the
+      // double-click all divide it out.
+      const s = uiScale(containerRef.current);
       setLensPos({
-        x: cx - rect.left,
-        y: cy - rect.top,
-        imgW: ir?.width || rect.width,
-        imgH: ir?.height || rect.height,
-        imgX: (ir?.left ?? rect.left) - rect.left,
-        imgY: (ir?.top ?? rect.top) - rect.top,
+        x: (cx - rect.left) / s,
+        y: (cy - rect.top) / s,
+        imgW: (ir?.width || rect.width) / s,
+        imgH: (ir?.height || rect.height) / s,
+        imgX: ((ir?.left ?? rect.left) - rect.left) / s,
+        imgY: ((ir?.top ?? rect.top) - rect.top) / s,
         visible: cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom,
       });
     }
@@ -372,7 +381,7 @@ export default function InteractivePreview({
         setPan(clampPan({
           x: startPan.panX + (p.cx - startPan.x) / s,
           y: startPan.panY + (p.cy - startPan.y) / s,
-        }, zoom, containerRef.current));
+        }, zoom, containerRef.current, imageRef.current));
       }
     });
   };
@@ -466,7 +475,7 @@ export default function InteractivePreview({
       setZoom(z);
       setPan(panCenteringAt(
         { x: e.clientX ?? e.touches?.[0]?.clientX, y: e.clientY ?? e.touches?.[0]?.clientY },
-        containerRef.current, z,
+        containerRef.current, z, imageRef.current,
       ));
     }
   };
@@ -625,13 +634,20 @@ export default function InteractivePreview({
   const zoomBy = (factor) => {
     const nz = Math.min(Math.max(1, zoomRef.current * factor), ZOOM_MAX);
     setZoom(nz);
-    setPan(nz === 1 ? { x: 0, y: 0 } : clampPan(panRef.current, nz, containerRef.current));
+    setPan(nz === 1 ? { x: 0, y: 0 }
+                    : clampPan(panRef.current, nz, containerRef.current, imageRef.current));
   };
 
   // Main HUD Control Bar inside Preview Box
   const hudBar = () => (
+    // `flex-wrap` + `max-w-full`, because this cluster is sixteen controls wide
+    // and the stage it sits in is `overflow-hidden`. On any layout where the
+    // row is wider than the stage it was clipped at BOTH ends (the row is
+    // centred), and with no wrap and no scroll the clipped controls could not
+    // be reached at all — the first casualty on the left being the zoom-out
+    // button, and on the right the fullscreen one.
     <div className="absolute inset-x-0 bottom-0 z-50 flex justify-center p-3 pointer-events-none">
-      <div className="spring-cluster pointer-events-auto flex items-center gap-0.5 rounded-xl hud-glass p-1 opacity-70 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300 shadow-2xl border border-white/10">
+      <div className="spring-cluster pointer-events-auto flex flex-wrap justify-center max-w-full items-center gap-0.5 rounded-xl hud-glass p-1 opacity-70 translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0 transition-all duration-300 shadow-2xl border border-white/10">
         {/* View Zoom controls */}
         <button
           onClick={() => zoomBy(1 / 1.4)}
