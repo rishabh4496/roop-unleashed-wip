@@ -508,15 +508,42 @@ actually run**:
 | CodeFormer fp16 | 2763 MB | 530 MB |
 | CodeFormer fp32 | 2700 MB | 560 MB |
 
-Two things worth knowing before re-deriving any of this:
+Reproduced twice; the per-extra-context figures are stable to 1 MB
+(529/530, 560/560, 682/683), while the first context varies with whatever CUDA
+context init is already on the card.
+
+What the pool actually buys, same machine, 8 calls over 4 threads, all contexts
+warmed, serial and concurrent interleaved over 5 rounds (median):
+
+| | serial | concurrent | speedup |
+|---|---|---|---|
+| CodeFormer fp16 | 41.4 ms/call | 27.4 ms/call | **1.51x** |
+| CodeFormer fp32 | 37.3 ms/call | 28.9 ms/call | **1.29x** |
+
+Not 4x, because a single CodeFormer inference already keeps the GPU busy. This
+understates the change: it isolates the enhancer, whereas the pool's real job in
+a render is letting other workers run mask/swap/paste **while** one enhances,
+instead of every thread blocking on the global lock.
+
+**`Codeformer (fp16)` buys nothing under `trt_precision: mixed`** — same VRAM,
+and its serial ms/call is if anything slightly worse than the fp32 tier's (the
+two overlap run to run). `mixed` builds FP16 kernels from either set of weights,
+so the fp16 ONNX has nothing left to give. Its measured 1.60x (162.9 -> 102.0
+ms) is a **CUDA** result and only applies with `provider: cuda`.
+
+Three traps before re-deriving any of this, each of which returns a confident
+wrong number:
 
 - **ONNX file size does not predict VRAM.** fp32 is 359 MB on disk against
-  fp16's 180 MB, yet costs slightly *less* on the card, because `mixed` has
-  TensorRT build FP16 kernels from either set of weights. What lives in VRAM is
+  fp16's 180 MB, yet costs slightly *less* on the card. What lives in VRAM is
   the engine, not the file.
 - **Creating a session is not what allocates the execution context.** Measured
   without running an inference, every extra context looks like ~10 MB and the
   whole question looks free.
+- **Warm up every context before timing.** The first concurrent batch pays each
+  extra context's first-inference allocation (~530 MB). Timing that against a
+  serial batch that runs afterwards on warm contexts reported **0.10x** — i.e.
+  concurrency ten times slower — which is pure ordering artefact.
 
 `trt_precision: fp32` builds genuinely FP32 engines and is **not** covered by
 that table. Each pooled enhancer falls back to a single session behind the lock
