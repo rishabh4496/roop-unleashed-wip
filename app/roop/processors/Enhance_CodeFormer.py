@@ -7,6 +7,7 @@ import roop.globals
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path
 from roop.processors.enhance_common import is_usable, sized
+from roop import session_pool
 
 
 # THREAD_LOCK = threading.Lock()
@@ -18,6 +19,7 @@ class Enhance_CodeFormer():
     plugin_options:dict = None
     fp16 = False
     in_dtype = np.float32
+    pool = None        # SessionPool of independent sessions for TRT multi-context
 
     processorname = 'codeformer'
     type = 'enhance'
@@ -74,10 +76,55 @@ class Enhance_CodeFormer():
                 # above; going lower would give the saving back.
                 opts = onnxruntime.SessionOptions()
                 opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-            self.model_codeformer = onnxruntime.InferenceSession(model_path, opts, providers=roop.globals.execution_providers)
+            def _build(_i=0):
+                return onnxruntime.InferenceSession(
+                    model_path, opts, providers=roop.globals.execution_providers)
+
+            self.model_codeformer = _build()
             self.model_inputs = self.model_codeformer.get_inputs()
             self.model_outputs = self.model_codeformer.get_outputs()
             self.in_dtype = np.float16 if 'float16' in self.model_inputs[0].type else np.float32
+
+            # Optional TensorRT multi-context pool: the primary session plus
+            # (N-1) independent extras, so N workers can enhance concurrently.
+            #
+            # Without this, `_gpu_guard` hands the enhance stage the GLOBAL GPU
+            # lock (it only exempts a processor that owns a pool), which makes
+            # the single most expensive stage in a render — ~36% of wall clock —
+            # a one-thread-at-a-time queue while every other worker waits. That
+            # is a hard ceiling no thread count can lift: with the enhancer at
+            # ~22 ms/face and the rest of the per-face work at ~57 ms, the
+            # pipeline saturates at ~4 threads and then simply stops scaling.
+            #
+            # Only SESSIONS are pooled here, not (session, io_binding) pairs as
+            # in Enhance_RestoreFormerPPlus. This Run() already builds a fresh
+            # io_binding per call — it has to, because the fidelity weight `w`
+            # is a second input that must be bound per call — so binding state
+            # was never shared and only the TensorRT context needs isolating.
+            #
+            # Sized from VRAM by session_pool, so a card that cannot afford the
+            # extra engines gets 0 and the original single-session + global-lock
+            # behaviour back, byte for byte.
+            #
+            # Building the extras can still run the card out of memory on a
+            # config the VRAM tier did not anticipate — a big swapper, an
+            # expression pool and four restorer contexts all want the same
+            # 12GB. An OOM here must not take the render down, because the
+            # single-session path is right there and works: on failure, drop
+            # whatever was built and carry on with the global lock. Slower,
+            # never broken.
+            if session_pool.pooling_enabled():
+                n = session_pool.pool_size()
+                extras = []
+                try:
+                    extras = [_build(i) for i in range(n - 1)]
+                    self.pool = session_pool.SessionPool(
+                        lambda i, _e=([self.model_codeformer] + extras): _e[i], n)
+                except Exception as e:
+                    extras.clear()
+                    self.pool = None
+                    print(f"[CodeFormer] multi-context pool unavailable ({e}); "
+                          f"falling back to one session behind the GPU lock")
 
 
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
@@ -90,18 +137,31 @@ class Enhance_CodeFormer():
         temp_frame = (temp_frame - 0.5) / 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
 
-        # Fresh io_binding per call: a shared binding is not thread-safe (under
-        # the CUDA provider enhancers run concurrently, unlike TensorRT which is
-        # serialised by the global GPU lock). Each input is bound exactly once
-        # per binding, with a consistent dtype (the fidelity weight w must be
-        # float64 for this ONNX export).
-        io_binding = self.model_codeformer.io_binding()
-        io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame.astype(self.in_dtype))
+        # Fresh io_binding per call: a shared binding is not thread-safe, and
+        # this graph needs one anyway because the fidelity weight `w` is a
+        # second input bound per call (float64 for this ONNX export). Each
+        # input is bound exactly once per binding, with a consistent dtype.
         cf_fidelity = getattr(roop.globals, 'codeformer_fidelity', 0.5)
-        io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([cf_fidelity], dtype=np.float64))
-        io_binding.bind_output(self.model_outputs[0].name, self.devicename)
-        self.model_codeformer.run_with_iobinding(io_binding)
-        ort_outs = io_binding.copy_outputs_to_cpu()
+
+        def _infer(sess):
+            iob = sess.io_binding()
+            iob.bind_cpu_input(self.model_inputs[0].name,
+                               temp_frame.astype(self.in_dtype))
+            iob.bind_cpu_input(self.model_inputs[1].name,
+                               np.array([cf_fidelity], dtype=np.float64))
+            iob.bind_output(self.model_outputs[0].name, self.devicename)
+            sess.run_with_iobinding(iob)
+            return iob.copy_outputs_to_cpu()
+
+        if self.pool is not None:
+            # Lease an independent session so this thread runs on its own
+            # TensorRT context concurrently with the other workers. Input and
+            # output NAMES are identical across sessions built from one ONNX,
+            # so the cached self.model_inputs/outputs stay valid for any lease.
+            with self.pool.lease() as sess:
+                ort_outs = _infer(sess)
+        else:
+            ort_outs = _infer(self.model_codeformer)
         # float32 regardless of the model's precision — every step below
         # (clip, rescale, cvtColor) is written for it, and cv2 rejects float16.
         result = np.asarray(ort_outs[0][0], dtype=np.float32)
@@ -130,6 +190,12 @@ class Enhance_CodeFormer():
 
 
     def Release(self):
+        # Pool first: it holds the extra sessions AND a reference to the
+        # primary one, so dropping the primary while the pool still owns it
+        # would leave live TensorRT contexts with no owner to free them.
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
         del self.model_codeformer
         self.model_codeformer = None
 
