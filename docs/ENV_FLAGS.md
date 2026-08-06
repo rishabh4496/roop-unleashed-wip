@@ -486,6 +486,42 @@ fixed. Isolated cost of one 512² face, RTX 4070, TensorRT FP16, engines warm
 Speed only — quality is a separate judgement and belongs to whoever is watching
 the output. Reproduce with `app/tools/bench_stages.py` (covers enhancer, mask and swap models).
 
+### Enhancer concurrency, and what it costs in VRAM
+
+Cost per call is only half the story. `_gpu_guard` waives the global TensorRT
+lock **only for a processor that owns a `SessionPool`** — so an unpooled
+enhancer serialises this stage to one thread while every other worker blocks on
+the lock, and since enhance is ~36% of wall clock that is a hard ceiling **no
+`max_threads` value can lift**. For a serialised stage of service time `S`
+against `P` of other per-face work, throughput is `min(T/(S+P), 1/S)` and
+saturates at `T* = 1 + P/S` — about 4 threads with CodeFormer on a 4070.
+
+Pooled today: **RestoreFormer++**, **CodeFormer**. Still unpooled (and so still
+serialised): GFPGAN, GPEN (all sizes), DMDNet, KEEP.
+
+Measured pool cost, RTX 4070, `trt_precision: mixed`, 4 contexts, **each one
+actually run**:
+
+| enhancer | 4 contexts | per extra context |
+|---|---|---|
+| RestoreFormer++ | 3345 MB | 683 MB |
+| CodeFormer fp16 | 2763 MB | 530 MB |
+| CodeFormer fp32 | 2700 MB | 560 MB |
+
+Two things worth knowing before re-deriving any of this:
+
+- **ONNX file size does not predict VRAM.** fp32 is 359 MB on disk against
+  fp16's 180 MB, yet costs slightly *less* on the card, because `mixed` has
+  TensorRT build FP16 kernels from either set of weights. What lives in VRAM is
+  the engine, not the file.
+- **Creating a session is not what allocates the execution context.** Measured
+  without running an inference, every extra context looks like ~10 MB and the
+  whole question looks free.
+
+`trt_precision: fp32` builds genuinely FP32 engines and is **not** covered by
+that table. Each pooled enhancer falls back to a single session behind the lock
+if building the extras runs out of memory, which is what carries that case.
+
 **Benchmarking ONNX outside the app — three traps**, each of which silently
 yields CPU numbers that look like a plausible result (measured 483 ms/call for
 GFPGAN on CPU vs 12 ms on TensorRT, a 43x error):

@@ -106,6 +106,32 @@ class Enhance_CodeFormer():
             # extra engines gets 0 and the original single-session + global-lock
             # behaviour back, byte for byte.
             #
+            # MEASURED cost of this pool, RTX 4070, trt_precision 'mixed',
+            # 4 contexts, each one actually run (see the trap below):
+            #
+            #   RestoreFormer++   3345 MB   (683 MB per extra context)
+            #   CodeFormer fp16   2763 MB   (530 MB per extra context)
+            #   CodeFormer fp32   2700 MB   (560 MB per extra context)
+            #
+            # So BOTH tiers here are cheaper than RestoreFormer++, which has
+            # always pooled 4. Pooling this one is not a new risk; it is less
+            # than the risk already shipped as the recommended enhancer.
+            #
+            # Note fp32 is not the expensive tier — it is marginally cheaper.
+            # The ONNX file sizes (359 MB fp32 vs 180 MB fp16) do NOT predict
+            # VRAM, because 'mixed' has TensorRT build FP16 kernels from either
+            # set of weights: what lives on the card is the engine, not the
+            # file. Do not re-derive this budget from model file sizes.
+            #
+            # The trap, if these are ever remeasured: creating a session is not
+            # what allocates the execution context. Measured without running an
+            # inference, every extra context looks like 10 MB and the whole
+            # question looks free.
+            #
+            # trt_precision 'fp32' is NOT covered by the above — that builds
+            # genuinely FP32 engines and was not measured. The fallback below is
+            # what carries that case.
+            #
             # Building the extras can still run the card out of memory on a
             # config the VRAM tier did not anticipate — a big swapper, an
             # expression pool and four restorer contexts all want the same
