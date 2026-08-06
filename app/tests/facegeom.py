@@ -41,6 +41,48 @@ def project_kps(yaw_deg, pitch_deg=0.0, roll_deg=0.0, scale=200.0, cx=256.0, cy=
                             cy - scale * pts[:, 1]]).astype(np.float32)
 
 
+def head_106():
+    """A 106-point head with real depth relief, in the same 3-D frame as
+    HEAD_5PT, using the index layout create_landmark_mask assumes (0-32 contour,
+    33-52 eyebrows).
+
+    Depth is the whole point. A flat 2-D face rotated in-plane — which is all the
+    roll tests need — collapses to a line under yaw, so it cannot say anything
+    about how the mask behaves on a turned head. Contour points wrap around an
+    ellipsoid so the cheeks recede, and the brows and nose stand proud.
+
+    The 5 arcface keypoints are appended as members, because in the real pipeline
+    the 106 landmarks and the 5 keypoints come from the same detector on the same
+    face. Two synthetic heads that disagree on where the mouth is will report a
+    keypoint outside the mask and look exactly like a bug in the mask.
+    """
+    pts = []
+    for i in range(33):                                   # 0-32 jaw / contour
+        a = np.pi * (-0.5 + i / 32.0)
+        pts.append([0.50 * np.sin(a),
+                    -0.62 + 0.50 * (1.0 - abs(np.sin(a))),
+                    0.30 * np.cos(a)])
+    for i in range(20):                                   # 33-52 eyebrows
+        t = -0.36 + 0.72 * i / 19.0
+        pts.append([t, 0.46, 0.28 - 0.35 * t * t])
+    for i in range(20):                                   # eye region
+        a = 2 * np.pi * i / 20.0
+        pts.append([0.33 * np.cos(a), 0.36 + 0.06 * np.sin(a), 0.20])
+    for i in range(13):                                   # nose ridge -> tip
+        pts.append([0.0, 0.36 - 0.46 * i / 12.0, 0.20 + 0.35 * i / 12.0])
+    for i in range(15):                                   # mouth
+        a = 2 * np.pi * i / 15.0
+        pts.append([0.30 * np.cos(a), -0.55 + 0.09 * np.sin(a), 0.30])
+    return np.vstack([np.asarray(pts, dtype=np.float64), HEAD_5PT])
+
+
+def project_points(pts3d, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
+                   scale=200.0, cx=256.0, cy=256.0):
+    """Project arbitrary 3-D head points to image coordinates at this pose."""
+    q = np.asarray(pts3d, dtype=np.float64) @ rotation(yaw_deg, pitch_deg, roll_deg).T
+    return np.column_stack([cx + scale * q[:, 0], cy - scale * q[:, 1]])
+
+
 def decompose(matrix):
     """(uniform scale, in-plane rotation in degrees) of a 2x3 similarity."""
     a, c = matrix[0, 0], matrix[1, 0]

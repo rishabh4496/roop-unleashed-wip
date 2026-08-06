@@ -6,11 +6,18 @@ space, which is only correct for an upright head: on a tilted one the forehead
 polygon lands off-axis, so the hull swallows background on one side while
 clipping real forehead on the other.
 
-Two properties are asserted:
+Properties asserted:
   * upright faces are BIT-IDENTICAL to the original implementation, so the
     frontal path (the overwhelming majority of frames) provably did not move;
   * the mask is rotationally EQUIVARIANT — rolling the head rolls the mask,
-    rather than deforming it.
+    rather than deforming it;
+  * the forehead extension tracks the head's own up-axis under YAW and PITCH,
+    not just roll (TestTurnedAndTilted).
+
+That last one needs a head with real depth. Everything above it rotates a flat
+2-D face in-plane, which is all roll requires — but a flat face collapses to a
+line under yaw, so those fixtures cannot say anything about a turned head.
+facegeom.head_106 exists for this.
 """
 
 import os
@@ -23,6 +30,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from roop.ProcessMgr import ProcessMgr                  # noqa: E402
+from tests.facegeom import (head_106, project_kps,      # noqa: E402
+                            project_points)
 
 SHAPE = (600, 600, 3)
 CENTER = (300.0, 300.0)
@@ -203,6 +212,76 @@ class TestMaskCropBox(unittest.TestCase):
         self.assertLessEqual(y0, 400)
         self.assertGreaterEqual(x1, 900)
         self.assertGreaterEqual(y1, 520)
+
+
+class TestTurnedAndTilted(unittest.TestCase):
+    """Yaw and pitch, which the roll fixtures above structurally cannot reach.
+
+    The hull itself is just the convex hull of the landmarks, so it follows the
+    face wherever the landmarks go. The part that is NOT derived from landmarks —
+    and so the part that can be wrong at a pose nobody tested — is the forehead
+    extension, which is projected along an axis taken from the 5 keypoints.
+    """
+
+    SHAPE = (512, 512, 3)
+
+    @staticmethod
+    def _mask(yaw, pitch, roll, blend=15.0):
+        lm = project_points(head_106(), yaw, pitch, roll)
+        kps = project_kps(yaw, pitch, roll)
+        return create_landmark_mask(None, lm, TestTurnedAndTilted.SHAPE,
+                                    blend, kps=kps), lm, kps
+
+    def test_every_keypoint_stays_inside_the_mask(self):
+        checked = 0
+        for yaw in range(-90, 91, 10):
+            for pitch in (-40, -20, 0, 20, 40):
+                for roll in (-45, 0, 45):
+                    mask, _, kps = self._mask(yaw, pitch, roll)
+                    for name, p in zip(("Leye", "Reye", "nose", "Lmouth",
+                                        "Rmouth"), kps):
+                        x, y = int(round(p[0])), int(round(p[1]))
+                        if 0 <= y < 512 and 0 <= x < 512:
+                            self.assertGreater(
+                                mask[y, x], 0,
+                                f"{name} outside the mask at yaw={yaw} "
+                                f"pitch={pitch} roll={roll}")
+                    checked += 1
+        self.assertGreater(checked, 250)
+
+    def test_forehead_extends_along_the_head_axis_at_every_pose(self):
+        """~0.6 of the brow-to-chin distance, measured along the head's own up
+        axis. If the extension were still projected in image space this would
+        collapse as soon as the head turned or tilted."""
+        for yaw in (-60, -30, 0, 30, 60):
+            for pitch in (-40, 0, 40):
+                mask, lm, kps = self._mask(yaw, pitch, 0, blend=0.0)
+                ys, xs = np.nonzero(mask)
+                self.assertGreater(len(xs), 0)
+                k = np.asarray(kps, np.float64)
+                u = ((k[0] + k[1]) / 2.0) - ((k[3] + k[4]) / 2.0)
+                u = u / max(np.linalg.norm(u), 1e-9)
+                brow = float(np.max(lm[33:53] @ u))
+                face_h = brow - float(np.min(lm @ u))
+                top = float(np.max(np.column_stack([xs, ys]).astype(np.float64) @ u))
+                ratio = (top - brow) / max(face_h, 1e-9)
+                self.assertGreater(ratio, 0.35,
+                                   f"forehead only {ratio:.2f} of face height at "
+                                   f"yaw={yaw} pitch={pitch}")
+                self.assertLess(ratio, 0.90,
+                                f"forehead over-extended to {ratio:.2f} at "
+                                f"yaw={yaw} pitch={pitch}")
+
+    def test_mask_area_is_sane_across_the_sphere(self):
+        for yaw in range(-90, 91, 15):
+            for pitch in (-40, 0, 40):
+                mask, _, _ = self._mask(yaw, pitch, 0)
+                cov = float((mask > 0).mean())
+                self.assertGreater(cov, 0.004,
+                                   f"mask nearly empty at yaw={yaw} pitch={pitch}")
+                self.assertLess(cov, 0.60,
+                                f"mask swallowed the frame at yaw={yaw} "
+                                f"pitch={pitch}")
 
 
 if __name__ == "__main__":
