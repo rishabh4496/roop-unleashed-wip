@@ -1033,17 +1033,13 @@ def kps_pose_ratios(kps):
 # overridden per run by the Face Swap toggle) rather than captured here at import
 # time, so flipping the toggle takes effect on the next run without an app
 # restart — the point of an opt-in visual change is being able to A/B it.
-# Gate for 'stabilize' mode ONLY. Engages on near-profile faces (~70 deg+),
-# deliberately TIGHTER than the 0.55 gate the masking path uses: the constrained
-# fit disagrees with the plain least-squares fit by up to ~9 deg even at yaw 55,
-# so a looser gate here would visibly change mid-angle faces that already look
-# correct.
-#
-# 'pose' mode does NOT use this. It is keyed on a real yaw+pitch solve and fades
-# in over an angle band instead — see POSE_ALIGN_ONSET_DEG. A yaw_ratio gate
-# cannot serve it, because pitch inflates yaw_ratio: at yaw 90 / pitch -30 the
-# ratio reads 0.411, above this threshold, so the most extreme pose in the range
-# was being treated as a mid-angle face and left uncorrected.
+# HISTORICAL. This was the hard gate for 'stabilize' mode. Nothing gates on it
+# any more — both modes now key on a real yaw+pitch solve and fade in over an
+# angle band (POSE_ALIGN_ONSET_DEG, STAB_ALIGN_ONSET_DEG) — but the constant is
+# kept because the tests use it to pin down how badly the proxy misleads: pitch
+# inflates yaw_ratio, so at yaw 90 / pitch -30 the ratio reads 0.411, above this
+# threshold, and the most extreme pose in the range was read as a mid-angle face
+# and left uncorrected. See solve_pose_5pt.
 YAW_ALIGN_RATIO = 0.40
 
 # Three modes, selected by roop.globals.yaw_align:
@@ -1253,36 +1249,22 @@ def _pose_template(yaw_deg, base_dst, pitch_deg=0.0):
     return scaled - scaled.mean(axis=0) + np.asarray(base_dst, np.float64).mean(axis=0)
 
 
-def _constrained_norm(lmk, dst):
-    """Similarity transform whose ROTATION is taken from the eye_mid -> mouth_mid
-    axis instead of from an unconstrained 5-point least-squares fit.
+def _axis_angle(p):
+    """Direction of the eye_mid -> mouth_mid axis, in image radians."""
+    v = ((p[3] + p[4]) / 2.0) - ((p[0] + p[1]) / 2.0)
+    return np.arctan2(v[1], v[0])
 
-    Why: at high yaw the two eyes project to nearly the same point (their
-    separation collapses to zero at 90 deg), so the least-squares fit is
-    ill-conditioned in rotation and starts absorbing PITCH as in-plane roll.
-    Measured swing of the crop rotation as the head nods from -25 to +25 deg:
 
-        yaw    0     30     60     75     90
-        LS   0.00   9.93  20.14  25.35  30.51  deg   <- current behaviour
-        ours 0.00   0.49   0.49   0.28   0.00  deg   <- rotation held steady
+def _similarity_at_angle(lmk, dst, theta):
+    """Similarity transform with the ROTATION pinned to `theta`, and scale and
+    translation solved by least squares over all 5 points.
 
-    A 30 deg rotation swing on a nodding profile head feeds the swapper an
-    off-distribution crop and shows up as rotational wobble frame to frame.
-
-    The eye_mid -> mouth_mid axis stays well-conditioned at every yaw, so we fix
-    the rotation from it and still solve scale + translation by least squares
-    over all 5 points (so those keep every point's information).
-
-    Caveat: the mean per-point fit residual gets slightly WORSE off-neutral-pitch
-    (e.g. yaw 90 / pitch +25: 64.0 -> 69.9 px on a 512 crop). That is expected and
-    is not a regression — the lower residual was being bought by rotating the
-    face, which is precisely the pathology being removed.
+    Pinning the rotation to the value the unconstrained fit would have chosen
+    reproduces that fit exactly — the least-squares similarity decouples, so the
+    optimal scale and translation for the optimal rotation are the optimal scale
+    and translation. That is what lets the crossfade below start from the plain
+    fit and converge back to it, instead of stepping.
     """
-    def axis_angle(p):
-        v = ((p[3] + p[4]) / 2.0) - ((p[0] + p[1]) / 2.0)
-        return np.arctan2(v[1], v[0])
-
-    theta = axis_angle(dst) - axis_angle(lmk)
     c, s = np.cos(theta), np.sin(theta)
     R = np.array([[c, -s], [s, c]], dtype=np.float64)
 
@@ -1298,7 +1280,7 @@ def _constrained_norm(lmk, dst):
     M = np.zeros((2, 3), dtype=np.float64)
     M[:, :2] = scale * R
     M[:, 2] = dst_m - scale * (R @ src_m)
-    return M
+    return M if np.isfinite(M).all() else None
 
 
 # Where the 'pose' template fades in and out, as an off-axis angle in degrees
@@ -1340,6 +1322,50 @@ def _constrained_norm(lmk, dst):
 POSE_ALIGN_ONSET_DEG = 15.0
 POSE_ALIGN_FULL_DEG = 40.0
 
+# Where 'stabilize' fades its rotation constraint in and out, also as an
+# off-axis angle. Same reasoning as the pose band above — a threshold flickers —
+# but this mode had a far worse case of it, so the numbers are worth recording.
+#
+# It used to engage on a hard `yaw_ratio < 0.40` gate. Two things were wrong
+# with that. First, yaw_ratio is pitch-contaminated (see solve_pose_5pt), so the
+# gate wandered: it fired at yaw 56 on a level head, at yaw 66 with 20 deg of
+# nod, and never at all below yaw 90 once the nod reached 30 deg — the mode was
+# silently dead on exactly the tilted profiles it was written for. Second, and
+# much worse, the two fits differ by up to 30 deg of crop rotation at high yaw,
+# so crossing the gate was a step change of that size. Measured:
+#
+#   still head, 1 px keypoint noise      rot sd    rot range
+#     yaw 66 / pitch -20   hard gate     5.411 deg   12.61 deg
+#     yaw 90 / pitch -30   hard gate     6.157 deg   21.88 deg
+#     yaw 90 / pitch -30   this band     0.360 deg    2.64 deg
+#     yaw 90 / pitch -30   mode 'off'    0.446 deg    2.69 deg
+#
+# A head that is not moving at all had its crop rotating +/- 11 deg frame to
+# frame, driven by nothing but detector noise sitting on the gate. The mode sold
+# as the fix for rotational wobble was the largest source of it in the pipeline.
+# Worst single-frame jump along a -90..+90 turn with a 40 deg nod riding on it:
+# 18.43 deg with the gate, 0.046 deg with this band, 0.104 deg with the mode off.
+#
+# Note this fades the ROTATION ANGLE between the two fits, not the templates.
+# An earlier attempt to fade 'stabilize' in was abandoned because the rotation
+# constraint does not converge to the default fit near frontal — it disagrees by
+# ~9 deg even at yaw 55 — so a template blend would have changed mid angles. That
+# objection does not apply here: interpolating from the angle the plain fit
+# ALREADY chose is exactly the plain fit at w=0 (see _similarity_at_angle), so
+# the low end of the band converges by construction. Verified: yaw 30 and 40 are
+# bit-identical to 'off', and the deviation reaches only 0.85 deg at yaw 55.
+#
+# Onset 40 rather than 55 (which would have left every currently-untouched angle
+# untouched) because the nod-coupled rotation swing this mode exists to remove is
+# large well below the old gate, and was going uncorrected:
+#
+#   nod-coupled rotation swing, pitch -25..+25    yaw 45   yaw 60   yaw 75
+#     mode 'off'                                  14.99    20.14    25.35 deg
+#     hard gate (shipped)                         14.99    20.14     0.92 deg
+#     this band                                   10.85     2.84     0.92 deg
+STAB_ALIGN_ONSET_DEG = 40.0
+STAB_ALIGN_FULL_DEG = 70.0
+
 
 def _smoothstep(edge0, edge1, x):
     """Hermite 3t^2-2t^3 ramp. Chosen over a linear ramp because its derivative
@@ -1367,6 +1393,61 @@ def pose_align_weight(lmk):
     if pose is None:
         return 0.0
     return _weight_for_pose(pose[0], pose[1])
+
+
+def _stabilized_norm(lmk, dst):
+    """'stabilize' mode: take the crop ROTATION from the eye_mid -> mouth_mid
+    axis instead of from the unconstrained 5-point least-squares fit, faded in
+    over STAB_ALIGN_ONSET_DEG..STAB_ALIGN_FULL_DEG of off-axis angle.
+
+    Why constrain the rotation at all: at high yaw the two eyes project to
+    nearly the same point (their separation collapses to zero at 90 deg), so the
+    least-squares fit is ill-conditioned in rotation and starts absorbing PITCH
+    as in-plane roll. Measured swing of the crop rotation as the head nods from
+    -25 to +25 deg:
+
+        yaw    0     30     60     75     90
+        LS   0.00   9.93  20.14  25.35  30.51  deg   <- unconstrained
+        ours 0.00   0.49   0.49   0.28   0.00  deg   <- rotation held steady
+
+    A 30 deg rotation swing on a nodding profile head feeds the swapper an
+    off-distribution crop and shows up as rotational wobble frame to frame. The
+    eye_mid -> mouth_mid axis stays well-conditioned at every yaw, so the
+    rotation comes from it while scale and translation are still solved by least
+    squares over all 5 points (so those keep every point's information).
+
+    Why fade rather than switch: see the band constants above — the two fits are
+    up to 30 deg apart, so any threshold between them is a step change that
+    detector noise alone will straddle.
+
+    Returns None below the onset, which is where the plain fit already holds
+    rotation steady and nothing needs constraining.
+
+    Caveat: the mean per-point fit residual gets slightly WORSE off-neutral-pitch
+    (e.g. yaw 90 / pitch +25: 64.0 -> 69.9 px on a 512 crop). That is expected and
+    is not a regression — the lower residual was being bought by rotating the
+    face, which is precisely the pathology being removed.
+    """
+    pose = solve_pose_5pt(lmk)
+    if pose is None:
+        return None
+    w = _smoothstep(STAB_ALIGN_ONSET_DEG, STAB_ALIGN_FULL_DEG,
+                    offaxis_deg(pose[0], pose[1]))
+    if w <= 0.0:
+        return None
+
+    tform = trans.SimilarityTransform()
+    tform.estimate(lmk, dst)
+    m_plain = tform.params[0:2, :]
+    if not np.isfinite(m_plain).all():
+        return None
+
+    # Blend the ANGLE, taking the short way round the circle so a pair straddling
+    # +/-pi interpolates through 0 rather than sweeping the long way.
+    theta_plain = float(np.arctan2(m_plain[1, 0], m_plain[0, 0]))
+    theta_axis = float(_axis_angle(dst) - _axis_angle(lmk))
+    delta = (theta_axis - theta_plain + np.pi) % (2.0 * np.pi) - np.pi
+    return _similarity_at_angle(lmk, dst, theta_plain + w * delta)
 
 
 def _maybe_constrained(lmk, dst):
@@ -1410,14 +1491,7 @@ def _maybe_constrained(lmk, dst):
         m = tform.params[0:2, :]
         return m if np.isfinite(m).all() else None
 
-    # 'stabilize' keeps its own tighter near-profile gate: unlike the pose
-    # template, its rotation constraint does NOT converge to the default fit as
-    # the face approaches frontal (it disagrees by ~9 deg even at yaw 55), so it
-    # cannot be faded in from a low angle without visibly changing mid angles.
-    yaw_ratio, _ = kps_pose_ratios(lmk)
-    if yaw_ratio is None or yaw_ratio >= YAW_ALIGN_RATIO:
-        return None
-    return _constrained_norm(lmk, dst)
+    return _stabilized_norm(lmk, dst)
 
 
 def estimate_norm(lmk, image_size=112, mode="arcface"):

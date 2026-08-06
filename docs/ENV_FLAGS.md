@@ -84,7 +84,7 @@ touch the render pipeline, which uses its own readers.
 | `ROOP_UPSCALE_TRT` | 0 | `1` runs ESRGAN x4 upscalers under TensorRT (**not recommended** — goes all-black under TRT FP16; default forces CUDA/CPU FP32). |
 | `ROOP_UPSCALE_TILE` | 256 | Tile size (px) for AI upscalers; lower if VRAM is tight on heavy ×4 models. |
 | `ROOP_CAS_STRENGTH` | 0.5 | Contrast-Adaptive Sharpening strength for the `fsr` classical upscaler (0 = plain Lanczos). |
-| `ROOP_YAW_ALIGN` | `off` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`. `stabilize` affects near-profile faces only; `pose` covers yaw **and** pitch and fades in from 15° off-axis. Frontal faces are bit-identical in every mode. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
+| `ROOP_YAW_ALIGN` | `off` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`. `stabilize` fades in from 40° off-axis; `pose` covers yaw **and** pitch and fades in from 15°. Frontal faces are bit-identical in every mode. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
 
 ### Angled-face alignment modes
 
@@ -103,7 +103,20 @@ the project's own 3-D reference head, over yaw 0–90° × pitch ±40°:
 - **`stabilize`** keeps the frontal template but takes the rotation from the
   eye→mouth axis, so pitch stops leaking into in-plane roll. This is a
   **temporal** fix — it reduces wobble *between* frames and will look identical
-  on a single still, so judge it on video.
+  on a single still, so judge it on video. It fades in from 40° off-axis and is
+  fully engaged by 70°; below 40° it is bit-identical to `off`.
+
+  It used to engage on a hard `yaw_ratio < 0.40` gate instead, which was the
+  largest single source of per-frame wobble in the pipeline — the two fits are
+  up to 30° apart in crop rotation, so crossing that gate was a step change of
+  that size (18.4° in one frame along a turn-plus-nod sweep), and a *motionless*
+  head parked on the gate had its crop rotating ±11° on detector noise alone.
+  Because `yaw_ratio` is pitch-contaminated the gate also wandered — yaw 56° on a
+  level head, yaw 66° with 20° of nod, and never at all below 90° once the nod
+  reached 30°, so the mode was silently dead on the tilted profiles it was
+  written for. The band fixes both: worst frame-to-frame rotation jump 0.09°
+  (vs 0.10° with the mode `off`), and the nod-coupled swing at yaw 60° drops from
+  20.1° to 2.8°.
 - **`pose`** replaces the template with the reference head projected at the
   **solved yaw and pitch**. It solves the head pose from the 5 keypoints by
   weak perspective (accurate to <0.05° anywhere in the range, including a true

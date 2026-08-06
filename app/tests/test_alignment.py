@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import roop.globals                                              # noqa: E402
 from roop.face_util import (arcface_dst, estimate_norm,          # noqa: E402
                             kps_pose_ratios, WARP_TEMPLATES,
-                            YAW_ALIGN_RATIO)
+                            YAW_ALIGN_RATIO, STAB_ALIGN_ONSET_DEG)
 from tests.facegeom import decompose, fit_residual, project_kps  # noqa: E402
 
 SIZES = (112, 128, 256, 512, 320)
@@ -100,19 +100,88 @@ class TestProfileAlignment(YawAlignCase):
         super().setUp()
         roop.globals.yaw_align = True
 
-    def test_gate_leaves_frontal_and_mid_angles_untouched(self):
-        """Only near-profile faces may be affected; everything else must be
-        bit-identical to the default fit."""
+    def test_below_the_onset_is_bit_identical(self):
+        """Faces inside STAB_ALIGN_ONSET_DEG of frontal must be bit-identical to
+        the default fit — that is what makes the band's low end a no-op rather
+        than a small unexplained change to every mid-angle face."""
         roop.globals.yaw_align = False
         baseline = {y: estimate_norm(project_kps(y), 512, "arcface")
-                    for y in (0, 15, 30, 45, 55)}
+                    for y in (0, 15, 30, 39)}
         roop.globals.yaw_align = True
         for yaw, expected in baseline.items():
-            self.assertGreaterEqual(kps_pose_ratios(project_kps(yaw))[0],
-                                    YAW_ALIGN_RATIO)
+            # Strictly below, not at: the pose solve lands within ~1e-7 deg of
+            # the requested angle, so a face projected at exactly the onset can
+            # solve a hair above it and pick up a w of ~1e-9. That is 5e-5 on the
+            # matrix — invisible, but it is not equality, and this test is the
+            # one that gets to insist on equality.
+            self.assertLess(yaw, STAB_ALIGN_ONSET_DEG)
             np.testing.assert_array_equal(
                 estimate_norm(project_kps(yaw), 512, "arcface"), expected,
-                f"profile alignment leaked into yaw={yaw}")
+                f"stabilize leaked below its onset at yaw={yaw}")
+
+    def test_mid_angle_deviation_stays_small(self):
+        """Inside the band the crop does move — that is the point — but it has to
+        arrive gradually. Guard the magnitude, since the whole reason 'stabilize'
+        was gated tightly was fear of disturbing angles that already look right."""
+        for yaw in (45, 50, 55, 60):
+            roop.globals.yaw_align = False
+            base = decompose(estimate_norm(project_kps(yaw), 512, "arcface"))
+            roop.globals.yaw_align = True
+            got = decompose(estimate_norm(project_kps(yaw), 512, "arcface"))
+            self.assertLess(abs(got[1] - base[1]), 2.0,
+                            f"crop rotation moved {abs(got[1]-base[1]):.2f} deg "
+                            f"at yaw={yaw}")
+            self.assertLess(abs(got[0] - base[0]) / base[0], 0.02,
+                            f"crop scale moved at yaw={yaw}")
+
+    def test_no_step_change_anywhere_along_a_turn(self):
+        """The defect this band replaced. A hard `yaw_ratio < 0.40` gate sat
+        between two fits up to 30 deg apart in crop rotation, so crossing it was
+        a step change — 18.4 deg in a single frame along this sweep, and a still
+        head parked on the gate had its crop rotating +/-11 deg on detector noise
+        alone. Nothing may step now.
+
+        Swept with a nod riding on the turn because the old gate was keyed on a
+        pitch-contaminated proxy: a level sweep crosses it in one clean place and
+        makes the discontinuity look far smaller than it was.
+        """
+        roop.globals.yaw_align = True
+        prev = None
+        worst_rot = worst_scale = 0.0
+        for i in range(2401):
+            yaw = -90.0 + i * 180.0 / 2400.0
+            pitch = 40.0 * np.sin(np.radians(i * 0.75))
+            scale, rot = decompose(
+                estimate_norm(project_kps(yaw, pitch), 512, "arcface"))
+            if prev is not None:
+                worst_rot = max(worst_rot, abs(rot - prev[1]))
+                worst_scale = max(worst_scale, abs(scale - prev[0]) / prev[0])
+            prev = (scale, rot)
+        self.assertLess(worst_rot, 1.0,
+                        f"crop rotation jumped {worst_rot:.2f} deg between "
+                        f"adjacent frames")
+        self.assertLess(worst_scale, 0.01,
+                        f"crop scale jumped {100*worst_scale:.2f}% between "
+                        f"adjacent frames")
+
+    def test_still_head_on_the_old_gate_no_longer_wobbles(self):
+        """The user-visible form of the same defect: a head that is not moving.
+        At yaw 90 / pitch -30 the old gate sat exactly under the noise, giving a
+        6.2 deg rotation sd on a motionless face. 'off' manages 0.45 deg there,
+        so the mode sold as the fix for rotational wobble has to beat that, not
+        lose to it by 14x."""
+        base = project_kps(90, -30)
+        rng = np.random.default_rng(2)
+        noisy = [base + rng.normal(0, 1.0, (5, 2)).astype(np.float32)
+                 for _ in range(400)]
+        out = {}
+        for mode in ("off", "stabilize"):
+            roop.globals.yaw_align = mode
+            out[mode] = np.std([decompose(estimate_norm(k, 512, "arcface"))[1]
+                                for k in noisy])
+        self.assertLess(out["stabilize"], out["off"] * 1.5,
+                        f"stabilize wobbles {out['stabilize']:.2f} deg vs "
+                        f"{out['off']:.2f} deg with the mode off")
 
     def test_removes_nod_coupled_rotation_swing(self):
         """The defect being fixed: with the plain fit the collapsed eye pair
