@@ -21,6 +21,7 @@ from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
+from roop.face_overlap import build_regions as build_face_regions
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
 from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
@@ -2050,10 +2051,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             elif do_kps_stab:
                 self._apply_stab(face)
             num_faces_found += 1
-            temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
+            temp_frame = self.process_face(self.options.selected_index, face, temp_frame, plate=frame)
             del face
 
         else:
+            # Faces are matched to sources here and composited together at the
+            # end (see _composite_faces), rather than pasted as each match is
+            # decided. Matching order is load-bearing — the claim ordering below
+            # exists so the best claim reaches a source first — but PAINT order
+            # must not be, because the last face pasted wins wherever two of them
+            # overlap, and match order changes frame to frame.
+            pending = []
             if _tfaces is not None:
                 faces = list(_tfaces)   # copy — faces.clear() below must not wipe the cache
             else:
@@ -2080,13 +2088,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             if self.options.swap_mode == "all":
                 for face in faces:
                     num_faces_found += 1
-                    temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
+                    pending.append((self.options.selected_index, face))
 
             elif self.options.swap_mode == "all_input":
                 for i, face in enumerate(faces):
                     num_faces_found += 1
                     if i < len(self.input_face_datas):
-                        temp_frame = self.process_face(i, face, temp_frame)
+                        pending.append((i, face))
                     else:
                         break
 
@@ -2303,7 +2311,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     if src_index is not None:
                         _audit_hit('swapped (identity lock)')
                         claimed_sources_in_frame.add(src_index)
-                        temp_frame = self.process_face(src_index, face, temp_frame)
+                        pending.append((src_index, face))
                         num_faces_found += 1
                     else:
                         # Distinguish the two no-veto ways of arriving here, or the
@@ -2355,7 +2363,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             src_index = self.options.selected_index if single_person else rank[best_g]
                             if src_index < len(self.input_face_datas):
                                 claimed_sources_in_frame.add(src_index)
-                                temp_frame = self.process_face(src_index, face, temp_frame)
+                                pending.append((src_index, face))
                                 num_faces_found += 1
                                 _audit_hit('swapped (per-frame match)')
                             else:
@@ -2433,7 +2441,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     claimed_persons.add(g)
                     src_index = self.options.selected_index if single_person else rank[g]
                     if src_index < len(self.input_face_datas):
-                        temp_frame = self.process_face(src_index, faces[fidx], temp_frame)
+                        pending.append((src_index, faces[fidx]))
                         num_faces_found += 1
                     elif _DEBUG_MATCH:
                         bar_write(f"[MATCH] person g={g} matched face {fidx} but src_index="
@@ -2444,7 +2452,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 for face in faces:
                     if face.sex == gender:
                         num_faces_found += 1
-                        temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
+                        pending.append((self.options.selected_index, face))
+
+            temp_frame = self._composite_faces(pending, frame, temp_frame)
 
             for face in faces:
                 del face
@@ -2485,6 +2495,60 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return num_faces_found, temp_frame
 
 
+    def _composite_faces(self, pending, plate, temp_frame):
+        """Swap and paste every matched face of one frame.
+
+        `pending` is [(source_index, face), ...] in MATCH order. Two things are
+        decided here that the per-face swap cannot decide for itself, because
+        both are about the faces as a set:
+
+        Ownership — when faces overlap, each one's matte is trimmed where a
+        neighbour owns the pixels, so the join between two swapped faces is a
+        line rather than a band of each smeared over the other. Costs two
+        bounding-box tests when nobody overlaps.
+
+        Order — faces are pasted far-to-near (smallest on screen first), not in
+        match order. Whoever paints last wins the contested pixels, and match
+        order is not stable frame to frame: in identity-lock mode the faces are
+        re-sorted by identity distance every frame, so a pair standing close
+        together would hand the join back and forth between them and flicker.
+        On-screen size is a proxy for depth that moves smoothly, so the nearer
+        face stays on top for as long as it is nearer.
+
+        Every face reads from `plate` (the untouched frame) and writes into the
+        running composite, so the result no longer depends on paste order except
+        in the hand-over band itself.
+        """
+        if not pending:
+            return temp_frame
+
+        def _depth(face):
+            """Sort key, far to near. Bigger on screen = nearer the camera.
+
+            The size is quantised to ~4 % steps and ties broken on horizontal
+            position, because a raw area comparison between two faces that are
+            near enough the same size flips on detection noise alone — and an
+            order that flips is the thing this ordering exists to stop.
+            """
+            try:
+                x0, y0, x1, y1 = (float(v) for v in face.bbox)
+                w, h = max(0.0, x1 - x0), max(0.0, y1 - y0)
+                area = w * h
+                step = round(np.log2(area) * 8.0) if area > 1.0 else -1e3
+                return (step, x0 + w * 0.5)
+            except Exception:
+                return (-1e3, 0.0)
+
+        order = sorted(range(len(pending)), key=lambda k: _depth(pending[k][1]))
+        regions = build_face_regions([f for _, f in pending], plate.shape, order)
+        for k in order:
+            src_index, face = pending[k]
+            temp_frame = self.process_face(
+                src_index, face, temp_frame, plate=plate,
+                region=None if regions is None else regions.get(k))
+        return temp_frame
+
+
     def rotation_action(self, original_face:Face, frame:Frame):
         return face_rotation_action(original_face, frame.shape[:2])
 
@@ -2511,8 +2575,27 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return frame
 
 
-    def process_face(self, face_index, target_face:Face, frame:Frame):
+    def process_face(self, face_index, target_face:Face, frame:Frame, plate:Frame=None, region=None):
+        """Swap one face and composite it into `frame`.
+
+        `frame` is the DESTINATION — the accumulating composite, which already
+        holds every face pasted before this one. `plate` is what gets READ: the
+        untouched original frame. They are the same buffer for a single-face
+        frame and must not be when several faces overlap, because every read
+        here (the alignment crop, the colour reference, the mask engine's view
+        of the face, the mouth and eye plates) would otherwise be looking at a
+        neighbour's already-swapped pixels and swapping a chimera — the smear
+        that shows up when two faces touch. Defaults to `frame`, which is the
+        old behaviour exactly.
+
+        `region` is this face's ownership field (roop.face_overlap) when it is
+        competing with another face for pixels; None when it has the frame to
+        itself.
+        """
         from roop.face_util import align_crop
+
+        if plate is None:
+            plate = frame
 
         # Count each target face processed (density = total_swaps / frames). A
         # lost increment under thread races is harmless for a coarse average.
@@ -2538,7 +2621,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 offs = int(max(width, height) * 0.25)
                 rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
                 rotcutframe = self.apply_rotation(rotcutframe, rotation_action)
-                rotface = get_first_face(rotcutframe)
+                # Cut the plate over the SAME box, so reads keep coming from the
+                # original pixels once `frame` is rebound to the rotated cut.
+                rotcutplate, _, _, _, _ = self.cutout(plate, startX, startY, endX, endY)
+                rotcutplate = self.apply_rotation(rotcutplate, rotation_action)
+                rotface = get_first_face(rotcutplate)
                 # Only commit to the rotation if re-detection confirms it left
                 # the face MORE upright. Without this the orientation heuristic
                 # gets the last word, and a wrong call feeds the swapper an
@@ -2548,7 +2635,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 else:
                     saved_frame = frame.copy()
                     frame = rotcutframe
+                    plate = rotcutplate
                     target_face = rotface
+                    # Ownership is expressed in FULL-frame coordinates; inside a
+                    # rotated cut it would land somewhere else entirely. Autorotate
+                    # therefore keeps the untrimmed matte.
+                    region = None
 
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
@@ -2565,7 +2657,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # M is carried through masks/paste/mouth-restore generically, so the
         # rest of the pipeline is template-agnostic.
         swap_template = getattr(swap_p, 'model_template', 'arcface')
-        aligned_img, M = align_crop(frame, target_face.kps, subsample_size, mode=swap_template)
+        aligned_img, M = align_crop(plate, target_face.kps, subsample_size, mode=swap_template)
         fake_frame = aligned_img
         target_face.matrix = M
         # Stash the crop affine per-thread so the SAM2 mask engine can warp its
@@ -2800,12 +2892,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         bar_write(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
-                    fake_frame, _img_mask = self.process_mask(p, aligned_img, fake_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
+                    fake_frame, _img_mask = self.process_mask(p, aligned_img, fake_frame, orig_frame=plate, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
                     if enhanced_frame is not None:
                         # Same mask, different target — every input it is derived
                         # from is identical here, so recomputing it (engine call,
                         # landmark hull, mouth mask, blurs) would be pure waste.
-                        enhanced_frame, _ = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=frame, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg, reuse_mask=_img_mask)
+                        enhanced_frame, _ = self.process_mask(p, aligned_img, enhanced_frame, orig_frame=plate, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg, reuse_mask=_img_mask)
             else:
                 # Pooled (no global lock) ONLY when this enhancer built its own
                 # SessionPool (e.g. RestoreFormer++). Enhancers without a pool
@@ -2851,7 +2943,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         # has real hair, neck and background out there; only the
                         # face itself needs to be the swapped version. Warp both
                         # and composite on the swap crop's own footprint.
-                        _ctx = cv2.warpAffine(frame, _M_e, (_ss, _ss),
+                        _ctx = cv2.warpAffine(plate, _M_e, (_ss, _ss),
                                               borderMode=cv2.BORDER_REPLICATE)
                         _sw = cv2.warpAffine(fake_frame, _A, (_ss, _ss),
                                              borderMode=cv2.BORDER_REPLICATE)
@@ -3108,9 +3200,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         face_kps = getattr(target_face, 'kps', None)
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region)
 
         # Lip-sync and restore_original_mouth write the same bounding box, so at
         # most one of them may run. Decided once, here, ahead of both: the UI
@@ -3125,8 +3217,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         and getattr(self, '_lipsync_audio', None) is not None)
 
         if self.options.restore_original_mouth and not lipsync_wins:
-            mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+            mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, plate, mask_offsets)
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg, region=region)
 
         # Eye restore. Read off globals rather than threaded through
         # ProcessOptions like restore_original_mouth is: that parameter is
@@ -3135,13 +3227,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # added since the React UI took over uses this path.
         if getattr(roop.globals, 'restore_original_eyes', False):
             result = self.apply_eyes_area(
-                result, frame, target_face,
+                result, plate, target_face,
                 strength=float(getattr(roop.globals, 'eyes_blend_amount', 1.0) or 0.0),
                 feather=float(getattr(roop.globals, 'eyes_feather_blend', 25.0) or 0.0),
                 size=float(getattr(roop.globals, 'eyes_size_factor', 1.0) or 1.0),
                 rx=float(getattr(roop.globals, 'eyes_radius_x', 1.0) or 1.0),
                 ry=float(getattr(roop.globals, 'eyes_radius_y', 1.0) or 1.0),
-                yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+                yaw=tgt_yaw_deg, pitch=tgt_pitch_deg, region=region)
 
         # ── Lip-sync (post-composite) ──────────────────────────────────────────
         # Same slot as restore_original_mouth/apply_eyes_area: full-frame space,
@@ -3156,7 +3248,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 if frame_idx is not None and audio_cache is not None:
                     t_s = frame_time(self._lipsync_frame_start, frame_idx, self._lipsync_fps)
                     audio_feat = audio_cache.features_for_time(t_s)
-                    mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
+                    mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, plate, mask_offsets)
                     if audio_feat is not None and mouth_cutout is not None:
                         restorer = self._lipsync_restorer()
                         prepared = restorer.prepare(result, target_face, audio_feat)
@@ -3169,7 +3261,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         crop_box = prepared.get('crop_box') if prepared else None
                         lipsync_cutout = restorer.finish(raw, crop_box, mouth_bb)
                         result = self.apply_mouth_area(result, lipsync_cutout, mouth_bb, mouth_polygon,
-                                                       mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg)
+                                                       mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg,
+                                                       region=region)
             except Exception as e:
                 bar_write(f"[ProcessMgr] lip-sync failed: {e}")
 

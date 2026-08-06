@@ -145,6 +145,51 @@ adopting it. The crop-scale and per-frame-stability numbers above are measured;
 whether the result looks better on your footage is a judgement only you can
 make.
 
+## Interacting faces (two or more swaps that touch)
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_FACE_DEMARCATE` | 1 (on) | Draw a boundary between faces that overlap, instead of letting each one paste its whole matte. `0` restores the old behaviour — use it to check whether an artefact on interacting faces comes from this or from the swap itself. |
+| `ROOP_FACE_DEMARCATE_FEATHER` | `0.02` | Width of the hand-over band where one face blends into the other, as a fraction of face radius (~4 px on a 200 px face). Larger mixes the two faces over a wider band; smaller risks aliasing along the join. |
+| `ROOP_FACE_DEMARCATE_DEPTH` | `0.10` | How much on-screen size counts as "in front", per doubling of face radius. `0` treats every face as the same distance away, so the boundary sits on the geometric midline regardless of who is nearer the camera. |
+
+### What goes wrong when two swapped faces meet
+
+Each face is pasted under a matte built from its own geometry alone — a hull
+that has been dilated, given a forehead extension reaching 60 % of the face
+height past the brow, then feathered outward. It knows nothing about anyone
+standing next to it, so when two faces touch, three things go wrong at once:
+
+* **Smudging.** Every face after the first used to read from the *running
+  composite*: its alignment crop, its colour reference, the mask engine's view
+  of it and its mouth/eye plates all came from a buffer that already held the
+  neighbour's swapped pixels. The swapper was being fed a chimera. Every read is
+  now taken from the untouched plate (`process_face(..., plate=)`); only the
+  write goes to the composite.
+* **Bleeding.** Face A's matte spills a band of A's swap over B's cheek, and
+  A's invented forehead across B's face. Ownership (`roop/face_overlap.py`)
+  trims each matte where the other face owns the pixels.
+* **Flipping.** Whoever is pasted *last* wins the contested pixels, and the
+  paste order used to be match order — which is not stable frame to frame (in
+  identity-lock mode the faces are re-sorted by identity distance every frame).
+  Faces are now painted far-to-near on a quantised size key, so the nearer one
+  stays on top for as long as it is nearer.
+
+Ownership is decided from geometry, once per frame, before anything is pasted:
+each face gets a signed distance field to its own hull, normalised by its own
+size so a near face and a far one are compared on equal terms, and a pixel goes
+to whichever face is deepest inside relative to its own scale. Faces that do not
+interact are detected by bounding-box test and nothing is computed for them, so
+the ordinary single-face frame pays nothing and cannot be changed by this.
+
+The boundary is enforced by paint order rather than by splitting contested
+pixels 50/50 between the two faces. Splitting looks right and is wrong: the
+mattes are applied in sequence, so two at 0.5 give `0.5·B + 0.25·A + 0.25·plate`
+— a hairline of untouched footage down the join. Instead each face defends its
+territory only against faces painted *before* it, and carries on one hand-over
+band into the territory of faces painted *after* it, so the face underneath
+backs the ramp of the face on top and the plate never shows through.
+
 ## Masking convention overrides
 
 | Flag | Default | Effect |

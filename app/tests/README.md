@@ -24,6 +24,7 @@ have been: silent, pose-dependent, and invisible on frontal footage.
 | `test_pose_ratios.py` | `kps_pose_ratios` is **monotonic** in yaw to 90°, roll-invariant, and returns `(None, None)` rather than NaN on degenerate keypoints |
 | `test_alignment.py` | `estimate_norm` is a **bit-exact no-op** when `yaw_align` is off (1350 size × template × pose combinations); the profile path is gated off mid-angles and kills the nod-coupled rotation swing |
 | `test_landmark_mask.py` | `create_landmark_mask` is **bit-identical** on upright faces and **rotationally equivariant** on tilted ones; `_mask_crop_box` never returns a degenerate rectangle |
+| `test_face_overlap.py` | Two swapped faces that touch get a **boundary**, not a smear: separated faces cost nothing, the sequential composite leaves no plate showing along the join, the boundary does not move with match order, and paint order is far-to-near and stable under bbox noise |
 | `test_settings_wiring.py` | A setting that reaches the UI actually reaches the render — no half-wired controls that silently do nothing |
 
 `test_settings_wiring.py` parses `FaceSwap.jsx` and `api.py` as text rather than

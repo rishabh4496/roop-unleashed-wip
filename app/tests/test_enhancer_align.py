@@ -134,9 +134,13 @@ class TheBorderComesFromThePlate(unittest.TestCase):
         warp with BORDER_REPLICATE, which still produces a plausible crop."""
         src = open(os.path.join(APP, 'roop', 'ProcessMgr.py'), encoding='utf-8').read()
         block = src.split('_M_e = estimate_norm', 1)[1][:2000]
-        self.assertIn('warpAffine(frame, _M_e', block,
-                      'the enhancer input must take its outer region from the '
-                      'original frame, which has real hair/neck/background there')
+        # `plate` is the untouched original frame — the same buffer as `frame`
+        # for a single face, and deliberately NOT the running composite when
+        # several faces overlap (the ring would otherwise pick up a neighbour's
+        # already-swapped skin). Either name satisfies the property this guards.
+        self.assertRegex(block, r'warpAffine\((frame|plate), _M_e',
+                         'the enhancer input must take its outer region from the '
+                         'original frame, which has real hair/neck/background there')
         self.assertIn('INTER_NEAREST', block,
                       'the coverage mask must be nearest-neighbour, or its own '
                       'interpolation softens the footprint it is describing')

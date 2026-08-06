@@ -34,6 +34,85 @@ _DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
 _NO_HYST = os.environ.get('ROOP_NONFRONTAL_HYST', '1').strip().lower() in ('0', 'off', 'false')
 
 
+def landmark_hull(landmarks_2d, kps=None):
+    """Convex hull of the 106-pt face landmarks, plus a forehead extension.
+
+    Returns ``(hull, face_h, face_w)`` in frame coordinates — the polygon that
+    says where this face IS. `create_landmark_mask` rasterises it for the paste
+    matte; `roop.face_overlap` competes two of them against each other to decide
+    which face owns a pixel when they overlap. Both must use the same shape, or
+    the demarcation would be drawn somewhere the matte does not agree with.
+
+    The forehead extension exists because the 106-pt model only reaches the
+    eyebrow line; we project along the head's own up-axis by ~60 % of the
+    brow-to-chin distance so the full forehead is covered on frontal faces
+    without over-extending on profiles.
+
+    The up-axis comes from the 5 keypoints (mouth_mid -> eye_mid) when they are
+    supplied. Projecting straight up in IMAGE space — the fallback when *kps* is
+    None — is only correct for an upright head: on a tilted one the forehead
+    polygon lands off-axis, so the hull swallows background on one side while
+    clipping real forehead on the other. Everything below is expressed in
+    (u, v) — along and across that axis — which reduces to the old y/x
+    arithmetic exactly when the head is upright, so frontal faces are
+    bit-identical to before.
+    """
+    pts = np.asarray(landmarks_2d).astype(np.int32)
+
+    # Head "up" unit vector. Image y grows downward, so an upright head
+    # yields (0, -1) and every projection below collapses to the original
+    # image-space form.
+    u = np.array([0.0, -1.0], dtype=np.float64)
+    if kps is not None:
+        try:
+            k = np.asarray(kps, dtype=np.float64)
+            if k.shape[0] == 5:
+                axis = ((k[0] + k[1]) / 2.0) - ((k[3] + k[4]) / 2.0)
+                n = float(np.linalg.norm(axis))
+                if n > 1e-6:
+                    u = axis / n
+        except Exception:
+            pass
+    v = np.array([-u[1], u[0]], dtype=np.float64)   # across-face axis
+
+    along  = pts.astype(np.float64) @ u    # higher = closer to the crown
+    across = pts.astype(np.float64) @ v
+
+    # Eyebrow region is roughly indices 33-52; find its topmost point along u.
+    top_brow_s = float(np.max(along[33:53]))
+    chin_s     = float(np.min(along))
+    face_h     = max(1.0, top_brow_s - chin_s)
+
+    # Extend along the head axis to cover the forehead. The int() truncations
+    # here and on the top-zone band are not cosmetic: they reproduce the
+    # original image-space arithmetic exactly, so an upright head produces a
+    # bit-identical mask (verified over 300 randomised faces) rather than
+    # drifting by a fraction of a pixel along the boundary.
+    forehead_s = top_brow_s + int(face_h * 0.6)
+
+    # Lateral extent of the top of the face (near brow line).
+    top_zone = across[along > top_brow_s - int(face_h * 0.15)]
+    if len(top_zone) >= 2:
+        left_t, right_t = float(np.min(top_zone)), float(np.max(top_zone))
+    else:
+        left_t, right_t = float(np.min(across)), float(np.max(across))
+
+    # Back to image space. Points may fall outside the frame; convexHull and
+    # fillConvexPoly clip against the mask bounds, so no clamping is needed.
+    # The original clamped the forehead to y >= 0, which did NOT merely trim
+    # the polygon — it dragged the top vertices down to the frame edge and
+    # skewed the hull's upper edges inward, eating real forehead on any face
+    # framed close to the top of the shot. Letting the vertices sit off-frame
+    # and be clipped keeps the correct edge slope.
+    forehead_pts = np.array([
+        np.floor(forehead_s * u + t * v)
+        for t in (left_t, np.floor((left_t + right_t) / 2.0), right_t)
+    ], dtype=np.int32)
+
+    all_pts = np.vstack([pts, forehead_pts])
+    return cv2.convexHull(all_pts), face_h, max(1.0, right_t - left_t)
+
+
 class MaskingMixin:
     def cutout(self, frame:Frame, start_x, start_y, end_x, end_y):
         if start_x < 0:
@@ -63,7 +142,7 @@ class MaskingMixin:
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -103,6 +182,13 @@ class MaskingMixin:
 
         img_matte = self.blur_area(img_matte, mask_offsets[4])
         img_matte = img_matte.astype(np.float32) / 255
+
+        # Cut this face's matte back where another face in the frame owns the
+        # pixels (see roop.face_overlap). AFTER the feather deliberately: the
+        # blur is what spreads a face's swap onto its neighbour in the first
+        # place, so trimming before it would just let the blur put it back.
+        if region is not None:
+            region.trim_frame(img_matte)
 
         # Save 2D mask before reshape — used by show_face_area_overlay
         mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
@@ -205,81 +291,17 @@ class MaskingMixin:
         computed in canonical 512×512 face-space and can bleed past the face
         edge on profile shots.
 
-        A forehead extension is added because the 106-pt model only reaches
-        the eyebrow line; we project along the head's own up-axis by ~60 % of
-        the brow-to-chin distance so the full forehead is covered on frontal
-        faces without over-extending on profiles.
-
-        The up-axis comes from the 5 keypoints (mouth_mid -> eye_mid) when they
-        are supplied. Projecting straight up in IMAGE space — the previous
-        behaviour, still the fallback when *kps* is None — is only correct for
-        an upright head: on a tilted one the forehead polygon lands off-axis, so
-        the hull swallows background on one side while clipping real forehead on
-        the other. Everything below is expressed in (u, v) — along and across
-        that axis — which reduces to the old y/x arithmetic exactly when the head
-        is upright, so frontal faces are bit-identical to before.
+        The hull itself is built by `landmark_hull` (shared with the overlap
+        demarcation in roop.face_overlap, so both agree on where a face is);
+        everything here is the rasterisation and the edge dilation.
         """
         mask = np.zeros(frame_shape[:2], dtype=np.uint8)
-        pts = landmarks_2d.astype(np.int32)
-
-        # Head "up" unit vector. Image y grows downward, so an upright head
-        # yields (0, -1) and every projection below collapses to the original
-        # image-space form.
-        u = np.array([0.0, -1.0], dtype=np.float64)
-        if kps is not None:
-            try:
-                k = np.asarray(kps, dtype=np.float64)
-                if k.shape[0] == 5:
-                    axis = ((k[0] + k[1]) / 2.0) - ((k[3] + k[4]) / 2.0)
-                    n = float(np.linalg.norm(axis))
-                    if n > 1e-6:
-                        u = axis / n
-            except Exception:
-                pass
-        v = np.array([-u[1], u[0]], dtype=np.float64)   # across-face axis
-
-        along  = pts.astype(np.float64) @ u    # higher = closer to the crown
-        across = pts.astype(np.float64) @ v
-
-        # Eyebrow region is roughly indices 33-52; find its topmost point along u.
-        top_brow_s = float(np.max(along[33:53]))
-        chin_s     = float(np.min(along))
-        face_h     = max(1.0, top_brow_s - chin_s)
-
-        # Extend along the head axis to cover the forehead. The int() truncations
-        # here and on the top-zone band are not cosmetic: they reproduce the
-        # original image-space arithmetic exactly, so an upright head produces a
-        # bit-identical mask (verified over 300 randomised faces) rather than
-        # drifting by a fraction of a pixel along the boundary.
-        forehead_s = top_brow_s + int(face_h * 0.6)
-
-        # Lateral extent of the top of the face (near brow line).
-        top_zone = across[along > top_brow_s - int(face_h * 0.15)]
-        if len(top_zone) >= 2:
-            left_t, right_t = float(np.min(top_zone)), float(np.max(top_zone))
-        else:
-            left_t, right_t = float(np.min(across)), float(np.max(across))
-
-        # Back to image space. Points may fall outside the frame; convexHull and
-        # fillConvexPoly clip against the mask bounds, so no clamping is needed.
-        # The original clamped the forehead to y >= 0, which did NOT merely trim
-        # the polygon — it dragged the top vertices down to the frame edge and
-        # skewed the hull's upper edges inward, eating real forehead on any face
-        # framed close to the top of the shot. Letting the vertices sit off-frame
-        # and be clipped keeps the correct edge slope.
-        forehead_pts = np.array([
-            np.floor(forehead_s * u + t * v)
-            for t in (left_t, np.floor((left_t + right_t) / 2.0), right_t)
-        ], dtype=np.int32)
-
-        all_pts = np.vstack([pts, forehead_pts])
-        hull    = cv2.convexHull(all_pts)
+        hull, face_h, face_w = landmark_hull(landmarks_2d, kps)
         cv2.fillConvexPoly(mask, hull, 255)
 
         # Dilate slightly so the hull doesn't clip skin right at the landmark
         # boundary — especially at jaw/temple edges.
         if blend_amount > 0:
-            face_w    = max(1.0, right_t - left_t)
             expand_px = max(1, int(np.sqrt(face_h * face_w) * blend_amount / 400))
             kernel    = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (expand_px * 2 + 1, expand_px * 2 + 1))
@@ -563,7 +585,7 @@ class MaskingMixin:
         return mouth_cutout, (min_x, min_y, max_x, max_y), mouth_mask_points
 
     def apply_eyes_area(self, frame, original, face, strength=1.0, feather=25.0,
-                        size=1.0, rx=1.0, ry=1.0, yaw=0.0, pitch=0.0):
+                        size=1.0, rx=1.0, ry=1.0, yaw=0.0, pitch=0.0, region=None):
         """Composite the TARGET's own eyes back over the swapped result.
 
         The counterpart to `restore_original_mouth`, and arguably the more
@@ -635,6 +657,13 @@ class MaskingMixin:
                 mask *= max(0.0, min(1.0, (38.0 - max_angle) / 13.0))
 
             mask *= float(strength)
+            # Don't restore this person's eyes over the face next to them: the
+            # ellipse is a rectangle's worth of plate, and on interacting faces
+            # its feather reaches the neighbour.
+            if region is not None:
+                own = region.crop(min_x, min_y, max_x, max_y)
+                if own is not None:
+                    mask *= own
             if mask.max() <= 0:
                 return frame
 
@@ -670,7 +699,7 @@ class MaskingMixin:
         max_val = np.max(mask)
         return mask / max_val if max_val > 0 else mask
 
-    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0, yaw:float=0.0, pitch:float=0.0) -> np.ndarray:
+    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0, yaw:float=0.0, pitch:float=0.0, region=None) -> np.ndarray:
         min_x, min_y, max_x, max_y = mouth_box
         box_width = max_x - min_x
         box_height = max_y - min_y
@@ -719,6 +748,13 @@ class MaskingMixin:
             if max_angle > 25.0:
                 fade_factor = max(0.0, min(1.0, (38.0 - max_angle) / 13.0))
                 mask = mask * fade_factor
+
+            # Same reason as the eye restore: the dilated mouth hull of one face
+            # must not write over the face beside it (see roop.face_overlap).
+            if region is not None:
+                own = region.crop(min_x, min_y, max_x, max_y)
+                if own is not None:
+                    mask = mask * own
 
             mask = mask[:, :, np.newaxis]
             blended = (color_corrected_mouth * mask + roi * (1 - mask)).astype(np.uint8)
