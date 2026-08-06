@@ -68,9 +68,42 @@ def nonfrontal_score(kps, tgt_pitch_deg=0.0):
     margins = [0.0]
     try:
         if kps is not None and len(kps) == 5:
-            left_eye_x, right_eye_x, nose_x = kps[0][0], kps[1][0], kps[2][0]
-            d_left = abs(nose_x - left_eye_x)
-            d_right = abs(nose_x - right_eye_x)
+            # Nose offset from each eye, measured ALONG THE INTER-OCULAR AXIS
+            # rather than along image x.
+            #
+            # Image x was wrong, and wrong in a way that fired constantly: it
+            # conflates head yaw with in-plane roll. A dead-frontal face that is
+            # merely TILTED has its nose displaced in image x purely by the tilt,
+            # so it scored non-frontal from about 11 deg of roll onward — 3.30 at
+            # 30 deg, against a threshold of 1.0, on a face whose true off-axis
+            # angle is 0.03 deg. That is not a borderline call: roll is the one
+            # thing a similarity transform represents EXACTLY, so the aligned crop
+            # of a tilted frontal face is the same crop as an untilted one, and
+            # there is no distortion for the unwarped path to fix. Worse, that
+            # path hands the mask model the face still tilted, where the
+            # canonical crop would have handed it an upright one.
+            #
+            # The metric is also non-monotonic in roll (0 at 0 deg, peaking 3.30
+            # at 30, back to 0 at 90), so a head tilting over crossed the
+            # threshold and crossed back — two mask-path changes, and the latch
+            # cannot suppress them because they are genuine crossings of a bad
+            # score, not noise.
+            #
+            # Projecting onto the eye axis is the same quantity in the frame the
+            # face actually lives in. Bit-identical for upright faces (verified
+            # over the yaw x pitch grid at roll 0 to 4e-16), and exactly
+            # roll-invariant.
+            pts = np.asarray(kps, dtype=np.float64)
+            axis = pts[1] - pts[0]
+            axis_len = float(np.linalg.norm(axis))
+            if axis_len > 1e-6:
+                u = axis / axis_len
+                d_left = abs(float(np.dot(pts[2] - pts[0], u)))
+                d_right = abs(float(np.dot(pts[2] - pts[1], u)))
+            else:
+                # Eyes coincide (a true 90 deg profile). No axis to project onto;
+                # the yaw_ratio term below is saturated here anyway.
+                d_left = d_right = 0.0
             if d_left + d_right > 1e-5:
                 margins.append(
                     (abs(d_left - d_right) / (d_left + d_right)) / _ASYM_MAX)

@@ -28,10 +28,27 @@ from tests.facegeom import project_kps                                   # noqa:
 
 
 def legacy_or(kps, tgt_pitch_deg=0.0):
-    """The rule as it shipped before the score existed, transcribed."""
+    """The rule as it shipped before the score existed, transcribed.
+
+    ONE deliberate divergence from the original: the nose-asymmetry term
+    projects onto the inter-ocular axis rather than image x. The original
+    measured in image x, which conflates yaw with in-plane roll and fired on
+    dead-frontal faces from ~11 deg of tilt onward — see the comment on that term
+    in roop/nonfrontal.py, and TestRollIsNotYaw below. Transcribed here the same
+    way so this file still checks what it is meant to check (that the score's
+    normalise-and-max reproduces an OR of independent thresholds) rather than
+    re-asserting the bug.
+    """
     non_frontal = False
-    left_eye_x, right_eye_x, nose_x = kps[0][0], kps[1][0], kps[2][0]
-    d_left, d_right = abs(nose_x - left_eye_x), abs(nose_x - right_eye_x)
+    pts = np.asarray(kps, dtype=np.float64)
+    axis = pts[1] - pts[0]
+    axis_len = float(np.linalg.norm(axis))
+    if axis_len > 1e-6:
+        u = axis / axis_len
+        d_left = abs(float(np.dot(pts[2] - pts[0], u)))
+        d_right = abs(float(np.dot(pts[2] - pts[1], u)))
+    else:
+        d_left = d_right = 0.0
     if d_left + d_right > 1e-5 and abs(d_left - d_right) / (d_left + d_right) > 0.25:
         non_frontal = True
     yaw_ratio, pitch_ratio = kps_pose_ratios(kps)
@@ -51,15 +68,18 @@ def legacy_or(kps, tgt_pitch_deg=0.0):
 
 class TestScoreReproducesTheOldRule(unittest.TestCase):
     def test_exact_over_the_pose_grid(self):
+        """Swept over BOTH turn directions. Everything about this pipeline was
+        originally validated over yaw 0..90, which cannot distinguish a
+        direction-symmetric rule from one with a sign error in it."""
         checked = 0
-        for yaw in range(0, 91, 2):
+        for yaw in range(-90, 91, 2):
             for pitch in range(-50, 51, 4):
                 for roll in (-20, 0, 20):
                     kps = project_kps(yaw, pitch, roll)
                     self.assertEqual(nonfrontal_score(kps) > 1.0, legacy_or(kps),
                                      f"yaw={yaw} pitch={pitch} roll={roll}")
                     checked += 1
-        self.assertGreater(checked, 3000)
+        self.assertGreater(checked, 6000)
 
     def test_exact_under_noise_too(self):
         """Grid poses are tidy; real keypoints are not. Noise is what pushes a
@@ -67,7 +87,7 @@ class TestScoreReproducesTheOldRule(unittest.TestCase):
         show up."""
         rng = np.random.default_rng(0)
         for _ in range(4000):
-            kps = project_kps(rng.uniform(0, 90), rng.uniform(-50, 50),
+            kps = project_kps(rng.uniform(-90, 90), rng.uniform(-50, 50),
                               rng.uniform(-30, 30))
             kps = kps + rng.normal(0, 2.0, (5, 2)).astype(np.float32)
             self.assertEqual(nonfrontal_score(kps) > 1.0, legacy_or(kps))
@@ -84,6 +104,70 @@ class TestScoreReproducesTheOldRule(unittest.TestCase):
         for bad in (None, np.zeros((3, 2), np.float32),
                     np.full((5, 2), np.nan, np.float32)):
             self.assertEqual(nonfrontal_score(bad), 0.0)
+
+
+class TestRollIsNotYaw(unittest.TestCase):
+    """A head TILTED in the image plane is not a head TURNED away from the
+    camera, and the routing score must not confuse the two.
+
+    It used to. The nose-asymmetry term measured along image x, so tilting a
+    dead-frontal face displaced the nose in x and the face scored non-frontal
+    from about 11 deg of tilt — 3.30 at 30 deg against a threshold of 1.0, on a
+    face whose solved off-axis angle is 0.03 deg.
+
+    This matters more than a mis-set threshold. In-plane roll is the one thing
+    the alignment represents EXACTLY, so a tilted frontal face and an upright one
+    produce the same canonical crop and there is nothing for the non-frontal mask
+    path to correct — while that path hands the mask model the face still tilted,
+    which is strictly worse input than the upright crop it would otherwise get.
+    """
+
+    def test_score_is_roll_invariant_on_a_frontal_face(self):
+        upright = nonfrontal_score(project_kps(0, 0, 0))
+        for roll in range(-90, 91, 5):
+            self.assertAlmostEqual(
+                nonfrontal_score(project_kps(0, 0, roll)), upright, places=6,
+                msg=f"tilting a frontal face by {roll} deg changed its score")
+
+    def test_roll_invariant_at_every_yaw_and_pitch(self):
+        # Relative tolerance, because the score saturates near a true profile:
+        # the yaw_ratio term is clamped at 550, where an absolute epsilon would
+        # be asserting on the 9th significant figure.
+        for yaw in range(-90, 91, 10):
+            for pitch in (-40, -20, 0, 20, 40):
+                ref = nonfrontal_score(project_kps(yaw, pitch, 0))
+                for roll in (-45, -25, 25, 45):
+                    got = nonfrontal_score(project_kps(yaw, pitch, roll))
+                    self.assertLess(
+                        abs(got - ref), 1e-5 * max(1.0, abs(ref)),
+                        f"yaw={yaw} pitch={pitch} roll={roll}: "
+                        f"{got} vs {ref}")
+
+    def test_a_tilting_head_does_not_change_mask_path(self):
+        """The visible symptom: the score was non-monotonic in roll — 0 at 0 deg,
+        peaking at 30, back to 0 at 90 — so a head tilting over crossed the
+        threshold and crossed back. Two mask-path changes on one smooth motion,
+        and the latch cannot suppress them because they are genuine crossings of
+        a bad score rather than noise."""
+        router = NonFrontalRouter()
+        rng = np.random.default_rng(4)
+        verdicts = []
+        for t in range(400):
+            kps = project_kps(0, 0, 90.0 * t / 399.0)
+            kps = kps + rng.normal(0, 0.5, (5, 2)).astype(np.float32)
+            verdicts.append(router.verdict(kps, 0.0, t))
+        changes = sum(1 for a, b in zip(verdicts, verdicts[1:]) if a != b)
+        self.assertEqual(changes, 0,
+                         f"{changes} mask-path changes while only tilting")
+
+    def test_upright_faces_are_unchanged(self):
+        """The fix must be confined to tilted faces: pure yaw, upright, has to
+        score exactly what it always did."""
+        expected = {0: 0.762, 15: 1.210, 20: 1.643, 30: 2.607,
+                    45: 3.544, 60: 2.046, 75: 2.972}
+        for yaw, want in expected.items():
+            self.assertAlmostEqual(nonfrontal_score(project_kps(yaw, 0, 0)),
+                                   want, places=3, msg=f"yaw={yaw}")
 
 
 class TestHysteresisKillsTheChatter(unittest.TestCase):
