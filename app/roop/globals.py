@@ -62,6 +62,17 @@ refine_landmarks = False
 # Seeded from ROOP_YAW_ALIGN (1/on/true == 'stabilize', or name a mode);
 # the UI selector overrides it per run. See face_util._maybe_constrained.
 yaw_align = initial_yaw_align()
+# Angle handling, the other two layers of the same structure as yaw_align:
+#   angle_visibility_mask — trim the paste matte to the face surface still
+#       facing the camera, so a profile stops pasting swap pixels over hair and
+#       neck (face_util.pose_visibility_polygon). Only acts while yaw_align is
+#       'pose', because it is placed by that alignment's template.
+#   angle_fade_strength — percent, the ceiling on how far the swap fades back
+#       toward the plate at 90 deg off-axis (face_util.angle_fade_weight). This
+#       is the layer that bounds an out-of-distribution swap, and the only one
+#       that behaves identically for every swap model. 0 disables it.
+angle_visibility_mask = True
+angle_fade_strength = 65.0
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
 # geometry). strength 0..1 = amount of the shape difference applied.

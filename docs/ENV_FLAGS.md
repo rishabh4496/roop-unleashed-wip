@@ -84,7 +84,7 @@ touch the render pipeline, which uses its own readers.
 | `ROOP_UPSCALE_TRT` | 0 | `1` runs ESRGAN x4 upscalers under TensorRT (**not recommended** — goes all-black under TRT FP16; default forces CUDA/CPU FP32). |
 | `ROOP_UPSCALE_TILE` | 256 | Tile size (px) for AI upscalers; lower if VRAM is tight on heavy ×4 models. |
 | `ROOP_CAS_STRENGTH` | 0.5 | Contrast-Adaptive Sharpening strength for the `fsr` classical upscaler (0 = plain Lanczos). |
-| `ROOP_YAW_ALIGN` | `off` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`. `stabilize` fades in from 40° off-axis; `pose` covers yaw **and** pitch and fades in from 15°. Frontal faces are bit-identical in every mode. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
+| `ROOP_YAW_ALIGN` | `pose` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`, and `0`/`off`/`false` for `off`. `stabilize` fades in from 40° off-axis; `pose` covers yaw **and** pitch and fades in from 15°. Frontal faces are bit-identical in every mode. **Default changed from `off` to `pose`** — the fixed frontal template breathes 1.354× in crop scale over yaw 0–88 × pitch ±40 against 1.072× for `pose`, and since frontal faces are untouched either way the old default was paying nothing and fixing nothing. Set `ROOP_YAW_ALIGN=off` for the previous behaviour exactly. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
 
 ### Angled-face alignment modes
 
@@ -137,13 +137,58 @@ the project's own 3-D reference head, over yaw 0–90° × pitch ±40°:
   tilted read as a mid-angle face and got **no** correction at all — the most
   extreme poses in the range were the ones it silently skipped.
 
-⚠️ Lower fit error is **not** automatically a better swap. The swap models were
-trained on crops aligned with the same fixed frontal template, so a
-geometrically cleaner angled crop is also slightly off their training
-distribution. `pose` is opt-in for that reason — A/B it on real footage before
-adopting it. The crop-scale and per-frame-stability numbers above are measured;
-whether the result looks better on your footage is a judgement only you can
-make.
+⚠️ Lower fit error is **not** automatically a better swap, and the "~0 px @ 90°"
+above is measured against the **pose** template, which is congruent to the input
+by construction. Against the template the models were actually **trained** on,
+the residual grows 44 px → 85 px (512 crop) from frontal to profile *in every
+mode* — no similarity transform can map a profile onto a frontal template. So
+alignment cannot put an angled crop back inside the training distribution; it can
+only stop the crop breathing and stop pitch leaking into roll. That is worth
+having, and it is why `pose` is now the default, but it is not a fix for
+extreme-angle distortion. The layer that addresses that is the off-axis fade
+below.
+
+### Angle handling — the three shared layers
+
+Lateral and down-lateral faces distorting is the most-reported angle problem, and
+it looks model-specific: hyperswap, hififace and inswapper each fail differently
+at different angles, so it is natural to go looking in whichever swapper is
+selected. It is not there. **All 13 swap models reach the same `align_crop`, the
+same `paste_upscale`, and the same crop-space fade**, so all three corrections are
+shared code and apply identically to every model:
+
+| Layer | What it fixes | Control | Default |
+|---|---|---|---|
+| 1. Pose-matched alignment | Crop breathes 1.354× in scale over the pose sphere, so the model is handed a face at a size it was not trained on and the crop wobbles frame to frame. Holds it to 1.072×. | `ROOP_YAW_ALIGN` / *Angled-face alignment* | `pose` |
+| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull). Neither knows a turned head hides half its own face, and the 106-pt model predicts the far-side contour even when it is behind the skull — so on a profile the matte reaches over hair and neck and the swap gets pasted there. | *Angle: trim hidden surface* | on |
+| 3. Off-axis fade | Past ~55° off-axis the crop is outside every model's training distribution and the model stops reconstructing and starts inventing. Fades the swapped crop back toward the original footage instead. **This is the layer that bounds how wrong an extreme angle can look.** | *Angle: extreme-angle fade* (0–100) | 65 |
+
+All three key on the **same** pose solve and share the same off-axis fade band, so
+they are one continuous function of pose rather than three gates that can flicker
+independently. Frontal faces are untouched by all three.
+
+Layer 2, measured as the fraction of the matte removed (crop space, layer 1 on):
+
+| pose | trimmed |
+|---|---|
+| dead frontal | 1.1% |
+| yaw 55 / pitch 0 | 1.5% |
+| yaw 0 / pitch −20 | 11.5% |
+| yaw 30 / pitch −40 | 18.5% |
+| yaw 88 / pitch −40 | 10.6% |
+
+Driven far more by **pitch** than by yaw: what it removes is mostly the under-chin
+region the landmark hull keeps claiming on a chin-up head. It never cuts real face
+— zero truly-visible landmarks are trimmed at any pose over yaw 0–88° × pitch
+−40…+20°, which is what the safety margin is sized for. Costs one extra
+single-channel warp, and only on off-axis faces.
+
+Layer 3 ramps from 0 at 60° off-axis to its full value at 90°, smoothstepped. The
+setting is the **ceiling** reached at 90°, so 0 disables it and every face is
+bit-identical to leaving it off. Raise it if extreme angles still distort; lower it
+if profiles lose too much likeness. Note it fades toward the *plate*, so the faded
+region also loses any enhancement — that is the intended "leave the original face
+mostly alone" behaviour.
 
 ## Interacting faces (two or more swaps that touch)
 

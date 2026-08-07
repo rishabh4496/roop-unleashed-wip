@@ -19,7 +19,13 @@ export const FACESWAP_DEFAULTS = {
   // either side of it and was the last Face Swap control missing here, so
   // "Reset defaults" restored its neighbours and silently left this one at
   // whatever it was — the same gap expression_restore_strength had below.
-  yaw_align: 'off',
+  // 'pose' rather than 'off': the fixed frontal template breathes 1.354x in crop
+  // scale over the pose sphere against 1.072x here, and frontal faces are
+  // unaffected in either mode. Keep in step with settings.initial_yaw_align.
+  yaw_align: 'pose',
+  // The other two layers of the same angle structure.
+  angle_visibility_mask: true,
+  angle_fade_strength: 65,
   rescue_small_faces: true,
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',

@@ -1690,6 +1690,237 @@ def _pose_template(yaw_deg, base_dst, pitch_deg=0.0, jaw=0.0):
     return scaled - scaled.mean(axis=0) + np.asarray(base_dst, np.float64).mean(axis=0)
 
 
+def _pose_placement(yaw_deg, pitch_deg, base_dst, jaw=0.0):
+    """The (scale, shift) that `_pose_template` places the reference head with.
+
+    Exists so anything ELSE derived from the reference head can be put in the
+    same crop coordinates as the alignment template — which is the whole basis
+    for `pose_visibility_polygon` being able to say where the face is in a crop.
+    Returns (None, None) when the reference is degenerate.
+
+    `_pose_template` is deliberately NOT rewritten in terms of this: it is the
+    tested alignment path and re-associating its arithmetic would perturb the
+    last bits. A test instead pins the two together, so they cannot drift.
+    """
+    posed = _project_reference(yaw_deg, pitch_deg, jaw)
+    frontal = _project_reference(0.0, 0.0)
+    frontal_vert = np.linalg.norm((frontal[3] + frontal[4]) / 2.0
+                                  - (frontal[0] + frontal[1]) / 2.0)
+    base_vert = np.linalg.norm((base_dst[3] + base_dst[4]) / 2.0
+                               - (base_dst[0] + base_dst[1]) / 2.0)
+    if frontal_vert < 1e-9:
+        return None, None
+    scale = float(base_vert / frontal_vert)
+    shift = (np.asarray(base_dst, np.float64).mean(axis=0)
+             - (posed * scale).mean(axis=0))
+    return scale, shift
+
+
+# ── Where the face SURFACE is, at a pose ─────────────────────────────────────
+# The paste matte says where to put swapped pixels. Its two terms — an ellipse in
+# canonical crop space, and the convex hull of the 106 landmarks — both describe
+# a FRONTAL face's footprint, and neither knows that a turned head hides half of
+# its own face. The 106-pt model predicts the far-side contour whether or not it
+# is behind the skull, so on a profile that hull reaches back over hair and neck,
+# and the swap gets pasted there.
+#
+# Measured in crop space, with pose-matched alignment active, the matte covers
+# this much more than the visible face surface:
+#
+#   pose                 trimmed away by this polygon
+#   dead frontal                   1.1%
+#   yaw 55 / pitch   0             1.5%
+#   yaw 88 / pitch   0             1.5%
+#   yaw  0 / pitch -20            11.5%
+#   yaw 30 / pitch -40            18.5%
+#   yaw 88 / pitch -40            10.6%
+#
+# Note the trim is driven far more by PITCH than by yaw. That is not a quirk: a
+# chin-up head foreshortens the whole lower face, and it is the under-chin region
+# the landmark hull keeps claiming that this removes. It also happens to be the
+# case in the bug report this was built for — a near-profile head tilted up.
+#
+# Modest, not dramatic — which is the honest size of this effect. It is worth
+# having because it is nearly free (one polygon fill in a space the matte is
+# already built in, no extra warp) and because what it removes is specifically
+# swap pixels on hair and background, which is where "why is the temple
+# discoloured on profiles" comes from.
+#
+# CRITICALLY it must never cut real face. With the safety margin below, zero of
+# the truly-visible landmarks are trimmed at any pose over yaw 0-88 x pitch
+# 0..-40; without it, 1-2 are lost at yaw 88.
+VIS_POLY_MARGIN = 0.01          # dilation, as a fraction of the crop size
+
+# Head model for the visible-surface test: an ellipsoid fitted to the project's
+# own reference head, so this cannot disagree with the pose solve or the
+# alignment template about head shape. AZ is the front-to-back extent of the
+# FACE mass rather than of the whole skull — the patch below only covers the
+# face, and an ellipsoid deep enough to hold the back of the head would put the
+# terminator in the wrong place.
+def _face_patch_rows(n_u=161, n_v=64, brow_extend=0.62):
+    """The face surface as rows of constant height, each row a (points, normals)
+    pair in reference-head coordinates.
+
+    Rows rather than a flat point cloud because the visible span at a fixed
+    height is one CONTIGUOUS interval in u, so its two ends are the left and
+    right edge of the visible region. That gives an exact outline; a convex hull
+    over the visible points does not — at profile the hull is still a full-width
+    oval, and measured, it trimmed 0.5% where this trims 10.6%.
+
+    `brow_extend` carries the patch above the eyebrows to the hairline, matching
+    `landmark_hull`'s 0.6 forehead extension. Without it the polygon would cut
+    the forehead off every face, frontal ones included.
+
+    Returned PADDED into (rows, n_u) grids with a validity mask rather than as a
+    list of ragged rows. The ragged form cost 1.1 ms per face — a Python loop over
+    42 rows, against a stage budget where a whole enhancer pass is 3-24 ms — and
+    none of that was arithmetic. Padded, the visibility test is one matrix-vector
+    product and two argmaxes.
+    """
+    from roop.face_3d_recon import _REF3D_68
+    ref = np.asarray(_REF3D_68, dtype=np.float64)
+    ref = ref - ref.mean(axis=0)
+    ax = float(np.abs(ref[:, 0]).max())
+    ay = float(np.abs(ref[:, 1]).max())
+    az = ax * 0.92
+
+    brow_y = float(ref[17:27, 1].max())
+    chin_y = float(ref[:17, 1].min())
+    top_y = brow_y + brow_extend * (brow_y - chin_y)
+
+    v_all = np.linspace(chin_y, top_y, n_v)
+    t = np.clip(v_all / ay, -1.0, 1.0)
+    half = ax * np.sqrt(np.maximum(0.0, 1.0 - t * t))
+    keep_row = half > 1e-6
+    v_all, half = v_all[keep_row], half[keep_row]
+
+    # One u grid per row, spanning that row's own half-width.
+    frac = np.linspace(-1.0, 1.0, n_u)[None, :]
+    u = half[:, None] * frac
+    v = np.repeat(v_all[:, None], n_u, axis=1)
+
+    s = 1.0 - (u / ax) ** 2 - (v / ay) ** 2
+    valid = s > 0.0
+    valid &= valid.sum(axis=1, keepdims=True) >= 2      # a row needs two ends
+    z = az * np.sqrt(np.maximum(s, 0.0))
+
+    pts = np.stack([u, v, z], axis=-1)
+    # True ellipsoid normal, so the terminator sits where the surface really
+    # turns away instead of at a hand-picked angle.
+    nrm = np.stack([u / ax ** 2, v / ay ** 2, z / az ** 2], axis=-1)
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=-1, keepdims=True), 1e-12)
+    return pts, nrm, valid
+
+
+_FACE_PATCH = None
+
+
+def _face_patch():
+    """The patch, built once. Lazy so importing face_util does not pull in
+    face_3d_recon, matching how `_reference_5pt` reaches for the same module."""
+    global _FACE_PATCH
+    if _FACE_PATCH is None:
+        _FACE_PATCH = _face_patch_rows()
+    return _FACE_PATCH
+
+
+def pose_visibility_polygon(yaw_deg, pitch_deg, base_dst, jaw=0.0):
+    """Outline of the face surface still facing the camera at this pose, in the
+    SAME crop pixel coordinates as the alignment template.
+
+    Returns an (N, 2) int32 polygon, or None when the pose hides the face
+    entirely or the reference is degenerate. Not convex — see `_face_patch_rows`.
+    """
+    scale, shift = _pose_placement(yaw_deg, pitch_deg, base_dst, jaw)
+    # `scale is None` is not enough: a degenerate template (all-zero, or NaN from
+    # a bad detection) yields a scale of 0 or NaN, which sails through and hands
+    # back a polygon collapsed onto a point — a matte trimmed to nothing, i.e. a
+    # face that silently stops being swapped. Fail to None and skip the trim.
+    if scale is None or not (scale > 0.0) or not np.isfinite(shift).all():
+        return None
+
+    y, p = np.radians(float(yaw_deg)), np.radians(float(pitch_deg))
+    ry = np.array([[np.cos(y), 0.0, np.sin(y)],
+                   [0.0, 1.0, 0.0],
+                   [-np.sin(y), 0.0, np.cos(y)]])
+    rx = np.array([[1.0, 0.0, 0.0],
+                   [0.0, np.cos(p), -np.sin(p)],
+                   [0.0, np.sin(p), np.cos(p)]])
+    R = rx @ ry                       # same order as _project_reference
+
+    pts, nrm, valid = _face_patch()
+
+    # Front-facing test. The rotated normal's z component is just n . R[2], so
+    # this is one matrix-vector product over the whole grid rather than a full
+    # rotation of every normal.
+    vis = (nrm @ R[2]) > 0.0
+    vis &= valid
+    rows_ok = vis.any(axis=1)
+    if int(rows_ok.sum()) < 3:
+        return None
+
+    # First and last visible sample in each row. Valid because the visible span
+    # at a fixed height is one contiguous interval (see _face_patch_rows) — these
+    # two are therefore the left and right edge of the visible region, not merely
+    # two points inside it.
+    n_u = vis.shape[1]
+    first = vis.argmax(axis=1)
+    last = n_u - 1 - vis[:, ::-1].argmax(axis=1)
+
+    ri = np.nonzero(rows_ok)[0]
+    edges = np.concatenate([pts[ri, first[ri]], pts[ri, last[ri]]])
+    q = edges @ R.T
+    xy = np.column_stack([q[:, 0], -q[:, 1]])          # image axes, +y down
+
+    k = len(ri)
+    # Left edge bottom-to-top, then right edge back down: a closed ring.
+    ring = np.vstack([xy[:k], xy[k:][::-1]])
+    return (ring * scale + shift).astype(np.int32)
+
+
+# ── How much to trust the swap at this pose ──────────────────────────────────
+# Every swap model here is trained on near-frontal aligned crops. Past roughly
+# 55 deg off-axis the crop is outside that distribution and the model stops
+# reconstructing and starts inventing — which is why hyperswap, hififace and
+# inswapper each fail DIFFERENTLY at different angles, and why no amount of
+# alignment work fixes it: the 5-point fit's residual against the training
+# template grows 44 -> 85 px on a 512 crop from frontal to profile, and it does
+# so in every alignment mode, because no similarity transform can map a profile
+# onto a frontal template.
+#
+# So this does not try to make the model right. It bounds how wrong the result
+# can look, by fading the swapped crop back toward the plate as the pose leaves
+# the range the models can actually serve. That is the one lever that applies
+# identically to all 13 swappers, because it does not care which one produced
+# the crop.
+#
+# Onset is where the residual reaches ~1.5x its frontal value (yaw 70 at pitch
+# 0, 65 deg off-axis); full fade at 90, where a swapper has nothing left to work
+# from. Faded with the same smoothstep as the alignment band, for the same
+# reason: a hard gate on a noisy per-frame pose flickers.
+ANGLE_FADE_ONSET_DEG = 60.0
+ANGLE_FADE_FULL_DEG = 90.0
+
+
+def angle_fade_weight(yaw_deg, pitch_deg, strength):
+    """How much to fade the swap back toward the plate, 0..1.
+
+    `strength` is the user's ceiling in percent — the fade reaches
+    `strength/100` at 90 deg off-axis and 0 below the onset, so 0 disables this
+    entirely and every face is bit-identical to leaving it off.
+    """
+    try:
+        s = float(strength) / 100.0
+    except (TypeError, ValueError):
+        return 0.0
+    if not (s > 0.0):
+        return 0.0
+    s = min(s, 1.0)
+    w = _smoothstep(ANGLE_FADE_ONSET_DEG, ANGLE_FADE_FULL_DEG,
+                    offaxis_deg(yaw_deg, pitch_deg))
+    return s * w
+
+
 def _axis_angle(p):
     """Direction of the eye_mid -> mouth_mid axis, in image radians."""
     v = ((p[3] + p[4]) / 2.0) - ((p[0] + p[1]) / 2.0)
@@ -1823,6 +2054,22 @@ def _smoothstep(edge0, edge1, x):
 def _weight_for_pose(yaw, pitch):
     return _smoothstep(POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG,
                        offaxis_deg(yaw, pitch))
+
+
+def pose_weight_for(yaw, pitch):
+    """The pose-align crossfade weight for an ALREADY SOLVED yaw/pitch.
+
+    `pose_align_weight` below is the same thing from raw keypoints. Callers that
+    already hold a solve want this one — otherwise they pay for a second solve
+    and, worse, can end up keying on a pose that differs from the one the
+    alignment template used."""
+    return _weight_for_pose(yaw, pitch)
+
+
+def yaw_align_mode():
+    """The active alignment mode. Public alias for `_yaw_align_mode`, for the
+    pipeline stages that must only act while pose-matched alignment is on."""
+    return _yaw_align_mode()
 
 
 def pose_align_weight(lmk):

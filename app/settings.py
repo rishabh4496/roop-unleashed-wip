@@ -56,7 +56,18 @@ def initial_yaw_align():
     raw = (os.environ.get('ROOP_YAW_ALIGN') or '').strip().lower()
     if raw in YAW_ALIGN_MODES:
         return raw
-    return 'stabilize' if raw in ('1', 'on', 'true', 'yes') else 'off'
+    if raw in ('1', 'on', 'true', 'yes'):
+        return 'stabilize'
+    if raw in ('0', 'off', 'false', 'no'):
+        return 'off'
+    # Default 'pose', not 'off'. The fixed frontal template makes the crop
+    # BREATHE 1.354x in scale over yaw 0-88 x pitch +/-40, which both wobbles
+    # frame to frame and hands the swap model a face at a size it was not
+    # trained on; 'pose' holds that to 1.072x. Frontal faces are unaffected
+    # either way — the correction fades in from 15 deg off-axis — so the old
+    # default was paying nothing and fixing nothing. ROOP_YAW_ALIGN=off still
+    # gets the previous behaviour exactly, for A/B.
+    return 'pose'
 
 
 class Settings:
@@ -203,6 +214,11 @@ class Settings:
         # ROOP_YAW_ALIGN says, so the env var still works on a config that has
         # never had the selector touched; once it is saved, the saved value wins.
         self.yaw_align = self.default_get(data, 'yaw_align', initial_yaw_align())
+        # Angle handling, layers 2 and 3 — see roop.face_util
+        # (pose_visibility_polygon, angle_fade_weight). Layer 1 is yaw_align
+        # above; all three are one structure and share its off-axis fade band.
+        self.angle_visibility_mask = self.default_get(data, 'angle_visibility_mask', True)
+        self.angle_fade_strength = self.default_get(data, 'angle_fade_strength', 65.0)
         # Jaw / chin reshape toward the source face shape
         self.jaw_reshape = self.default_get(data, 'jaw_reshape', False)
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
@@ -356,6 +372,8 @@ class Settings:
             'color_transfer_mode': self.color_transfer_mode,
             'refine_landmarks': self.refine_landmarks,
             'yaw_align': self.yaw_align,
+            'angle_visibility_mask': self.angle_visibility_mask,
+            'angle_fade_strength': self.angle_fade_strength,
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,

@@ -32,6 +32,8 @@ export const LABELS = {
   interp_after_swap: 'Interpolation',
   refine_landmarks: 'Refine landmarks',
   yaw_align: 'Angled-face alignment',
+  angle_visibility_mask: 'Angle: hidden-surface trim',
+  angle_fade_strength: 'Angle: extreme-angle fade',
   rescue_small_faces: 'Small-face rescue',
   jaw_reshape: 'Jaw reshape',
   autorotate_faces: 'Autorotate',

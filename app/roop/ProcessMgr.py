@@ -8,7 +8,10 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
-from roop.face_util import estimate_norm, solve_pose_5pt
+from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
+from roop.face_util import (angle_fade_weight, offaxis_deg, pose_weight_for,
+                            pose_visibility_polygon, yaw_align_mode,
+                            WARP_TEMPLATES, arcface_dst)
 from roop.lipsync_audio import frame_time
 import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
@@ -49,6 +52,10 @@ _DEBUG_POSE_LOG = False
 # pitch proxies, the non-frontal verdict, which masking path was taken, and how
 # much of the canonical crop the unwarped box actually covers. Use on a single
 # preview frame — it prints per face per processor, so it is noisy on a video.
+# Imported rather than re-read from the environment so both halves of the
+# diagnostic (the mask routing in procmgr_masking, the off-axis fade here) are
+# governed by the same switch and cannot end up half on.
+from roop.procmgr_masking import _DEBUG_ANGLE
 
 # ── Optional per-stage timing probe (enable with env ROOP_PROFILE=1) ─────────
 # Sums wall-clock per pipeline stage across all worker threads. "share" is each
@@ -3239,6 +3246,38 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 except Exception as e:
                     bar_write(f"[ProcessMgr] Warp-based mask application failed: {e}")
 
+        # ── Off-axis confidence fade ──────────────────────────────────────────
+        # Fade the swapped crop back toward the plate as the head leaves the pose
+        # range the swap models were trained for. See angle_fade_weight: this is
+        # the one angle lever that is identical for all 13 swappers, because it
+        # acts on the crop after the swap and does not care which model made it.
+        #
+        # Applied in CROP space, before the paste, so it composes with every
+        # downstream stage (mask engines have already run above; the mouth and eye
+        # restores below read the plate anyway) instead of having to be repeated
+        # per output surface.
+        #
+        # Both surfaces have to be faded, not just one. `fake_frame` is what gets
+        # blended by `blend_ratio` inside paste_upscale, so fading only the
+        # enhanced copy would leave up to 20% un-faded swap in the result.
+        _fade = angle_fade_weight(tgt_yaw_deg, tgt_pitch_deg,
+                                  getattr(roop.globals, 'angle_fade_strength', 0.0))
+        if _fade > 0.0:
+            def _toward_plate(img):
+                plate_crop = aligned_img
+                if img.shape[:2] != plate_crop.shape[:2]:
+                    plate_crop = cv2.resize(plate_crop, (img.shape[1], img.shape[0]),
+                                            interpolation=cv2.INTER_CUBIC)
+                return (img.astype(np.float32) * (1.0 - _fade)
+                        + plate_crop.astype(np.float32) * _fade).astype(np.uint8)
+            fake_frame = _toward_plate(fake_frame)
+            if enhanced_frame is not None:
+                enhanced_frame = _toward_plate(enhanced_frame)
+            if _DEBUG_ANGLE:
+                print(f"[ANGLE] fade={_fade:.3f} at yaw={tgt_yaw_deg:+.1f}° "
+                      f"pitch={tgt_pitch_deg:+.1f}° "
+                      f"(offaxis={offaxis_deg(tgt_yaw_deg, tgt_pitch_deg):.1f}°)")
+
         upscale = 512
         orig_width = fake_frame.shape[1]
         if orig_width != upscale:
@@ -3251,11 +3290,41 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # kps gives create_landmark_mask the head's up-axis, so the forehead
         # extension follows a tilted head instead of image-up.
         face_kps = getattr(target_face, 'kps', None)
+
+        # Where the face surface still faces the camera, in normalised crop units
+        # so paste_upscale can land it on whatever resolution it is working at.
+        # Faded in over the same off-axis band as the pose-matched alignment, and
+        # skipped entirely when that alignment is off: the polygon is the
+        # reference head placed by the alignment template, so it only sits where
+        # the real face is while the alignment is putting it there too.
+        vis_poly, vis_weight = None, 0.0
+        if (getattr(roop.globals, 'angle_visibility_mask', False)
+                and yaw_align_mode() == 'pose'):
+            # The JAW-aware solve, not the tgt_yaw_deg/tgt_pitch_deg pair above:
+            # those come from solve_pose_5pt, while the alignment template is
+            # built from solve_pose_jaw_5pt. Using the other one here would put
+            # the polygon at a slightly different pose than the template that
+            # decides where the face lands — and on a talking head the jaw-blind
+            # solve reports pitch that is not there, so the disagreement would be
+            # largest exactly on the frames people look at.
+            _jp = solve_pose_jaw_5pt(target_face.kps)
+            if _jp is not None:
+                _yaw, _pitch, _, _jaw = _jp
+                _w = pose_weight_for(_yaw, _pitch)
+                if _w > 0.0:
+                    _base = (WARP_TEMPLATES[swap_template] * float(subsample_size)
+                             if swap_template in WARP_TEMPLATES
+                             else arcface_dst * (float(subsample_size) / 112.0))
+                    _poly = pose_visibility_polygon(_yaw, _pitch, _base, _jaw)
+                    if _poly is not None:
+                        vis_poly = np.asarray(_poly, np.float64) / float(subsample_size)
+                        vis_weight = _w
+
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight)
 
         # Lip-sync and restore_original_mouth write the same bounding box, so at
         # most one of them may run. Decided once, here, ahead of both: the UI

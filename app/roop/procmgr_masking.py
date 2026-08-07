@@ -17,7 +17,7 @@ import numpy as np
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop.face_util import clamp_cut_values, kps_pose_ratios
+from roop.face_util import clamp_cut_values, kps_pose_ratios, VIS_POLY_MARGIN
 from roop.nonfrontal import nonfrontal_score
 
 
@@ -233,7 +233,7 @@ class MaskingMixin:
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, vis_poly=None, vis_weight=0.0):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -261,6 +261,12 @@ class MaskingMixin:
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
+        # The visibility trim is built here, in canonical crop space, but APPLIED
+        # after the feather below — see `_visibility_matte` and its use next to
+        # the overlap trim.
+        vis_matte = self._visibility_matte(vis_poly, vis_weight, img_matte.shape,
+                                           IM, target_img.shape)
+
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
@@ -280,6 +286,18 @@ class MaskingMixin:
         # place, so trimming before it would just let the blur put it back.
         if region is not None:
             region.trim_frame(img_matte)
+
+        # Same position, same reason, for the pose visibility trim: the feather is
+        # what would spread the swap back over the hair this removes.
+        #
+        # And a second reason that is specific to this one. `blur_area` sizes its
+        # feather from the matte's EXTENT, so applying the trim before it would
+        # narrow the feather everywhere the trim shrank the matte — measured 29px
+        # -> 18px, a 38% tighter seam, on exactly the high-pose faces where a seam
+        # shows most. Trimming afterwards leaves the feather untouched, so this
+        # layer can only ever remove matte and never sharpen it.
+        if vis_matte is not None:
+            img_matte *= vis_matte
 
         # Save 2D mask before reshape — used by show_face_area_overlay
         mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
@@ -308,6 +326,51 @@ class MaskingMixin:
             paste_face = cv2.addWeighted(paste_face.astype(np.uint8), 0.6, overlay, 0.4, 0)
 
         return paste_face.astype(np.uint8)
+
+    @staticmethod
+    def _visibility_matte(vis_poly, vis_weight, crop_shape, IM, frame_shape):
+        """Multiplier that trims the paste matte to the face surface still facing
+        the camera, in FRAME space, or None when this layer is not engaged.
+
+        `vis_poly` arrives in normalised [0, 1] crop units so it does not have to
+        know whether it is landing on a 512 swap crop or a 1024 GPEN one.
+
+        It is rasterised in crop space and warped, rather than being projected as
+        a polygon, because the polygon is not convex — `fillPoly` on transformed
+        vertices and a warp of the filled mask agree here, and the warp is the one
+        that cannot go wrong on a self-intersecting ring. The cost is one extra
+        single-channel warp, paid only on off-axis faces.
+        """
+        if vis_poly is None or not (vis_weight > 0.0):
+            return None
+        h, w = crop_shape[:2]
+        try:
+            poly = (np.asarray(vis_poly, dtype=np.float64)
+                    * np.array([w, h], dtype=np.float64))
+            if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
+                return None
+            if not np.isfinite(poly).all():
+                return None
+            vis = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(vis, [poly.astype(np.int32)], 255)
+            # Safety margin. The polygon comes from a REFERENCE head, not this
+            # face, so it can sit a little inside a wider one; without the margin
+            # 1-2 truly-visible landmarks get trimmed at yaw 88, and a matte that
+            # clips visible skin is a worse artefact than the over-coverage it is
+            # removing. Measured zero cut at every pose with it.
+            r = max(1, int(min(w, h) * VIS_POLY_MARGIN))
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2 + 1, r * 2 + 1))
+            vis = cv2.dilate(vis, k, iterations=1)
+            # Soften the trim's own edge so it ramps into the matte instead of
+            # stepping. The feather below is already sized and applied by then, so
+            # nothing else will smooth this boundary.
+            vis = cv2.GaussianBlur(vis, (r * 2 + 1, r * 2 + 1), 0)
+            vis = cv2.warpAffine(vis, IM, (frame_shape[1], frame_shape[0]),
+                                 flags=cv2.INTER_LINEAR, borderValue=0.0)
+            keep = 1.0 - float(vis_weight) * (1.0 - vis.astype(np.float32) / 255.0)
+            return np.clip(keep, 0.0, 1.0)
+        except cv2.error:
+            return None       # a wild pose costs a skipped trim, not a dead frame
 
     @staticmethod
     def _scale_paste(IM, crop_shape, face_landmarks):

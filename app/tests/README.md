@@ -25,6 +25,7 @@ have been: silent, pose-dependent, and invisible on frontal footage.
 | `test_alignment.py` | `estimate_norm` is a **bit-exact no-op** when `yaw_align` is off (1350 size × template × pose combinations); the profile path is gated off mid-angles and kills the nod-coupled rotation swing |
 | `test_landmark_mask.py` | `create_landmark_mask` is **bit-identical** on upright faces and **rotationally equivariant** on tilted ones; `_mask_crop_box` never returns a degenerate rectangle |
 | `test_face_overlap.py` | Two swapped faces that touch get a **boundary**, not a smear: separated faces cost nothing, the sequential composite leaves no plate showing along the join, the boundary does not move with match order, and paint order is far-to-near and stable under bbox noise |
+| `test_angle_handling.py` | The three shared angle layers: the visibility polygon **never trims real face** at any pose, is off entirely near frontal, and shrinks monotonically with yaw; the off-axis fade is bounded, monotone and exactly off at 0; the trim is applied **after** the feather (before it, shrinking the matte shrank the feather 29px→18px and *sharpened* the seam); both paste call sites pass it; the default path is bit-identical |
 | `test_settings_wiring.py` | A setting that reaches the UI actually reaches the render — no half-wired controls that silently do nothing |
 
 `test_settings_wiring.py` parses `FaceSwap.jsx` and `api.py` as text rather than
@@ -36,9 +37,10 @@ reason too.
 
 Two guarantees are load-bearing and easy to break by accident:
 
-- **`yaw_align` off must be bit-exact.** It is opt-in because it changes the crop
-  — and so the swap output — for high-yaw faces. If it ever leaked into the
-  default path it would silently change every render.
+- **`yaw_align` off must be bit-exact.** `pose` is now the default, but `off` is
+  the A/B baseline and the only way back to the pre-change output, so it has to
+  stay a true no-op. The same applies to the other two angle layers: strength 0
+  and the trim disabled must both be bit-identical to not having them.
 - **Upright faces must be bit-identical.** Frontal is the overwhelming majority
   of frames, so any mask change there is a regression in the common case.
 
