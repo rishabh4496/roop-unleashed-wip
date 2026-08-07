@@ -429,10 +429,11 @@ class TestPoseTemplate(YawAlignCase):
     @staticmethod
     def _target_template(kps, dst):
         """The template estimate_norm actually aimed at for these keypoints."""
-        from roop.face_util import _pose_template, pose_align_weight, solve_pose_5pt
-        yaw, pitch, _ = solve_pose_5pt(kps)
+        from roop.face_util import (_pose_template, pose_align_weight,
+                                    solve_pose_jaw_5pt)
+        yaw, pitch, _, jaw = solve_pose_jaw_5pt(kps)
         w = pose_align_weight(kps)
-        return (1.0 - w) * dst + w * _pose_template(yaw, dst, pitch)
+        return (1.0 - w) * dst + w * _pose_template(yaw, dst, pitch, jaw)
 
     def test_cuts_the_fit_residual_at_high_yaw(self):
         """The point of the mode: a template congruent to the input makes the

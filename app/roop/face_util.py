@@ -1078,10 +1078,16 @@ def _reference_5pt():
     ])
 
 
-def _project_reference(yaw_deg, pitch_deg=0.0):
+def _project_reference(yaw_deg, pitch_deg=0.0, jaw=0.0):
     """The reference head's 5 points at a given yaw/pitch, orthographic, image
     axes. Pitch is applied after yaw (R = Rx @ Ry), matching the convention the
-    pose solve below decomposes back out."""
+    pose solve below decomposes back out.
+
+    `jaw` slides the two mouth corners down the head's own eye->mouth axis, as a
+    fraction of that distance, BEFORE the rotation — the sixth degree of freedom
+    the five keypoints actually have (see solve_pose_jaw_5pt). jaw = 0 leaves
+    the arithmetic untouched, so every existing caller is bit-identical.
+    """
     y, p = np.radians(yaw_deg), np.radians(pitch_deg)
     ry = np.array([[np.cos(y), 0.0, np.sin(y)],
                    [0.0, 1.0, 0.0],
@@ -1089,7 +1095,13 @@ def _project_reference(yaw_deg, pitch_deg=0.0):
     rx = np.array([[1.0, 0.0, 0.0],
                    [0.0, np.cos(p), -np.sin(p)],
                    [0.0, np.sin(p), np.cos(p)]])
-    pts = _reference_5pt() @ (rx @ ry).T
+    ref = _reference_5pt()
+    if jaw:
+        ref = np.asarray(ref, dtype=np.float64).copy()
+        drop = float(jaw) * ((ref[3] + ref[4]) / 2.0 - (ref[0] + ref[1]) / 2.0)
+        ref[3] = ref[3] + drop
+        ref[4] = ref[4] + drop
+    pts = ref @ (rx @ ry).T
     return np.column_stack([pts[:, 0], -pts[:, 1]])
 
 
@@ -1108,6 +1120,55 @@ _REF5_IMAGE = _reference_5pt_image()
 # to one precomputed pseudo-inverse and a 3x5 @ 5x2 matmul: 0.79 us against
 # 6.49 us for np.linalg.lstsq, which redoes a full SVD on every call.
 _REF5_PINV = np.linalg.pinv(_REF5_IMAGE)
+
+
+# ── The jaw axis, and the normal equations as polynomials in it ──────────────
+# The mouth corners are two of the five keypoints and the jaw is a moving part,
+# so the observed points are a SIX degree-of-freedom family, not five: yaw,
+# pitch, roll, scale and translation, plus how far the mouth has opened. This is
+# that sixth direction — both mouth corners sliding down the head's own
+# eye->mouth axis — expressed in the same centred image-axis frame as
+# _REF5_IMAGE, so a head with the jaw at `j` is _REF5_IMAGE + j * _JAW5.
+def _jaw_axis_5pt():
+    ref = np.asarray(_REF5_IMAGE, dtype=np.float64)
+    drop = (ref[3] + ref[4]) / 2.0 - (ref[0] + ref[1]) / 2.0
+    axis = np.zeros((5, 3), dtype=np.float64)
+    axis[3] = drop
+    axis[4] = drop
+    return axis
+
+
+_JAW5 = _jaw_axis_5pt()
+# Centred, because a pose solve removes translation before it does anything else.
+_JAW5C = _JAW5 - _JAW5.mean(axis=0)
+
+# X(j) = _REF5_IMAGE + j*_JAW5C, so the normal-equation matrix X(j)^T X(j) is a
+# QUADRATIC in j and the right-hand side X(j)^T x is LINEAR in it. Precomputing
+# the coefficients turns each Newton step below into 3x3 arithmetic on constants
+# instead of re-forming and re-factorising a least-squares problem.
+_JQ0 = _REF5_IMAGE.T @ _REF5_IMAGE
+_JQ1 = _REF5_IMAGE.T @ _JAW5C + _JAW5C.T @ _REF5_IMAGE
+_JQ2 = _JAW5C.T @ _JAW5C
+
+# Unpacked into plain floats for the hot loop, for the same reason the tail of
+# solve_pose_5pt is: on 3x3 data every numpy call costs more in dispatch than in
+# arithmetic.
+_JQ0F = tuple(float(v) for v in (_JQ0[0, 0], _JQ0[0, 1], _JQ0[0, 2],
+                                 _JQ0[1, 1], _JQ0[1, 2], _JQ0[2, 2]))
+_JQ1F = tuple(float(v) for v in (_JQ1[0, 0], _JQ1[0, 1], _JQ1[0, 2],
+                                 _JQ1[1, 1], _JQ1[1, 2], _JQ1[2, 2]))
+_JQ2F = tuple(float(v) for v in (_JQ2[0, 0], _JQ2[0, 1], _JQ2[0, 2],
+                                 _JQ2[1, 1], _JQ2[1, 2], _JQ2[2, 2]))
+
+# How far the mouth is allowed to travel, as a fraction of the eye->mouth
+# distance. Negative because the parameter also absorbs a real difference in
+# eye-to-mouth PROPORTION between the reference head and the person in frame —
+# which is welcome, it is exactly the "one head's proportions forced onto
+# everybody" cost the pose template otherwise pays — but only within the range
+# real anatomy spans. Outside it the solve has gone somewhere the model does not
+# describe, and clamping keeps a bad frame merely uncorrected instead of wrong.
+JAW_SOLVE_MIN = -0.35
+JAW_SOLVE_MAX = 0.90
 
 
 def solve_pose_5pt(kps):
@@ -1189,6 +1250,345 @@ def solve_pose_5pt(kps):
         return None
 
 
+def _decompose_projection(A):
+    """(yaw, pitch, roll, scale) from a 3x2 weak-perspective matrix, or None.
+
+    Split out of solve_pose_5pt so the jaw-aware solve below reuses exactly the
+    same convention — two solvers that disagreed about which way a head faces is
+    a bug this project has already had once.
+    """
+    a0x, a0y, a0z = float(A[0][0]), float(A[1][0]), float(A[2][0])
+    a1x, a1y, a1z = float(A[0][1]), float(A[1][1]), float(A[2][1])
+
+    n1 = math.sqrt(a0x * a0x + a0y * a0y + a0z * a0z)
+    if not (n1 > 1e-9):
+        return None
+    r1x, r1y, r1z = a0x / n1, a0y / n1, a0z / n1
+    dot = a1x * r1x + a1y * r1y + a1z * r1z
+    r2x, r2y, r2z = a1x - dot * r1x, a1y - dot * r1y, a1z - dot * r1z
+    n2 = math.sqrt(r2x * r2x + r2y * r2y + r2z * r2z)
+    if not (n2 > 1e-9):
+        return None
+    r2x, r2y, r2z = r2x / n2, r2y / n2, r2z / n2
+    r3x = r1y * r2z - r1z * r2y
+    r3y = r1z * r2x - r1x * r2z
+    r3z = r1x * r2y - r1y * r2x
+
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, -r3y))))
+    yaw = -math.degrees(math.atan2(r3x, r3z))
+    roll = math.degrees(math.atan2(r1y, r2y))
+    if not (math.isfinite(yaw) and math.isfinite(pitch) and math.isfinite(roll)):
+        return None
+    return yaw, pitch, roll, 0.5 * (n1 + n2)
+
+
+# How many Newton steps to take on the jaw, once the right basin is known.
+# Measured worst error over a yaw 0-90 x pitch +/-40 x roll +/-90 x jaw 0-0.7
+# grid of exact projections:
+#
+#   steps    2       3       4       5       6
+#   worst  13.9    2.67    0.11    0.0003  0.0000  deg
+#
+# Five is where it stops mattering — a tenth of a degree of pose is already far
+# below what a detector's keypoints resolve — and the loop exits early on any
+# frame that converges sooner, which is most of them.
+_JAW_NEWTON_STEPS = 5
+
+# The rotation-consistency error is NOT unimodal in the jaw. Besides the true
+# minimum there is a second, shallower one 0.4 to 0.8 higher, which reads as a
+# head tilted ~35 deg further back with the mouth open wider. Two facts about it
+# set the search below, and both were measured rather than assumed:
+#
+#   * Its floor (error ~1e-4) is well BELOW the true basin's shoulders (~5e-3 a
+#     tenth of a jaw away from the true minimum, whose floor is ~1e-31). So
+#     ranking sampled points does not work — a grid that misses the true
+#     minimum by a little ranks the decoy first. Only floors may be compared
+#     with floors, which means refining before choosing.
+#   * Gauss-Newton settles into whichever basin it starts in, and no small fixed
+#     set of starting points covers both for every pose. Starting only at 0
+#     misreads every yaw-0 head tilted UP (over a 9360-pose grid, 104 misreads,
+#     all at pitch +40, worst 8.6 deg); adding a second and a third fixed start
+#     moved the failures around rather than removing them.
+#
+# So: sample the range on a grid comfortably finer than the basin spacing, take
+# the best sample AND the best sample from the other basin, refine both, and
+# choose on the error each one actually reaches.
+_JAW_SCAN_STEP = 0.1
+_JAW_BASIN_SEP = 0.25
+
+# And when refinement finds that both basins fit EXACTLY, which happens.
+#
+# At yaw 0 the ambiguity is not numerical, it is real. A frontal head projects
+# its eyes to one height, its mouth to another and its nose in between, and the
+# nose's sideways offset — the thing that separates a tilt from a jaw once the
+# head has turned — is zero. Two unknowns, two informative heights, a quadratic
+# system, two roots. Measured on an exact projection of a head at pitch +10 with
+# the mouth 5% closed: jaw -0.05 gives error 1.1e-31, and jaw +0.83 with pitch
+# +66.7 gives 2.1e-31. Both are the truth as far as five points can tell.
+#
+# So the choice is a prior, and there is an obvious one. The decoy is ALWAYS the
+# root with the WIDER mouth — it sits 0.4 to 0.8 above the true jaw at every
+# pose sampled — and the two readings are not equally costly to get wrong:
+# taking the more closed mouth on a head that really is tilted back merely
+# leaves the alignment uncorrected, while taking the wider one on an ordinary
+# face swings the template through 57 degrees of pitch that is not there. So
+# prefer the most closed reading, and let a rival overturn it only by fitting
+# distinctly better. (Ordered on the signed jaw, not its magnitude: when the
+# true jaw is negative — a face whose mouth simply sits higher than the
+# reference head's — the decoy is the one NEARER zero, and ranking by magnitude
+# picks it.)
+_JAW_TIE_RATIO = 0.5
+_JAW_TIE_FLOOR = 1e-8
+
+
+def _jaw_fit_at(j, b, q, want_step=True):
+    """Fit the reference head with its jaw at `j`, and say how far the result is
+    from being a rigid pose.
+
+    Returns `(A, err, step)`: the 3x2 weak-perspective matrix, the squared
+    rotation-consistency error (scale-free, so it is comparable across
+    candidates), and the Gauss-Newton step that would reduce it — or None if the
+    normal equations are singular. `want_step=False` skips the derivative, which
+    is about 40% of the work and is not needed while merely scoring candidates.
+
+    `b` is the right-hand side split into its constant and jaw-linear parts, `q`
+    the three quadratic coefficients of X(j)^T X(j). Both are precomputed by the
+    caller because they do not depend on j.
+    """
+    (b0_00, b0_01, b0_10, b0_11, b0_20, b0_21,
+     b1_00, b1_01, b1_10, b1_11, b1_20, b1_21) = b
+    q0, q1, q2 = q
+
+    jj = j * j
+    g11 = q0[0] + j * q1[0] + jj * q2[0]
+    g12 = q0[1] + j * q1[1] + jj * q2[1]
+    g13 = q0[2] + j * q1[2] + jj * q2[2]
+    g22 = q0[3] + j * q1[3] + jj * q2[3]
+    g23 = q0[4] + j * q1[4] + jj * q2[4]
+    g33 = q0[5] + j * q1[5] + jj * q2[5]
+
+    # Adjugate of the symmetric 3x3, then Cramer.
+    c11 = g22 * g33 - g23 * g23
+    c12 = g13 * g23 - g12 * g33
+    c13 = g12 * g23 - g13 * g22
+    det = g11 * c11 + g12 * c12 + g13 * c13
+    if not (abs(det) > 1e-12):
+        return None
+    c22 = g11 * g33 - g13 * g13
+    c23 = g13 * g12 - g11 * g23
+    c33 = g11 * g22 - g12 * g12
+    inv = 1.0 / det
+
+    # A = G^-1 B, columns a0 (image x) and a1 (image y).
+    a00 = (c11 * b0_00 + c12 * b0_10 + c13 * b0_20 + j * (c11 * b1_00 + c12 * b1_10 + c13 * b1_20)) * inv
+    a10 = (c12 * b0_00 + c22 * b0_10 + c23 * b0_20 + j * (c12 * b1_00 + c22 * b1_10 + c23 * b1_20)) * inv
+    a20 = (c13 * b0_00 + c23 * b0_10 + c33 * b0_20 + j * (c13 * b1_00 + c23 * b1_10 + c33 * b1_20)) * inv
+    a01 = (c11 * b0_01 + c12 * b0_11 + c13 * b0_21 + j * (c11 * b1_01 + c12 * b1_11 + c13 * b1_21)) * inv
+    a11 = (c12 * b0_01 + c22 * b0_11 + c23 * b0_21 + j * (c12 * b1_01 + c22 * b1_11 + c23 * b1_21)) * inv
+    a21 = (c13 * b0_01 + c23 * b0_11 + c33 * b0_21 + j * (c13 * b1_01 + c23 * b1_11 + c33 * b1_21)) * inv
+
+    # The fit is a scaled rotation exactly when its two rows have equal norm AND
+    # are orthogonal, so the residual is the PAIR
+    #
+    #     u = |a0|^2 - |a1|^2        v = 2 (a0 . a1)
+    #
+    # and the jaw is the j that drives both to zero. Both terms are needed: an
+    # in-plane roll of theta turns (u, v) through 2*theta, so u alone is
+    # identically zero at 45 degrees of roll, and a root find on it wanders off
+    # to the clamp. u^2 + v^2 is roll-invariant, which a head lying on its side
+    # in shot makes a requirement rather than a nicety.
+    n0 = a00 * a00 + a10 * a10 + a20 * a20
+    n1 = a01 * a01 + a11 * a11 + a21 * a21
+    u = n0 - n1
+    v = 2.0 * (a00 * a01 + a10 * a11 + a20 * a21)
+    s2 = 0.5 * (n0 + n1)
+    if not (s2 > 1e-12):
+        return None
+    # Divided by the scale so the error means the same thing on a face 40 px
+    # across and one 400 px across — otherwise the scan below would compare
+    # candidates by how big the face is.
+    err = (u * u + v * v) / (s2 * s2)
+    if not want_step:
+        return ((a00, a01), (a10, a11), (a20, a21)), err, 0.0
+
+    # dA/dj = G^-1 (B' - G' A) reuses the same inverse, so the exact derivative
+    # costs one more application rather than a second solve.
+    p11 = q1[0] + 2.0 * j * q2[0]
+    p12 = q1[1] + 2.0 * j * q2[1]
+    p13 = q1[2] + 2.0 * j * q2[2]
+    p22 = q1[3] + 2.0 * j * q2[3]
+    p23 = q1[4] + 2.0 * j * q2[4]
+    p33 = q1[5] + 2.0 * j * q2[5]
+
+    r00 = b1_00 - (p11 * a00 + p12 * a10 + p13 * a20)
+    r10 = b1_10 - (p12 * a00 + p22 * a10 + p23 * a20)
+    r20 = b1_20 - (p13 * a00 + p23 * a10 + p33 * a20)
+    r01 = b1_01 - (p11 * a01 + p12 * a11 + p13 * a21)
+    r11 = b1_11 - (p12 * a01 + p22 * a11 + p23 * a21)
+    r21 = b1_21 - (p13 * a01 + p23 * a11 + p33 * a21)
+
+    d00 = (c11 * r00 + c12 * r10 + c13 * r20) * inv
+    d10 = (c12 * r00 + c22 * r10 + c23 * r20) * inv
+    d20 = (c13 * r00 + c23 * r10 + c33 * r20) * inv
+    d01 = (c11 * r01 + c12 * r11 + c13 * r21) * inv
+    d11 = (c12 * r01 + c22 * r11 + c23 * r21) * inv
+    d21 = (c13 * r01 + c23 * r11 + c33 * r21) * inv
+
+    du = 2.0 * ((a00 * d00 + a10 * d10 + a20 * d20)
+                - (a01 * d01 + a11 * d11 + a21 * d21))
+    dv = 2.0 * ((d00 * a01 + d10 * a11 + d20 * a21)
+                + (a00 * d01 + a10 * d11 + a20 * d21))
+    # Gauss-Newton on (u, v) jointly — a plain Newton on either one alone
+    # inherits that term's blind roll angle.
+    den = du * du + dv * dv
+    step = 0.0 if not (den > 1e-12) else -(u * du + v * dv) / den
+    if not math.isfinite(step):
+        step = 0.0
+    return ((a00, a01), (a10, a11), (a20, a21)), err, step
+
+
+def solve_pose_jaw_5pt(kps):
+    """(yaw, pitch, roll, jaw) in degrees + jaw fraction, or None.
+
+    Same weak-perspective model as solve_pose_5pt, with the mouth allowed to
+    open. That matters because it is not a small correction:
+
+        frontal head, jaw dropping, NOTHING else moving
+        jaw drop        0%     15%     30%     45%     60%
+        solve_pose_5pt  0.0   -11.0   -18.7   -24.1   -28.0 deg of "pitch"
+
+    A talking head reports up to 28 degrees of pitch that is not there, and
+    _pose_template then projects the reference head into a position the person
+    is not in — which is worse than not correcting at all. Two consequences, both
+    measured on REAL detected keypoints (seven faces from this project's test
+    clip, mouth opened synthetically so nothing else changes):
+
+      * The crop breathes. Opening the mouth 45% of the eye-to-mouth distance
+        moves the reported pitch by up to 17 deg and swings the crop scale
+        1.36x on average, 1.46x worst. With the jaw solved out, the reported
+        pitch is constant to 0.1 deg and the swing is 1.03x / 1.06x.
+      * The correction fires on faces that have not moved. A frontal head with
+        the mouth 45% open reported 24 deg of pitch, which is most of the way
+        through the 15->40 deg engagement band, so the template was being
+        swapped in on the strength of an expression. It now scores 0 and the
+        alignment is bit-identical to leaving the mode off.
+
+    Note what this does NOT claim: on turned heads the correction was mostly
+    engaging for real reasons. Across 18 high-angle frames sampled from that
+    clip the engagement verdict does not change on any of them, and the pitch
+    moves by only a few degrees — those heads really are tilted. The win is
+    steadiness across an expression, not a different set of frames.
+
+    WHY A LINEAR SOLVE CANNOT DO THIS, and this one can. After centring, the
+    jaw displacement lies EXACTLY in the span of the reference head's own
+    coordinates (least-squares residual 4e-16 — see tests/test_open_mouth_pose),
+    so adding a jaw column to the linear system changes nothing: both eyes sit
+    at one y and both mouth corners at another, and dropping the jaw is a
+    reweighting of that axis, which is what pitch is. What breaks the tie is the
+    ROTATION CONSTRAINT — a jaw drop leaves a residual no rigid rotation can
+    produce. The unconstrained fit answers a jaw drop by stretching the y axis,
+    so its two projection rows come out unequal and non-orthogonal; driving that
+    inconsistency to zero is a one-dimensional problem in the jaw. Not a convex
+    one, though — see _JAW_SCAN_STEP and _JAW_TIE_RATIO for the two basins and
+    the genuine yaw-0 ambiguity, which is most of what the code below is doing.
+
+    Accurate to 6 deg worst over a 13k-pose grid (yaw 0-90 x pitch +/-40 x
+    roll +/-90 x jaw -0.25..0.75) and under 1 deg everywhere except a handful of
+    exactly-yaw-0 corners, where it deliberately under-corrects.
+
+    Costs ~8x solve_pose_5pt (98 us against 12), so it is used only where it
+    changes an outcome: the 'pose' and 'stabilize' alignment templates, both
+    opt-in. solve_pose_5pt stays the answer everywhere else — the mask router,
+    the mouth and eye restore fades, the tracking gates — unchanged and
+    bit-exact. Those read pose to decide how far a head has TURNED, where a few
+    degrees of jaw-borrowed pitch changes no verdict; the templates are the one
+    consumer that projects a head at the angle it is handed.
+    """
+    try:
+        if kps is None:
+            return None
+        x = np.asarray(kps, dtype=np.float64)
+        if x.shape != (5, 2) or not np.isfinite(x).all():
+            return None
+        x = x - x.mean(axis=0)
+        if float((x ** 2).sum()) < 1e-9:
+            return None
+
+        # Right-hand side, also linear in j: X(j)^T x = B0 + j*B1.
+        B0 = _REF5_IMAGE.T @ x
+        B1 = _JAW5C.T @ x
+        b0_00, b0_01 = float(B0[0][0]), float(B0[0][1])
+        b0_10, b0_11 = float(B0[1][0]), float(B0[1][1])
+        b0_20, b0_21 = float(B0[2][0]), float(B0[2][1])
+        b1_00, b1_01 = float(B1[0][0]), float(B1[0][1])
+        b1_10, b1_11 = float(B1[1][0]), float(B1[1][1])
+        b1_20, b1_21 = float(B1[2][0]), float(B1[2][1])
+
+        b = (b0_00, b0_01, b0_10, b0_11, b0_20, b0_21,
+             b1_00, b1_01, b1_10, b1_11, b1_20, b1_21)
+        q = (_JQ0F, _JQ1F, _JQ2F)
+
+        # 1. Score the whole range cheaply, and pick one candidate per basin.
+        scored = []
+        jc = JAW_SOLVE_MIN
+        while jc <= JAW_SOLVE_MAX + 1e-9:
+            got = _jaw_fit_at(jc, b, q, False)
+            if got is not None:
+                scored.append((got[1], jc))
+            jc += _JAW_SCAN_STEP
+        if not scored:
+            return None
+        scored.sort()
+        starts = [scored[0][1]]
+        for _err, cand in scored[1:]:
+            if abs(cand - starts[0]) >= _JAW_BASIN_SEP:
+                starts.append(cand)
+                break
+
+        # 2. Refine each, and let them compete on the error they reach.
+        refined = []
+        for start in starts:
+            j = start
+            for _step in range(_JAW_NEWTON_STEPS):
+                got = _jaw_fit_at(j, b, q)
+                if got is None:
+                    break
+                # A trust region, because Gauss-Newton on a near-flat error can
+                # throw the jaw across the whole range in one step and not come
+                # back.
+                step = max(-0.4, min(0.4, got[2]))
+                j_new = max(JAW_SOLVE_MIN, min(JAW_SOLVE_MAX, j + step))
+                settled = abs(j_new - j) < 1e-5
+                j = j_new
+                if settled:
+                    break
+            # Re-fit at the jaw this start settled on — both to score it and so
+            # the pose returned and the jaw returned describe the same head
+            # rather than being one Gauss-Newton step apart.
+            got = _jaw_fit_at(j, b, q)
+            if got is not None:
+                refined.append((got[1], j, got[0]))
+
+        if not refined:
+            return None
+        # 3. The most closed mouth wins unless another fits distinctly better —
+        #    see _JAW_TIE_RATIO for why that is the safe way round.
+        refined.sort(key=lambda c: c[1])
+        best_err, best_j, best_A = refined[0]
+        for err, j, A in refined[1:]:
+            if best_err <= _JAW_TIE_FLOOR:
+                break
+            if err < best_err * _JAW_TIE_RATIO:
+                best_err, best_j, best_A = err, j, A
+
+        out = _decompose_projection(best_A)
+        if out is None:
+            return None
+        return out[0], out[1], out[2], best_j
+    except Exception:
+        return None
+
+
 def offaxis_deg(yaw_deg, pitch_deg):
     """How far the head has turned away from the camera, combining yaw and pitch
     into the single angle between the face's forward axis and the view axis.
@@ -1207,7 +1607,7 @@ def offaxis_deg(yaw_deg, pitch_deg):
 # worse way to ask the same question.
 
 
-def _pose_template(yaw_deg, base_dst, pitch_deg=0.0):
+def _pose_template(yaw_deg, base_dst, pitch_deg=0.0, jaw=0.0):
     """The destination points for a head at `yaw_deg`/`pitch_deg`, placed to
     match the frontal template's centroid and scale.
 
@@ -1236,8 +1636,17 @@ def _pose_template(yaw_deg, base_dst, pitch_deg=0.0):
     A 39% swing means the pasted face changes size as the head moves — it
     breathes — which reads as both misalignment and per-frame wobble. Holding
     the crop scale flat is most of what makes an angled swap sit still.
+
+    The MOUTH does the same thing, for the same reason, and it moves far more
+    often than the head does. The template is therefore projected with the jaw
+    the solve found (see solve_pose_jaw_5pt) while the scale still comes from
+    the CLOSED-mouth frontal reference — so an opening mouth moves the
+    template's mouth corners down to meet it instead of shrinking the whole
+    crop to drag them back up. Measured swing over a mouth opening from shut to
+    60% on an otherwise still head: 1.430x with no correction, 1.514x projecting
+    at the phantom pitch a jaw-blind solve reports, 1.03x here.
     """
-    posed = _project_reference(yaw_deg, pitch_deg)
+    posed = _project_reference(yaw_deg, pitch_deg, jaw)
     frontal = _project_reference(0.0, 0.0)
     frontal_vert = np.linalg.norm((frontal[3] + frontal[4]) / 2.0
                                   - (frontal[0] + frontal[1]) / 2.0)
@@ -1388,8 +1797,14 @@ def pose_align_weight(lmk):
     """How much pose-matched template to blend in for these keypoints, 0..1.
 
     Returns 0.0 for frontal faces, which is what keeps the alignment bit-exact
-    where nothing needs correcting."""
-    pose = solve_pose_5pt(lmk)
+    where nothing needs correcting.
+
+    Keyed on the jaw-aware solve, so an open mouth no longer engages the
+    correction on a head that has not turned. Before, a frontal face with the
+    mouth 45% open reported 24 deg of pitch, which is most of the way through
+    the 15->40 deg band — the template was being swapped in on the strength of
+    an expression."""
+    pose = solve_pose_jaw_5pt(lmk)
     if pose is None:
         return 0.0
     return _weight_for_pose(pose[0], pose[1])
@@ -1446,7 +1861,7 @@ def _stabilized_norm(lmk, dst):
     the same w, so at w = 0 this is still the plain fit exactly — the scale
     correction is a ratio of 1.0 there by construction, not merely nearly one.
     """
-    pose = solve_pose_5pt(lmk)
+    pose = solve_pose_jaw_5pt(lmk)
     if pose is None:
         return None
     w = _smoothstep(STAB_ALIGN_ONSET_DEG, STAB_ALIGN_FULL_DEG,
@@ -1501,7 +1916,7 @@ def _hold_scale(M, lmk, dst, pose, w, m_plain):
     the crop however the head is turned. Blended from the plain fit's scale so
     w = 0 is a no-op.
     """
-    posed = _pose_template(pose[0], dst, pose[1])
+    posed = _pose_template(pose[0], dst, pose[1], pose[3])
     if posed is None:
         return M
     t = trans.SimilarityTransform()
@@ -1536,14 +1951,19 @@ def _maybe_constrained(lmk, dst):
         # perfectly level — leaving the up/down case uncorrected.
         # Solved once and reused: this runs per face per frame, and
         # pose_align_weight would otherwise repeat the whole solve.
-        pose = solve_pose_5pt(lmk)
+        #
+        # Jaw-aware, because two of the five keypoints are the mouth corners:
+        # a jaw-blind solve reports a talking head as a tilted one and the
+        # template then corrects toward a pose the person is not in. See
+        # solve_pose_jaw_5pt.
+        pose = solve_pose_jaw_5pt(lmk)
         if pose is None:
             return None
-        yaw, pitch, _ = pose
+        yaw, pitch, _, jaw = pose
         w = _weight_for_pose(yaw, pitch)
         if w <= 0.0:
             return None                      # frontal: leave the default fit alone
-        posed = _pose_template(yaw, dst, pitch)
+        posed = _pose_template(yaw, dst, pitch, jaw)
         if posed is None:
             return None
         # Blend the TEMPLATES, not the two fitted matrices. Interpolating target
