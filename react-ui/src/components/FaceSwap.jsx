@@ -262,8 +262,23 @@ export default function FaceSwap({
   const sourceSig = useMemo(() => gallerySig(sourceFaces), [sourceFaces]);
   const targetSig = useMemo(() => gallerySig(targetFaces), [targetFaces]);
 
+  // Everything a cached preview depends on EXCEPT the target index, the frame
+  // and the settings — shared by the main preview and by all three comparison
+  // grids, which each used to re-spell it. A comment already claimed it was
+  // shared; it was copied, so a fix to one copy silently missed the other.
+  //
+  // The engine version leads it because the rest of the key is settings, and
+  // settings do not change when the BACKEND does. Restarting the server after a
+  // pipeline change while leaving this webview open left every rendered cell
+  // keyed identically, so a grid could show one model freshly rendered beside
+  // another served from before the change and labelled "Cached" — read as a
+  // difference between the two models. Comparing a new render against a stale
+  // one is the one thing a comparison grid must not do.
+  const cacheSuffix =
+    `${meta?.git_version || 'dev'}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+
   const getCacheKey = (idx = selTarget, fr = frame) => {
-    return `${idx}_${fr}_${previewKey}_${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+    return `${idx}_${fr}_${previewKey}_${cacheSuffix}`;
   };
 
   const getCachedPreview = (idx = selTarget, fr = frame) => {
@@ -786,13 +801,12 @@ export default function FaceSwap({
   // lines three times over; it is one hook now, differing only in which settings
   // key is varied and which values are legal. See faceswap/useGridPreviewLoader.
   //
-  // The cache key's tail is shared by all three (and by refreshPreview), so it
-  // is built once here rather than re-spelled per grid.
-  const gridCacheSuffix = `${sourceSig}_${targetSig}_${selSource}_${selTargetFace}`;
+  // The cache key's tail — see `cacheSuffix` above, which the main preview uses
+  // too so the two can never drift.
   const gridCommon = {
     settings: p, fakePreview, selTarget, frame, targetCount: targets.length,
     buildPreviewPayload, previewSignature, previewCacheRef,
-    cacheSuffix: gridCacheSuffix, reloadKey: previewKey,
+    cacheSuffix, reloadKey: previewKey,
   };
 
   useGridPreviewLoader({
