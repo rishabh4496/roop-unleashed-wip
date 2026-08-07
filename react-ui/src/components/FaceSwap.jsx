@@ -36,7 +36,6 @@ import useViewPersistence from './faceswap/useViewPersistence';
 import usePlaybackBuffer from './faceswap/usePlaybackBuffer';
 import useGridPreviewLoader from './faceswap/useGridPreviewLoader';
 import useWorkspaceLayout from './faceswap/useWorkspaceLayout';
-import useRunCompleteAlert from './faceswap/useRunCompleteAlert';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { TiltCard } from '../motion';
 
@@ -145,15 +144,10 @@ export default function FaceSwap({
 
   const [showPresetStudio, setShowPresetStudio] = useState(false);
 
-  // Chime + optional OS notification on the processing -> idle edge. The
-  // Processing tab mounts this too — exactly one of the two tabs is ever
-  // mounted, so whichever one you are watching from is the one that announces
-  // the end of the run, and it can never double up. Nothing is read from it
-  // here: the alerts TOGGLE lives on the Processing tab's dock, and the
-  // preference it writes is persisted, not held in this component.
-  useRunCompleteAlert({
-    processing: progress.processing, error: progress.error, notify,
-  });
+  // The run-complete chime and notification live in App, which is the only
+  // component always mounted — a run that ends while you are on another tab
+  // still has to announce itself. Mounting the hook here as well is what gave
+  // every finished run two chimes.
 
   // Keeps the UI from competing with the render for the GPU while a job runs —
   // see faceswap/useRenderLite for why that is worth doing. This tab now stays

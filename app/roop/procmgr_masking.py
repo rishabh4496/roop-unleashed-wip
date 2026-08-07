@@ -34,6 +34,29 @@ _DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
 _NO_HYST = os.environ.get('ROOP_NONFRONTAL_HYST', '1').strip().lower() in ('0', 'off', 'false')
 
 
+def nonfrontal_mask_mode():
+    """Routing mode for the unwarped-crop mask path — see process_mask.
+
+    '0' (default) never take it, 'auto' route by pose, '1' always take it.
+    Read per call rather than at import so the switch can be flipped and A/B'd
+    without a restart, which is the only thing it is for. It costs about a
+    microsecond against a stage measured in tens of milliseconds.
+    """
+    return os.environ.get('ROOP_NONFRONTAL_MASK', '0').strip().lower()
+
+
+def nonfrontal_routing_enabled():
+    """Whether the pose router's verdict can change anything.
+
+    ProcessMgr.process_face publishes every face into the router as soon as the
+    keypoints are known, so that a worker asking for a verdict later finds the
+    event already logged. With the routing off that publish is a pose solve and
+    a SHARED LOCK per face per frame producing something nothing can read — so
+    the publisher asks first.
+    """
+    return nonfrontal_mask_mode() == 'auto'
+
+
 # Extra context around the aligned crop's footprint in the unwarped mask box, as
 # a fraction of its size per side. Enough that a hand or a microphone entering
 # from outside the crop is visible to the segmenter — it has to see the object to
@@ -537,7 +560,7 @@ class MaskingMixin:
         #
         # ROOP_NONFRONTAL_MASK: 0 (default) never take it; `auto` restore the
         # pose routing; 1 always take it for a dense masker.
-        _nf_mode = os.environ.get('ROOP_NONFRONTAL_MASK', '0').strip().lower()
+        _nf_mode = nonfrontal_mask_mode()
         if _nf_mode == '1':
             is_non_frontal = True
         elif _nf_mode == 'auto':

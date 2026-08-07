@@ -10,7 +10,6 @@ import DiagnosticsPanel from './faceswap/DiagnosticsPanel';
 import LiveProcessingPeek from './faceswap/LiveProcessingPeek';
 import useTelemetry from './faceswap/useTelemetry';
 import useRenderLite from './faceswap/useRenderLite';
-import useRunCompleteAlert from './faceswap/useRunCompleteAlert';
 import { lastPreview } from './faceswap/lastPreview';
 import { fmtTime } from './faceswap/utils';
 
@@ -30,19 +29,16 @@ import { fmtTime } from './faceswap/utils';
  * stays after the run ends (so the finished log and the output are still
  * readable) and disappears once you navigate away from it.
  */
-export default function Processing({ progress, settings, notify, setTab }) {
+export default function Processing({ progress, settings, notify, setTab,
+                                     desktopAlerts, onToggleDesktopAlerts }) {
   const p = settings || {};
   const processing = !!progress.processing;
 
   const telemetry = useTelemetry();
   const { renderLite, toggleRenderLite } = useRenderLite(processing);
-  // The chime / OS notification on the processing -> idle edge. Mounted here as
-  // well as in Face Swap because exactly one of the two tabs is ever mounted,
-  // and the alert has to fire whichever one is being looked at. It cannot
-  // double up for the same reason.
-  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
-    processing, error: progress.error, notify,
-  });
+  // The alert itself is App's — it is the only component always mounted, so a
+  // run finishing while this tab is closed still announces itself. This tab
+  // only hosts the TOGGLE for it, which is why both arrive as props.
 
   // The knobs that actually decide a run's speed and look, shown alongside the
   // live diagnostics so a screenshot of a slow or wrong-looking run says what
@@ -336,7 +332,7 @@ export default function Processing({ progress, settings, notify, setTab }) {
               onTogglePause={() => (progress.paused ? resume() : pause())}
               onCancelJob={stop}
               desktopAlerts={desktopAlerts}
-              onToggleDesktopAlerts={toggleDesktopAlerts}
+              onToggleDesktopAlerts={onToggleDesktopAlerts}
               renderLite={renderLite}
               onToggleRenderLite={toggleRenderLite}
             />

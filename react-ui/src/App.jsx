@@ -4,7 +4,8 @@ import { Toasts, Confetti } from './components/ui';
 import CommandPalette from './components/CommandPalette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
-import { playChime, notifyDesktop, fmtTime } from './components/faceswap/utils';
+import { fmtTime } from './components/faceswap/utils';
+import useRunCompleteAlert from './components/faceswap/useRunCompleteAlert';
 import { themeByName, allThemes, applyThemeToDom } from './themes';
 import { SETTINGS_CATALOG, focusSetting } from './components/settingsCatalog';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
@@ -220,21 +221,36 @@ export default function App() {
     }
   }, [progress.processing, progress.started_at, startTime]);
 
+  // ── "Your render finished", once ─────────────────────────────────────────
+  // This lives here rather than in a tab because the shell is the only thing
+  // always mounted: a run that ends while you are on Settings or Outputs still
+  // has to announce itself.
+  //
+  // It used to live in BOTH places. The shell played its own chime and posted
+  // its own notification here, and the Face Swap tab mounted useRunCompleteAlert
+  // as well — so every finished run gave you two chimes and two desktop
+  // notifications, and only if you happened to be on that one tab. Neither half
+  // could see the other, which is exactly how a duplicate survives: each looks
+  // correct on its own.
+  //
+  // The hook is the better of the two — it distinguishes a failed or stopped run
+  // from a finished one and plays a different tone, where this block treated
+  // ">= 99% and no error" as the only outcome worth a sound. So the hook wins
+  // and moves up here, and the tabs read the toggle off it instead of owning it.
+  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
+    processing: progress.processing, error: progress.error, notify,
+  });
+
   const prevProcessingCelebrationRef = useRef(false);
   useEffect(() => {
     const was = prevProcessingCelebrationRef.current;
     prevProcessingCelebrationRef.current = progress.processing;
     if (was && !progress.processing && !progress.error && (progress.progress || 0) >= 0.99) {
-      playChime();
-      // Backend /api/progress returns output as { path, kind } (no `name`), so
-      // derive the filename from the path for the notification body.
-      const outName = (progress.output?.path || '').split(/[\\/]/).pop();
-      notifyDesktop('Swap complete', outName ? `${outName} is ready` : 'Your render is ready');
       setConfetti(false);
       requestAnimationFrame(() => setConfetti(true));
       setTimeout(() => setConfetti(false), 2600);
     }
-  }, [progress.processing, progress.error, progress.progress, progress.output]);
+  }, [progress.processing, progress.error, progress.progress]);
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   useEffect(() => { isDraggingOverRef.current = isDraggingOver; }, [isDraggingOver]);
@@ -863,6 +879,8 @@ export default function App() {
                     settings={settings}
                     notify={notify}
                     setTab={setTab}
+                    desktopAlerts={desktopAlerts}
+                    onToggleDesktopAlerts={toggleDesktopAlerts}
                   />
                 )}
                 {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}

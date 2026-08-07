@@ -16,7 +16,7 @@ import roop.vr_util as vr
 
 from typing import Any, List, Callable
 from roop.typing import Frame, Face
-from roop.procmgr_masking import MaskingMixin
+from roop.procmgr_masking import MaskingMixin, nonfrontal_routing_enabled
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
@@ -2726,12 +2726,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # process_mask, a whole swap and enhance later; the gap is what lets
         # workers on neighbouring frames see each other's events instead of
         # racing, which is what removes the routing ripple on a moving face.
-        try:
-            self._nonfrontal_router.observe(
-                getattr(target_face, 'kps', None), tgt_pitch_deg,
-                getattr(self._tls, 'frame_idx', None))
-        except Exception:
-            pass   # the router re-scores in process_mask regardless
+        #
+        # Only when the routing can actually use it. observe() scores the face
+        # and then takes a SHARED lock to log the event, per face per frame
+        # across every worker — with the unwarped mask path off by default that
+        # is contention on the hot path for a verdict nobody will ask for.
+        if nonfrontal_routing_enabled():
+            try:
+                self._nonfrontal_router.observe(
+                    getattr(target_face, 'kps', None), tgt_pitch_deg,
+                    getattr(self._tls, 'frame_idx', None))
+            except Exception:
+                pass   # the router re-scores in process_mask regardless
 
         # ── Option 1: Multi-angle source bank ────────────────────────────────
         # Select the source face whose pose best matches this target frame.
@@ -2858,6 +2864,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 and inputface is not None):
             try:
                 ft_threshold = getattr(self.options, 'frontalization_threshold', 25.0)
+                # This threshold only started meaning anything once the angles
+                # became real. The old EPnP value reported ~180 - true_yaw, so
+                # abs() cleared any sane threshold on EVERY face and a
+                # dead-frontal head was frontalized too — a warp and a resample
+                # to move a face that was already facing the camera.
                 if abs(tgt_yaw_deg) > ft_threshold or abs(tgt_pitch_deg) > ft_threshold:
                     from roop.face_frontalize import frontalize_crop
                     # frontal_lm68=None → auto-computed via solvePnP re-projection
@@ -2866,8 +2877,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     )
                     if M_frontal is not None:
                         aligned_for_swap = frontalized
-                        bar_write(f"[Frontalize] Δyaw={tgt_yaw_deg:+.1f}° Δpitch={tgt_pitch_deg:+.1f}°"
-                                  f" — frontalization applied")
+                        # The target's own pose, not a delta — it was labelled
+                        # as one, which was harmless while it printed a constant
+                        # and misleading now that it tracks the head.
+                        bar_write(f"[Frontalize] target yaw={tgt_yaw_deg:+.1f}° "
+                                  f"pitch={tgt_pitch_deg:+.1f}° — frontalization applied")
             except Exception as e:
                 bar_write(f"[ProcessMgr] Frontalization failed: {e}")
 

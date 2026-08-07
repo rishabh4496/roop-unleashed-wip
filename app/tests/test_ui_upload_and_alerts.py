@@ -111,13 +111,67 @@ class TheAlertTellsTheTruth(unittest.TestCase):
             cn.group(1), fn.group(1),
             'the failure tone must not use the success chime\'s notes')
 
+    @staticmethod
+    def _alert_mounts():
+        """Every place the hook is actually CALLED, as (relative path, args).
+
+        Searched across the tree rather than in one named file: the hook has
+        already moved once (Face Swap -> App, when the run panel became its own
+        tab), and a guard pinned to a filename fails for the wrong reason when
+        that happens — or worse, passes while a second copy sits elsewhere.
+        """
+        out = []
+        for root, _dirs, names in os.walk(SRC):
+            for name in sorted(names):
+                if not name.endswith(('.jsx', '.js')):
+                    continue
+                path = os.path.join(root, name)
+                if os.path.basename(path) == 'useRunCompleteAlert.js':
+                    continue                      # the definition, not a call
+                src = _read(path)
+                for m in re.finditer(r'useRunCompleteAlert\(\{', src):
+                    args = src[m.end():].split('})', 1)[0]
+                    out.append((os.path.relpath(path, SRC).replace('\\', '/'), args))
+        return out
+
     def test_the_call_site_passes_the_error_through(self):
-        src = _read(FACESWAP)
-        call = src.split('useRunCompleteAlert({', 1)[1].split('})', 1)[0]
-        self.assertIn(
-            'error:', call,
-            'FaceSwap must hand the alert progress.error; without it the hook '
-            'cannot tell a finished run from a failed one')
+        mounts = self._alert_mounts()
+        self.assertTrue(mounts, 'nothing mounts the run-complete alert any more')
+        for where, args in mounts:
+            self.assertIn(
+                'error:', args,
+                f'{where} must hand the alert progress.error; without it the '
+                f'hook cannot tell a finished run from a failed one')
+
+    def test_only_one_component_mounts_the_alert(self):
+        """Two mounts is two chimes and two desktop notifications.
+
+        This was live: the shell played its own chime on completion AND the
+        Face Swap tab mounted the hook, so a finished run announced itself
+        twice — and only while you were on that one tab, since the tab is
+        unmounted the moment you look at anything else. Neither half could see
+        the other, which is how a duplicate survives review: each is correct on
+        its own. It belongs in the always-mounted shell, exactly once.
+        """
+        mounts = self._alert_mounts()
+        self.assertEqual(
+            len(mounts), 1,
+            f'the run-complete alert is mounted {len(mounts)} times '
+            f'({", ".join(w for w, _ in mounts)}) — that is one chime each')
+        self.assertEqual(
+            mounts[0][0], 'App.jsx',
+            f'the alert moved to {mounts[0][0]}; only the shell is mounted for '
+            f'the whole session, so anywhere else misses runs that end while '
+            f'you are looking at another tab')
+
+    def test_the_shell_does_not_keep_a_second_hand_rolled_chime(self):
+        """The duplicate was not another hook call — it was a bare playChime()
+        in an effect, which is why searching for the hook alone would have
+        reported clean."""
+        src = _read(os.path.join(SRC, 'App.jsx'))
+        self.assertNotIn(
+            'playChime(', src,
+            'App is playing its own chime again alongside the hook')
 
     def test_the_desktop_alert_preference_persists(self):
         src = _read(ALERT)

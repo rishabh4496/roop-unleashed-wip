@@ -214,6 +214,66 @@ class TestTheDefaultRouting(unittest.TestCase):
         self.assertIn('router.verdict', auto,
                       'the router verdict escaped the auto branch')
 
+    def test_the_publisher_asks_before_taking_the_shared_lock(self):
+        """The other half, and the more expensive one.
+
+        ProcessMgr.process_face publishes every face into the router as soon as
+        the keypoints are known, so a worker asking for a verdict later finds
+        the event already logged. observe() scores the face and then takes a
+        SHARED lock to record it — per face, per frame, across every worker. With
+        the routing off that is contention on the hot path producing something
+        nothing will ever read, so the publish has to be gated too. Gating only
+        the reader would leave the cost exactly where it was.
+        """
+        with open(os.path.join(APP, 'roop', 'ProcessMgr.py'), encoding='utf-8') as fh:
+            mgr = re.sub(r'#[^\n]*', '', fh.read())
+        idx = mgr.find('_nonfrontal_router.observe')
+        self.assertNotEqual(idx, -1, 'the router publish is gone entirely')
+        before = mgr[max(0, idx - 400):idx]
+        self.assertIn('nonfrontal_routing_enabled()', before,
+                      'observe() is called unconditionally again')
+
+    def test_the_two_gates_read_the_same_switch(self):
+        """Reader and publisher disagreeing would be worse than either bug: the
+        router would log events nobody reads, or answer from a log with holes
+        in it."""
+        self.assertIn('def nonfrontal_routing_enabled', self.code)
+        # To the next top-level def, not a fixed slice: these bodies carry long
+        # docstrings and a fixed window cuts the code off before it starts.
+        fn = re.split(r'\ndef ', self.code.split('def nonfrontal_routing_enabled')[1])[0]
+        self.assertIn('nonfrontal_mask_mode()', fn,
+                      'the publisher gate reads the env var separately')
+        self.assertIn("== 'auto'", fn)
+
+
+class TestFrontalizationGate(unittest.TestCase):
+    """Frontalization thresholds on the same angles the mask router used to get.
+
+    It needs landmark_3d_68, which means the old EPnP path was always taken for
+    it — and that reported roughly 180 - true_yaw, so abs() cleared any sane
+    threshold on every face. A dead-frontal head was warped toward frontal and
+    warped back: a resample for nothing. With true angles the threshold does
+    what its name and its UI control say.
+    """
+
+    def setUp(self):
+        with open(os.path.join(APP, 'roop', 'ProcessMgr.py'), encoding='utf-8') as fh:
+            self.code = re.sub(r'#[^\n]*', '', fh.read())
+
+    def test_the_gate_reads_the_corrected_angles(self):
+        m = re.search(r"frontalization_threshold[^\n]*\n\s*if\s+abs\((\w+)\)[^\n]*abs\((\w+)\)",
+                      self.code)
+        self.assertIsNotNone(m, 'the frontalization gate moved or changed shape')
+        self.assertEqual({m.group(1), m.group(2)}, {'tgt_yaw_deg', 'tgt_pitch_deg'})
+
+    def test_a_frontal_face_is_below_any_sane_threshold_now(self):
+        from roop.face_util import solve_pose_5pt
+        from tests.test_face_pose_source import project_68, kps_from_68
+        yaw, pitch, _ = solve_pose_5pt(kps_from_68(project_68(0, 0)))
+        self.assertLess(max(abs(yaw), abs(pitch)), 25.0)
+        # ...and what the old path produced never was.
+        self.assertGreater(abs(178.5), 25.0)
+
 
 if __name__ == '__main__':
     unittest.main()
