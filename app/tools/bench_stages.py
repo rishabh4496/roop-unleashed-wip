@@ -96,7 +96,29 @@ _NP = {
     'tensor(double)': np.float64, 'tensor(int64)': np.int64,
     'tensor(int32)': np.int32, 'tensor(bool)': np.bool_,
 }
-N_WARM, N_ITER = 5, 25
+# These were 5 and 25, and at those counts this tool invented differences that
+# are not there. Each model is loaded, warmed, timed and freed in turn, so five
+# warm-up calls leave the measurement sitting on whatever the GPU clocks and the
+# TensorRT context are doing immediately after that model's own session was
+# built — and that is not the same for the first row as for the sixth.
+#
+# It showed up on a pair that cannot differ: xseg.onnx and xseg_3.onnx are the
+# SAME network (430 nodes, 233 initializers, identical op set, identical opset
+# version — only the weights and the tensor names differ). At 5/25 they measured
+# 3.36 and 5.83 ms, a 1.74x gap. At 60/150 they measure 2.54 and 2.75, and
+# interleaved in one warmed process, alternating which goes first over 8 rounds,
+# 2.564 +/- 0.032 against 2.570 +/- 0.054 — the same number.
+#
+# Every row was inflated and the RATIOS were wrong, which is worse, because the
+# ratios are the part that gets quoted and acted on. Occluder was reported as the
+# most expensive mask engine (5.02, 1.71x) when it is in fact the cheapest
+# (2.31, 0.91x).
+#
+# For two models within a few percent of each other, this still is not enough:
+# build both sessions, warm both, then alternate. Between-process variance is
+# larger than within-process variance, so a single sequential pass can never
+# resolve a 5% gap however long each row runs.
+N_WARM, N_ITER = 60, 150
 rng = np.random.default_rng(0)
 
 
