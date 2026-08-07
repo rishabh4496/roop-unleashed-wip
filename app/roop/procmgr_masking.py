@@ -358,19 +358,49 @@ class MaskingMixin:
             # 1-2 truly-visible landmarks get trimmed at yaw 88, and a matte that
             # clips visible skin is a worse artefact than the over-coverage it is
             # removing. Measured zero cut at every pose with it.
+            #
+            # MORPH_RECT, not MORPH_ELLIPSE: rect dilation is separable, measured
+            # 5.72ms -> 0.36ms for the 41x41 this margin needs on a 512 crop. It is
+            # marginally more generous at the diagonals, which is the safe
+            # direction for a margin whose whole job is to not clip skin.
             r = max(1, int(min(w, h) * VIS_POLY_MARGIN))
-            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2 + 1, r * 2 + 1))
+            k = cv2.getStructuringElement(cv2.MORPH_RECT, (r * 2 + 1, r * 2 + 1))
             vis = cv2.dilate(vis, k, iterations=1)
             # Soften the trim's own edge so it ramps into the matte instead of
-            # stepping. The feather below is already sized and applied by then, so
-            # nothing else will smooth this boundary.
-            vis = cv2.GaussianBlur(vis, (r * 2 + 1, r * 2 + 1), 0)
-            vis = cv2.warpAffine(vis, IM, (frame_shape[1], frame_shape[0]),
-                                 flags=cv2.INTER_LINEAR, borderValue=0.0)
-            keep = 1.0 - float(vis_weight) * (1.0 - vis.astype(np.float32) / 255.0)
-            return np.clip(keep, 0.0, 1.0)
-        except cv2.error:
-            return None       # a wild pose costs a skipped trim, not a dead frame
+            # stepping. The feather applied to the matte is already sized and spent
+            # by the time this lands, so nothing else will smooth this boundary.
+            #
+            # A FIXED small radius, not `r`. The two are answering different
+            # questions: `r` is how much slack the reference head needs against a
+            # real one, this is anti-aliasing.
+            b = max(1, int(min(w, h) * 0.008))
+            vis = cv2.GaussianBlur(vis, (b * 2 + 1, b * 2 + 1), 0)
+
+            # Fold the weight in HERE, in crop space, then warp the finished
+            # multiplier. Doing it the other way round — warp, then build
+            # `1 - w*(1 - vis/255)` at frame size — costs 15ms of full-frame float
+            # temporaries at 1080p against 0.05ms here, for the same result. The
+            # warp is linear, so weighting before or after it is equivalent.
+            #
+            # borderValue 255: outside the crop's footprint there is no verdict to
+            # apply, and 255 means "keep". The matte is zero out there anyway, but
+            # a 0 border would mean this function returns "delete everything" for
+            # the whole rest of the frame, which is a trap for any future caller.
+            keep = 255.0 - float(vis_weight) * (255.0 - vis.astype(np.float32))
+            out = cv2.warpAffine(keep, IM, (frame_shape[1], frame_shape[0]),
+                                 flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_CONSTANT,
+                                 borderValue=255.0)
+            # In place: `out / 255.0` would allocate a second full-frame float32
+            # (8 MB at 1080p) purely to divide.
+            return np.multiply(out, 1.0 / 255.0, out=out)
+        except Exception:
+            # Broad on purpose, and matching how the mask stages in process_face
+            # guard themselves: this is an optional refinement running per face per
+            # frame, so anything unexpected here must cost a skipped trim, never a
+            # dead frame. cv2.error alone is too narrow — the polygon also goes
+            # through numpy casts on its way in.
+            return None
 
     @staticmethod
     def _scale_paste(IM, crop_shape, face_landmarks):

@@ -160,28 +160,39 @@ shared code and apply identically to every model:
 | Layer | What it fixes | Control | Default |
 |---|---|---|---|
 | 1. Pose-matched alignment | Crop breathes 1.354× in scale over the pose sphere, so the model is handed a face at a size it was not trained on and the crop wobbles frame to frame. Holds it to 1.072×. | `ROOP_YAW_ALIGN` / *Angled-face alignment* | `pose` |
-| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull). Neither knows a turned head hides half its own face, and the 106-pt model predicts the far-side contour even when it is behind the skull — so on a profile the matte reaches over hair and neck and the swap gets pasted there. | *Angle: trim hidden surface* | on |
+| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull), and the hull over-claims the lower face once the head tilts. Measured: a **pitch** correction only — 0% on a level head at any yaw, up to 10.2% chin-up. Small; keep expectations accordingly. | *Angle: trim hidden surface* | on |
 | 3. Off-axis fade | Past ~55° off-axis the crop is outside every model's training distribution and the model stops reconstructing and starts inventing. Fades the swapped crop back toward the original footage instead. **This is the layer that bounds how wrong an extreme angle can look.** | *Angle: extreme-angle fade* (0–100) | 65 |
 
 All three key on the **same** pose solve and share the same off-axis fade band, so
 they are one continuous function of pose rather than three gates that can flicker
 independently. Frontal faces are untouched by all three.
 
-Layer 2, measured as the fraction of the matte removed (crop space, layer 1 on):
+Layer 2 is a **pitch** correction, not a yaw one. Fraction of the matte removed:
 
-| pose | trimmed |
-|---|---|
-| dead frontal | 1.1% |
-| yaw 55 / pitch 0 | 1.5% |
-| yaw 0 / pitch −20 | 11.5% |
-| yaw 30 / pitch −40 | 18.5% |
-| yaw 88 / pitch −40 | 10.6% |
+| pitch ↓ / yaw → | 0 | 30 | 55 | 70 | 80 | 88 |
+|---|---|---|---|---|---|---|
+| **0** | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| **−20** | 4.0% | 6.4% | 5.3% | 3.9% | 2.3% | 1.3% |
+| **−40** | 2.7% | 10.2% | 10.2% | 7.2% | 5.4% | 4.0% |
+| **+20** | 0.0% | 0.0% | 0.0% | 0.1% | 0.4% | 0.8% |
 
-Driven far more by **pitch** than by yaw: what it removes is mostly the under-chin
-region the landmark hull keeps claiming on a chin-up head. It never cuts real face
-— zero truly-visible landmarks are trimmed at any pose over yaw 0–88° × pitch
-−40…+20°, which is what the safety margin is sized for. Costs one extra
-single-channel warp, and only on off-axis faces.
+On a **level** head it trims exactly nothing at any yaw, out to an 88° profile.
+Everything it removes is the under-chin / lower-face region the 106-pt hull
+over-claims once the head **tilts** — so it is relevant to the chin-up
+near-profile case, and irrelevant to a level turned head. Mean 2.5%, max 10.2%.
+
+It never cuts real face: zero truly-visible landmarks are trimmed at any pose over
+yaw 0–88° × pitch −40…+20°, which is what the safety margin is sized for. The
+margin cannot be smaller because the polygon comes from a **reference** head and
+real heads differ from it by more than the over-coverage being removed — that, not
+tuning, is the ceiling on this layer. Beating it needs a per-face visibility
+estimate.
+
+Cost: **+8.3 ms per off-axis face at 1080p (+6% of `paste_upscale`)**, and nothing
+at all on frontal faces. It started at +29 ms; the difference was doing the weight
+arithmetic at frame size (15 ms of float temporaries) and using an ellipse rather
+than a rect structuring element for a 41×41 dilation (5.7 ms → 0.36 ms). If you
+touch this, keep the arithmetic in crop space.
 
 Layer 3 ramps from 0 at 60° off-axis to its full value at 90°, smoothstepped. The
 setting is the **ceiling** reached at 90°, so 0 disables it and every face is

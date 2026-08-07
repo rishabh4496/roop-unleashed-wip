@@ -10,8 +10,8 @@ from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, 
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
 from roop.face_util import (angle_fade_weight, offaxis_deg, pose_weight_for,
-                            pose_visibility_polygon, yaw_align_mode,
-                            WARP_TEMPLATES, arcface_dst)
+                            pose_visibility_polygon, swap_template_points,
+                            yaw_align_mode)
 from roop.lipsync_audio import frame_time
 import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
@@ -19,7 +19,8 @@ import roop.vr_util as vr
 
 from typing import Any, List, Callable
 from roop.typing import Frame, Face
-from roop.procmgr_masking import MaskingMixin, nonfrontal_routing_enabled
+from roop.procmgr_masking import (MaskingMixin, nonfrontal_routing_enabled,
+                                  _DEBUG_ANGLE)
 from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
@@ -52,10 +53,10 @@ _DEBUG_POSE_LOG = False
 # pitch proxies, the non-frontal verdict, which masking path was taken, and how
 # much of the canonical crop the unwarped box actually covers. Use on a single
 # preview frame — it prints per face per processor, so it is noisy on a video.
-# Imported rather than re-read from the environment so both halves of the
-# diagnostic (the mask routing in procmgr_masking, the off-axis fade here) are
-# governed by the same switch and cannot end up half on.
-from roop.procmgr_masking import _DEBUG_ANGLE
+# `_DEBUG_ANGLE` is imported from procmgr_masking (see the import block above)
+# rather than re-read from the environment, so both halves of the diagnostic —
+# the mask routing there and the off-axis fade here — are governed by one switch
+# and cannot end up half on.
 
 # ── Optional per-stage timing probe (enable with env ROOP_PROFILE=1) ─────────
 # Sums wall-clock per pipeline stage across all worker threads. "share" is each
@@ -2582,6 +2583,27 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return frame
 
 
+    @staticmethod
+    def _fade_toward_plate(img, plate_crop, fade):
+        """Blend a swapped crop back toward the untouched plate crop by `fade`.
+
+        A method rather than a closure inside process_face so it can actually be
+        tested — the surrounding function needs models, a frame and a matched face
+        before it will run a single line.
+
+        `plate_crop` is resized when the surface is bigger than the swap crop (GPEN
+        outputs 1024/2048), with the same INTER_CUBIC the mask-engine blend above
+        uses on the same array, so the two paths cannot disagree about the plate.
+        """
+        if fade <= 0.0:
+            return img
+        f = float(min(max(fade, 0.0), 1.0))
+        if img.shape[:2] != plate_crop.shape[:2]:
+            plate_crop = cv2.resize(plate_crop, (img.shape[1], img.shape[0]),
+                                    interpolation=cv2.INTER_CUBIC)
+        return (img.astype(np.float32) * (1.0 - f)
+                + plate_crop.astype(np.float32) * f).astype(np.uint8)
+
     def process_face(self, face_index, target_face:Face, frame:Frame, plate:Frame=None, region=None):
         """Swap one face and composite it into `frame`.
 
@@ -3263,16 +3285,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         _fade = angle_fade_weight(tgt_yaw_deg, tgt_pitch_deg,
                                   getattr(roop.globals, 'angle_fade_strength', 0.0))
         if _fade > 0.0:
-            def _toward_plate(img):
-                plate_crop = aligned_img
-                if img.shape[:2] != plate_crop.shape[:2]:
-                    plate_crop = cv2.resize(plate_crop, (img.shape[1], img.shape[0]),
-                                            interpolation=cv2.INTER_CUBIC)
-                return (img.astype(np.float32) * (1.0 - _fade)
-                        + plate_crop.astype(np.float32) * _fade).astype(np.uint8)
-            fake_frame = _toward_plate(fake_frame)
+            fake_frame = self._fade_toward_plate(fake_frame, aligned_img, _fade)
             if enhanced_frame is not None:
-                enhanced_frame = _toward_plate(enhanced_frame)
+                enhanced_frame = self._fade_toward_plate(enhanced_frame, aligned_img, _fade)
             if _DEBUG_ANGLE:
                 print(f"[ANGLE] fade={_fade:.3f} at yaw={tgt_yaw_deg:+.1f}° "
                       f"pitch={tgt_pitch_deg:+.1f}° "
@@ -3307,14 +3322,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             # decides where the face lands — and on a talking head the jaw-blind
             # solve reports pitch that is not there, so the disagreement would be
             # largest exactly on the frames people look at.
-            _jp = solve_pose_jaw_5pt(target_face.kps)
+            _jp = solve_pose_jaw_5pt(face_kps)
             if _jp is not None:
                 _yaw, _pitch, _, _jaw = _jp
                 _w = pose_weight_for(_yaw, _pitch)
                 if _w > 0.0:
-                    _base = (WARP_TEMPLATES[swap_template] * float(subsample_size)
-                             if swap_template in WARP_TEMPLATES
-                             else arcface_dst * (float(subsample_size) / 112.0))
+                    # The SAME template estimate_norm fitted this crop to. Do not
+                    # reconstruct it — every size here takes the `% 128` branch,
+                    # so the obvious `arcface_dst * size/112` is 53 px out on a
+                    # 512 crop. See swap_template_points.
+                    _base = swap_template_points(subsample_size, swap_template)
                     _poly = pose_visibility_polygon(_yaw, _pitch, _base, _jaw)
                     if _poly is not None:
                         vis_poly = np.asarray(_poly, np.float64) / float(subsample_size)

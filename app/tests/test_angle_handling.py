@@ -36,13 +36,17 @@ from roop.face_util import (                                    # noqa: E402
     ANGLE_FADE_FULL_DEG, ANGLE_FADE_ONSET_DEG, VIS_POLY_MARGIN,
     _pose_placement, _pose_template, _project_reference, arcface_dst,
     angle_fade_weight, estimate_norm, offaxis_deg, pose_visibility_polygon,
-    pose_weight_for, solve_pose_jaw_5pt, yaw_align_mode,
+    pose_weight_for, solve_pose_jaw_5pt, swap_template_points, yaw_align_mode,
 )
 from roop.procmgr_masking import MaskingMixin, landmark_hull    # noqa: E402
 from tests.facegeom import head_106, project_points, rotation   # noqa: E402
 
 SIZE = 512
-DST = arcface_dst * (SIZE / 112.0)
+# The template `estimate_norm` really fits to at this size — NOT
+# `arcface_dst * SIZE/112`. Writing that out by hand here is what let the
+# production placement bug through: the test made the same wrong guess as the
+# code, so the two agreed and the polygon was 53 px out of register with the face.
+DST = swap_template_points(SIZE, "arcface")
 
 # facegeom.head_106 returns 101 landmarks with the 5 arcface keypoints appended,
 # so the two have to be sliced apart — using all 106 as "landmarks" would feed
@@ -123,14 +127,85 @@ class PosePlacement(unittest.TestCase):
                     np.testing.assert_allclose(got, want, atol=1e-9)
 
 
+class PolygonRegistration(unittest.TestCase):
+    """The polygon must land ON the face, for every swapper template and crop size.
+
+    This is the test that was missing when the placement bug shipped. The other
+    tests all used one template at one size and compared the polygon against a
+    hull built the same wrong way, so they agreed with each other while both were
+    53 px out. This one asks the only question that cannot be fudged: after the
+    real `estimate_norm` puts the keypoints in the crop, are they inside the
+    polygon?
+
+    Covers all five templates the 13 swap models use (`arcface` plus the four
+    `WARP_TEMPLATES` entries) at every crop size in play — 128 through 1024, which
+    matters because they take different branches of `swap_template_points`.
+    """
+
+    TEMPLATES = ('arcface', 'arcface_112_v1', 'arcface_112_v2',
+                 'mtcnn_512', 'ffhq_512')
+    SIZES = (128, 256, 512, 1024)
+
+    def test_the_keypoints_land_inside_the_polygon(self):
+        old = g.yaw_align
+        g.yaw_align = 'pose'
+        try:
+            for tmpl in self.TEMPLATES:
+                for size in self.SIZES:
+                    base = swap_template_points(size, tmpl)
+                    for yaw, pitch in ((30, -10), (55, -25), (70, -30), (88, -40)):
+                        with self.subTest(template=tmpl, size=size,
+                                          yaw=yaw, pitch=pitch):
+                            _, kp = _project(yaw, pitch)
+                            M = estimate_norm(np.asarray(kp, np.float32), size, tmpl)
+                            pose = solve_pose_jaw_5pt(np.asarray(kp, np.float64))
+                            poly = pose_visibility_polygon(
+                                yaw, pitch, base,
+                                pose[3] if pose is not None else 0.0)
+                            self.assertIsNotNone(poly)
+                            pts = np.hstack([kp, np.ones((5, 1))]) @ np.asarray(M).T
+                            inside = sum(
+                                1 for x, y in pts
+                                if cv2.pointPolygonTest(
+                                    poly.astype(np.int32),
+                                    (float(x), float(y)), False) >= 0)
+                            # The far eye and far mouth corner legitimately fall
+                            # outside at high yaw — that is the layer working. The
+                            # nose and the near-side pair never should.
+                            self.assertGreaterEqual(
+                                inside, 3,
+                                f'only {inside}/5 keypoints inside the polygon — '
+                                f'it is out of register with the face')
+        finally:
+            g.yaw_align = old
+
+    def test_a_hand_rolled_template_would_fail_this(self):
+        """Pins the regression: the guess that shipped is genuinely far enough out
+        to be caught here, so this test is not vacuously passing."""
+        wrong = arcface_dst * (SIZE / 112.0)
+        right = swap_template_points(SIZE, 'arcface')
+        self.assertGreater(float(np.abs(wrong - right).max()), 20.0)
+
+
 class VisibilityPolygonSafety(unittest.TestCase):
     """The trim must never eat real face.
 
     A matte that clips visible skin is a worse artefact than the over-coverage it
     is removing — a hard edge across a cheek, rather than a soft wash over hair.
     So this is the property that has to hold everywhere, not on average, and it
-    is what the safety margin is sized from: without the margin 1-2 truly-visible
-    landmarks are lost at yaw 88.
+    is what `VIS_POLY_MARGIN` is sized from: at 0.01 thirteen of these poses clip
+    a landmark, at 0.04 none do.
+
+    Deliberately STRICTER than the shipped behaviour — it tests the hard polygon,
+    while the applied trim is feathered and weighted by the pose crossfade, so a
+    landmark counted here as clipped would in practice sit in the ramp. Being
+    conservative about the one failure that shows as a hard edge is worth the
+    smaller trim it costs.
+
+    Note this also compares two DIFFERENT synthetic heads: the polygon is built
+    from `_REF3D_68` and the landmarks come from `facegeom.head_106`. That is the
+    point — it stands in for the reference-vs-real head mismatch that sets the
+    ceiling on how tight this layer can ever be.
     """
 
     def test_no_visible_landmark_is_ever_trimmed(self):
@@ -180,19 +255,35 @@ class VisibilityPolygonSafety(unittest.TestCase):
 class VisibilityPolygonEffect(unittest.TestCase):
     """...and it must actually remove something, or it is dead weight."""
 
-    def test_it_trims_more_as_the_head_turns_away(self):
-        def trimmed(yaw, pitch):
-            m_hull, m_vis, _, _ = _crop_shapes(yaw, pitch)
-            a0 = int((m_hull > 0).sum())
-            a1 = int((cv2.bitwise_and(m_hull, m_vis) > 0).sum())
-            return 1.0 - a1 / max(1, a0)
+    @staticmethod
+    def _trimmed(yaw, pitch):
+        m_hull, m_vis, _, _ = _crop_shapes(yaw, pitch)
+        a0 = int((m_hull > 0).sum())
+        a1 = int((cv2.bitwise_and(m_hull, m_vis) > 0).sum())
+        return 1.0 - a1 / max(1, a0)
 
-        frontal = trimmed(0, 0)
-        for yaw, pitch in ((55, -40), (70, -40), (88, -40), (88, -20)):
-            with self.subTest(yaw=yaw, pitch=pitch):
-                self.assertGreater(trimmed(yaw, pitch), frontal + 0.02,
-                                   'trim is no larger off-axis than frontal — '
-                                   'the layer is not doing anything')
+    def test_it_is_a_PITCH_correction_not_a_yaw_one(self):
+        """Measured, and worth knowing before reaching for this layer: on a LEVEL
+        head the trim is exactly zero at every yaw, right out to an 88° profile.
+        Everything it removes is the under-chin / lower-face region the landmark
+        hull over-claims once the head tilts — 4-10% at pitch −40.
+
+        So it is not the fix for "profiles distort" (that is the off-axis fade),
+        but it is relevant to the chin-up near-profile case it was built for.
+        """
+        for yaw in (0, 30, 55, 70, 80, 88):
+            with self.subTest(yaw=yaw, pitch=0):
+                self.assertAlmostEqual(self._trimmed(yaw, 0), 0.0, places=3)
+        for yaw in (30, 55, 70, 88):
+            with self.subTest(yaw=yaw, pitch=-40):
+                self.assertGreater(self._trimmed(yaw, -40), 0.02,
+                                   'the layer does nothing on a tilted head')
+
+    def test_a_chin_up_head_is_trimmed_more_the_further_it_tilts(self):
+        for yaw in (30, 55, 70):
+            with self.subTest(yaw=yaw):
+                self.assertGreater(self._trimmed(yaw, -40),
+                                   self._trimmed(yaw, -20))
 
     def test_the_visible_surface_shrinks_monotonically_with_yaw(self):
         """A property, not a threshold: whatever the absolute areas are, turning
@@ -278,12 +369,21 @@ class PipelineWiring(unittest.TestCase):
 
     def test_the_fade_is_applied_to_both_paste_surfaces(self):
         """`fake_frame` is blended into the result by `blend_ratio` even when an
-        enhancer ran, so fading only the enhanced copy would leave un-faded swap
-        in the output."""
+        enhancer ran, so fading only the enhanced copy would leave up to 20%
+        un-faded swap in the output."""
         body = self.procmgr[self.procmgr.index('_fade = angle_fade_weight'):]
         body = body[:body.index('upscale = 512')]
-        self.assertIn('fake_frame = _toward_plate(fake_frame)', body)
-        self.assertIn('enhanced_frame = _toward_plate(enhanced_frame)', body)
+        self.assertIn('fake_frame = self._fade_toward_plate(fake_frame, aligned_img',
+                      body)
+        self.assertIn('enhanced_frame = self._fade_toward_plate(enhanced_frame, '
+                      'aligned_img', body)
+
+    def test_the_fade_runs_after_the_mask_engines_blend(self):
+        """The mask engines blend `fake_frame` toward the same plate crop. Fading
+        first would then be partly overwritten by that blend on masked pixels."""
+        masks = self.procmgr.rindex('Warp-based mask application failed')
+        fade = self.procmgr.index('_fade = angle_fade_weight')
+        self.assertLess(masks, fade)
 
     def test_the_trim_is_gated_on_pose_alignment(self):
         """The polygon is placed by the pose template. With the alignment off,
@@ -301,7 +401,19 @@ class PipelineWiring(unittest.TestCase):
         largest on a talking head, which is most footage."""
         body = self.procmgr[self.procmgr.index('vis_poly, vis_weight = None, 0.0'):]
         body = body[:body.index('if enhanced_frame is None:')]
-        self.assertIn('solve_pose_jaw_5pt(target_face.kps)', body)
+        self.assertIn('solve_pose_jaw_5pt(face_kps)', body)
+
+    def test_the_trim_uses_the_alignments_own_template(self):
+        """Reconstructing the template by hand is how this shipped 53 px out of
+        register: every crop size here takes estimate_norm's `% 128` branch, so
+        `arcface_dst * size/112` is simply a different template."""
+        body = self.procmgr[self.procmgr.index('vis_poly, vis_weight = None, 0.0'):]
+        body = body[:body.index('if enhanced_frame is None:')]
+        self.assertIn('swap_template_points(subsample_size, swap_template)', body)
+        # Comments legitimately name the wrong template in order to warn about it,
+        # so only look at code.
+        code = '\n'.join(ln.split('#')[0] for ln in body.splitlines())
+        self.assertNotIn('arcface_dst', code)
 
     def test_both_paste_calls_pass_the_polygon(self):
         """There are two `paste_upscale` call sites — enhanced and not. Missing
@@ -334,6 +446,68 @@ class PipelineWiring(unittest.TestCase):
         sig = inspect.signature(MaskingMixin.paste_upscale)
         self.assertIsNone(sig.parameters['vis_poly'].default)
         self.assertEqual(sig.parameters['vis_weight'].default, 0.0)
+
+
+class FadeTowardPlate(unittest.TestCase):
+    """Layer 3's actual pixel operation, executed.
+
+    Everything in `AngleFade` above tests the WEIGHT. This tests what the weight
+    is used for — including the GPEN case, where the surface being faded is 1024
+    or 2048 px and the plate crop is 512, which is the one place this can silently
+    paste a quarter-size ghost instead of a fade.
+    """
+
+    def setUp(self):
+        from roop.ProcessMgr import ProcessMgr
+        self.fade = ProcessMgr._fade_toward_plate
+        rng = np.random.default_rng(3)
+        self.swap = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+        self.plate = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+
+    def test_zero_fade_returns_the_input_untouched(self):
+        out = self.fade(self.swap, self.plate, 0.0)
+        np.testing.assert_array_equal(out, self.swap)
+
+    def test_full_fade_returns_the_plate(self):
+        out = self.fade(self.swap, self.plate, 1.0)
+        np.testing.assert_allclose(out, self.plate, atol=1)
+
+    def test_half_fade_is_the_midpoint(self):
+        out = self.fade(self.swap, self.plate, 0.5).astype(np.float64)
+        want = (self.swap.astype(np.float64) + self.plate.astype(np.float64)) / 2.0
+        self.assertLess(np.abs(out - want).max(), 1.5)
+
+    def test_it_is_monotone_in_the_fade(self):
+        prev = None
+        for f in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
+            d = np.abs(self.fade(self.swap, self.plate, f).astype(np.float64)
+                       - self.plate.astype(np.float64)).mean()
+            if prev is not None:
+                self.assertLessEqual(d, prev + 1e-9)
+            prev = d
+
+    def test_a_larger_enhancer_surface_is_faded_not_ghosted(self):
+        """GPEN 1024/2048 hand back a bigger crop than the 512 swap. If the plate
+        were pasted at its own size the result would be a quarter-size ghost in the
+        corner, which is a real bug this file's paste path has hit before."""
+        for size in (1024, 2048):
+            with self.subTest(size=size):
+                big = cv2.resize(self.swap, (size, size), interpolation=cv2.INTER_CUBIC)
+                out = self.fade(big, self.plate, 1.0)
+                self.assertEqual(out.shape, big.shape)
+                want = cv2.resize(self.plate, (size, size), interpolation=cv2.INTER_CUBIC)
+                np.testing.assert_allclose(out, want, atol=1)
+
+    def test_out_of_range_fade_is_clamped(self):
+        np.testing.assert_allclose(self.fade(self.swap, self.plate, 5.0),
+                                   self.plate, atol=1)
+        np.testing.assert_array_equal(self.fade(self.swap, self.plate, -3.0), self.swap)
+
+    def test_output_stays_uint8_and_in_range(self):
+        out = self.fade(self.swap, self.plate, 0.37)
+        self.assertEqual(out.dtype, np.uint8)
+        self.assertGreaterEqual(int(out.min()), 0)
+        self.assertLessEqual(int(out.max()), 255)
 
 
 class _Options:
@@ -415,6 +589,43 @@ class PasteUpscaleExecutes(unittest.TestCase):
         self.assertLess(np.abs(half - base).mean(), np.abs(full - base).mean())
         self.assertLess(np.abs(half - full).mean(), np.abs(base - full).mean() * 1.05)
 
+    def test_outside_the_crop_footprint_the_multiplier_keeps(self):
+        """The warp's border fill has to mean "keep", not "delete".
+
+        The matte is already zero outside the crop's footprint, so a 0 border is
+        invisible today — which is exactly why it is worth pinning. A helper that
+        returns "remove everything" for most of the frame is a live bug the moment
+        anything applies it to a matte built some other way.
+        """
+        # A frame far larger than the crop's footprint, so the corners are
+        # genuinely outside it. (On a frame the crop nearly fills, a corner can be
+        # inside the footprint and legitimately trimmed.)
+        big = (4000, 4000, 3)
+        IM = cv2.invertAffineTransform(self.M)
+        m = self.paster._visibility_matte(self.poly, 1.0, (512, 512), IM, big)
+        self.assertIsNotNone(m)
+        # Confirm the corners really are outside the footprint before asserting.
+        corners = np.array([[0, 0, 1], [big[1] - 1, 0, 1],
+                            [0, big[0] - 1, 1], [big[1] - 1, big[0] - 1, 1]],
+                           dtype=np.float64)
+        back = corners @ np.vstack([np.asarray(self.M), [0, 0, 1]]).T
+        for (cx, cy, _), (fy, fx) in zip(
+                back, ((0, 0), (0, -1), (-1, 0), (-1, -1))):
+            self.assertFalse(0 <= cx < 512 and 0 <= cy < 512,
+                             'test fixture is wrong: corner is inside the crop')
+            self.assertAlmostEqual(float(m[fy, fx]), 1.0, places=3)
+
+    def test_the_multiplier_stays_in_range(self):
+        for wgt in (0.1, 0.5, 1.0):
+            with self.subTest(weight=wgt):
+                m = self.paster._visibility_matte(
+                    self.poly, wgt, (512, 512),
+                    cv2.invertAffineTransform(self.M), self.target.shape)
+                self.assertGreaterEqual(float(m.min()), -1e-6)
+                self.assertLessEqual(float(m.max()), 1.0 + 1e-6)
+                # At weight w the strongest possible trim is (1 - w).
+                self.assertGreaterEqual(float(m.min()), 1.0 - wgt - 1e-3)
+
     def test_it_survives_a_polygon_that_misses_the_crop(self):
         """A wild pose solve must cost a wrong trim, not an exception."""
         for poly in (self.poly * 50.0, self.poly - 10.0,
@@ -443,6 +654,63 @@ class SettingsSurface(unittest.TestCase):
                 os.environ.pop('ROOP_YAW_ALIGN', None)
             else:
                 os.environ['ROOP_YAW_ALIGN'] = old
+
+    def test_the_three_declarations_of_each_default_agree(self):
+        """Each angle setting has its default written in THREE places, and they are
+        separate sources of truth:
+
+          * `settings.py` — what a fresh backend uses
+          * `faceswap/defaults.js` — what the UI shows, and what "Reset defaults"
+            restores
+          * `api.py` — the `payload.get(key, getattr(CFG, key, FALLBACK))` fallback,
+            which appears twice (preview and the run path)
+
+        A drift between the first two means the panel shows one value and a render
+        uses another, with nothing erroring. `test_ui_settings_defaults` guards this
+        for the Settings panel but not for the Face Swap tab, which is where these
+        live.
+        """
+        import re
+        from pathlib import Path
+        app = Path(__file__).resolve().parents[1]       # .../app
+        repo = app.parent
+        py = (app / 'settings.py').read_text(encoding='utf-8')
+        js = (repo / 'react-ui' / 'src' / 'components' / 'faceswap'
+              / 'defaults.js').read_text(encoding='utf-8')
+        api = (app / 'api.py').read_text(encoding='utf-8')
+
+        def norm(v):
+            v = v.strip().rstrip(',').strip()
+            if v in ('True', 'true'):
+                return True
+            if v in ('False', 'false'):
+                return False
+            try:
+                return float(v)
+            except ValueError:
+                return v.strip('\'"')
+
+        for key, expected in (('yaw_align', 'pose'),
+                              ('angle_visibility_mask', True),
+                              ('angle_fade_strength', 65.0)):
+            with self.subTest(key=key):
+                j = re.findall(rf'^\s*{key}:\s*([^,\n]+)', js, re.M)
+                self.assertEqual(len(j), 1, f'{key} not declared once in defaults.js')
+                self.assertEqual(norm(j[0]), expected)
+
+                a = re.findall(
+                    rf'"{key}", getattr\(roop_globals\.CFG, "{key}", ([^)]*)\)', api)
+                self.assertEqual(len(a), 2,
+                                 f'{key} needs a fallback on BOTH api paths '
+                                 f'(preview and run), found {len(a)}')
+                for fallback in a:
+                    self.assertEqual(norm(fallback), expected)
+
+                if key != 'yaw_align':      # seeded from a function, checked above
+                    p = re.findall(rf"default_get\(data, '{key}', ([^)]*)\)", py)
+                    self.assertEqual(len(p), 1,
+                                     f'{key} not declared once in settings.py')
+                    self.assertEqual(norm(p[0]), expected)
 
     def test_the_two_new_settings_round_trip_through_the_config(self):
         """Saved as well as loaded. A setting that loads but is dropped on save

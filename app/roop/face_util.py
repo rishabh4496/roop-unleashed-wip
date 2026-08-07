@@ -1727,29 +1727,53 @@ def _pose_placement(yaw_deg, pitch_deg, base_dst, jaw=0.0):
 # Measured in crop space, with pose-matched alignment active, the matte covers
 # this much more than the visible face surface:
 #
-#   pose                 trimmed away by this polygon
-#   dead frontal                   1.1%
-#   yaw 55 / pitch   0             1.5%
-#   yaw 88 / pitch   0             1.5%
-#   yaw  0 / pitch -20            11.5%
-#   yaw 30 / pitch -40            18.5%
-#   yaw 88 / pitch -40            10.6%
+# SIZE AND SHAPE OF THE EFFECT, honestly. This is a PITCH correction, not a yaw
+# one. Fraction of the matte trimmed, with the polygon correctly placed and the
+# safety margin below:
 #
-# Note the trim is driven far more by PITCH than by yaw. That is not a quirk: a
-# chin-up head foreshortens the whole lower face, and it is the under-chin region
-# the landmark hull keeps claiming that this removes. It also happens to be the
-# case in the bug report this was built for — a near-profile head tilted up.
+#   yaw ->        0     30     55     70     80     88
+#   pitch   0   0.0%   0.0%   0.0%   0.0%   0.0%   0.0%
+#   pitch -20   4.0%   6.4%   5.3%   3.9%   2.3%   1.3%
+#   pitch -40   2.7%  10.2%  10.2%   7.2%   5.4%   4.0%
+#   pitch +20   0.0%   0.0%   0.0%   0.1%   0.4%   0.8%
 #
-# Modest, not dramatic — which is the honest size of this effect. It is worth
-# having because it is nearly free (one polygon fill in a space the matte is
-# already built in, no extra warp) and because what it removes is specifically
-# swap pixels on hair and background, which is where "why is the temple
-# discoloured on profiles" comes from.
+# On a LEVEL head it trims exactly nothing, at any yaw, right out to an 88 deg
+# profile. Everything it removes is the under-chin / lower-face region the 106-pt
+# landmark hull over-claims once the head TILTS. Mean over the grid 2.5%, max
+# 10.2%. So it is relevant to the chin-up near-profile case it was built for, and
+# irrelevant to a level turned head.
 #
-# CRITICALLY it must never cut real face. With the safety margin below, zero of
-# the truly-visible landmarks are trimmed at any pose over yaw 0-88 x pitch
-# 0..-40; without it, 1-2 are lost at yaw 88.
-VIS_POLY_MARGIN = 0.01          # dilation, as a fraction of the crop size
+# An earlier version of this comment claimed 10.6% at yaw 88 and framed it as a
+# yaw fix. That was measured with the polygon placed against the wrong template
+# (see swap_template_points) — 53 px out of register with the face, so it was
+# "trimming" more only because it was trimming the wrong pixels.
+#
+# The reason it cannot be tighter is fundamental to the approach: the polygon
+# comes from a REFERENCE head, and real heads differ from it by more than the
+# over-coverage being removed. The margin needed to stop it clipping a wider jaw
+# than the reference is most of the margin the trim was trying to reclaim.
+#
+# So this is kept as a cheap, safe, small improvement — NOT as the fix for
+# extreme-angle distortion. That is angle_fade_weight below. Do not re-tune this
+# expecting a large win; the ceiling is set by head-shape variation, and beating
+# it needs a per-face visibility estimate rather than a reference head.
+#
+# CRITICALLY it must never cut real face: a matte that clips visible skin is a
+# worse artefact (a hard edge across a cheek) than the soft over-coverage it is
+# removing. 0.04 is the smallest margin at which zero truly-visible landmarks are
+# trimmed at any pose over yaw 0-88 x pitch -40..+20. Measured poses with at least
+# one landmark clipped, against margin:
+#
+#   margin    0.010  0.015  0.020  0.025  0.030  0.040
+#   poses        13     11      6      4      1      0
+#   mean trim  5.0%   4.4%   3.8%   3.5%   3.1%   2.5%
+#
+# The test behind that table is deliberately STRICTER than the shipped behaviour:
+# it checks the hard polygon, while the applied trim is feathered and weighted, so
+# a landmark it counts as "clipped" would in practice only sit in the ramp. Being
+# conservative on the one property that produces a visible hard edge is the right
+# trade.
+VIS_POLY_MARGIN = 0.04          # dilation, as a fraction of the crop size
 
 # Head model for the visible-surface test: an ellipsoid fitted to the project's
 # own reference head, so this cannot disagree with the pose solve or the
@@ -2261,24 +2285,22 @@ def _maybe_constrained(lmk, dst):
     return _stabilized_norm(lmk, dst)
 
 
-def estimate_norm(lmk, image_size=112, mode="arcface"):
-    assert lmk.shape == (5, 2)
+def swap_template_points(image_size, mode="arcface"):
+    """The 5 destination points `estimate_norm` fits the keypoints to, in crop
+    pixels — i.e. WHERE THE FACE LANDS in the crop, for this model's template and
+    this crop size.
 
-    # Force SimilarityTransform (use_affine = False) for all faces.
-    # AffineTransform introduces non-uniform scaling and shearing, which causes
-    # severe perspective warping and facial distortion (e.g. stretched foreheads)
-    # on angled/close-up faces. Using SimilarityTransform preserves the face's
-    # natural aspect ratio and matches the training distribution of the models.
-    use_affine = False
-
+    Split out of estimate_norm because anything else that needs to know where the
+    face sits in the crop has to ask the same question, and guessing it is a trap:
+    every crop size this app actually uses (128/256/512/1024) falls through the
+    `% 112` test and lands on the `% 128` branch, which scales by size/128 AND
+    shifts x. Reconstructing it as `arcface_dst * size/112` — the obvious guess —
+    is wrong by 13 px at 128 and 53 px at 512, and wrong in a way that still looks
+    plausible on screen. `pose_visibility_polygon`'s placement was built on exactly
+    that guess.
+    """
     if mode in WARP_TEMPLATES:
-        dst = WARP_TEMPLATES[mode] * float(image_size)
-        M = _maybe_constrained(lmk, dst)
-        if M is not None:
-            return M
-        tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
-        tform.estimate(lmk, dst)
-        return tform.params[0:2, :]
+        return WARP_TEMPLATES[mode] * float(image_size)
 
     if image_size % 112 == 0:
         ratio = float(image_size) / 112.0
@@ -2298,13 +2320,26 @@ def estimate_norm(lmk, image_size=112, mode="arcface"):
 
     dst = arcface_dst * ratio
     dst[:, 0] += diff_x
+    return dst
+
+
+def estimate_norm(lmk, image_size=112, mode="arcface"):
+    assert lmk.shape == (5, 2)
+
+    # Force SimilarityTransform (use_affine = False) for all faces.
+    # AffineTransform introduces non-uniform scaling and shearing, which causes
+    # severe perspective warping and facial distortion (e.g. stretched foreheads)
+    # on angled/close-up faces. Using SimilarityTransform preserves the face's
+    # natural aspect ratio and matches the training distribution of the models.
+    use_affine = False
+
+    dst = swap_template_points(image_size, mode)
     M = _maybe_constrained(lmk, dst)
     if M is not None:
         return M
     tform = trans.AffineTransform() if use_affine else trans.SimilarityTransform()
     tform.estimate(lmk, dst)
-    M = tform.params[0:2, :]
-    return M
+    return tform.params[0:2, :]
 
 
 
