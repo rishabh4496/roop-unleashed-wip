@@ -583,11 +583,24 @@ class MaskingMixin:
             score = nonfrontal_score(kps, tgt_pitch_deg)
             yaw_ratio, pitch_ratio = (kps_pose_ratios(kps) if kps is not None
                                       else (None, None))
+            # Why the verdict differs from the raw score, when it does. "(latched)"
+            # used to be the only explanation on offer, and with the routing off by
+            # default it was printed for every angled face — where nothing is
+            # latched at all, the router is simply not being asked. A diagnostic
+            # that misreports why it decided something is worse than no
+            # diagnostic, since it is read precisely when the pipeline is not
+            # behaving.
+            if is_non_frontal == (score > 1.0):
+                why = ''
+            elif _nf_mode in ('0', '1'):
+                why = f'(ROOP_NONFRONTAL_MASK={_nf_mode}) '
+            else:
+                why = '(latched) '
             print(f"[ANGLE] {p_name} yaw_ratio="
                   f"{'n/a' if yaw_ratio is None else f'{yaw_ratio:.3f}'} "
                   f"pitch_ratio={'n/a' if pitch_ratio is None else f'{pitch_ratio:.3f}'} "
                   f"pitch_deg={tgt_pitch_deg:+.1f} score={score:.3f} "
-                  f"{'(latched) ' if is_non_frontal != (score > 1.0) else ''}"
+                  f"{why}"
                   f"non_frontal={is_non_frontal} "
                   f"path={'unwarped-box' if crop_box is not None else 'canonical-crop'}"
                   f"{'' if cov is None else f' box_covers={cov * 100:.1f}% of crop'}",
