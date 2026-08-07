@@ -150,6 +150,92 @@ class CustomThemeDerivation(unittest.TestCase):
             'dark under dark ink — the preset light blocks set it, so the '
             'derivation must too')
 
+    def test_accent_ink_is_computed_not_assumed_white(self):
+        """Ink on an accent fill must be derived from the accent's lightness.
+
+        The standing assumption was "the accent fill is dark enough to carry
+        white ink in every theme". Measured against each theme's own accent,
+        white reaches 4.5:1 on NONE of them — lime 1.19, gold 1.40, mauve 2.03,
+        teal 2.22, emerald 2.54, and the DEFAULT crimson 3.83. So this was never
+        a light-accent edge case, and a hardcoded `color: #fff` is the bug.
+
+        `oklch(from var(--accent) …)` reads the accent's own lightness and picks
+        black or white, which is correct for all 38 presets and any user theme
+        without a per-theme value. A plain `#fff` immediately before it is the
+        intended fallback for an engine without relative colour syntax, so this
+        checks that a computed declaration FOLLOWS the literal rather than
+        banning the literal outright.
+        """
+        css = _read(CSS)
+
+        # Scoped to the .fill-accent rule BODY, not the stylesheet. Matching
+        # anywhere made this vacuous: the light block's own accent rule carries
+        # the same pattern, so deleting the override from .fill-accent still
+        # passed. Caught by deliberately perturbing it.
+        def rule_body(selector):
+            i = css.index(selector)
+            body = css[i + len(selector):]
+            return body[:body.index('}')]
+
+        for selector in ('.fill-accent {', '.fill-accent:hover {'):
+            body = rule_body(selector)
+            self.assertIn(
+                'oklch(from var(--accent', body,
+                f'{selector} sets ink without computing it from the accent — '
+                f'white is below 4.5:1 on EVERY theme accent, the default '
+                f'crimson included (3.83)')
+
+        # And the accent-fill rule in the light block must not be left asserting
+        # plain white as its final word.
+        _sel, body = _light_theme_block(css)
+        accent_rule = re.search(r'\.bg-\\\[var\\\(--accent\\\)\\\][^{]*\{([^}]*)\}', body)
+        self.assertIsNotNone(
+            accent_rule, 'the light block no longer scopes the accent fill')
+        self.assertIn(
+            'oklch(from var(--accent)', accent_rule.group(1),
+            'the light-mode accent fill still forces white ink unconditionally')
+
+    def test_status_colours_agree_between_the_css_and_the_derivation(self):
+        """The status hues are written twice and cannot be written once.
+
+        `:root` in index.css needs literal values (nothing evaluates JS there),
+        and `deriveThemeVars` needs them to emit inline for custom themes. So the
+        two lists are duplicated by necessity — and a drift between them is
+        invisible: preset themes would read one set and custom themes the other,
+        which shows up as "the warning colour is slightly different on my theme"
+        and nothing else.
+
+        Both modes are checked, because the light set is the one that matters
+        (the dark values as ink on a white card are ~1.9:1).
+        """
+        css = _read(CSS)
+        vars_js = _read(os.path.join(SRC, 'themeVars.js'))
+        names = ('--ok', '--warn', '--danger', '--info')
+
+        def css_block(selector):
+            i = css.index(selector)
+            body = css[i:]
+            return body[:body.index('\n}')]
+
+        def js_block(mode):
+            m = re.search(mode + r":\s*\{([^}]*)\}", vars_js)
+            self.assertIsNotNone(m, f'STATUS_COLORS.{mode} not found in themeVars.js')
+            return m.group(1)
+
+        for mode, selector in (('dark', ':root {'), ('light', '[data-theme-mode="light"] {')):
+            block = css_block(selector)
+            js = js_block(mode)
+            for name in names:
+                cm = re.search(re.escape(name) + r':\s*([^;]+);', block)
+                jm = re.search(re.escape(name) + r"':\s*'([^']+)'", js)
+                self.assertIsNotNone(cm, f'{name} missing from {selector} in index.css')
+                self.assertIsNotNone(jm, f'{name} missing from STATUS_COLORS.{mode}')
+                self.assertEqual(
+                    cm.group(1).strip().lower(), jm.group(1).strip().lower(),
+                    f'{name} disagrees between index.css ({selector}) and '
+                    f'STATUS_COLORS.{mode} in themeVars.js — preset themes and '
+                    f'custom themes would render different status colours')
+
 
 if __name__ == '__main__':
     unittest.main()

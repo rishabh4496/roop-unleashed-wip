@@ -76,7 +76,7 @@ export default function ParserRegions({ regions, grow, onChange }) {
   return (
     <div className="rounded-xl bg-black/25 border border-white/[0.07] p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40">
+        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45">
           Parsed regions to swap
         </span>
         {!isDefault && (
@@ -105,7 +105,7 @@ export default function ParserRegions({ regions, grow, onChange }) {
                 className={`w-[104px] shrink-0 px-2 py-1 rounded-lg text-mini font-semibold text-left border transition-all duration-150 ${
                   active
                     ? 'bg-[var(--accent)]/15 border-[var(--accent)]/40 text-white'
-                    : 'bg-white/[0.02] border-white/10 text-white/40 hover:text-white/75 hover:border-white/20'
+                    : 'bg-white/[0.02] border-white/10 text-white/45 hover:text-white/75 hover:border-white/20'
                 }`}
               >
                 {label}
@@ -126,7 +126,7 @@ export default function ParserRegions({ regions, grow, onChange }) {
                   : `${label} is excluded from the mask, so there is nothing to grow`}
               />
               <span className={`w-8 shrink-0 text-right text-micro font-mono tabular-nums ${
-                active && px > 0 ? 'text-[var(--accent)]' : 'text-white/25'
+                active && px > 0 ? 'text-[var(--accent)]' : 'text-white/45'
               }`}>
                 {active ? `${px}` : '—'}
               </span>
@@ -135,7 +135,7 @@ export default function ParserRegions({ regions, grow, onChange }) {
         })}
       </div>
 
-      <p className="text-micro text-white/30 leading-relaxed">
+      <p className="text-micro text-white/45 leading-relaxed">
         Grow is in pixels of the 512² parse, applied to each region separately
         before they are combined — so growing the mouth does not also push the
         outer edge of the face outward.

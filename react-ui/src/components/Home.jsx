@@ -52,12 +52,12 @@ const Stat = ({ icon: Ico, label, value, sub, tone, onClick, title }) => {
     >
       <div className="flex items-center gap-1.5 mb-1.5">
         <Ico size={12} className={tone === 'accent' ? 'text-[var(--accent)]' : 'text-white/35'} />
-        <span className="text-nano font-semibold uppercase tracking-[0.12em] text-white/35">{label}</span>
+        <span className="text-nano font-semibold uppercase tracking-[0.12em] text-white/45">{label}</span>
       </div>
       <div className={`text-title font-bold tabular-nums leading-none ${tone === 'accent' ? 'text-[var(--accent)]' : 'text-white/90'}`}>
         {value}
       </div>
-      {sub && <div className="text-nano text-white/35 mt-1 truncate">{sub}</div>}
+      {sub && <div className="text-nano text-white/45 mt-1 truncate">{sub}</div>}
     </Tag>
   );
 };
@@ -212,7 +212,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
             title="Recent runs"
             action={history?.length ? (
               <button type="button" onClick={() => setTab('history')}
-                      className="text-nano font-semibold text-white/40 hover:text-white apple-transition flex items-center gap-1">
+                      className="text-nano font-semibold text-white/45 hover:text-white apple-transition flex items-center gap-1">
                 All <Icon.expand size={10} />
               </button>
             ) : null}
@@ -220,7 +220,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
             {history === null ? (
               <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14" />)}</div>
             ) : history.length === 0 ? (
-              <p className="text-compact text-white/30 py-6 text-center">
+              <p className="text-compact text-white/45 py-6 text-center">
                 Finished runs are recorded here with the settings they used.
               </p>
             ) : (
@@ -233,7 +233,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
                         {e.outputs?.[0] || 'Untitled run'}
                       </div>
                       <div className="flex flex-wrap items-center gap-1 mt-1">
-                        <span className="text-nano text-white/35">{fmtAgo(e.time)}</span>
+                        <span className="text-nano text-white/45">{fmtAgo(e.time)}</span>
                         {/* The few settings that most define what a run looked
                             like — the same set the history tab chips. */}
                         {CHIP_KEYS.map((k) => {
@@ -269,7 +269,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
             title="Latest outputs"
             action={outputs?.files?.length ? (
               <button type="button" onClick={() => setTab('gallery')}
-                      className="text-nano font-semibold text-white/40 hover:text-white apple-transition flex items-center gap-1">
+                      className="text-nano font-semibold text-white/45 hover:text-white apple-transition flex items-center gap-1">
                 All <Icon.expand size={10} />
               </button>
             ) : null}
@@ -277,7 +277,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
             {outputs === null ? (
               <div className="grid grid-cols-3 gap-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="aspect-video" />)}</div>
             ) : outputs.files.length === 0 ? (
-              <p className="text-compact text-white/30 py-6 text-center">
+              <p className="text-compact text-white/45 py-6 text-center">
                 Rendered files land in the Outputs tab.
               </p>
             ) : (

@@ -218,7 +218,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
               <span className="h-4 w-4 rounded-full border-2 border-white/20 border-t-[var(--accent)] animate-spin" />
               <span className="font-semibold">Rendering {label}…</span>
               {timers[label] && (
-                <span className="text-micro text-white/30 font-mono">
+                <span className="text-micro text-white/45 font-mono">
                   Elapsed: {timers[label]}
                 </span>
               )}
@@ -243,7 +243,7 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
             {zoom.toFixed(1)}× — Reset
           </button>
         ) : items.length > 0 && (
-          <span className="px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-micro font-semibold text-white/40 pointer-events-none select-none">
+          <span className="px-2.5 py-1 rounded-full bg-black/50 backdrop-blur text-micro font-semibold text-white/45 pointer-events-none select-none">
             Scroll or double-click to zoom all
           </span>
         )}

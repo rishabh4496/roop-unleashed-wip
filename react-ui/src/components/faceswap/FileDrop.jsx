@@ -165,7 +165,7 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
                     style={{ width: `${pct}%` }}
                   />
                 </div>
-                <div className="flex items-center justify-center gap-2 text-micro text-white/40 font-mono tabular-nums">
+                <div className="flex items-center justify-center gap-2 text-micro text-white/45 font-mono tabular-nums">
                   <span>{fmtBytes(progress.loaded)} / {fmtBytes(progress.total)}</span>
                   {rate > 0 && <><span>·</span><span>{fmtBytes(rate)}/s</span></>}
                   {eta > 0 && <><span>·</span><span>{fmtEta(eta)}</span></>}
@@ -195,7 +195,7 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
             </motion.div>
             <div className="text-left">
               <span className={`text-xs font-bold tracking-wide block ${drag ? 'text-[var(--accent)]' : 'text-white/80'}`}>{drag ? 'Drop files now' : label}</span>
-              {!drag && hint && <span className="block text-micro text-white/40 mt-0.5">{hint}</span>}
+              {!drag && hint && <span className="block text-micro text-white/45 mt-0.5">{hint}</span>}
             </div>
           </div>
         )}
@@ -238,12 +238,12 @@ export default function FileDrop({ label, accept, multiple, onFiles, busy, hint,
                       className="px-2.5 py-1 rounded-lg text-mini font-semibold text-white/50 hover:text-white border border-white/10 hover:border-white/25 transition-colors">
                 Cancel
               </button>
-              <span className="text-micro text-white/30">Ctrl + Enter</span>
+              <span className="text-micro text-white/45">Ctrl + Enter</span>
             </div>
           </div>
         ) : (
           <button type="button" onClick={() => setPathOpen(true)}
-                  className="text-micro font-semibold text-white/35 hover:text-[var(--accent)] transition-colors"
+                  className="text-micro font-semibold text-white/45 hover:text-[var(--accent)] transition-colors"
                   title="Reference a file already on this machine instead of uploading a copy of it">
             or add by path — no copy, no wait
           </button>

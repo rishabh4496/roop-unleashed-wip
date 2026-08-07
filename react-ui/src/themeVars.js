@@ -103,6 +103,27 @@ export const RECIPE_LIMITS = {
 
 export const normalizeRecipe = (t) => ({ ...DEFAULT_RECIPE, ...(t || {}), custom: true });
 
+// ── Semantic status ───────────────────────────────────────────────────────
+// The one part of a theme that is NOT derived from the recipe. "Warning" has to
+// look like a warning in every theme, so these do not follow the accent — a
+// theme-tinted danger colour on Obsidian would be crimson, i.e. identical to
+// its accent, and the distinction the colour exists to make would vanish.
+//
+// Only `mode` matters, and only for contrast: the dark set is tuned for ink on a
+// dark surface, and on a light page the same hues carry ~1.9:1 as text, so the
+// light set is the 700-weight equivalents (all above 4.5:1 on white).
+//
+// These MUST be emitted rather than left to the CSS. A custom theme's variables
+// are written as INLINE STYLE, which outranks the `[data-theme-mode="light"]`
+// block in index.css — so omitting them would pin a light custom theme to the
+// dark values and put 1.9:1 status text on a white card. Same trap as
+// `--input-bg-focus` below, and `test_ui_light_themes` guards both.
+// Keep in step with the `--ok/--warn/--danger/--info` values in index.css.
+export const STATUS_COLORS = {
+  dark: { '--ok': '#34D399', '--warn': '#FBBF24', '--danger': '#F87171', '--info': '#60A5FA' },
+  light: { '--ok': '#047857', '--warn': '#B45309', '--danger': '#B91C1C', '--info': '#1D4ED8' },
+};
+
 // ── Derivation ────────────────────────────────────────────────────────────
 
 /**
@@ -172,6 +193,8 @@ export function deriveThemeVars(recipe) {
     // light one the panel is already the brighter surface, so the same read
     // comes from a faint inner shade instead. See the note in index.css.
     '--specular': light ? 'rgba(0, 0, 0, 0.035)' : alpha(lighten(bg, 1), 0.05),
+    // Semantic status — mode-picked, not accent-derived. See STATUS_COLORS.
+    ...STATUS_COLORS[light ? 'light' : 'dark'],
     // Light themes only: see the `.glass-input:focus` comment in index.css.
     // Emitting it unconditionally on dark would darken-then-lighten inputs on
     // focus, so it is scoped the same way the preset blocks scope it.

@@ -321,7 +321,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
       </Card>
 
       {!loading && files.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-mini text-white/40 -mt-2 px-1">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-mini text-white/45 -mt-2 px-1">
           <div className="flex items-center gap-2">
             <span className="font-bold text-white/60">{filteredFiles.length}</span> shown
             {filteredFiles.length !== files.length && <span>of {files.length}</span>}
@@ -410,7 +410,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-white/80 border-collapse">
                 <thead>
-                  <tr className="border-b border-white/10 bg-black/40 text-white/40 uppercase font-mono text-nano tracking-wider">
+                  <tr className="border-b border-white/10 bg-black/40 text-white/45 uppercase font-mono text-nano tracking-wider">
                     <th className="p-3 w-10 text-center">
                       <input
                         type="checkbox"
@@ -693,7 +693,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
           >
             {file.name}
           </h4>
-          <span className="text-micro font-mono text-white/40 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+          <span className="text-micro font-mono text-white/45 block mt-0.5">{dateStr}{sizeStr ? ` · ${sizeStr}` : ''}</span>
         </div>
         <div className="flex justify-between items-center shrink-0">
           <span className="text-micro uppercase font-semibold tracking-wider text-[var(--accent)]/80">
@@ -703,7 +703,7 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
             type="button"
             onClick={onDelete}
             disabled={isBusy}
-            className="text-mini font-bold text-white/30 hover:text-red-400 cursor-pointer transition-colors"
+            className="text-mini font-bold text-white/45 hover:text-red-400 cursor-pointer transition-colors"
           >
             Delete
           </button>

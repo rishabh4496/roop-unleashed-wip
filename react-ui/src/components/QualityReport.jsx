@@ -88,15 +88,15 @@ export default function QualityReport({ outputPath, notify }) {
           </svg>
           <div className="absolute flex flex-col items-center leading-none">
             <span className="text-2xl font-black" style={{ color: gc }}>{g}</span>
-            <span className="text-nano font-bold text-white/40 tabular-nums"><AnimatedNumber value={m.overall_score} decimals={0} /></span>
+            <span className="text-nano font-bold text-white/45 tabular-nums"><AnimatedNumber value={m.overall_score} decimals={0} /></span>
           </div>
         </div>
         <div className="min-w-0">
-          <div className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40">Quality Report</div>
+          <div className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45">Quality Report</div>
           <div className="text-sm font-bold text-white/90">
             {g === 'A' ? 'Excellent result' : g === 'B' ? 'Good result' : g === 'C' ? 'Acceptable' : g === 'D' ? 'Needs work' : 'Poor — review settings'}
           </div>
-          <div className="text-micro text-white/35 mt-0.5">
+          <div className="text-micro text-white/45 mt-0.5">
             {data.is_video ? `Sampled ${data.sampled} frames` : 'Single image'}
             {!data.has_source && ' · no source loaded (likeness skipped)'}
           </div>
@@ -117,7 +117,7 @@ export default function QualityReport({ outputPath, notify }) {
       </div>
 
       <div className="flex items-center justify-between pt-1">
-        <span className="text-nano text-white/25 leading-tight max-w-[70%]">
+        <span className="text-nano text-white/45 leading-tight max-w-[70%]">
           Heuristic scores from re-detecting faces in the output. Load the source for likeness.
         </span>
         <button type="button" onClick={analyze} className="text-mini font-bold text-white/50 hover:text-white shrink-0">Re-analyze</button>

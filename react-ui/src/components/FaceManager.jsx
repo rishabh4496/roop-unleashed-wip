@@ -152,7 +152,7 @@ export default function FaceManager({ notify, registerFileListener }) {
             >
               {DETECTORS.map((d) => <option key={d.id} value={d.id} className="bg-[#121420]">{d.label}</option>)}
             </select>
-            <span className="mt-1 block text-mini text-white/35">Engine used to find & align faces on add / cut.</span>
+            <span className="mt-1 block text-mini text-white/45">Engine used to find & align faces on add / cut.</span>
           </label>
           <div>
             <Toggle
@@ -165,7 +165,7 @@ export default function FaceManager({ notify, registerFileListener }) {
           <div>
             <Slider label="Quality gate" info={`keep ≥ ${Math.round(threshold * 100)}%`}
                     min={0} max={1} step={0.05} value={threshold} onChange={setThreshold} />
-            <span className="mt-1 block text-mini text-white/35">Faces below this score are dimmed; “Drop below gate” removes them.</span>
+            <span className="mt-1 block text-mini text-white/45">Faces below this score are dimmed; “Drop below gate” removes them.</span>
           </div>
         </div>
       </Section>

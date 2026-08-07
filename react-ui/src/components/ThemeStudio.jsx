@@ -24,7 +24,7 @@ const Row = ({ label, hint, children }) => (
   <div className="flex items-center justify-between gap-4 py-1.5">
     <div className="min-w-0">
       <div className="text-compact font-semibold text-white/80">{label}</div>
-      {hint && <div className="text-nano text-white/35 mt-0.5 leading-snug">{hint}</div>}
+      {hint && <div className="text-nano text-white/45 mt-0.5 leading-snug">{hint}</div>}
     </div>
     <div className="shrink-0 flex items-center gap-2">{children}</div>
   </div>
@@ -181,7 +181,7 @@ export default function ThemeStudio({ open, onClose, initial, customThemes, onSa
                 <Icon.theme size={16} className="text-[var(--accent)]" />
                 Theme Studio
               </h2>
-              <p className="text-mini text-white/40 mt-1">
+              <p className="text-mini text-white/45 mt-1">
                 Six choices; everything else is derived. The page behind this dialog is the preview.
               </p>
             </div>
@@ -274,7 +274,7 @@ export default function ThemeStudio({ open, onClose, initial, customThemes, onSa
             {['--card-bg', '--text-main', '--text-muted', '--border-color', '--accent-hover'].map((k) => (
               <span key={k} className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/[0.04] border border-white/10">
                 <span className="h-3 w-3 rounded-sm border border-white/20" style={{ background: vars[k] }} />
-                <span className="text-nano font-mono text-white/40">{k.replace('--', '')}</span>
+                <span className="text-nano font-mono text-white/45">{k.replace('--', '')}</span>
               </span>
             ))}
           </div>

@@ -97,6 +97,26 @@
      against a near-white card and got nothing visible for the cost. Now each
      mode can state its own edge; see the light override further down. */
   --specular: rgba(255, 255, 255, 0.05);
+
+  /* ── Semantic status ──────────────────────────────────────────────────
+     Four states this UI genuinely has to signal, as tokens.
+
+     Their ABSENCE is the whole explanation for 321 hardcoded palette
+     utilities across 15 hue families (amber 80, emerald 72, red 71,
+     indigo 30, blue 14, pink 13, cyan 12 …): the design language allows one
+     accent, but nothing existed to express "this is a warning" or "this
+     control is active", so every author reached for a Tailwind swatch. In the
+     always-visible run bar alone that put FOUR rogue accent hues — indigo,
+     blue, amber, rose — next to the one accent, and none of them move when the
+     theme does.
+
+     Declared ONCE here, not in all 37 theme blocks: custom properties inherit,
+     so every theme gets them and any theme can still override one. Same
+     "repoint the variable, never enumerate" rule as --color-white below. */
+  --ok: #34D399;
+  --warn: #FBBF24;
+  --danger: #F87171;
+  --info: #60A5FA;
 }
 
 .theme-glass-light {
@@ -926,6 +946,95 @@ html[data-render-lite] .animate-scanner-sweep {
 }
 
 /* Premium glass surface — calm elevation, hairline border, quiet hover. */
+/* ── Status + active chrome ───────────────────────────────────────────────
+   One class per state, rather than the three-utility incantation
+   (`bg-amber-500/20 text-amber-300 border-amber-500/40`) that was being
+   retyped with a different swatch and three different alphas at every call
+   site. Same shape as .glass-panel/.glass-input: the surface knows how to
+   render itself, and the tint follows the theme because it is mixed FROM the
+   token rather than picked next to it.
+
+   `.state-accent` is the important one — "this control is active" was being
+   drawn in indigo throughout, which is a second accent by another name. It now
+   follows --accent, so it is crimson on Obsidian and mauve on Catppuccin
+   instead of indigo on both.
+
+   color-mix keeps this to four tokens instead of twelve: one hue in, ink +
+   surface + hairline out, at fixed ratios so every state reads at the same
+   strength. */
+.state-ok,
+.state-warn,
+.state-danger,
+.state-info,
+.state-accent {
+  border: 1px solid color-mix(in oklab, var(--state-hue) 34%, transparent);
+  background: color-mix(in oklab, var(--state-hue) 15%, transparent);
+  color: var(--state-hue);
+}
+
+.state-ok { --state-hue: var(--ok); }
+.state-warn { --state-hue: var(--warn); }
+.state-danger { --state-hue: var(--danger); }
+.state-info { --state-hue: var(--info); }
+.state-accent { --state-hue: var(--accent); }
+
+/* Text-only variants, for a label or numeral that must not also draw a chip. */
+.ink-ok { color: var(--ok); }
+.ink-warn { color: var(--warn); }
+.ink-danger { color: var(--danger); }
+.ink-info { color: var(--info); }
+.ink-accent { color: var(--accent); }
+
+/* A solid accent fill — the single primary action per screen. Deliberately a
+   FLAT fill, not a gradient: the run bar's Start button was
+   `from-blue-600 via-indigo-600 to-purple-600` with a coloured glow shadow,
+   which is three hues and a glow in the one element the eye lands on first,
+   and is the exact "red+gold gradient" decoration this UI was cleaned of.
+
+   ── The ink is COMPUTED, and it has to be ────────────────────────────────
+   "White ink is safe on every theme's accent" was the standing assumption here
+   and in the light-mode block below. It is measurably false. White on each
+   theme's own accent:
+
+     lime #c6ff00  1.19 : 1      teal   #00bbf9  2.22 : 1
+     gold #ffd700  1.40 : 1      emerald #10b981 2.54 : 1
+     mauve #cba6f7 2.03 : 1      CRIMSON #E94560 3.83 : 1  <- the default theme
+
+   Not one of them reaches 4.5:1, and the default theme is among the failures —
+   so this was never a light-accent edge case. Black ink on the same six runs
+   5.48 to 17.71.
+
+   `oklch(from …)` reads the accent's OWN lightness and picks the ink, so all 38
+   presets and any user-authored theme are correct by construction instead of
+   needing 38 hand-set values. `clamp(0, (0.62 - l) * 1000, 1)` is a step: below
+   l 0.62 the ink is white, above it black. Chroma 0 keeps it neutral — at
+   lightness 0 or 1 a hue carries no chroma anyway.
+
+   The plain `#fff` first is the fallback: an engine without relative colour
+   syntax drops the second declaration and keeps the old behaviour rather than
+   inheriting the page's ink. */
+.fill-accent {
+  background: var(--accent);
+  color: #fff;
+  color: oklch(from var(--accent) clamp(0, (0.62 - l) * 1000, 1) 0 h);
+  border: 1px solid transparent;
+}
+
+.fill-accent:hover {
+  background: var(--accent-hover);
+  color: oklch(from var(--accent-hover) clamp(0, (0.62 - l) * 1000, 1) 0 h);
+}
+
+/* The status hues are fixed, so their ink does not need computing — but it does
+   need to be right: --danger is #F87171 on dark (white 2.6:1, black 8.1:1) and
+   #B91C1C on light (white 6.4:1). Same expression, same reason. */
+.fill-danger {
+  background: var(--danger);
+  color: #fff;
+  color: oklch(from var(--danger) clamp(0, (0.62 - l) * 1000, 1) 0 h);
+  border: 1px solid transparent;
+}
+
 .glass-panel {
   background: var(--card-bg);
   /* Backdrop blur is re-sampled every time content scrolls behind the panel
@@ -1068,6 +1177,16 @@ input[type="range"]::-webkit-slider-thumb:active {
 [data-theme-mode="light"] {
   --color-white: var(--text-main);
 
+  /* The status tokens are tuned for dark surfaces; on a light page the same
+     hues carry no contrast as INK (#34D399 on white is 1.9:1, well under the
+     4.5:1 small text needs). These are the 700-weight equivalents, all above
+     4.5:1 on white, so `.state-*` stays legible without every call site
+     knowing which mode it is in. */
+  --ok: #047857;
+  --warn: #B45309;
+  --danger: #B91C1C;
+  --info: #1D4ED8;
+
   /* On a light page the panel is already brighter than what sits behind it, so
      a white top-edge highlight has nothing to catch. A faint inner SHADE at the
      top edge reads the way the white one does on dark: as the surface having a
@@ -1095,14 +1214,18 @@ input[type="range"]::-webkit-slider-thumb:active {
     --color-white: #fff;
   }
 
-  /* The accent fill is dark enough to carry white ink in every theme, so it
-     must not follow the page's. The variable keeps any `text-white/N` on these
-     at its intended alpha; the declaration covers children that set no text
-     colour at all and would otherwise inherit the page's dark ink. */
+  /* An accent fill must not follow the PAGE's ink — it is its own surface. It
+     was assumed dark enough for white in every theme; measured, no theme's
+     accent reaches 4.5:1 against white and the default crimson manages 3.83
+     (see .fill-accent). So the ink is computed from the fill's own lightness
+     here too, and `--color-white` is repointed to match so any `text-white/N`
+     on a child lands on the correct side rather than at its intended alpha of
+     the wrong colour. */
   .bg-\[var\(--accent\)\],
   .bg-\[\#E94560\] {
-    --color-white: #fff;
+    --color-white: oklch(from var(--accent) clamp(0, (0.62 - l) * 1000, 1) 0 h);
     color: #ffffff;
+    color: oklch(from var(--accent) clamp(0, (0.62 - l) * 1000, 1) 0 h);
   }
 
   /* Native <option> lists are painted by the OS, so they inherit none of the

@@ -204,7 +204,7 @@ function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
       </div>
 
       <div className="flex items-center gap-1.5 mt-1.5">
-        <span className="text-nano font-mono text-white/25 tabular-nums shrink-0">{s.min}</span>
+        <span className="text-nano font-mono text-white/45 tabular-nums shrink-0">{s.min}</span>
         <div className="relative flex-1 flex items-center">
           <input
             type="range"
@@ -229,7 +229,7 @@ function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
             />
           )}
         </div>
-        <span className="text-nano font-mono text-white/25 tabular-nums shrink-0">{s.max}</span>
+        <span className="text-nano font-mono text-white/45 tabular-nums shrink-0">{s.max}</span>
       </div>
     </div>
   );
@@ -459,7 +459,7 @@ export default function SliderTrackerBar({
         <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-white/5 select-none">
           {/* Left preset pills list */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-micro font-bold uppercase tracking-wider text-white/40 mr-1">
+            <span className="text-micro font-bold uppercase tracking-wider text-white/45 mr-1">
               Presets:
             </span>
             {activePreset === 'Custom' && (
@@ -601,7 +601,7 @@ export default function SliderTrackerBar({
                         </span>
                       )}
                       <span className="flex-1 h-px bg-white/5" />
-                      <span className="text-nano font-mono text-white/25 tabular-nums">
+                      <span className="text-nano font-mono text-white/45 tabular-nums">
                         {g.sliders.length}
                       </span>
                     </button>

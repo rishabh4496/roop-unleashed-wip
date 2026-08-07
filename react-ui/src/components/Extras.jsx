@@ -169,7 +169,7 @@ export default function Extras({ notify, registerFileListener }) {
           <Button variant="primary" onClick={runEnhance} disabled={enhBusy || !file}>
             {enhBusy ? 'Processing…' : 'Run'}
           </Button>
-          {operation === 'upscale' && <p className="text-micro text-white/30">First run downloads the model (~65 MB). ×4 on video is heavy.</p>}
+          {operation === 'upscale' && <p className="text-micro text-white/45">First run downloads the model (~65 MB). ×4 on video is heavy.</p>}
         </Section>
       </div>
 

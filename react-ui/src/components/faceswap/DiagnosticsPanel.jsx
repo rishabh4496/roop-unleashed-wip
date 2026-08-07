@@ -74,7 +74,7 @@ function Meter({ label, value, sub, pct, color, series, max }) {
   return (
     <div className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-nano font-semibold uppercase tracking-[0.14em] text-white/35">{label}</span>
+        <span className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45">{label}</span>
         <span className="text-mini font-mono font-bold tabular-nums" style={{ color }}>{value}</span>
       </div>
       {series ? (
@@ -85,7 +85,7 @@ function Meter({ label, value, sub, pct, color, series, max }) {
                style={{ width: `${Math.max(1, Math.min(pct ?? 0, 100))}%`, background: color }} />
         </div>
       )}
-      {sub && <div className="mt-1 text-nano font-mono text-white/25 tabular-nums">{sub}</div>}
+      {sub && <div className="mt-1 text-nano font-mono text-white/45 tabular-nums">{sub}</div>}
     </div>
   );
 }
@@ -106,9 +106,9 @@ const stageColor = (s) => STAGE_COLORS[s] || (
 function Stat({ label, value, tone = 'text-white/80', sub }) {
   return (
     <div className="min-w-0 rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5">
-      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30 truncate">{label}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45 truncate">{label}</div>
       <div className={`font-mono text-plain font-bold tabular-nums truncate ${tone}`}>{value}</div>
-      {sub && <div className="font-mono text-nano text-white/25 truncate">{sub}</div>}
+      {sub && <div className="font-mono text-nano text-white/45 truncate">{sub}</div>}
     </div>
   );
 }
@@ -269,9 +269,9 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
       {/* ── Throughput ───────────────────────────────────────────────────── */}
       <div className="lg:col-span-2 rounded-xl border border-white/[0.07] bg-black/30 px-3 py-2.5">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/35">Throughput</span>
+          <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Throughput</span>
           {fpsStats && (
-            <span className="flex items-baseline gap-2.5 font-mono text-micro text-white/30 tabular-nums">
+            <span className="flex items-baseline gap-2.5 font-mono text-micro text-white/45 tabular-nums">
               <span className="text-compact font-bold text-[var(--accent)]">{fpsStats.cur.toFixed(1)}</span>
               <span>fps</span>
               <span className="text-white/15">·</span>
@@ -284,7 +284,7 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
         {fpsHist.length > 1 ? (
           <>
             <div className="mt-1.5"><Spark data={fpsHist} height={52} mean={fpsStats?.avg} /></div>
-            <div className="mt-1 flex items-center justify-between font-mono text-nano text-white/25">
+            <div className="mt-1 flex items-center justify-between font-mono text-nano text-white/45">
               <span>{fpsHist.length} samples · frames ÷ wall time · dashed = run average</span>
               {fpsStats?.unstable && (
                 <span className="text-amber-400/70">
@@ -295,7 +295,7 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
             </div>
           </>
         ) : (
-          <div className="mt-2 h-[52px] flex items-center text-micro font-mono text-white/25">
+          <div className="mt-2 h-[52px] flex items-center text-micro font-mono text-white/45">
             collecting throughput samples…
           </div>
         )}
@@ -327,8 +327,8 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
       {/* ── Stage cost breakdown ─────────────────────────────────────────── */}
       <div className="lg:col-span-2 rounded-xl border border-white/[0.07] bg-black/30 px-3 py-2.5">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/35">Stage cost</span>
-          <span className="font-mono text-nano text-white/25">
+          <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Stage cost</span>
+          <span className="font-mono text-nano text-white/45">
             {profile?.enabled ? 'wall-clock summed across threads' : 'profiler off'}
           </span>
         </div>
@@ -344,14 +344,14 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
                 <span className="w-9 shrink-0 text-right font-mono text-micro font-semibold tabular-nums text-white/60">
                   {Math.round(s.share * 100)}%
                 </span>
-                <span className="w-16 shrink-0 text-right font-mono text-nano tabular-nums text-white/25">
+                <span className="w-16 shrink-0 text-right font-mono text-nano tabular-nums text-white/45">
                   {s.ms_per_call}ms
                 </span>
               </div>
             ))}
           </div>
         ) : (
-          <div className="mt-2 font-mono text-micro leading-relaxed text-white/25">
+          <div className="mt-2 font-mono text-micro leading-relaxed text-white/45">
             Set <span className="text-white/45">ROOP_PROFILE=1</span> before starting the app to break the
             run down by stage (decode / detect / mask / swap / enhance) and see which one owns the time.
           </div>
@@ -360,10 +360,10 @@ export default function DiagnosticsPanel({ desc = '', telemetry, processing, pau
 
       {/* ── Effective settings ───────────────────────────────────────────── */}
       <div className="rounded-xl border border-white/[0.07] bg-black/30 px-3 py-2.5">
-        <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/35">Run config</span>
+        <span className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Run config</span>
         <div className="mt-2 space-y-1">
           {config.length === 0 ? (
-            <div className="font-mono text-micro text-white/25">—</div>
+            <div className="font-mono text-micro text-white/45">—</div>
           ) : config.map(([k, v]) => (
             <div key={k} className="flex items-baseline justify-between gap-2 font-mono text-micro">
               <span className="text-white/30">{k}</span>

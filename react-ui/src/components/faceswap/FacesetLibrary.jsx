@@ -156,14 +156,14 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
           </div>
 
           {entries.length === 0 ? (
-            <p className="text-mini text-white/35 leading-relaxed">
+            <p className="text-mini text-white/45 leading-relaxed">
               No saved facesets yet. Select a source face above and hit
               <span className="text-white/55"> Save selected face</span> to keep it here — it survives
               restarts, so you never re-upload. Set the folder to a cloud drive in Settings to sync across devices.
             </p>
           ) : (
             <div>
-              <div className="text-micro uppercase tracking-[0.12em] text-white/40 mb-1.5">Load a faceset</div>
+              <div className="text-micro uppercase tracking-[0.12em] text-white/45 mb-1.5">Load a faceset</div>
               <div className="relative" ref={pickerRef}>
                 {/* Closed dropdown box (mirrors the Select control) */}
                 <button
@@ -173,7 +173,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <Thumb e={selected} size="w-6 h-6" />
-                    <span className={`truncate text-note ${selected ? 'text-white/85' : 'text-white/35'}`}>
+                    <span className={`truncate text-note ${selected ? 'text-white/85' : 'text-white/45'}`}>
                       {selected ? selected.name : 'Select a faceset…'}
                     </span>
                   </span>
@@ -198,7 +198,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                     )}
                     <div className="max-h-60 overflow-y-auto py-1 [scrollbar-width:thin]">
                       {shown.length === 0 ? (
-                        <p className="text-mini text-white/30 py-2 text-center">No match for “{filter}”.</p>
+                        <p className="text-mini text-white/45 py-2 text-center">No match for “{filter}”.</p>
                       ) : shown.map((e) => (
                         <div
                           key={e.filename}
@@ -225,7 +225,7 @@ export default function FacesetLibrary({ canSave, onLoaded, notify }) {
                           {/* focus-within as well as group-hover — these are
                               real tab stops, and opacity-0 alone left a
                               keyboard user focused on invisible controls. */}
-                          <span className="flex items-center gap-1.5 text-mini text-white/35 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                          <span className="flex items-center gap-1.5 text-mini text-white/45 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button type="button" className="hover:text-white/80 transition-colors" title="Rename" aria-label={`Rename faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); beginRename(e); }}><Icon.rename size={12} /></button>
                             <a className="hover:text-white/80 transition-colors" title="Export .fsz" aria-label={`Export faceset ${e.name}`} href={fileUrl(e.path)} download={e.filename} onClick={(ev) => ev.stopPropagation()}><Icon.download size={12} /></a>
                             <button type="button" className="hover:text-[var(--accent)] transition-colors" title="Delete" aria-label={`Delete faceset ${e.name}`} onClick={(ev) => { ev.stopPropagation(); del(e); }}><Icon.trash size={12} /></button>

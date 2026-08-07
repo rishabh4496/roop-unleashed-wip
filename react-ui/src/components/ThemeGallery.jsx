@@ -34,9 +34,9 @@ function ThemeCard({ theme, active, onChange, onEdit }) {
         <div className="px-2.5 py-2 bg-black/40 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-1">
             <span className="text-mini font-bold text-white/90 truncate">{t.name}</span>
-            <span className={`text-nano font-semibold uppercase tracking-wider px-1 py-0.5 rounded shrink-0 ${t.mode === 'light' ? 'bg-amber-400/15 text-amber-300' : 'bg-white/10 text-white/40'}`}>{t.mode}</span>
+            <span className={`text-nano font-semibold uppercase tracking-wider px-1 py-0.5 rounded shrink-0 ${t.mode === 'light' ? 'bg-amber-400/15 text-amber-300' : 'bg-white/10 text-white/45'}`}>{t.mode}</span>
           </div>
-          <div className="text-nano text-white/35 truncate">{t.custom ? 'Your theme' : t.label}</div>
+          <div className="text-nano text-white/45 truncate">{t.custom ? 'Your theme' : t.label}</div>
         </div>
       </button>
       {t.custom && (

@@ -3,10 +3,20 @@ import { motion, AnimatePresence } from '../../motion';
 import { Icon } from '../../icons';
 
 /**
- * FloatingActionDock
- * Ultra-premium floating glassmorphic HUD dock anchored at bottom center.
- * Gives instant access to layout workspace switching, render action, preview toggles,
- * ambilight background glow, panel drawer controls, and pop-out window.
+ * FloatingActionDock — the always-visible action bar at bottom centre: render,
+ * preview, workspace layout, ambilight, preset studio, pop-out, drawer toggles.
+ *
+ * Colour here follows the design tokens, and that is load-bearing rather than
+ * tidiness. This bar is on screen on every tab, and it used to carry FOUR
+ * accent hues that no theme could move — indigo for active states, blue for
+ * previewing, amber for the ambilight toggle, rose for cancel — plus a
+ * `from-blue-600 via-indigo-600 to-purple-600` gradient and an
+ * `shadow-indigo-500/25` glow on Start Swap. Against Obsidian's crimson accent
+ * that is five competing hues in one 820px strip.
+ *
+ * So: one accent (`.fill-accent`, `.state-accent`), `--danger` for cancel, and
+ * neutrals for everything at rest. The motion is untouched — the spring hover
+ * and tap are the approved "bold & cinematic" behaviour, not decoration.
  */
 export default function FloatingActionDock({
   workspaceMode,
@@ -42,23 +52,26 @@ export default function FloatingActionDock({
 
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-auto transition-all duration-300">
-      <div className="relative flex items-center gap-2.5 rounded-full border border-white/15 bg-neutral-950/85 px-4 py-2.5 shadow-2xl backdrop-blur-xl ring-1 ring-white/10">
+      <div className="relative flex items-center gap-2.5 rounded-full border border-white/15 bg-black/85 px-4 py-2.5 shadow-2xl backdrop-blur-xl ring-1 ring-white/10">
         
         {/* Render Button with Live Status Ring */}
         <div className="relative flex items-center">
           {isRendering ? (
             <button
               onClick={onCancelSwap}
-              className="relative flex items-center gap-2 rounded-full bg-rose-600/90 px-4 py-2 text-xs font-semibold text-white shadow-lg transition-all hover:bg-rose-500 active:scale-95"
+              className="fill-danger relative flex items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold shadow-lg transition-all active:scale-95"
               title="Cancel current swap job"
             >
-              <span className="h-2 w-2 rounded-full bg-white animate-ping" />
+              {/* A steady dot, not `animate-ping`. The progress number next to it
+                  already says the job is live, and a pulsing ring on the one
+                  control the eye is drawn to is the decoration this UI dropped. */}
+              <span className="h-1.5 w-1.5 rounded-full bg-white/90" />
               <span>Cancel ({Math.round(progress)}%)</span>
             </button>
           ) : (
             <button
               onClick={onStartSwap}
-              className="group relative flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-indigo-500/25 transition-all hover:shadow-indigo-500/40 hover:scale-105 active:scale-95"
+              className="fill-accent group relative flex items-center gap-2 overflow-hidden rounded-full px-5 py-2 text-xs font-bold shadow-lg transition-all hover:scale-105 active:scale-95"
               title="Start Face Swap processing"
             >
               <span className="text-base group-hover:scale-110 transition-transform">▶</span>
@@ -75,8 +88,8 @@ export default function FloatingActionDock({
           disabled={previewing}
           className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
             previewing
-              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-              : 'text-neutral-300 hover:bg-white/10 hover:text-white'
+              ? 'state-accent'
+              : 'text-white/70 hover:bg-white/10 hover:text-white'
           }`}
           title="Generate instant preview frame"
           aria-label="Generate instant preview frame"
@@ -91,7 +104,7 @@ export default function FloatingActionDock({
         <div className="relative">
           <button
             onClick={() => setShowModeMenu(!showModeMenu)}
-            className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-medium text-neutral-200 transition-all hover:bg-white/10 hover:text-white"
+            className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-medium text-white/80 transition-all hover:bg-white/10 hover:text-white"
             title="Switch Workspace Layout Mode"
             aria-label={`Workspace layout: ${currentMode.label}. Change layout`}
             aria-expanded={showModeMenu}
@@ -107,9 +120,9 @@ export default function FloatingActionDock({
                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute bottom-full left-0 mb-3 w-56 rounded-2xl border border-white/15 bg-neutral-900/95 p-2 shadow-2xl backdrop-blur-2xl"
+                className="absolute bottom-full left-0 mb-3 w-56 rounded-2xl border border-white/15 bg-black/85 p-2 shadow-2xl backdrop-blur-2xl"
               >
-                <div className="px-3 py-1.5 text-micro font-bold uppercase tracking-wider text-neutral-400">
+                <div className="px-3 py-1.5 text-micro font-semibold uppercase tracking-[0.14em] text-white/45">
                   Workspace Layout Mode
                 </div>
                 <div className="space-y-1">
@@ -122,12 +135,12 @@ export default function FloatingActionDock({
                       }}
                       className={`w-full rounded-xl px-3 py-2 text-left transition-all ${
                         workspaceMode === mode.id
-                          ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-500/40 font-semibold'
-                          : 'text-neutral-300 hover:bg-white/10 hover:text-white'
+                          ? 'state-accent font-semibold'
+                          : 'text-white/70 hover:bg-white/10 hover:text-white'
                       }`}
                     >
                       <div className="text-xs flex items-center gap-2"><mode.icon size={13} />{mode.label}</div>
-                      <div className="text-micro text-neutral-400 pl-[21px]">{mode.desc}</div>
+                      <div className="text-micro text-white/50 pl-[21px]">{mode.desc}</div>
                     </button>
                   ))}
                 </div>
@@ -143,8 +156,8 @@ export default function FloatingActionDock({
           onClick={() => setAmbilightEnabled(!ambilightEnabled)}
           className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs transition-all ${
             ambilightEnabled
-              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-              : 'text-neutral-400 hover:bg-white/10 hover:text-neutral-200'
+              ? 'state-accent'
+              : 'text-white/55 hover:bg-white/10 hover:text-white/85'
           }`}
           title="Toggle Canvas Ambilight Glow"
           aria-pressed={ambilightEnabled}
@@ -157,7 +170,7 @@ export default function FloatingActionDock({
         {onOpenPresetStudio && (
           <button
             onClick={onOpenPresetStudio}
-            className="flex items-center gap-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 px-2.5 py-1.5 text-xs text-indigo-300 transition-all hover:bg-indigo-500/20 hover:text-indigo-200"
+            className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white/70 transition-all hover:bg-white/10 hover:text-white"
             title="Open Preset Studio & Quality Recipes"
           >
             <Icon.theme size={13} />
@@ -168,7 +181,7 @@ export default function FloatingActionDock({
         {/* External Pop-out Window */}
         <button
           onClick={onOpenPopout}
-          className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400 transition-all hover:bg-white/10 hover:text-neutral-200"
+          className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-white/55 transition-all hover:bg-white/10 hover:text-white/85"
           title="Open Detached Pop-out Preview Monitor"
         >
           <Icon.popout size={13} />
@@ -182,7 +195,7 @@ export default function FloatingActionDock({
           <button
             onClick={() => setDrawers((d) => ({ ...d, left: !d.left }))}
             className={`rounded-lg p-1.5 text-xs transition-all ${
-              drawers.left ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
+              drawers.left ? 'ink-accent bg-white/10' : 'text-white/40 hover:text-white/70'
             }`}
             title="Toggle Left Faces Sidebar"
             aria-label="Toggle the faces sidebar"
@@ -194,7 +207,7 @@ export default function FloatingActionDock({
           <button
             onClick={() => setDrawers((d) => ({ ...d, right: !d.right }))}
             className={`rounded-lg p-1.5 text-xs transition-all ${
-              drawers.right ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
+              drawers.right ? 'ink-accent bg-white/10' : 'text-white/40 hover:text-white/70'
             }`}
             title="Toggle Right Settings Inspector"
             aria-label="Toggle the settings inspector"
@@ -206,7 +219,7 @@ export default function FloatingActionDock({
           <button
             onClick={() => setDrawers((d) => ({ ...d, bottom: !d.bottom }))}
             className={`rounded-lg p-1.5 text-xs transition-all ${
-              drawers.bottom ? 'text-indigo-400 bg-white/10' : 'text-neutral-500 hover:text-neutral-300'
+              drawers.bottom ? 'ink-accent bg-white/10' : 'text-white/40 hover:text-white/70'
             }`}
             title="Toggle Bottom Timeline & Logs Deck"
             aria-label="Toggle the timeline and logs deck"

@@ -111,7 +111,7 @@ export default function ProcessingTerminal({
             <button onClick={() => setTab('all')} className={chip(tab === 'all')} title="Everything this run printed">
               All
             </button>
-            <span className="shrink-0 px-1 text-nano font-semibold uppercase tracking-[0.14em] text-white/30">
+            <span className="shrink-0 px-1 text-nano font-semibold uppercase tracking-[0.14em] text-white/45">
               {parts.length ? `${parts.length} part${parts.length > 1 ? 's' : ''}` : 'no parts yet'}
             </span>
             {errorCount > 0 && (
@@ -145,7 +145,7 @@ export default function ProcessingTerminal({
             <span>{copied ? '✓ Copied!' : 'Copy'}</span>
           </button>
 
-          <span className="flex items-center gap-1.5 text-micro text-white/40">
+          <span className="flex items-center gap-1.5 text-micro text-white/45">
             <span className={`h-1.5 w-1.5 rounded-full ${paused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
             {paused ? 'paused' : 'live'}
           </span>

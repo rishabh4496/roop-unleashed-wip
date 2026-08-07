@@ -1860,7 +1860,7 @@ export default function FaceSwap({
           </button>
           {advice && (
             <div className="space-y-2 mt-2">
-              <div className="text-micro text-white/40 leading-relaxed">
+              <div className="text-micro text-white/45 leading-relaxed">
                 {advice.stats.sampled_frames} frame{advice.stats.sampled_frames === 1 ? '' : 's'} sampled ·
                 faces found on {advice.stats.detection_coverage}% ·
                 face size {advice.stats.min_face_size_pct}–{advice.stats.max_face_size_pct}% ·
@@ -1882,7 +1882,7 @@ export default function FaceSwap({
                           <span className="text-[var(--accent)] font-bold">{fmtAdviceVal(r.value)}</span>
                         </span>
                       </div>
-                      <div className="text-micro text-white/40 leading-snug mt-0.5">{r.reason}</div>
+                      <div className="text-micro text-white/45 leading-snug mt-0.5">{r.reason}</div>
                     </div>
                   ))}
                   <div className="flex gap-2">
@@ -1902,7 +1902,7 @@ export default function FaceSwap({
         </Section>
 
         <Section title="Live camera" collapsible defaultOpen={false}>
-          <div className="text-micro text-white/40 leading-relaxed -mt-1">
+          <div className="text-micro text-white/45 leading-relaxed -mt-1">
             Swap your webcam feed live using the loaded source face{liveObs ? ',' : ''} — optionally
             published as a system <b>virtual camera</b> for OBS / video calls.
           </div>
@@ -2113,7 +2113,7 @@ export default function FaceSwap({
                 <input type="file" accept=".json" onChange={importRecipe} className="sr-only" />
               </label>
             </div>
-            <p className="text-micro text-white/30 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
+            <p className="text-micro text-white/45 mt-1.5 leading-relaxed">A recipe captures every setting <span className="text-white/45">and</span> the person→source mapping, so anyone can reproduce this exact look.</p>
           </Section>
         </div>
 
@@ -2124,7 +2124,7 @@ export default function FaceSwap({
                 {/* GPU & VRAM */}
                 <div className="bg-black/25 p-3 rounded-xl border border-white/5 space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-white/40 text-micro uppercase font-bold tracking-wider">GPU</span>
+                    <span className="text-white/45 text-micro uppercase font-bold tracking-wider">GPU</span>
                     <span className="text-white font-semibold truncate max-w-[200px]">{telemetry.gpu}</span>
                   </div>
                   {telemetry.vram_total > 0 && (
@@ -2176,7 +2176,7 @@ export default function FaceSwap({
 
                 {/* Active threads info */}
                 <div className="bg-black/25 px-3 py-2 rounded-xl border border-white/5 flex items-center justify-between">
-                  <span className="text-micro text-white/40 uppercase font-bold tracking-wider">Active Python Threads</span>
+                  <span className="text-micro text-white/45 uppercase font-bold tracking-wider">Active Python Threads</span>
                   <span className="text-pink-400 font-bold text-xs bg-pink-500/10 px-2 py-0.5 rounded-md border border-pink-500/20">{telemetry.threads}</span>
                 </div>
               </div>
@@ -2185,7 +2185,7 @@ export default function FaceSwap({
                 <Skeleton className="h-16 w-full" />
                 <Skeleton className="h-20 w-full" />
                 <Skeleton className="h-9 w-full" />
-                <div className="text-micro text-white/25 italic text-center">Connecting to hardware diagnostics…</div>
+                <div className="text-micro text-white/45 italic text-center">Connecting to hardware diagnostics…</div>
               </div>
             )}
             <div className="mt-3 flex justify-between items-center">
@@ -2367,7 +2367,7 @@ export default function FaceSwap({
                       <div className="shrink-0 opacity-75 hidden text-white/50"><TypeIcon size={16} /></div>
                       <div className="flex-1 min-w-0">
                         <span className="truncate block font-bold text-white/90 group-hover:text-white transition-colors">{t.name}</span>
-                        <div className="flex items-center gap-2 mt-0.5 text-micro font-medium text-white/40">
+                        <div className="flex items-center gap-2 mt-0.5 text-micro font-medium text-white/45">
                           {isVideo ? (
                             <span>{t.frames} frames · {t.fps} FPS{duration ? ` · ${duration}s` : ''}</span>
                           ) : (
@@ -2426,7 +2426,7 @@ export default function FaceSwap({
                   <div className="space-y-1.5 pt-1">
                     {sourceFacesInfo[selSource].count > 1 ? (
                       <>
-                        <div className="text-micro font-bold text-white/40 mb-1">Pose Coverage Breakdown:</div>
+                        <div className="text-micro font-bold text-white/45 mb-1">Pose Coverage Breakdown:</div>
                         <div className="flex flex-wrap gap-1.5">
                           {Object.entries(
                             sourceFacesInfo[selSource].poses.reduce((acc, p) => {
@@ -2544,7 +2544,7 @@ export default function FaceSwap({
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Enhancers (Select up to 4)</span>
+                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Enhancers (Select up to 4)</span>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -2591,8 +2591,8 @@ export default function FaceSwap({
                     {/* Mask-engine selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Mask Engines (Select up to 4)</span>
-                        <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Mask Engines (Select up to 4)</span>
+                        <span className="text-micro text-white/45">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {meta.mask_engines?.map((mE) => {
@@ -2640,8 +2640,8 @@ export default function FaceSwap({
                     {/* Swapper-model selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare Swapper Models (Select up to 4)</span>
-                        <span className="text-micro text-white/30">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Swapper Models (Select up to 4)</span>
+                        <span className="text-micro text-white/45">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {meta.swap_models?.map((sM) => {
@@ -2689,8 +2689,8 @@ export default function FaceSwap({
                     {/* AI-upscaler selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40 block">Compare AI Upscalers (Select up to 4)</span>
-                        <span className="text-micro text-white/30">Swaps once, then upscales each</span>
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare AI Upscalers (Select up to 4)</span>
+                        <span className="text-micro text-white/45">Swaps once, then upscales each</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {AI_UPSCALE_MODELS.map((m) => {
@@ -2931,7 +2931,7 @@ export default function FaceSwap({
             <TiltCard className="rounded-2xl w-full" max={6}>
             <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 w-full">
               <div className="flex items-center justify-between mb-4">
-                <span className="text-mini uppercase tracking-[0.14em] text-white/40 font-semibold">Runtime estimation</span>
+                <span className="text-mini uppercase tracking-[0.14em] text-white/45 font-semibold">Runtime estimation</span>
                 <span className={`text-micro font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${estSourceClass}`}>{estSourceLabel}</span>
               </div>
               <div className="flex items-end gap-3 mb-4">
@@ -2956,7 +2956,7 @@ export default function FaceSwap({
                   </div>
                 ))}
               </div>
-              <div className="mt-3 pt-3 border-t border-white/5 text-micro text-white/35 leading-snug">
+              <div className="mt-3 pt-3 border-t border-white/5 text-micro text-white/45 leading-snug">
                 {estLearned
                   ? 'Learned from your completed runs with these settings. Accuracy improves as you process more.'
                   : calibEst?.source === 'global'

@@ -221,7 +221,7 @@ export default function RunHistory({ notify, setSettings, setTab }) {
 function Sum({ label, value, tone = 'text-white/85' }) {
   return (
     <div className="px-4 py-2.5 min-w-0">
-      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{label}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45">{label}</div>
       <div className={`font-mono text-lead font-bold tabular-nums truncate ${tone}`}>{value}</div>
     </div>
   );
@@ -286,13 +286,13 @@ function RunRow({ entry, outputPath, existing, presets, selected, compareFull, o
                   {outputs[0] || 'run'}
                 </span>
                 {outputs.length > 1 && (
-                  <span className="text-micro text-white/40">+{outputs.length - 1} more</span>
+                  <span className="text-micro text-white/45">+{outputs.length - 1} more</span>
                 )}
                 {allDeleted && (
                   <span className="text-nano uppercase tracking-wide text-amber-400/70 border border-amber-400/20 rounded px-1 py-0.5">file removed</span>
                 )}
               </div>
-              <div className="mt-0.5 flex items-center gap-2 text-mini text-white/40 font-mono">
+              <div className="mt-0.5 flex items-center gap-2 text-mini text-white/45 font-mono">
                 <span title={new Date(entry.time * 1000).toLocaleString()}>{fmtRel(entry.time)}</span>
                 {entry.duration_s > 0 && (<><span className="text-white/15">·</span><span>{fmtDur(entry.duration_s)}</span></>)}
                 {entry.fps > 0 && (
@@ -309,7 +309,7 @@ function RunRow({ entry, outputPath, existing, presets, selected, compareFull, o
           {/* Setting chips */}
           <div className="mt-2 flex flex-wrap gap-1.5">
             {chips.length ? chips.map((k) => <Chip key={k} k={k} v={p[k]} />)
-              : <span className="text-mini text-white/25">no settings recorded</span>}
+              : <span className="text-mini text-white/45">no settings recorded</span>}
           </div>
 
           {/* Actions */}
@@ -350,7 +350,7 @@ function RunRow({ entry, outputPath, existing, presets, selected, compareFull, o
               </button>
             )}
             <button type="button" onClick={onDelete}
-                    className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.02] border border-white/5 text-white/35 hover:text-red-300 hover:border-red-500/30 transition-colors ml-auto">
+                    className="px-2.5 py-1 rounded-lg text-mini font-semibold bg-white/[0.02] border border-white/5 text-white/45 hover:text-red-300 hover:border-red-500/30 transition-colors ml-auto">
               Remove
             </button>
           </div>
@@ -371,11 +371,11 @@ function ComparePanel({ a, b, onClear, onLoad }) {
 
   const Head = ({ e, side }) => (
     <div className="min-w-0">
-      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30">{side}</div>
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45">{side}</div>
       <div className="font-semibold text-white/85 text-sm truncate" title={(e.outputs || []).join(', ')}>
         {(e.outputs || [])[0] || 'run'}
       </div>
-      <div className="mt-0.5 flex items-center gap-2 text-micro font-mono text-white/40">
+      <div className="mt-0.5 flex items-center gap-2 text-micro font-mono text-white/45">
         <span>{new Date(e.time * 1000).toLocaleString()}</span>
         {e.duration_s > 0 && <span>· {fmtDur(e.duration_s)}</span>}
         {e.fps > 0 && <span className="text-emerald-400/80">· {e.fps.toFixed(1)} fps</span>}
@@ -411,11 +411,11 @@ function ComparePanel({ a, b, onClear, onLoad }) {
       )}
 
       {/* Changed settings */}
-      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/35 mb-1.5">
+      <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45 mb-1.5">
         {changed.length} setting{changed.length === 1 ? '' : 's'} differ
       </div>
       {changed.length === 0 ? (
-        <div className="text-note text-white/40">These two runs used identical settings.</div>
+        <div className="text-note text-white/45">These two runs used identical settings.</div>
       ) : (
         <div className="rounded-lg border border-white/[0.07] overflow-hidden divide-y divide-white/[0.05]">
           {changed.map(({ k, va, vb }) => (
@@ -431,7 +431,7 @@ function ComparePanel({ a, b, onClear, onLoad }) {
       {same.length > 0 && (
         <div className="mt-2">
           <button type="button" onClick={() => setShowSame((v) => !v)}
-                  className="text-micro font-semibold text-white/35 hover:text-white/60 transition-colors">
+                  className="text-micro font-semibold text-white/45 hover:text-white/60 transition-colors">
             {showSame ? '▾ Hide' : '▸ Show'} {same.length} matching setting{same.length === 1 ? '' : 's'}
           </button>
           {showSame && (

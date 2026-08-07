@@ -72,7 +72,7 @@ export const Section = ({ title, action, children, className = '', collapsible =
   const [open, setOpen] = useState(defaultOpen);
   const showBody = !collapsible || open;
   const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
-  const label = 'text-mini font-semibold uppercase tracking-[0.14em] text-white/40';
+  const label = 'text-mini font-semibold uppercase tracking-[0.14em] text-white/45';
   return (
     <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover} elevation={elevation}>
       {title && (
@@ -126,7 +126,7 @@ export const InfoBadge = ({ info }) => (
       type="button"
       aria-label={typeof info === 'string' ? info : 'More information'}
       onClick={(e) => e.preventDefault()}
-      className="text-micro text-white/30 hover:text-white/60 focus-visible:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition"
+      className="text-micro text-white/45 hover:text-white/60 focus-visible:text-white/60 cursor-help bg-white/5 rounded-full w-4.5 h-4.5 flex items-center justify-center font-bold apple-transition"
     >
       ?
     </button>
@@ -197,12 +197,15 @@ export const Select = ({ label, info, value, onChange, options = [], modified, o
 export const Slider = ({ label, info, value, onChange, min = 0, max = 1, step = 0.01, modified, onReset, settingKey }) => (
   <Field label={label} info={info} modified={modified} onReset={onReset} settingKey={settingKey}>
     <div className="flex items-center gap-3">
+      {/* The native range thumb uses `accent-[var(--accent)]`, not the literal
+          #E94560 it had before — that pinned it to Obsidian's crimson in all 38
+          themes. */}
       <input
         type="range"
         min={min} max={max} step={step}
         value={value ?? 0}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="flex-1 accent-[#E94560] h-1.5 apple-transition"
+        className="flex-1 accent-[var(--accent)] h-1.5 apple-transition"
       />
       <span className="w-12 text-right text-xs font-semibold tabular-nums text-white/60">{Number(value ?? 0).toFixed(step < 1 ? 2 : 0)}</span>
     </div>
@@ -257,9 +260,24 @@ export const TextInput = ({ label, info, value, onChange, placeholder, type = 't
 
 export const Button = ({ children, onClick, variant = 'primary', disabled, className = '', size = 'md' }) => {
   const variants = {
-    primary: 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white shadow-[0_2px_10px_var(--accent-glow)] hover:shadow-[0_4px_18px_var(--accent-glow)] border border-white/10',
+    // `.fill-accent` rather than the utilities spelled out, so there is ONE
+    // definition of "accent-filled button" in the app — this primitive and the
+    // run bar's Start button were drifting apart, and the ink is the reason it
+    // matters: `text-white` here measured 2.03:1 on Catppuccin's mauve accent and
+    // 3.83:1 on the DEFAULT crimson, both under AA. The class computes the ink
+    // from the accent's own lightness (see index.css).
+    //
+    // The accent glow is gone with it. It was
+    // `shadow-[0_2px_10px_var(--accent-glow)]` growing to `0_4px_18px` on hover
+    // — coloured glow-on-hover, which is the decoration this UI was deliberately
+    // cleaned of, on the one control that appears on every screen. Depth now
+    // comes from a neutral elevation shadow; the hover/tap SPRING is untouched,
+    // because that is the approved motion, not decoration.
+    primary: 'fill-accent shadow-[0_2px_10px_rgba(0,0,0,0.35)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.45)]',
     secondary: 'bg-white/[0.05] hover:bg-white/[0.09] text-white/85 hover:text-white border border-white/10 hover:border-white/20',
-    stop: 'bg-red-500/10 hover:bg-red-500/18 text-red-300 border border-red-500/25 hover:border-red-500/40',
+    // Was red-500/red-300 literals; --danger is the same concept with a token,
+    // and it carries a light-mode value the literals could not.
+    stop: 'state-danger hover:brightness-110',
     ghost: 'bg-transparent hover:bg-white/[0.06] text-white/55 hover:text-white',
   };
   const sizes = {

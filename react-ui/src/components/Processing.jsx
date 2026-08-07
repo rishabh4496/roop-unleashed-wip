@@ -148,12 +148,12 @@ export default function Processing({ progress, settings, notify, setTab,
             {/* Elapsed / ETA compact readout */}
             <div className="flex items-center gap-3 text-xs font-mono shrink-0">
               <div className="flex flex-col">
-                <span className="text-micro uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
+                <span className="text-micro uppercase tracking-wider text-white/45 font-bold">Elapsed</span>
                 <span className="text-white font-bold tabular-nums whitespace-nowrap">{fmtTime(elapsedMs)}</span>
               </div>
               <div className="h-6 w-px bg-white/10" />
               <div className="flex flex-col">
-                <span className="text-micro uppercase tracking-wider text-white/40 font-bold">ETA</span>
+                <span className="text-micro uppercase tracking-wider text-white/45 font-bold">ETA</span>
                 <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
               </div>
             </div>
@@ -261,17 +261,17 @@ export default function Processing({ progress, settings, notify, setTab,
               </div>
               <div className="flex items-stretch gap-5 font-mono">
                 <div className="text-right">
-                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Elapsed</div>
+                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Elapsed</div>
                   <div className="text-title font-bold tabular-nums text-white/85">{fmtTime(elapsedMs)}</div>
                 </div>
                 <div className="w-px bg-white/10" />
                 <div className="text-right">
-                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Time left</div>
+                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Time left</div>
                   <div className="text-title font-bold tabular-nums text-emerald-400">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</div>
                 </div>
                 <div className="w-px bg-white/10" />
                 <div className="text-right">
-                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Finishes</div>
+                  <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/45">Finishes</div>
                   <div className="text-title font-bold tabular-nums text-white/85">
                     {etaMs > 0 ? new Date(Date.now() + etaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
                   </div>
@@ -314,7 +314,7 @@ export default function Processing({ progress, settings, notify, setTab,
                           <div className={`mt-1.5 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-[0.12em] truncate ${
                             state === 'done' ? 'text-emerald-400/70'
                             : state === 'active' ? 'text-white'
-                            : 'text-white/25'}`}>
+                            : 'text-white/45'}`}>
                             {state === 'done' && <span aria-hidden>✓</span>}
                             <span className="truncate">{s.label}</span>
                           </div>
@@ -389,7 +389,7 @@ export default function Processing({ progress, settings, notify, setTab,
               into another tab to be looked at. */}
           {out?.path && (
             <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 space-y-3">
-              <div className="text-mini uppercase tracking-[0.14em] text-white/40 font-semibold">Output</div>
+              <div className="text-mini uppercase tracking-[0.14em] text-white/45 font-semibold">Output</div>
               {out.kind === 'video'
                 ? <video src={outUrl} controls className="w-full max-h-[52vh] rounded-xl border border-white/5" />
                 : <img src={outUrl} alt="Render output" className="w-full max-h-[52vh] object-contain rounded-xl border border-white/5" />}

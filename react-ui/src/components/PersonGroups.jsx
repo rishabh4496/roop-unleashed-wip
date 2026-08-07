@@ -213,7 +213,7 @@ export default function PersonGroups({
       <div className="rounded-xl border border-dashed border-white/10 bg-black/10 p-4 text-center space-y-1.5 select-none">
         <div className="flex justify-center opacity-40"><Icon.faces size={22} /></div>
         <div className="text-xs text-white/50 font-semibold">No people captured yet</div>
-        <div className="text-mini text-white/30 leading-relaxed">
+        <div className="text-mini text-white/45 leading-relaxed">
           Load a target below, scrub to a clear frame, then use <span className="text-white/50 font-bold">“Face from frame”</span> to capture people. Add more angles per person for steadier video swaps.
         </div>
       </div>
@@ -229,7 +229,7 @@ export default function PersonGroups({
     >
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/40">
+        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45">
           {people.length} {people.length === 1 ? 'person' : 'people'} · {targetFaces.length} {targetFaces.length === 1 ? 'angle' : 'angles'}
         </span>
         <div className="flex gap-1.5">
@@ -247,7 +247,7 @@ export default function PersonGroups({
       </div>
 
       {sourceFaces.length > 0 && (
-        <div className="text-micro text-white/30 flex items-center gap-1.5 select-none">
+        <div className="text-micro text-white/45 flex items-center gap-1.5 select-none">
           <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
           Drag a source face onto a person, or use the dropdown, to choose who they become.
         </div>
@@ -307,7 +307,7 @@ export default function PersonGroups({
                       className="text-white/25 hover:text-white/70 shrink-0"><Icon.rename size={11} /></button>
                   </div>
                 )}
-                <div className="text-micro text-white/35 font-medium">{indices.length} {indices.length === 1 ? 'angle' : 'angles'}</div>
+                <div className="text-micro text-white/45 font-medium">{indices.length} {indices.length === 1 ? 'angle' : 'angles'}</div>
               </div>
 
               {/* Mapping dropdown */}
@@ -379,7 +379,7 @@ export default function PersonGroups({
                 <div className="flex items-center gap-3">
                   <PoseCompass covered={covered} color={color} />
                   <div className="min-w-0">
-                    <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/30 mb-1">
+                    <div className="text-nano font-semibold uppercase tracking-[0.14em] text-white/45 mb-1">
                       Angle coverage · {covered.size}/5
                     </div>
                     {missing.length === 0 ? (
@@ -388,7 +388,7 @@ export default function PersonGroups({
                       <div className="flex flex-wrap gap-1">
                         {missing.map((pp) => (
                           <span key={pp} title={`No ${pp} angle captured yet — add one for steadier swaps`}
-                            className="px-1.5 py-0.5 rounded-md text-nano font-semibold border border-dashed border-white/15 text-white/35">
+                            className="px-1.5 py-0.5 rounded-md text-nano font-semibold border border-dashed border-white/15 text-white/45">
                             + {pp.replace(' Profile', '')}
                           </span>
                         ))}
