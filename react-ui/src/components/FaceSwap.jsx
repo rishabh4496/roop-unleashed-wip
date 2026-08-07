@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getJSON, postJSON, postFile, postFiles, API } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, AnimatedNumber, Skeleton } from './ui';
+import { Section, Select, Slider, Toggle, TextInput, Button, FaceGallery, Card, Skeleton } from './ui';
 import { Icon } from '../icons';
 import PersonGroups from './PersonGroups';
 import QualityReport from './QualityReport';
@@ -16,15 +16,12 @@ import SegmentBar from './faceswap/SegmentBar';
 import SliderTrackerBar from './faceswap/SliderTrackerBar';
 import Timeline from './faceswap/Timeline';
 import FacesetLibrary from './faceswap/FacesetLibrary';
-import ProcessingTerminal from './faceswap/ProcessingTerminal';
-import DiagnosticsPanel from './faceswap/DiagnosticsPanel';
 import AmbilightGlow from './faceswap/AmbilightGlow';
 import FloatingActionDock from './faceswap/FloatingActionDock';
 import MediaTabSessionBar from './faceswap/MediaTabSessionBar';
 import PresetStudioModal from './faceswap/PresetStudioModal';
-import LiveProcessingPeek from './faceswap/LiveProcessingPeek';
-import ProcessingDock from './faceswap/ProcessingDock';
 import { popoutManager } from './faceswap/PopoutPreviewManager';
+import { setLastPreview } from './faceswap/lastPreview';
 import { num, fmtTime } from './faceswap/utils';
 import useProfiles from './faceswap/useProfiles';
 import useTelemetry from './faceswap/useTelemetry';
@@ -41,7 +38,7 @@ import useGridPreviewLoader from './faceswap/useGridPreviewLoader';
 import useWorkspaceLayout from './faceswap/useWorkspaceLayout';
 import useRunCompleteAlert from './faceswap/useRunCompleteAlert';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
-import { motion, spring, TiltCard } from '../motion';
+import { TiltCard } from '../motion';
 
 // AI upscale models folded into the swap pass (mirrors the Extras post-processor
 // list). value = backend subtype, label = friendly name.
@@ -67,7 +64,7 @@ const AI_UPSCALE_MODELS = [
 
 export default function FaceSwap({
   meta, settings, setSettings, notify, registerFileListener,
-  progress, setProgress, startTime, setStartTime
+  progress, setProgress, startTime, setStartTime, onOpenProcessing
 }) {
   const [sourceFaces, setSourceFaces] = useState([]);
   const [sourceFacesInfo, setSourceFacesInfo] = useState([]);
@@ -148,14 +145,21 @@ export default function FaceSwap({
 
   const [showPresetStudio, setShowPresetStudio] = useState(false);
 
-  // Chime + optional OS notification on the processing -> idle edge.
-  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
+  // Chime + optional OS notification on the processing -> idle edge. The
+  // Processing tab mounts this too — exactly one of the two tabs is ever
+  // mounted, so whichever one you are watching from is the one that announces
+  // the end of the run, and it can never double up. Nothing is read from it
+  // here: the alerts TOGGLE lives on the Processing tab's dock, and the
+  // preference it writes is persisted, not held in this component.
+  useRunCompleteAlert({
     processing: progress.processing, error: progress.error, notify,
   });
 
   // Keeps the UI from competing with the render for the GPU while a job runs —
-  // see faceswap/useRenderLite for why that is worth doing.
-  const { renderLite, toggleRenderLite } = useRenderLite(progress.processing);
+  // see faceswap/useRenderLite for why that is worth doing. This tab now stays
+  // fully drawn during a run, so it matters here more than it used to; the
+  // switch for it is on the Processing tab.
+  useRenderLite(progress.processing);
 
   // ── Mask-engine comparison grid (mirrors the enhancer grid) ──
   const {
@@ -496,26 +500,6 @@ export default function FaceSwap({
   // same stale snapshot, so the second silently drops the first — which for
   // the region panel would mean toggling a region also reverted its grow.
   const setMany = (patch) => setSettings((s) => ({ ...s, ...patch }));
-
-  // The knobs that actually decide a run's speed and look, shown alongside the
-  // live diagnostics so a screenshot of a slow or wrong-looking run says what
-  // produced it — otherwise the numbers have to be paired with the settings tab
-  // from memory. Only the ones with real cost/quality weight; off is shown as
-  // "off" rather than hidden, because an unexpectedly disabled stage is itself
-  // the answer often enough.
-  const runConfigSummary = useMemo(() => ([
-    ['swapper', p.swap_model || '—'],
-    ['detector', p.detector_engine || '—'],
-    ['enhancer', p.selected_enhancer && p.selected_enhancer !== 'None' ? p.selected_enhancer : 'off'],
-    ['mask', p.mask_engine || '—'],
-    ['pixel boost', p.subsample_upscale || '—'],
-    ['upscale', p.upscale_after_swap ? (p.upscale_model_after || 'on') : 'off'],
-    ['tracking', p.track_identities ? 'on' : 'off'],
-    ['temporal', p.temporal_detection ? 'on' : 'off'],
-    ['stabilize', p.stabilize_face || p.stabilize_enhancer ? 'on' : 'off'],
-  ]), [p.swap_model, p.detector_engine, p.selected_enhancer, p.mask_engine,
-       p.subsample_upscale, p.upscale_after_swap, p.upscale_model_after,
-       p.track_identities, p.temporal_detection, p.stabilize_face, p.stabilize_enhancer]);
 
   // Manual mask painted in the preview box. ProcessMgr already understands this
   // format ({"<faceset>": {exclude, canonical, ref_kps}}) — it was simply never
@@ -1192,23 +1176,9 @@ export default function FaceSwap({
     } catch (e) { notify(e.message, 'error'); }
   };
 
+  // Stop stays here because the floating dock offers it from this tab. Pause and
+  // Resume moved to the Processing tab with the run bar that carried them.
   const stop = async () => { await postJSON('/api/stop', {}); notify('Stopping…', 'info'); };
-
-  const pause = async () => {
-    try {
-      await postJSON('/api/pause', {});
-      setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
-      notify('Paused', 'info');
-    } catch (e) { notify(e.message, 'error'); }
-  };
-
-  const resume = async () => {
-    try {
-      await postJSON('/api/resume', {});
-      setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
-      notify('Resumed');
-    } catch (e) { notify(e.message, 'error'); }
-  };
 
   // Hide the previous "Latest output" while a job is running so a new upload +
   // run never shows a stale result. The poll keeps reporting the old _last_output
@@ -1296,6 +1266,14 @@ export default function FaceSwap({
       popoutManager.sendUpdate({ type: 'UPDATE_PREVIEW', src });
     }
   }, [previewSrc, rawUrl]);
+
+  // Park the current still where the Processing tab can find it. That tab is
+  // mounted only while this one is not, and its live-frame peek needs something
+  // to show for the window before the pipeline publishes its first frame — see
+  // faceswap/lastPreview.
+  useEffect(() => {
+    setLastPreview({ previewSrc, rawUrl, frame, maxFrames });
+  }, [previewSrc, rawUrl, frame, maxFrames]);
 
   const revealOutput = async () => {
     try { await postJSON('/api/reveal', { path: out?.path }); }
@@ -1822,11 +1800,12 @@ export default function FaceSwap({
           scrolling a taller workspace. Scrolls internally when taller than the
           viewport.
 
-          Hidden while a job runs: none of it can be acted on mid-run (the
-          settings are already baked into the running job), and hiding it gives
-          the whole viewport to the diagnostics, which is the only thing there is
-          to look at until the run ends. Comes back on Stop / completion. */}
-      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${(progress.processing || !showLeftPanel) ? 'hidden' : ''}`}>
+          This used to disappear for the duration of a run, along with the asset
+          rail, the timeline and the preview controls — the whole tab became a
+          progress panel. Watching a render and setting up the next job are now
+          two different tabs, so this one keeps its layout at all times and the
+          run has the Processing tab to itself. */}
+      <div className={`w-full lg:w-[380px] 3xl:w-[440px] 4xl:w-[520px] shrink-0 pr-0 lg:pr-2 space-y-5 select-none ${!showLeftPanel ? 'hidden' : ''}`}>
         <Section title="Presets">
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((name) => (
@@ -2210,9 +2189,10 @@ export default function FaceSwap({
           preview is the visual center instead of buried on the far right. */}
       <div className="flex-1 w-full min-w-0 space-y-6 flex flex-col 2xl:flex-row-reverse gap-6">
 
-        {/* COLUMN 2: Media Asset Manager — right rail (hidden while running, as
-            with column 1 — sources/targets are locked in for the current job). */}
-        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${(progress.processing || !showRightPanel) ? 'hidden' : ''}`}>
+        {/* COLUMN 2: Media Asset Manager — right rail. Stays put during a run,
+            as with column 1: the sources and targets a running job baked in are
+            already its own, so editing these is setting up the NEXT job. */}
+        <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${!showRightPanel ? 'hidden' : ''}`}>
           <Section title="Target faces">
             <PersonGroups
               targetFaces={targetFaces}
@@ -2466,296 +2446,52 @@ export default function FaceSwap({
         <div className="flex-1 min-w-0 space-y-6">
           {/* run bar */}
           <div className="sticky top-20 z-30 pb-3 bg-[#0c0e14]/90 backdrop-blur-md">
-            {progress.processing ? (() => {
-              const radius = 21;
-              const circumference = radius * 2 * Math.PI;
-              const strokeDashoffset = circumference - prog * circumference;
-              return (
-                <div className="relative overflow-hidden rounded-2xl glass-panel px-5 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl border border-white/5 w-full">
-                  {/* Left: Circular Progress Ring & Info */}
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    <div className={`relative flex items-center justify-center h-14 w-14 select-none shrink-0 rounded-full transition-shadow duration-1000 ${!progress.paused ? 'shadow-[0_0_14px_var(--accent-glow)]' : ''}`}>
-                      <svg className="transform -rotate-90 w-[52px] h-[52px]" viewBox="0 0 48 48">
-                        <circle
-                          stroke="rgba(255, 255, 255, 0.08)"
-                          fill="transparent"
-                          strokeWidth={3.5}
-                          r={radius}
-                          cx={24}
-                          cy={24}
-                        />
-                        <circle
-                          className="transition-all duration-500 ease-out"
-                          stroke="var(--accent)"
-                          fill="transparent"
-                          strokeWidth={3.5}
-                          strokeDasharray={`${circumference} ${circumference}`}
-                          style={{ strokeDashoffset, filter: 'drop-shadow(0 0 4px var(--accent-glow))' }}
-                          r={radius}
-                          cx={24}
-                          cy={24}
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <AnimatedNumber value={prog * 100} decimals={0} suffix="%" className="absolute text-compact font-extrabold text-white tabular-nums" />
-                    </div>
-
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`h-2 w-2 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-                        <span className={`text-mini font-semibold uppercase tracking-[0.14em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
-                          {progress.paused ? 'Paused' : 'Processing'}
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold text-white truncate max-w-[340px]">
-                        {progress.desc || 'Swapping faces…'}
-                      </div>
-                      {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
-                    </div>
-                  </div>
-
-                  {/* Elapsed / ETA compact readout (the full telemetry HUD now
-                      lives in the Preview panel, so the run-bar stays a slim strip). */}
-                  <div className="flex items-center gap-3 text-xs font-mono shrink-0">
-                    <div className="flex flex-col">
-                      <span className="text-micro uppercase tracking-wider text-white/40 font-bold">Elapsed</span>
-                      <span className="text-white font-bold tabular-nums whitespace-nowrap">{fmtTime(elapsedMs)}</span>
-                    </div>
-                    <div className="h-6 w-px bg-white/10" />
-                    <div className="flex flex-col">
-                      <span className="text-micro uppercase tracking-wider text-white/40 font-bold">ETA</span>
-                      <span className="text-emerald-400 font-bold tabular-nums whitespace-nowrap">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</span>
-                    </div>
-                  </div>
-
-                  {/* Right: big icon action buttons */}
-                  <div className="flex items-center gap-3 shrink-0">
-                    {progress.paused ? (
-                      <motion.button type="button" onClick={resume} title="Resume (Space)"
-                        whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
-                        className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 transition-colors duration-200 group-hover:bg-emerald-500/25">
-                          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.9-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" /></svg>
-                        </span>
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-emerald-400 transition-colors">Resume</span>
-                      </motion.button>
-                    ) : (
-                      <motion.button type="button" onClick={pause} title="Pause (Space)"
-                        whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
-                        className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                        <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-amber-500/15 border border-amber-500/40 text-amber-400 transition-colors duration-200 group-hover:bg-amber-500/25">
-                          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" /></svg>
-                        </span>
-                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-amber-400 transition-colors">Pause</span>
-                      </motion.button>
-                    )}
-                    <motion.button type="button" onClick={stop} title="Stop"
-                      whileHover={{ y: -3, scale: 1.06 }} whileTap={{ scale: 0.92, y: 0 }} transition={spring.snappy}
-                      className="group flex flex-col items-center gap-1.5 focus:outline-none">
-                      <span className="h-11 w-11 rounded-xl flex items-center justify-center bg-red-500/15 border border-red-500/40 text-red-400 transition-colors duration-200 group-hover:bg-red-500/25">
-                        <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
-                      </span>
-                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 group-hover:text-red-400 transition-colors">Stop</span>
-                    </motion.button>
-                  </div>
-
-                  {/* Smooth animated progress line along the bottom edge */}
-                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/[0.04]">
-                    <div
-                      className={`h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
-                      style={{ width: `${Math.max(2, prog * 100)}%`, boxShadow: '0 0 10px var(--accent-glow)' }}
-                    />
-                  </div>
-                </div>
-              );
-            })() : (
-             <div className="w-full space-y-4">
+            {/* The run bar keeps its shape whether or not something is
+                rendering. A run has its own tab now, so this one no longer
+                turns into a progress panel — it just says a job is in flight,
+                and offers the way over to it. */}
+            <div className="w-full space-y-4">
               <div className="rounded-2xl glass-panel p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl border border-white/5 w-full">
                 <div className="flex items-center gap-3 w-full md:w-auto">
-                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
+                  <Button variant="primary" size="lg" onClick={start} disabled={targets.length === 0 || sourceFaces.length === 0 || progress.processing} className="w-full md:w-auto justify-center">▶ Start Swapping</Button>
                   {maxFrames > 1 && (
-                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
+                    <Button variant="secondary" size="lg" onClick={renderPreviewClip} disabled={targets.length === 0 || sourceFaces.length === 0 || isGeneratingPreviewClip || progress.processing} className="!text-orange-400 border border-orange-500/20 hover:bg-orange-500/10 w-full md:w-auto justify-center">
                       Render 5s Preview
+                    </Button>
+                  )}
+                  {progress.processing && (
+                    <Button variant="secondary" size="lg" onClick={onOpenProcessing} className="w-full md:w-auto justify-center">
+                      View progress →
                     </Button>
                   )}
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text-muted)] max-w-xs truncate text-right">
-                    <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
-                    {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                    {progress.processing ? (
+                      <>
+                        <span className={`h-2.5 w-2.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-pulse shadow-[0_0_8px_var(--accent-glow)]'}`} />
+                        <span className="tabular-nums">
+                          {progress.paused ? 'Paused' : `Rendering ${Math.round(prog * 100)}%`}
+                          {etaMs > 0 ? ` · ${fmtTime(etaMs)} left` : ''}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className={`h-2.5 w-2.5 rounded-full ${targets.length > 0 && sourceFaces.length > 0 ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_#10b981]' : 'bg-red-500/50'}`} />
+                        {targets.length === 0 ? 'No target media selected' : sourceFaces.length === 0 ? 'No source faces loaded' : 'Ready to swap'}
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
-             </div>
-            )}
+            </div>
           </div>
 
           {/* The preview holds a live image and its scrub/compare controls;
               nothing here should move under the cursor. This used to spell that
               out as three separate opt-outs, which is now just an elevation. */}
           <Section title="Preview" elevation="flat">
-            {/* While a job runs we no longer stream live swapped frames into the
-                preview box (they thrashed the GPU and jittered). Instead we show a
-                progress panel that mirrors the terminal: percent, frame X / Y,
-                FPS (from progress.desc), elapsed and time-left. previewSrc is
-                React-only state and is empty after a remount, so the processing
-                branch is keyed off progress.processing rather than previewSrc. */}
-            {progress.processing ? (
-              /* Fills the viewport rather than a 16:9 slot: with the settings
-                 sidebar, asset rail, timeline and preview controls all hidden
-                 during a run, this panel IS the screen, and the diagnostics
-                 want the height. Floored so it stays usable on a short window. */
-              <div className="relative h-[calc(100vh-230px)] min-h-[620px] rounded-2xl overflow-hidden processing-stage flex flex-col items-center select-none px-4 sm:px-6 py-4">
-                {/* h-full + min-h-0 so the console below takes ALL the leftover
-                    height instead of the whole block floating in a tall box. */}
-                <div className="relative h-full w-full max-w-[1900px] min-h-0 flex flex-col gap-3">
-
-                  {/* ── Headline ──────────────────────────────────────────────
-                      One line that answers "where is it, and when is it done".
-                      The old panel spread that over a centred status line, a
-                      percentage above the bar and an ETA below it, so reading
-                      the run meant collecting three separate scraps. */}
-                  <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-mini font-semibold uppercase tracking-[0.18em] ${progress.paused ? 'text-amber-400' : 'text-[var(--accent)]'}`}>
-                          {progress.paused ? 'Paused' : 'Processing'}
-                        </span>
-                        {!progress.paused && <span className="h-px w-8 bg-[var(--accent)]/40" />}
-                      </div>
-                      <div className="mt-1 flex items-baseline gap-2.5">
-                        <AnimatedNumber value={prog * 100} decimals={1} suffix="%"
-                                        className="font-mono text-display leading-none font-bold tabular-nums text-white" />
-                        <span className="text-sm font-medium text-white/55 truncate max-w-[46ch]">
-                          {progress.desc || 'Swapping faces…'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-stretch gap-5 font-mono">
-                      <div className="text-right">
-                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Elapsed</div>
-                        <div className="text-title font-bold tabular-nums text-white/85">{fmtTime(elapsedMs)}</div>
-                      </div>
-                      <div className="w-px bg-white/10" />
-                      <div className="text-right">
-                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Time left</div>
-                        <div className="text-title font-bold tabular-nums text-emerald-400">{etaMs > 0 ? fmtTime(etaMs) : '--:--'}</div>
-                      </div>
-                      <div className="w-px bg-white/10" />
-                      <div className="text-right">
-                        <div className="text-nano font-semibold uppercase tracking-[0.16em] text-white/30">Finishes</div>
-                        <div className="text-title font-bold tabular-nums text-white/85">
-                          {etaMs > 0 ? new Date(Date.now() + etaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* ── Pipeline rail ─────────────────────────────────────────
-                      The stages ARE the progress bar: one continuous track split
-                      into named segments that fill as the run moves through them,
-                      instead of a plain bar with a separate row of chips
-                      restating the same thing. */}
-                  {(() => {
-                    const d = (progress.desc || '').toLowerCase();
-                    const stages = [
-                      { key: 'analyze', label: 'Analyze' },
-                      { key: 'swap', label: 'Swap' },
-                      ...(p.upscale_after_swap ? [{ key: 'upscale', label: 'Upscale' }] : []),
-                      { key: 'combine', label: 'Combine' },
-                    ];
-                    let activeKey = 'swap';
-                    if (/combin|finaliz|encod|audio|mux/.test(d)) activeKey = 'combine';
-                    else if (/upscal/.test(d)) activeKey = 'upscale';
-                    else if (/processing frame|swapp/.test(d)) activeKey = 'swap';
-                    else if (/analy|track|extract|detect|start/.test(d)) activeKey = 'analyze';
-                    let activeIdx = stages.findIndex((s) => s.key === activeKey);
-                    if (activeIdx < 0) activeIdx = 1;
-                    return (
-                      <div className="w-full">
-                        <div className="flex items-stretch gap-1">
-                          {stages.map((s, i) => {
-                            const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending';
-                            return (
-                              <div key={s.key} className="flex-1 min-w-0">
-                                <div className={`h-1.5 rounded-full overflow-hidden ${state === 'pending' ? 'bg-white/[0.06]' : 'bg-white/[0.08]'}`}>
-                                  {state === 'done' && <div className="h-full w-full rounded-full bg-emerald-500/70" />}
-                                  {state === 'active' && (
-                                    <div className={`h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] transition-[width] duration-500 ease-out ${progress.paused ? '' : 'progress-bar-animated'}`}
-                                         style={{ width: `${Math.max(4, prog * 100)}%` }} />
-                                  )}
-                                </div>
-                                <div className={`mt-1.5 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-[0.12em] truncate ${
-                                  state === 'done' ? 'text-emerald-400/70'
-                                  : state === 'active' ? 'text-white'
-                                  : 'text-white/25'}`}>
-                                  {state === 'done' && <span aria-hidden>✓</span>}
-                                  <span className="truncate">{s.label}</span>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Processing Action Control Dock */}
-                  <ProcessingDock
-                    paused={progress.paused}
-                    onTogglePause={() => (progress.paused ? resume() : pause())}
-                    onCancelJob={stop}
-                    desktopAlerts={desktopAlerts}
-                    onToggleDesktopAlerts={toggleDesktopAlerts}
-                    renderLite={renderLite}
-                    onToggleRenderLite={toggleRenderLite}
-                  />
-
-                  {/* Live Processing Frame Peek & Diagnostics */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 min-h-0">
-                    <div className="lg:col-span-1">
-                      <LiveProcessingPeek
-                        previewSrc={previewSrc}
-                        rawUrl={rawUrl}
-                        // Keyed on live_seq, which only changes when the
-                        // pipeline publishes a newer frame — so the browser
-                        // refetches then and not once per poll.
-                        liveSrc={progress.live_seq ? `${API}/api/live_frame?seq=${progress.live_seq}` : ''}
-                        frame={frame}
-                        maxFrames={maxFrames}
-                        progressDesc={progress.desc}
-                        paused={progress.paused}
-                      />
-                    </div>
-                    <div className="lg:col-span-2">
-                      <DiagnosticsPanel
-                        desc={progress.desc}
-                        telemetry={telemetry}
-                        processing={progress.processing}
-                        paused={progress.paused}
-                        config={runConfigSummary}
-                        elapsedMs={elapsedMs}
-                        etaMs={etaMs}
-                        prog={prog}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Live terminal feed — mirrors what the real console prints */}
-                  <ProcessingTerminal
-                    log={progress.log || []}
-                    parts={progress.parts || []}
-                    statusLine={progress.status_line || progress.desc}
-                    paused={progress.paused}
-                    className="flex-1 min-h-0"
-                    bodyClass="h-full"
-                  />
-
-                  {progress.error && <div className="text-xs text-red-400 font-semibold text-center">{progress.error}</div>}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
+            <div className="space-y-4">
                 {/* Media Session Tab Bar for multi-file workspace */}
                 <MediaTabSessionBar
                   targets={targets}
@@ -3059,12 +2795,11 @@ export default function FaceSwap({
               </div>
             )}
           </div>
-        )}
             
-            {/* Clip timeline — hidden while running: scrubbing a clip that is
-                being written is meaningless, and the space belongs to the
-                diagnostics. */}
-            {maxFrames > 1 && !progress.processing && showTimelineDeck && (
+            {/* Clip timeline. It used to go away for the duration of a run;
+                it now stays, because this tab is where the next job is set up
+                and the timeline is how a range is chosen. */}
+            {maxFrames > 1 && showTimelineDeck && (
               <div className="pt-4 border-t border-[var(--border-color)]">
                 <Timeline
                   fps={targets[selTarget]?.fps || 25}
@@ -3114,10 +2849,11 @@ export default function FaceSwap({
               </div>
             )}
 
-            {/* Preview controls — every one of these drives a preview render,
-                which is exactly what must not happen mid-run, so they go away
-                with everything else while a job is running. */}
-            <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''} ${progress.processing ? 'hidden' : ''}`}>
+            {/* Preview controls. Each one drives a preview render, which does
+                compete with a run for the GPU — but it takes a deliberate click
+                to fire one, and the automatic refreshes still hold off until
+                the run is over (see the deferred-preview effect above). */}
+            <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
               <Button size="sm" variant="secondary" title="Re-run the swap for this frame, ignoring the cached result" onClick={() => refreshPreview({ force: true })}>Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
               {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
@@ -3128,7 +2864,7 @@ export default function FaceSwap({
               )}
             </div>
 
-            <div className={`flex items-center flex-wrap gap-3 ${progress.processing ? 'hidden' : ''}`}>
+            <div className="flex items-center flex-wrap gap-3">
               <Toggle label="Live Swap" checked={fakePreview} onChange={setFakePreview} />
               <Toggle label="Compare" checked={compare} onChange={(v) => { setCompare(v); if (v) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } }} />
               {compare && <Toggle label="Split View" checked={splitView} onChange={setSplitView} />}
@@ -3219,11 +2955,11 @@ export default function FaceSwap({
             </TiltCard>
           )}
 
-          {/* Batch queue — hidden while running UNLESS a queue is what's running,
-              because then this holds the only controls that stop the QUEUE
-              rather than just the current job, and hiding them would let the
-              next job start after a Stop. */}
-          <div className={progress.processing && !queue.running ? 'hidden' : ''}>
+          {/* Batch queue. It used to be hidden mid-run unless a queue was what
+              was running — the queue-level Stop had to stay reachable, or the
+              next job would start after stopping the current one. Nothing is
+              hidden mid-run any more, so that special case is gone with it. */}
+          <div>
             <QueuePanel
               q={queue}
               onAddCurrent={addToQueue}
@@ -3233,7 +2969,7 @@ export default function FaceSwap({
             />
           </div>
 
-          <Section title="Output settings & renders" className={progress.processing ? 'hidden' : ''}>
+          <Section title="Output settings & renders">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
               <div className="space-y-4">
                 <Select label="Output method" value={p.output_method} onChange={(v) => set('output_method', v)} options={meta.output_methods} />

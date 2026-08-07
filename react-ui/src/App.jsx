@@ -23,6 +23,7 @@ import { Icon } from './icons';
 // ErrorBoundary below owns the failure case.
 const loadHome = () => import('./components/Home');
 const loadFaceSwap = () => import('./components/FaceSwap');
+const loadProcessing = () => import('./components/Processing');
 const loadSettings = () => import('./components/Settings');
 const loadFaceManager = () => import('./components/FaceManager');
 const loadExtras = () => import('./components/Extras');
@@ -31,6 +32,7 @@ const loadRunHistory = () => import('./components/RunHistory');
 
 const Home = lazy(loadHome);
 const FaceSwap = lazy(loadFaceSwap);
+const Processing = lazy(loadProcessing);
 const Settings = lazy(loadSettings);
 const FaceManager = lazy(loadFaceManager);
 const Extras = lazy(loadExtras);
@@ -50,9 +52,13 @@ function TabFallback() {
   );
 }
 
-const TABS = [
+// `transient` tabs are not always in the strip — see `runTabOpen` below. The
+// full list still lives here so chunk warming and the command palette can
+// resolve a tab by id whether or not it is currently on screen.
+const ALL_TABS = [
   { id: 'home', label: 'Home', icon: Icon.home, preload: loadHome },
   { id: 'faceswap', label: 'Face Swap', icon: Icon.faceswap, preload: loadFaceSwap },
+  { id: 'processing', label: 'Processing', icon: Icon.meter, preload: loadProcessing, transient: true },
   { id: 'facemgr', label: 'Face Manager', icon: Icon.faces, preload: loadFaceManager },
   { id: 'extras', label: 'Editor', icon: Icon.editor, preload: loadExtras },
   { id: 'gallery', label: 'Outputs', icon: Icon.outputs, preload: loadGallery },
@@ -65,7 +71,7 @@ const warmed = new Set();
 const warmTab = (id) => {
   if (warmed.has(id)) return;
   warmed.add(id);
-  const t = TABS.find((x) => x.id === id);
+  const t = ALL_TABS.find((x) => x.id === id);
   t?.preload?.().catch(() => warmed.delete(id));
 };
 
@@ -180,6 +186,23 @@ export default function App() {
     };
   }, [progress.processing, startPolling]);
 
+  // ── The Processing tab ───────────────────────────────────────────────────
+  // A run no longer takes the Face Swap tab over. It gets a tab of its own,
+  // which exists only for the run: it appears the moment one starts (and is
+  // selected, because that is what you just asked for), and it stays after the
+  // run ends so the finished log and the output are still there to read. It
+  // disappears once you navigate away from it with nothing running.
+  const [runTabOpen, setRunTabOpen] = useState(false);
+  useEffect(() => {
+    if (progress.processing) setRunTabOpen(true);
+    else if (tab !== 'processing') setRunTabOpen(false);
+  }, [progress.processing, tab]);
+
+  const visibleTabs = useMemo(
+    () => ALL_TABS.filter((t) => !t.transient || runTabOpen),
+    [runTabOpen],
+  );
+
   const prevProcessingRef = useRef(false);
   useEffect(() => {
     const was = prevProcessingRef.current;
@@ -188,6 +211,10 @@ export default function App() {
       // started_at is the backend's clock, so a run already in flight when this
       // view (re)loaded keeps its real elapsed time instead of restarting at 0.
       if (!startTime) setStartTime(progress.started_at ? progress.started_at * 1000 : Date.now());
+      // Follow the run. Only on the edge, so going back to Face Swap mid-render
+      // to line up the next job is not undone a second later.
+      warmTab('processing');
+      setTab('processing');
     } else if (!progress.processing && was) {
       setStartTime(null);
     }
@@ -339,7 +366,7 @@ export default function App() {
     // The tab's own icon and label carry straight into its palette row, so the
     // two surfaces can never drift apart (this used to slice the emoji off the
     // front of the label string and re-derive the title with a regex).
-    TABS.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.icon, title: `Go to ${t.label}`, run: () => { warmTab(t.id); setTab(t.id); } }));
+    visibleTabs.forEach((t) => cmds.push({ id: `nav-${t.id}`, section: 'Navigate', icon: t.icon, title: `Go to ${t.label}`, run: () => { warmTab(t.id); setTab(t.id); } }));
     cmds.push({ id: 'act-start', section: 'Actions', icon: Icon.play, title: 'Start swapping', subtitle: 'Run the current job', run: () => runFaceswap('start') });
     cmds.push({ id: 'act-stop', section: 'Actions', icon: Icon.stop, title: 'Stop processing', run: () => runFaceswap('stop') });
     cmds.push({ id: 'act-queue', section: 'Actions', icon: Icon.queue, title: 'Add current to batch queue', run: () => runFaceswap('queue') });
@@ -383,7 +410,7 @@ export default function App() {
     }));
 
     return cmds;
-  }, [applyTheme, runFaceswap, customThemes, presets]);
+  }, [applyTheme, runFaceswap, customThemes, presets, visibleTabs]);
 
   const registerFileListener = useCallback((cb) => {
     fileListenersRef.current.push(cb);
@@ -533,7 +560,7 @@ export default function App() {
   // off the critical path; Safari/older webviews fall back to a timeout.
   useEffect(() => {
     if (!meta) return undefined;
-    const run = () => TABS.forEach((t) => warmTab(t.id));
+    const run = () => ALL_TABS.forEach((t) => warmTab(t.id));
     const ric = window.requestIdleCallback;
     if (ric) {
       const h = ric(run, { timeout: 3000 });
@@ -629,14 +656,36 @@ export default function App() {
           {progress.processing && (
             <div className="ml-2 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-micro font-bold tracking-wide uppercase">
               <span className={`h-1.5 w-1.5 rounded-full ${progress.paused ? 'bg-amber-400' : 'bg-[var(--accent)] animate-ping'}`} />
-              <span className={progress.paused ? 'text-amber-400/90' : 'text-[var(--accent)]'}>
+              {/* The chip is the one piece of the run that is on screen from
+                  every tab, so it doubles as the way back to the run's own tab
+                  once you have wandered off it. */}
+              <button
+                type="button"
+                onClick={() => { warmTab('processing'); setTab('processing'); }}
+                title="Open the Processing tab"
+                className={`hover:underline ${progress.paused ? 'text-amber-400/90' : 'text-[var(--accent)]'}`}
+              >
                 {progress.paused ? 'Paused' : `Processing ${Math.round((progress.progress || 0) * 100)}%`}
-              </span>
-              {startTime && (progress.progress || 0) > 0.01 && (
-                <span className="text-white/40 normal-case font-mono font-medium ml-1">
-                  ETA: {fmtTime(((Date.now() - startTime) * (1 - progress.progress)) / progress.progress)}
-                </span>
-              )}
+              </button>
+              {/* Same "time left" the Processing tab and the terminal show:
+                  eta_s is the render's own progress bar, and the extrapolation
+                  is only the fallback for the windows where nothing is counting
+                  frames. Extrapolating throughout reads model loads and the
+                  pre-pass as swap time and comes out roughly twice too high —
+                  which is exactly what this chip used to say while the tab beside
+                  it said something else. */}
+              {(() => {
+                const eta = typeof progress.eta_s === 'number' && progress.eta_s > 0
+                  ? progress.eta_s * 1000
+                  : (startTime && (progress.progress || 0) > 0.01
+                      ? ((Date.now() - startTime) * (1 - progress.progress)) / progress.progress
+                      : 0);
+                return eta > 0 ? (
+                  <span className="text-white/40 normal-case font-mono font-medium ml-1">
+                    ETA: {fmtTime(eta)}
+                  </span>
+                ) : null;
+              })()}
               <div className="flex items-center gap-1.5 border-l border-white/10 pl-2 ml-1">
                 {progress.paused ? (
                   <button
@@ -704,7 +753,7 @@ export default function App() {
           <button type="button" onClick={() => bumpZoom(0.05)} title="Zoom in (Ctrl +)" aria-label="Zoom in" className="h-6 w-6 grid place-items-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 text-base leading-none transition-colors">+</button>
         </div>
         <nav className="flex gap-0.5 bg-black/25 p-1 rounded-xl border border-white/[0.06] w-full md:w-auto overflow-x-auto">
-          {TABS.map((t) => {
+          {visibleTabs.map((t) => {
             const active = tab === t.id;
             return (
               <motion.button
@@ -805,6 +854,15 @@ export default function App() {
                     setProgress={setProgress}
                     startTime={startTime}
                     setStartTime={setStartTime}
+                    onOpenProcessing={() => { warmTab('processing'); setTab('processing'); }}
+                  />
+                )}
+                {tab === 'processing' && (
+                  <Processing
+                    progress={progress}
+                    settings={settings}
+                    notify={notify}
+                    setTab={setTab}
                   />
                 )}
                 {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
