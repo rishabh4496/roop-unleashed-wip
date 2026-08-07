@@ -34,6 +34,13 @@ _DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
 _NO_HYST = os.environ.get('ROOP_NONFRONTAL_HYST', '1').strip().lower() in ('0', 'off', 'false')
 
 
+# Extra context around the aligned crop's footprint in the unwarped mask box, as
+# a fraction of its size per side. Enough that a hand or a microphone entering
+# from outside the crop is visible to the segmenter — it has to see the object to
+# label it — without shrinking the face back down toward the size that made the
+# masks unreliable in the first place.
+_MASK_BOX_MARGIN = float(os.environ.get('ROOP_MASK_BOX_MARGIN', '0.15') or 0.15)
+
 # How wide the boundary between a foreign object and the swap should be once it
 # lands on the frame, in FRAME pixels. Small enough to read as an edge, wide
 # enough that the mask's own resolution does not staircase along it.
@@ -371,32 +378,84 @@ class MaskingMixin:
         return mask
 
     @staticmethod
-    def _mask_crop_box(target_face, orig_frame):
+    def _mask_crop_box(target_face, orig_frame, M=None, crop_shape=None):
         """Padded, frame-clamped crop box around *target_face* for the unwarped
         (non-frontal) masking path: (x0, y0, x1, y1, cx0, cy0, cx1, cy1) where the
         first four are the padded box in frame coords and the last four are that
         box clamped to the frame.
 
-        Returns None when the clamped box is empty — a face can be (almost)
-        entirely off-screen: leaving the shot, an extrapolated/gap-filled or
-        temporally smoothed bbox, or a bbox from a rotated cut. The crop → resize
-        → paste chain below assumes a real rectangle, and on an empty slice
-        cv2.resize raises
-            (-215:Assertion failed) !ssize.empty() in function 'cv::resize'
-        which aborted the whole swap/preview. Callers fall back to masking in
-        canonical crop space, which has no off-frame geometry to get wrong.
+        SIZED FROM THE ALIGNED CROP, not from a multiple of the detection box.
+
+        The box used to be a flat 2x the bbox, and that put the face at a very
+        different size from the one the OTHER mask path shows the same model.
+        Measured as the interocular distance over the crop it sits in:
+
+            pose        aligned crop   2x bbox box   ratio
+            frontal        23.3%          15.1%      1.55x
+            yaw 40         18.6%          11.5%      1.61x
+            yaw 60         12.2%           7.5%      1.62x
+            yaw 60/pitch 30 16.6%          8.1%      2.04x
+
+        XSeg, the occluder models and the face parser are all trained on aligned
+        crops where the face fills the frame. Handing one a face at 8% of the
+        crop is well outside that, and this path is selected precisely for
+        turned and tilted faces — so the mask came back worst exactly where it
+        was being relied on, which shows up as the original leaking back through
+        the middle of a swapped profile and flickering frame to frame.
+
+        Boxing the aligned crop's own footprint instead means both paths cover
+        the SAME region of the frame at the SAME face scale, and differ only in
+        whether it is warped — which is all the path was ever meant to change.
+        It also guarantees the box covers the whole crop, so the parts the mask
+        does not reach (which default to "restore original") can no longer cut a
+        straight edge across the face.
+
+        Falls back to the bbox multiple when there is no matrix to work from.
         """
         h_frame, w_frame = orig_frame.shape[:2]
-        xmin, ymin, xmax, ymax = target_face.bbox
 
-        w_box = xmax - xmin
-        h_box = ymax - ymin
-        cx = xmin + w_box / 2.0
-        cy = ymin + h_box / 2.0
+        footprint = None
+        if M is not None and crop_shape is not None:
+            try:
+                ch, cw = int(crop_shape[0]), int(crop_shape[1])
+                if ch > 1 and cw > 1:
+                    IM = cv2.invertAffineTransform(np.asarray(M, dtype=np.float32))
+                    corners = np.array([[0.0, 0.0], [cw, 0.0], [cw, ch], [0.0, ch]],
+                                       dtype=np.float32)
+                    pts = np.hstack([corners, np.ones((4, 1), np.float32)]) @ IM.T
+                    if np.isfinite(pts).all():
+                        footprint = pts
+            except Exception:
+                footprint = None
 
-        box_size = max(w_box, h_box)
-        # Add 50% padding on all sides to cover face + hair + background/occluders
-        crop_size = box_size * 2.0
+        if footprint is not None:
+            fx0, fy0 = footprint.min(axis=0)
+            fx1, fy1 = footprint.max(axis=0)
+            # Square, so the model's own square resize introduces no aspect
+            # distortion, and margined so an object reaching in from outside the
+            # crop is still visible to the segmenter rather than cropped away at
+            # the exact edge where it matters.
+            span = max(float(fx1 - fx0), float(fy1 - fy0))
+            if span >= 2.0:
+                cx = float(fx0 + fx1) / 2.0
+                cy = float(fy0 + fy1) / 2.0
+                crop_size = span * (1.0 + 2.0 * _MASK_BOX_MARGIN)
+            else:
+                # A singular matrix collapses all four corners onto one point,
+                # and invertAffineTransform reports that without raising — so
+                # the span, not just finiteness, is what says the footprint is
+                # usable. Fall through to the bbox instead of boxing nothing.
+                footprint = None
+
+        if footprint is None:
+            xmin, ymin, xmax, ymax = target_face.bbox
+            w_box = xmax - xmin
+            h_box = ymax - ymin
+            cx = xmin + w_box / 2.0
+            cy = ymin + h_box / 2.0
+            box_size = max(w_box, h_box)
+            # Add 50% padding on all sides to cover face + hair + background/occluders
+            crop_size = box_size * 2.0
 
         x0 = int(cx - crop_size / 2.0)
         y0 = int(cy - crop_size / 2.0)
@@ -436,59 +495,74 @@ class MaskingMixin:
         # TLS by process_face, indexed by the TLS frame index from swap_faces.
         p_name = getattr(processor, 'processorname', None)
 
-        # Is the face angled enough that the standard affine-aligned crop is too
-        # distorted for a frontal-trained mask model to label correctly?
-        #
-        # The heuristics live in roop/nonfrontal.py, collapsed into one
-        # continuous score where 1.0 is the threshold. They cover: nose-vs-eyes
-        # asymmetry (turned), eye-separation over eye-to-mouth (turned, and
-        # monotonic all the way to 90 deg where asymmetry collapses back to 0),
-        # the pitch proxy (tilted), the solved off-axis angle (turned AND
-        # tilted, which defeats all three scalars at once), eyes-below-mouth
-        # (upside down), and the exact landmark_3d_68 pitch when that model
-        # happens to be loaded.
-        #
-        # `score > 1.0` is the same verdict the previous OR-of-booleans gave,
-        # exactly. What the score buys is a temporal one: the router below can
-        # LATCH it. A bare threshold on a per-frame score flickers — the two
-        # mask paths derive the mask differently, so a face parked near the
-        # boundary alternates between them and the mask edge visibly moves on a
-        # head that is not moving at all (measured: up to 123 verdict flips per
-        # 400 frames on a still head tilted up 30 deg).
         kps = None
         if target_face is not None and getattr(target_face, 'kps', None) is not None:
             if len(target_face.kps) == 5:
                 kps = target_face.kps
-        router = getattr(self, '_nonfrontal_router', None)
-        if router is not None and not _NO_HYST:
-            # verdict() scores the face itself — do not score it again here just
-            # to hand it over; this runs per face per mask processor.
-            is_non_frontal = router.verdict(
-                kps, tgt_pitch_deg, getattr(self._tls, 'frame_idx', None))
-        else:
-            is_non_frontal = nonfrontal_score(kps, tgt_pitch_deg) > 1.0
 
         dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
 
-        # Isolation switch for the unwarped-crop masking path (ROOP_NONFRONTAL_MASK):
-        #   unset/auto — route by is_non_frontal (normal behaviour)
-        #   0          — never take it; mask in canonical crop space as if frontal
-        #   1          — always take it for a dense masker
-        # Exists because widening the non-frontal test to cover 75-90 deg yaw also
-        # newly routes those angles down this path. If a profile face looks wrong,
-        # `0` isolates whether it is the mask ROUTING or the detection change.
-        _nf_mode = os.environ.get('ROOP_NONFRONTAL_MASK', 'auto').strip().lower()
-        if _nf_mode == '0':
-            is_non_frontal = False
-        elif _nf_mode == '1':
+        # ── Should this face be masked on an UNWARPED crop instead? ───────────
+        # Default: no. This used to route by pose, and the reason it gave was
+        # that "the standard affine-aligned crop is too distorted for a
+        # frontal-trained mask model to label correctly" on a turned or tilted
+        # head. That premise is false, and measurably so.
+        #
+        # estimate_norm forces a SimilarityTransform (use_affine = False, and
+        # both yaw_align variants return similarities too). A similarity is a
+        # rotation, a uniform scale and a translation. It cannot shear, squash or
+        # otherwise distort anything. Measured over yaw +/-90 x pitch +/-40 x
+        # roll +/-30 x four crop sizes, in all three alignment modes: anisotropy
+        # 1.000000000 exactly, worst shear 2.8e-14 degrees. The aligned crop is
+        # the same face, rotated upright and zoomed — which is what the mask
+        # models were trained on.
+        #
+        # So the path had no benefit to trade against its three real costs:
+        #
+        #   * it shows the model a smaller face. Interocular over the crop it
+        #     sits in — frontal 23.3% aligned vs 15.0% boxed, yaw 60 12.2% vs
+        #     7.5%, yaw 60 with 30 of pitch 16.6% vs 8.1%. Half the linear
+        #     resolution, and framing these models never saw in training.
+        #   * it undoes the in-plane rotation, handing a segmenter trained on
+        #     upright faces a tilted one.
+        #   * switching between two differently-derived masks mid-clip is itself
+        #     a flicker source — NonFrontalRouter's whole existence is to damp
+        #     the chatter that switching causes.
+        #
+        # And it engaged precisely on turned and tilted faces, which is where the
+        # original leaking back through the middle of a swapped face gets
+        # reported. `_mask_crop_box` now boxes the aligned crop's own footprint,
+        # so the path is much better behaved if it is turned back on, but on this
+        # evidence it should not be on by default.
+        #
+        # ROOP_NONFRONTAL_MASK: 0 (default) never take it; `auto` restore the
+        # pose routing; 1 always take it for a dense masker.
+        _nf_mode = os.environ.get('ROOP_NONFRONTAL_MASK', '0').strip().lower()
+        if _nf_mode == '1':
             is_non_frontal = True
+        elif _nf_mode == 'auto':
+            # The score collapses several pose heuristics into one number where
+            # 1.0 is the threshold; the router latches it, because a bare
+            # threshold on a noisy score flips up to 123 times per 400 frames on
+            # a still head tilted up 30 degrees.
+            router = getattr(self, '_nonfrontal_router', None)
+            if router is not None and not _NO_HYST:
+                # verdict() scores the face itself — do not score it again here
+                # just to hand it over; this runs per face per mask processor.
+                is_non_frontal = router.verdict(
+                    kps, tgt_pitch_deg, getattr(self._tls, 'frame_idx', None))
+            else:
+                is_non_frontal = nonfrontal_score(kps, tgt_pitch_deg) > 1.0
+        else:
+            is_non_frontal = False
 
         # The unwarped-crop path needs a real, on-screen rectangle. _mask_crop_box
         # returns None when there isn't one, and we fall back to masking in
         # canonical crop space instead of crashing (see that method).
         crop_box = None
         if is_non_frontal and orig_frame is not None and M is not None and p_name in dense_maskers:
-            crop_box = self._mask_crop_box(target_face, orig_frame)
+            crop_box = self._mask_crop_box(target_face, orig_frame,
+                                           M=M, crop_shape=frame.shape)
 
         if _DEBUG_ANGLE:
             # How much of the canonical crop does the unwarped box actually cover?
