@@ -1213,39 +1213,10 @@ def solve_pose_5pt(kps):
 
         # A maps the reference head onto the observed points; rows are s*r1, s*r2.
         A = _REF5_PINV @ x
-
-        # The rest is 3-vector arithmetic, done in plain Python floats rather
-        # than numpy. On 3-element vectors every numpy call costs far more in
-        # dispatch than in arithmetic, and there are about ten of them here
-        # (norm, dot, cross, clip, arcsin, two arctan2, degrees...). Writing
-        # them out took this function from 42.7 us to 10.8 us — worth it because
-        # it runs per face per frame in both the alignment and the mask router.
-        a0x, a0y, a0z = float(A[0][0]), float(A[1][0]), float(A[2][0])
-        a1x, a1y, a1z = float(A[0][1]), float(A[1][1]), float(A[2][1])
-
-        n1 = math.sqrt(a0x * a0x + a0y * a0y + a0z * a0z)
-        if not (n1 > 1e-9):
+        out = _decompose_projection(A)
+        if out is None:
             return None
-        # Nearest orthonormal pair: normalise the first row, then remove its
-        # component from the second (Gram-Schmidt). r3 completes the frame.
-        r1x, r1y, r1z = a0x / n1, a0y / n1, a0z / n1
-        dot = a1x * r1x + a1y * r1y + a1z * r1z
-        r2x, r2y, r2z = a1x - dot * r1x, a1y - dot * r1y, a1z - dot * r1z
-        n2 = math.sqrt(r2x * r2x + r2y * r2y + r2z * r2z)
-        if not (n2 > 1e-9):
-            return None
-        r2x, r2y, r2z = r2x / n2, r2y / n2, r2z / n2
-        # r3 = r1 x r2, the third row of R = [r1; r2; r3].
-        r3x = r1y * r2z - r1z * r2y
-        r3y = r1z * r2x - r1x * r2z
-        r3z = r1x * r2y - r1y * r2x
-
-        pitch = math.degrees(math.asin(max(-1.0, min(1.0, -r3y))))
-        yaw = -math.degrees(math.atan2(r3x, r3z))
-        roll = math.degrees(math.atan2(r1y, r2y))
-        if not (math.isfinite(yaw) and math.isfinite(pitch) and math.isfinite(roll)):
-            return None
-        return yaw, pitch, roll
+        return out[0], out[1], out[2]
     except Exception:
         return None
 
@@ -1253,9 +1224,21 @@ def solve_pose_5pt(kps):
 def _decompose_projection(A):
     """(yaw, pitch, roll, scale) from a 3x2 weak-perspective matrix, or None.
 
-    Split out of solve_pose_5pt so the jaw-aware solve below reuses exactly the
-    same convention — two solvers that disagreed about which way a head faces is
-    a bug this project has already had once.
+    THE single place this project turns a fitted projection into angles. Both
+    solvers call it, deliberately: two pose sources that disagreed about which
+    way a head faces is a bug this project has already had, and it stayed
+    invisible for a long time (see face_3d_recon's 180-degree offset). A second
+    copy of this arithmetic would be the same trap with a shorter fuse.
+
+    `A` is indexed [row][col] and may be a numpy array or nested tuples, so the
+    jaw solve can hand over plain floats without building an array for it.
+
+    Written out in plain Python floats rather than numpy: on 3-element vectors
+    every numpy call costs far more in dispatch than in arithmetic, and there
+    are about ten of them here (norm, dot, cross, clip, arcsin, two arctan2,
+    degrees...). Doing it this way took solve_pose_5pt from 42.7 us to 10.8 —
+    worth it because that runs per face per frame in both the alignment and the
+    mask router.
     """
     a0x, a0y, a0z = float(A[0][0]), float(A[1][0]), float(A[2][0])
     a1x, a1y, a1z = float(A[0][1]), float(A[1][1]), float(A[2][1])
@@ -1263,6 +1246,8 @@ def _decompose_projection(A):
     n1 = math.sqrt(a0x * a0x + a0y * a0y + a0z * a0z)
     if not (n1 > 1e-9):
         return None
+    # Nearest orthonormal pair: normalise the first row, then remove its
+    # component from the second (Gram-Schmidt). r3 completes the frame.
     r1x, r1y, r1z = a0x / n1, a0y / n1, a0z / n1
     dot = a1x * r1x + a1y * r1y + a1z * r1z
     r2x, r2y, r2z = a1x - dot * r1x, a1y - dot * r1y, a1z - dot * r1z
@@ -1282,16 +1267,20 @@ def _decompose_projection(A):
     return yaw, pitch, roll, 0.5 * (n1 + n2)
 
 
-# How many Newton steps to take on the jaw, once the right basin is known.
-# Measured worst error over a yaw 0-90 x pitch +/-40 x roll +/-90 x jaw 0-0.7
-# grid of exact projections:
+# How many Gauss-Newton steps to take on the jaw, once the right basin is known.
+# Worst pose error over |yaw| 5-90 x pitch +/-40 x roll +/-90, jaw values chosen
+# deliberately NOT to land on the scan grid below:
 #
-#   steps    2       3       4       5       6
-#   worst  13.9    2.67    0.11    0.0003  0.0000  deg
+#   steps      2        3        4        5        6
+#   worst  0.1827   0.0019   0.0000   0.0000   0.0000  deg
 #
-# Five is where it stops mattering — a tenth of a degree of pose is already far
-# below what a detector's keypoints resolve — and the loop exits early on any
-# frame that converges sooner, which is most of them.
+# Four converges; five is one step of margin, and the loop exits early on any
+# frame that settles sooner, which is most of them.
+#
+# Measure this with jaw values OFF the scan grid. A grid whose jaws happen to
+# coincide with the scan points reports 0.0000 at every step count, because the
+# scan lands on the answer and the refinement has nothing left to do — which
+# says nothing at all about whether the refinement works.
 _JAW_NEWTON_STEPS = 5
 
 # The rotation-consistency error is NOT unimodal in the jaw. Besides the true
@@ -1338,7 +1327,21 @@ _JAW_BASIN_SEP = 0.25
 # reference head's — the decoy is the one NEARER zero, and ranking by magnitude
 # picks it.)
 _JAW_TIE_RATIO = 0.5
-_JAW_TIE_FLOOR = 1e-8
+# The floor exists so that two roots which BOTH fit exactly are not ranked on
+# the ratio of two numbers that are pure rounding noise — at that point the
+# comparison is meaningless and the prior should simply win.
+#
+# It has to sit near the true floor of an exact fit (~1e-30), NOT at some
+# generously small number. 1e-8 was tried and is a bug: a candidate that has
+# converged to within 0.06 of the right jaw scores ~1e-9, which is twenty-one
+# orders of magnitude WORSE than the exact root sitting next to it and is in no
+# sense a tie — but the floor called it perfect, stopped the comparison, and
+# kept it. That cost 14 misreads of up to 5.9 deg on the pose grid, every one of
+# them a case where the right answer had already been computed and was thrown
+# away. On real footage the error never approaches either number (it runs 1e-2
+# to 1e-1, dominated by how far a real face is from the reference head), so the
+# floor is inert there and the ratio does all the work.
+_JAW_TIE_FLOOR = 1e-20
 
 
 def _jaw_fit_at(j, b, q, want_step=True):
@@ -1492,11 +1495,31 @@ def solve_pose_jaw_5pt(kps):
     one, though — see _JAW_SCAN_STEP and _JAW_TIE_RATIO for the two basins and
     the genuine yaw-0 ambiguity, which is most of what the code below is doing.
 
-    Accurate to 6 deg worst over a 13k-pose grid (yaw 0-90 x pitch +/-40 x
-    roll +/-90 x jaw -0.25..0.75) and under 1 deg everywhere except a handful of
-    exactly-yaw-0 corners, where it deliberately under-corrects.
+    ACCURACY, and where it is worst. Exact to 0.0000 deg over |yaw| 5-90 x
+    pitch +/-40 x roll +/-90 x jaw -0.21..0.74. At |yaw| BELOW about 5 it can be
+    wrong by up to 36 deg, because that is where the two readings described under
+    _JAW_TIE_RATIO stop being distinguishable — 28 of 9576 grid poses, every one
+    of them at yaw 0, half over-reading the pitch and half under-reading it.
+    That sounds bad until it is compared with the alternative, which is what
+    matters here. Under 0.5 px of keypoint noise on a 180 px face:
 
-    Costs ~8x solve_pose_5pt (98 us against 12), so it is used only where it
+        pitch error, mean / p95 / sd across draws
+        yaw pitch   solve_pose_5pt          this
+          0     0   16.5 / 28.2 / 10.0      0.5 /  1.1 / 0.6
+          0    20   22.3 / 39.1 / 13.9      3.3 / 34.6 / 9.0   <- the bad case
+          0    40   25.1 / 46.3 / 16.4      6.2 / 12.9 / 5.8
+         15    40   24.5 / 45.3 / 16.0      1.5 /  3.9 / 1.8
+         60    40   16.5 / 31.1 / 10.9      0.4 /  0.9 / 0.5
+
+    It is better on the mean and on the spread in every condition, including the
+    bad one. The spread is the part that shows on video: what reaches the render
+    is the engagement weight, and on a STILL head at yaw 15 / pitch 40 (true
+    weight 1.0) the jaw-blind pose delivers 0.341 +/- 0.404 — the correction
+    fading in and out on a face that is not moving — against 1.000 +/- 0.001
+    here. At yaw 0 / pitch 0 (true weight 0.0) it is 0.178 +/- 0.210 against
+    0.000 +/- 0.000. Most of what looked like pose-mode flicker was this.
+
+    Costs ~9x solve_pose_5pt (112 us against 13), so it is used only where it
     changes an outcome: the 'pose' and 'stabilize' alignment templates, both
     opt-in. solve_pose_5pt stays the answer everywhere else — the mask router,
     the mouth and eye restore fades, the tracking gates — unchanged and
@@ -1641,10 +1664,19 @@ def _pose_template(yaw_deg, base_dst, pitch_deg=0.0, jaw=0.0):
     often than the head does. The template is therefore projected with the jaw
     the solve found (see solve_pose_jaw_5pt) while the scale still comes from
     the CLOSED-mouth frontal reference — so an opening mouth moves the
-    template's mouth corners down to meet it instead of shrinking the whole
-    crop to drag them back up. Measured swing over a mouth opening from shut to
-    60% on an otherwise still head: 1.430x with no correction, 1.514x projecting
-    at the phantom pitch a jaw-blind solve reports, 1.03x here.
+    template's mouth corners down to meet it instead of shrinking the whole crop
+    to drag them back up. Crop-scale swing as the mouth opens from shut to 60%
+    on an otherwise still head at yaw 50 / pitch -20:
+
+        no correction   1.532x
+        this template   1.000x
+
+    On a FRONTAL head the same sweep stays at 1.475x, and that is not a failure
+    to fix it — it is this mode declining to act. A head that has not turned
+    scores zero on the engagement band, so the alignment is bit-identical to
+    leaving the mode off, mouth or no mouth. Correcting it there would mean
+    re-framing every talking close-up away from the arcface crop the swap models
+    were trained on, which is a change to argue on output, not on geometry.
     """
     posed = _project_reference(yaw_deg, pitch_deg, jaw)
     frontal = _project_reference(0.0, 0.0)

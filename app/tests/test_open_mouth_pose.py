@@ -51,9 +51,11 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import roop.globals                                              # noqa: E402
+import roop.face_util as face_util                                # noqa: E402
 from roop.face_util import (_project_reference, solve_pose_5pt,   # noqa: E402
                             solve_pose_jaw_5pt, estimate_norm,
-                            offaxis_deg, pose_align_weight, _REF5_IMAGE)
+                            pose_align_weight, _REF5_IMAGE,
+                            _weight_for_pose as _weight)
 
 
 def kps(yaw, pitch, roll=0.0, jaw=0.0, scale=180.0, cx=400.0, cy=300.0):
@@ -122,22 +124,89 @@ class TheJawAwareSolveSeparatesThem(unittest.TestCase):
             self.assertAlmostEqual(jaw, j, delta=0.02,
                                    msg=f'jaw {j}: solved {jaw:.3f}')
 
+    # Jaw values deliberately chosen NOT to coincide with the solver's internal
+    # scan grid. This is load-bearing: a grid whose jaws land on the scan points
+    # passes at ANY quality, because the scan lands on the answer and the
+    # refinement never has to work. Measured — with on-grid jaws the whole sweep
+    # reports 0.0000 deg even with the refinement cut to two steps.
+    OFF_GRID_JAWS = (-0.213, -0.077, 0.031, 0.187, 0.334, 0.471, 0.628, 0.742)
+
     def test_it_recovers_pose_and_jaw_together(self):
         """Both at once is the case that matters — a head that is turned AND
-        tilted AND talking is most of this project's footage."""
+        tilted AND talking is most of this project's footage.
+
+        Excludes |yaw| < 5, where the two are genuinely not separable; that
+        region has its own test below."""
         worst = 0.0
         where = None
-        for yaw in range(0, 91, 15):
-            for pitch in range(-40, 41, 20):
+        # Stepped finely enough to have teeth: on a yaw-15 x pitch-20 grid,
+        # cutting the refinement to two Gauss-Newton steps still scores 0.021
+        # deg and slips through. At yaw 10 x pitch 10 it scores 0.183.
+        for yaw in range(5, 91, 10):
+            for pitch in range(-40, 41, 10):
                 for roll in (-90, -45, 0, 45, 90):
-                    for j in (0.0, 0.2, 0.4, 0.6):
+                    for j in self.OFF_GRID_JAWS:
                         got = solve_pose_jaw_5pt(kps(yaw, pitch, roll, j))
                         self.assertIsNotNone(got)
                         err = max(abs(got[0] - yaw), abs(got[1] - pitch),
                                   abs(got[3] - j) * 100.0)
                         if err > worst:
                             worst, where = err, (yaw, pitch, roll, j, got)
-        self.assertLess(worst, 6.0, f'worst {worst:.2f} at {where}')
+        # Tight on purpose. The measured worst here is 0.0000 deg; a loose bound
+        # would let the refinement be cut back to two Gauss-Newton steps (0.18
+        # deg) without anything noticing.
+        self.assertLess(worst, 0.05, f'worst {worst:.4f} at {where}')
+
+    def test_a_converged_root_is_not_discarded_as_a_tie(self):
+        """The tie-break may only fire between readings that genuinely cannot be
+        told apart.
+
+        This is a regression guard with a specific history: the "both fit
+        exactly, keep the closed mouth" floor was first set at 1e-8. A candidate
+        that had converged to within 0.06 of the right jaw scores about 1e-9 —
+        twenty-one orders of magnitude worse than the exact root sitting beside
+        it, and no tie at all — but the floor called it perfect, stopped the
+        comparison and kept it. Fourteen poses on the grid were misread by up to
+        5.9 degrees with the right answer already computed and thrown away.
+        """
+        # Read through the module, not a from-import: a value bound at import
+        # time cannot see the constant it is meant to be guarding.
+        self.assertLess(face_util._JAW_TIE_FLOOR, 1e-15,
+                        'the tie floor must sit near the floor of an EXACT fit '
+                        '(~1e-30), not at a merely small number')
+        # The exact poses the 1e-8 floor misread, so the behaviour is guarded
+        # and not just the constant.
+        for roll in (-90, -45, 0, 45, 90):
+            for j in (0.65, 0.75):
+                got = solve_pose_jaw_5pt(kps(0, 40, roll, j))
+                self.assertAlmostEqual(got[1], 40.0, delta=1.0,
+                                       msg=f'roll {roll} jaw {j} -> pitch '
+                                           f'{got[1]:.2f}, jaw {got[3]:.3f}')
+                self.assertAlmostEqual(got[3], j, delta=0.01)
+
+    def test_it_beats_the_jaw_blind_solve_under_keypoint_noise(self):
+        """Accuracy on exact projections is not the point — detectors are noisy.
+        What reaches the render is the engagement weight, and the jaw-blind pose
+        makes it jitter on a face that is not moving.
+
+        Asserted as a comparison rather than against an absolute, so it cannot
+        drift into passing on a fixed threshold that stopped meaning anything.
+        """
+        rng = np.random.default_rng(5)
+        for yaw, pitch in ((0, 0), (15, 40), (30, 20)):
+            blind, aware = [], []
+            for j in (0.0, 0.3, 0.6):
+                for _ in range(40):
+                    k = kps(yaw, pitch, 0.0, j) + rng.normal(0, 0.5, (5, 2))
+                    a, b = solve_pose_5pt(k), solve_pose_jaw_5pt(k)
+                    if a:
+                        blind.append(_weight(a[0], a[1]))
+                    if b:
+                        aware.append(_weight(b[0], b[1]))
+            sd_blind, sd_aware = float(np.std(blind)), float(np.std(aware))
+            self.assertLess(sd_aware, sd_blind * 0.5,
+                            f'yaw {yaw} pitch {pitch}: weight jitter sd '
+                            f'{sd_aware:.3f} vs jaw-blind {sd_blind:.3f}')
 
     def test_it_is_not_blind_at_45_degrees_of_roll(self):
         """A regression guard with a specific history. The rotation
