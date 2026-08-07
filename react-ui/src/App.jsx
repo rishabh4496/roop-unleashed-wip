@@ -221,26 +221,6 @@ export default function App() {
     }
   }, [progress.processing, progress.started_at, startTime]);
 
-  // ── "Your render finished", once ─────────────────────────────────────────
-  // This lives here rather than in a tab because the shell is the only thing
-  // always mounted: a run that ends while you are on Settings or Outputs still
-  // has to announce itself.
-  //
-  // It used to live in BOTH places. The shell played its own chime and posted
-  // its own notification here, and the Face Swap tab mounted useRunCompleteAlert
-  // as well — so every finished run gave you two chimes and two desktop
-  // notifications, and only if you happened to be on that one tab. Neither half
-  // could see the other, which is exactly how a duplicate survives: each looks
-  // correct on its own.
-  //
-  // The hook is the better of the two — it distinguishes a failed or stopped run
-  // from a finished one and plays a different tone, where this block treated
-  // ">= 99% and no error" as the only outcome worth a sound. So the hook wins
-  // and moves up here, and the tabs read the toggle off it instead of owning it.
-  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
-    processing: progress.processing, error: progress.error, notify,
-  });
-
   const prevProcessingCelebrationRef = useRef(false);
   useEffect(() => {
     const was = prevProcessingCelebrationRef.current;
@@ -522,6 +502,28 @@ export default function App() {
     setLiveMsg(`${type}: ${message}`);
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
   }, []);
+
+  // ── "Your render finished", once ─────────────────────────────────────────
+  // Here rather than in a tab because the shell is the only thing mounted for
+  // the whole session: a run that ends while you are on Settings or Outputs
+  // still has to announce itself.
+  //
+  // It used to live in BOTH places. The shell played its own chime and posted
+  // its own notification, and the Face Swap tab mounted useRunCompleteAlert as
+  // well — so every finished run gave you two chimes and two desktop
+  // notifications, and only if you happened to be on that one tab. Neither half
+  // could see the other, which is how a duplicate survives review: each looks
+  // correct on its own. The hook is the better of the two (it tells a failed run
+  // from a finished one and plays a different tone), so it won.
+  //
+  // BELOW `notify`, and that is not cosmetic. `const` is not hoisted, so calling
+  // this above the declaration throws "Cannot access 'notify' before
+  // initialization" on the FIRST render — which takes the whole app down to a
+  // blank page, since there is no ErrorBoundary above the shell. It built
+  // cleanly and every test passed; only opening it showed anything wrong.
+  const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
+    processing: progress.processing, error: progress.error, notify,
+  });
 
   // Core bootstrap (meta + settings + in-flight job), retryable. The backend is
   // often still binding its port when this webview first paints — especially on
