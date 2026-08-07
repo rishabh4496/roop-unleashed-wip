@@ -69,6 +69,37 @@ ENABLED = os.environ.get('ROOP_FACE_DEMARCATE', '1').strip().lower() not in ('0'
 # narrow enough to read as an edge and wide enough not to alias.
 FEATHER = _env_float('ROOP_FACE_DEMARCATE_FEATHER', 0.02)
 
+# ...and wide enough not to SHIMMER, which is the constraint the fraction alone
+# could not express.
+#
+# The boundary is the locus where two normalised distance fields cross, and each
+# field is rasterised from that frame's landmark hull. The 106-point landmarks
+# are not temporally smoothed, so about a pixel of detector jitter moves the
+# boundary about a pixel — every frame, on two people standing still. Whether
+# that is visible depends entirely on how it compares to the width of the ramp
+# it is moving inside, and a band given only as a fraction of face radius makes
+# that comparison an accident of how big the face happens to be.
+#
+# Measured mean worst per-frame ownership change at the join, two faces cheek to
+# cheek at a 117 px radius under 1 px of landmark noise (1.0 would be a pixel
+# handed fully from one face to the other in a single frame):
+#
+#   band      4.7px   9.4px   14.0px   18.7px   28.1px
+#   swing     0.383   0.260    0.182    0.135    0.070
+#
+# 4.7 px is what a 0.02 fraction gives at that size, and a third of a pixel's
+# worth of ownership changing hands every frame is exactly the flicker along the
+# join that gets reported. The noise is a fixed number of PIXELS, so the floor
+# has to be too — the fraction then takes over for faces big enough to need a
+# proportionally wider ramp.
+MIN_BAND_PX = _env_float('ROOP_FACE_DEMARCATE_MIN_BAND_PX', 16.0)
+
+# ...but not so wide that a small face is nothing but ramp. On a 50 px-radius
+# face a 16 px floor would be a third of the head, which stops being a
+# demarcation and starts being a dissolve, so the floor is capped as a fraction
+# of radius and small faces get a proportionally narrower band instead.
+MAX_BAND_FRAC = _env_float('ROOP_FACE_DEMARCATE_MAX_BAND', 0.16)
+
 # How much a face's on-screen size counts as "in front". Two people at the same
 # distance have the same size and this cancels exactly; when one head is twice
 # the other's it is almost certainly nearer the camera, and this pushes the
@@ -249,7 +280,12 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
     def _best(fs):
         return fs[0] if len(fs) == 1 else np.maximum.reduce(fs)
 
-    band = max(1e-4, 2.0 * feather)
+    # `field` is a distance divided by the face radius, so a band of B pixels is
+    # B / r_ref in field units. r_ref is the geometric mean of the competing
+    # radii — the same common scale the depth bias is measured against, and the
+    # right one here because the two fields are normalised by their OWN radii and
+    # then compared with each other.
+    band = max(1e-4, 2.0 * feather, min(MIN_BAND_PX / max(r_ref, 1.0), MAX_BAND_FRAC))
     regions = {}
     for i, field in fields.items():
         own = np.ones_like(field)

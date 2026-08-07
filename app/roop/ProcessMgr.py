@@ -8,7 +8,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
-from roop.face_util import estimate_norm
+from roop.face_util import estimate_norm, solve_pose_5pt
 from roop.lipsync_audio import frame_time
 import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
@@ -2665,12 +2665,48 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._tls.cur_M = M
 
         # ── Shared landmark / pose computation ────────────────────────────────
-        # Computed once and reused by source-bank selection, 3D recon, and
-        # frontalization.  Guards against missing landmark_3d_68 gracefully.
+        # tgt_yaw_deg / tgt_pitch_deg are the head's TRUE angles in degrees, and
+        # they gate real behaviour: how far the mouth and eye restores fade out
+        # (past ~25 deg the plate's mouth lands on the side of a turned face and
+        # the plate's eyes land on the nose bridge — the doubled features people
+        # report on profiles), and the pitch term of the mask router's score.
+        #
+        # They used to come from an EPnP fit to landmark_3d_68 mapped into crop
+        # space, which was wrong in both directions and silently so:
+        #
+        #   * landmark_3d_68 is only loaded when one of four off-by-default
+        #     features asks for it (see initialize), so in the DEFAULT
+        #     configuration this whole block was skipped and both angles stayed
+        #     0.0 — i.e. "perfectly frontal", for every face at every angle. The
+        #     fades therefore never engaged and both restores composited at 100%
+        #     onto 90-degree profiles.
+        #   * when the model IS loaded, that fit reports yaw ~= 180 - true_yaw
+        #     (measured -178.5 deg on a dead-frontal face, +100.2 at yaw 85) and
+        #     pitch inverted and offset. max(|yaw|, |pitch|) is then always past
+        #     the fade's end, so both restores were switched fully OFF instead.
+        #
+        # solve_pose_5pt answers the same question from the 5 arcface keypoints,
+        # which EVERY detector engine here produces, and recovers the synthesised
+        # pose to 0.0000 deg over the yaw 0-90 x pitch +/-40 grid. It is already
+        # the project's canonical pose solver — the alignment crossfade and
+        # nonfrontal_score both key on it — so this also stops the pipeline
+        # holding two disagreeing opinions about which way a head is facing.
         import math as _math
-        tgt_lm68_crop = None
         tgt_yaw_deg   = 0.0
         tgt_pitch_deg = 0.0
+        _pose5 = solve_pose_5pt(getattr(target_face, 'kps', None))
+        if _pose5 is not None:
+            tgt_yaw_deg, tgt_pitch_deg = float(_pose5[0]), float(_pose5[1])
+
+        # The EPnP angles are kept for the source bank ALONE. Its stored source
+        # poses are measured with the same estimate_pose/decompose_yaw_pitch
+        # pair, so the convention error cancels in the yaw/pitch DIFFERENCE the
+        # matcher actually uses. Re-pointing one side of that comparison at the
+        # corrected angles — and not the other — would be the one change here
+        # that made something worse.
+        tgt_lm68_crop = None
+        bank_yaw_deg   = 0.0
+        bank_pitch_deg = 0.0
         try:
             if (hasattr(target_face, 'landmark_3d_68')
                     and target_face.landmark_3d_68 is not None):
@@ -2680,10 +2716,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 tgt_lm68_crop = landmarks_to_crop_space(target_face.landmark_3d_68, M)
                 rvec, _ = estimate_pose(tgt_lm68_crop, subsample_size)
                 ty, tp  = decompose_yaw_pitch(rvec)
-                tgt_yaw_deg   = _math.degrees(ty)
-                tgt_pitch_deg = _math.degrees(tp)
+                bank_yaw_deg   = _math.degrees(ty)
+                bank_pitch_deg = _math.degrees(tp)
         except Exception:
-            pass   # landmarks unavailable — features that need pose will no-op
+            pass   # landmarks unavailable — the source bank falls back to faces[0]
 
         # Publish this face's non-frontal score to the mask router NOW, at the
         # first point the pose is known. The verdict is not needed until
@@ -2715,7 +2751,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
                     if yaw_d is None:
                         continue
-                    dist = (tgt_yaw_deg - yaw_d) ** 2 + (tgt_pitch_deg - pitch_d) ** 2
+                    # bank_*, not tgt_* — see the pose block above for why these
+                    # two comparands have to stay in the same convention.
+                    dist = (bank_yaw_deg - yaw_d) ** 2 + (bank_pitch_deg - pitch_d) ** 2
                     if dist < best_dist:
                         best_dist = dist
                         best_idx  = i
@@ -2775,8 +2813,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
                             sv, _ = estimate_pose(src_lm68_crop, subsample_size)
                             sy, sp = decompose_yaw_pitch(sv)
-                            dy = tgt_yaw_deg - _math.degrees(sy)
-                            dp = tgt_pitch_deg - _math.degrees(sp)
+                            # Both sides in the EPnP convention, as above.
+                            dy = bank_yaw_deg - _math.degrees(sy)
+                            dp = bank_pitch_deg - _math.degrees(sp)
                             if abs(dy) > 15 or abs(dp) > 15:
                                 bar_write(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
                         except Exception:

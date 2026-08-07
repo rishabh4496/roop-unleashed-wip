@@ -119,10 +119,15 @@ class TestProfileAlignment(YawAlignCase):
                 estimate_norm(project_kps(yaw), 512, "arcface"), expected,
                 f"stabilize leaked below its onset at yaw={yaw}")
 
-    def test_mid_angle_deviation_stays_small(self):
+    def test_mid_angle_rotation_deviation_stays_small(self):
         """Inside the band the crop does move — that is the point — but it has to
         arrive gradually. Guard the magnitude, since the whole reason 'stabilize'
-        was gated tightly was fear of disturbing angles that already look right."""
+        was gated tightly was fear of disturbing angles that already look right.
+
+        Rotation only. The SCALE deliberately moves now, and by more than any
+        bound this test could put on "how different is it from off" — see
+        test_scale_is_held_against_the_frontal_crop for what replaced that half.
+        """
         for yaw in (45, 50, 55, 60):
             roop.globals.yaw_align = False
             base = decompose(estimate_norm(project_kps(yaw), 512, "arcface"))
@@ -131,8 +136,59 @@ class TestProfileAlignment(YawAlignCase):
             self.assertLess(abs(got[1] - base[1]), 2.0,
                             f"crop rotation moved {abs(got[1]-base[1]):.2f} deg "
                             f"at yaw={yaw}")
-            self.assertLess(abs(got[0] - base[0]) / base[0], 0.02,
-                            f"crop scale moved at yaw={yaw}")
+
+    def test_scale_is_held_against_the_frontal_crop(self):
+        """The half of the mode that was missing, and was making it worse than
+        doing nothing.
+
+        Pinning the crop rotation is not free: the least-squares scale is solved
+        AT the pinned angle, so rotating away from the angle the free fit chose
+        shrinks it by about cos(delta) — and delta reaches 30 deg at high yaw.
+        The mode marketed as the anti-wobble fix was therefore trading a rotation
+        wobble for a LARGER scale one. Measured crop-scale swing over
+        yaw 0-90 x pitch +/-40: 1.389x with the mode off, 1.575x with the
+        rotation pinned and the scale left free, 1.193x holding both.
+
+        What is asserted is the thing a viewer sees: the pasted face must not
+        change size as the head turns. Across the band the free fit drifts from
+        1.041x the frontal crop scale down to 0.897x; holding it keeps every
+        angle within a few percent of 1.0.
+        """
+        roop.globals.yaw_align = False
+        frontal = decompose(estimate_norm(project_kps(0), 512, "arcface"))[0]
+
+        roop.globals.yaw_align = False
+        free = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0] / frontal
+                for y in (40, 50, 60, 70, 80, 90)]
+        roop.globals.yaw_align = True
+        held = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0] / frontal
+                for y in (40, 50, 60, 70, 80, 90)]
+
+        free_swing = max(free) / min(free)
+        held_swing = max(held) / min(held)
+        # Compared on the EXCESS over 1.0, not on the ratios themselves: a swing
+        # of 1.0 is perfection, so `held < 0.6 * free` on the raw numbers asks
+        # for something arithmetically impossible.
+        self.assertLess(held_swing - 1.0, (free_swing - 1.0) * 0.6,
+                        f"scale swing across the band: free {free_swing:.3f}x, "
+                        f"held {held_swing:.3f}x — the hold is not earning its place")
+        for yaw, s in zip((40, 50, 60, 70, 80, 90), held):
+            self.assertLess(abs(s - 1.0), 0.06,
+                            f"crop is {s:.3f}x the frontal size at yaw={yaw}")
+
+    def test_holding_the_scale_still_collapses_to_off_below_the_onset(self):
+        """The scale hold is faded by the same weight as the rotation, so at
+        w = 0 its correction ratio is exactly 1.0 rather than merely close to
+        it. Without that the mode would no longer be a no-op on frontal faces,
+        which is the guarantee the whole band exists to keep."""
+        roop.globals.yaw_align = False
+        baseline = {y: estimate_norm(project_kps(y, p), 512, "arcface")
+                    for y in (0, 10, 20, 30, 39) for p in (0,)}
+        roop.globals.yaw_align = True
+        for yaw, expected in baseline.items():
+            np.testing.assert_array_equal(
+                estimate_norm(project_kps(yaw), 512, "arcface"), expected,
+                f"the scale hold leaked below the onset at yaw={yaw}")
 
     def test_no_step_change_anywhere_along_a_turn(self):
         """The defect this band replaced. A hard `yaw_ratio < 0.40` gate sat

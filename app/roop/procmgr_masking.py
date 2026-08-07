@@ -34,6 +34,67 @@ _DEBUG_ANGLE = os.environ.get('ROOP_DEBUG_ANGLE') == '1'
 _NO_HYST = os.environ.get('ROOP_NONFRONTAL_HYST', '1').strip().lower() in ('0', 'off', 'false')
 
 
+# How wide the boundary between a foreign object and the swap should be once it
+# lands on the frame, in FRAME pixels. Small enough to read as an edge, wide
+# enough that the mask's own resolution does not staircase along it.
+OCCLUDER_EDGE_PX = float(os.environ.get('ROOP_OCCLUDER_EDGE_PX', '5') or 5)
+
+
+def _edge_blur_kernel(M, crop_shape, mask_shape, target_px=None):
+    """Odd GaussianBlur kernel, in MASK pixels, that puts an occluder's edge at
+    roughly `target_px` frame pixels wide. 1 means "do not blur".
+
+    The occluder family thresholds its output to a hard 0/1 and then softens it,
+    and that softening used to be a fixed 5x5 — applied in CROP space, which is
+    not a fixed size on screen. The crop is a constant 256 or 512 px whatever the
+    face's real size, so the kernel's width in the finished frame is whatever the
+    crop-to-frame magnification happens to be. Measured ramp width around a hand
+    or a microphone, at the default 256 px pixel-boost:
+
+        face width in frame   120px   250px   500px   900px   1400px
+        crop px per frame px   0.73    1.51    3.02    5.44     8.46
+        5x5 blur ends up as    3.6px   7.6px  15.1px  27.2px   42.3px
+
+    So the closer the shot, the wider the halo — a 42 px glow bleeding the swap
+    across the object it is supposed to stop at, and moving frame to frame with
+    the model's own noise. That is the wrong way round: a close-up is where the
+    boundary should be tightest.
+
+    Linear upsampling of the mask already contributes about one mask pixel of
+    ramp on its own, so the blur only has to make up the difference — which on a
+    big close-up is nothing at all, and on a small distant face is several
+    pixels, exactly inverting the old behaviour.
+
+    Falls back to the historic 5x5 when the geometry is unreadable, so nothing
+    here can turn into a crash on a degenerate matrix.
+    """
+    target_px = OCCLUDER_EDGE_PX if target_px is None else target_px
+    try:
+        if M is None:
+            return 5
+        m = np.asarray(M, dtype=np.float64)
+        # Crop pixels per frame pixel, from the area scale of the 2x3 affine.
+        det = abs(float(m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]))
+        if not (det > 1e-12):
+            return 5
+        crop_per_frame = det ** 0.5
+        # ...then mask pixels per crop pixel, since the engine's output is not
+        # necessarily the crop's own resolution (256 for xseg/occluder, and the
+        # unwarped-box path hands back a mask the size of the crop instead).
+        ch = float(crop_shape[0]) or 1.0
+        mh = float(mask_shape[0]) or 1.0
+        frame_per_mask = (1.0 / crop_per_frame) * (ch / mh)
+        if not (frame_per_mask > 1e-9):
+            return 5
+        # One mask pixel of ramp comes free from the upsample; ask the kernel for
+        # whatever is still missing.
+        radius = int(round(target_px / frame_per_mask / 2.0 - 0.5))
+        radius = max(0, min(radius, 8))
+        return 2 * radius + 1
+    except Exception:
+        return 5
+
+
 def landmark_hull(landmarks_2d, kps=None):
     """Convex hull of the 106-pt face landmarks, plus a forehead extension.
 
@@ -521,7 +582,9 @@ class MaskingMixin:
         # prevent ghosting (xseg_3 shares the face_occluder output convention).
         if p_name in ('mask_occluder', 'mask_xseg3'):
             binary_mask = (img_mask > 0.35).astype(np.float32)
-            img_mask = cv2.GaussianBlur(binary_mask, (5, 5), 0)
+            k = _edge_blur_kernel(M, frame.shape, img_mask.shape)
+            img_mask = (cv2.GaussianBlur(binary_mask, (k, k), 0) if k > 1
+                        else binary_mask)
 
         return self._composite_mask(img_mask, frame, target), img_mask
 

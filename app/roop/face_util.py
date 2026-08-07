@@ -1427,6 +1427,24 @@ def _stabilized_norm(lmk, dst):
     (e.g. yaw 90 / pitch +25: 64.0 -> 69.9 px on a 512 crop). That is expected and
     is not a regression — the lower residual was being bought by rotating the
     face, which is precisely the pathology being removed.
+
+    SCALE. Pinning the rotation is not free: the least-squares scale is solved
+    AT the pinned angle, and rotating away from the angle the unconstrained fit
+    chose shortens the projection of the target points onto the rotated source,
+    so the scale falls with it — by roughly cos(delta), and delta reaches 30 deg
+    at high yaw. The mode therefore used to fix the rotation wobble by
+    introducing a scale one, and the scale one is larger. Measured crop-scale
+    swing over yaw 0-90 x pitch +/-40:
+
+        mode 'off'                     1.389x
+        rotation pinned, scale free    1.575x   <- worse than doing nothing
+        rotation pinned, scale held    1.071x
+
+    So the scale is held to the value a POSE-MATCHED template implies, which is
+    the same quantity 'pose' mode holds flat and is the reason that mode does
+    not breathe (see _pose_template). Both the angle and the scale are faded by
+    the same w, so at w = 0 this is still the plain fit exactly — the scale
+    correction is a ratio of 1.0 there by construction, not merely nearly one.
     """
     pose = solve_pose_5pt(lmk)
     if pose is None:
@@ -1447,7 +1465,57 @@ def _stabilized_norm(lmk, dst):
     theta_plain = float(np.arctan2(m_plain[1, 0], m_plain[0, 0]))
     theta_axis = float(_axis_angle(dst) - _axis_angle(lmk))
     delta = (theta_axis - theta_plain + np.pi) % (2.0 * np.pi) - np.pi
-    return _similarity_at_angle(lmk, dst, theta_plain + w * delta)
+    M = _similarity_at_angle(lmk, dst, theta_plain + w * delta)
+    if M is None:
+        return None
+    return _hold_scale(M, lmk, dst, pose, w, m_plain)
+
+
+def _mat_scale(M):
+    """Uniform scale of a 2x3 similarity."""
+    return float(np.hypot(M[0, 0], M[1, 0]))
+
+
+def _rescale_about(M, lmk, dst, k):
+    """Multiply a similarity's scale by `k`, keeping the source centroid landing
+    on the destination centroid.
+
+    Scaling the linear part alone would also move the crop, because the
+    translation column is expressed for the old scale; re-deriving it from the
+    centroids keeps the face framed exactly where it was and changes only how
+    much of it fits in the box.
+    """
+    A = M[:, :2] * float(k)
+    out = np.zeros((2, 3), dtype=np.float64)
+    out[:, :2] = A
+    out[:, 2] = dst.mean(0) - A @ lmk.mean(0)
+    return out if np.isfinite(out).all() else M
+
+
+def _hold_scale(M, lmk, dst, pose, w, m_plain):
+    """Hold the crop scale to the pose-matched template's, faded in by `w`.
+
+    The target is the scale the ordinary least-squares fit would choose against
+    a template projected at this head's own yaw and pitch — a template congruent
+    to the input, so its scale is the one that keeps the face the same size on
+    the crop however the head is turned. Blended from the plain fit's scale so
+    w = 0 is a no-op.
+    """
+    posed = _pose_template(pose[0], dst, pose[1])
+    if posed is None:
+        return M
+    t = trans.SimilarityTransform()
+    t.estimate(lmk, np.asarray(posed, dtype=np.float64))
+    mp = t.params[0:2, :]
+    if not np.isfinite(mp).all():
+        return M
+    s_cur = _mat_scale(M)
+    if not (s_cur > 1e-9):
+        return M
+    s_target = (1.0 - w) * _mat_scale(m_plain) + w * _mat_scale(mp)
+    if not (s_target > 1e-9):
+        return M
+    return _rescale_about(M, lmk, dst, s_target / s_cur)
 
 
 def _maybe_constrained(lmk, dst):

@@ -195,6 +195,110 @@ class OrderIndependence(unittest.TestCase):
                                    'halfway; anything else is a bias nobody asked for')
 
 
+class JoinStability(unittest.TestCase):
+    """The join has to sit still on two people who are standing still.
+
+    The boundary is where two normalised distance fields cross, and both are
+    rasterised from that frame's raw 106-point landmarks — which nothing
+    smooths. So a pixel of detector jitter moves the boundary about a pixel,
+    every frame. Whether anyone can see that depends entirely on how wide the
+    ramp it is moving inside is, and expressing the band purely as a fraction of
+    face radius left that to chance: at a 117 px radius the fraction gives a
+    4.7 px band, and the worst pixel along the join changed hands by 0.383 per
+    frame — a third of the way from one face to the other, on nobody moving.
+
+    Measured swing against band width at that radius:
+
+        band      4.7px   9.4px   14.0px   18.7px   28.1px
+        swing     0.383   0.260    0.182    0.135    0.070
+
+    Hence the pixel floor: the noise is a fixed number of pixels, so the ramp
+    that has to absorb it must be too.
+    """
+
+    @staticmethod
+    def _noisy_pair(rng, size=140, sep=120, jitter=1.0):
+        a, b = _Face(340, 200, size), _Face(340 + sep, 200, size)
+        for f in (a, b):
+            f.landmark_2d_106 = (f.landmark_2d_106
+                                 + rng.normal(0, jitter, f.landmark_2d_106.shape)
+                                 ).astype(np.float32)
+        return [a, b]
+
+    def _swing(self, size, sep, frames=120, jitter=1.0):
+        """Mean worst per-frame change in ownership along the join.
+
+        Sampled through `region.crop` over a FIXED frame-space box, not out of
+        `region.own` directly: the ROI is sized from the jittered claims, so its
+        width changes frame to frame and rows taken from it are not comparable
+        to each other. Reading a fixed box is also what the real consumers do.
+        """
+        rng = np.random.default_rng(21)
+        y = 200
+        box = (340, y - 1, 340 + sep, y + 1)
+        prev, deltas = None, []
+        for _ in range(frames):
+            regions = build_regions(self._noisy_pair(rng, size, sep, jitter),
+                                    SHAPE, order=[0, 1])
+            if regions is None or 0 not in regions:
+                continue
+            own = regions[0].crop(*box)
+            if own is None:
+                continue
+            row = own[1].copy()
+            if prev is not None:
+                deltas.append(float(np.abs(row - prev).max()))
+            prev = row
+        self.assertGreater(len(deltas), frames // 2,
+                           'not enough contested frames to judge')
+        return float(np.mean(deltas))
+
+    def test_the_join_does_not_shimmer_on_a_still_pair(self):
+        self.assertLess(self._swing(140, 120), 0.25,
+                        'the worst pixel along the join is changing hands too '
+                        'fast for two people who are not moving')
+
+    def test_the_band_does_not_shrink_with_the_face(self):
+        """A fraction-only band is narrowest exactly where the noise is
+        relatively largest. The floor is what decouples the two, so stability
+        should hold across a range of face sizes rather than degrading."""
+        for size in (100, 160, 260):
+            self.assertLess(self._swing(size, int(size * 0.8)), 0.30,
+                            f'join is unstable at face size {size}')
+
+    def test_a_narrower_band_really_is_worse(self):
+        """The floor is only worth its cost if removing it is measurably worse.
+
+        `feather` cannot express this — the band takes the LARGER of the
+        fraction and the floor, so asking for a narrow feather changes nothing
+        while the floor stands. The floor itself has to come out, which is also
+        exactly what the env override does, so this doubles as a check that
+        turning it off restores the old behaviour rather than breaking.
+        """
+        with_floor = self._swing(140, 120)
+        saved = face_overlap.MIN_BAND_PX
+        try:
+            face_overlap.MIN_BAND_PX = 0.0
+            without_floor = self._swing(140, 120)
+        finally:
+            face_overlap.MIN_BAND_PX = saved
+        self.assertGreater(without_floor, with_floor * 1.5,
+                           f'floor made little difference: {without_floor:.3f} '
+                           f'without vs {with_floor:.3f} with')
+
+    def test_the_floor_is_capped_so_a_small_face_is_not_all_ramp(self):
+        """16px of hand-over on a 50px-radius head would be a dissolve, not a
+        demarcation. Small faces get a proportionally narrower band instead."""
+        faces = [_Face(340, 200, 46), _Face(378, 200, 46)]
+        regions = build_regions(faces, SHAPE, order=[0, 1])
+        self.assertIsNotNone(regions)
+        r = regions[1]
+        row = r.own[200 - r.y0]
+        soft = int(((row > 0.02) & (row < 0.98)).sum())
+        self.assertLess(soft, 46 * 0.5,
+                        f'{soft}px of ramp across a 46px face is a dissolve')
+
+
 class Depth(unittest.TestCase):
     """Index 0 is the near (larger) face throughout, painted last."""
 
