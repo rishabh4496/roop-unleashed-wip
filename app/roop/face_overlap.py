@@ -205,6 +205,17 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
     to be known here because a face only needs to defend itself against the
     faces already on the canvas — see the module docstring.
 
+    A face in `faces` but NOT in `order` is a claimant that will never be
+    painted: an unswapped bystander. It gets no region of its own (there is
+    nothing to trim), and it is treated as already on the canvas by everyone
+    else — which is exactly true, since what is showing there is the original
+    footage and that is what should stay. Without this a bystander is not in the
+    competition at all and takes a neighbour's dilated matte, feather and
+    invented forehead across their face; and because whether a face is being
+    swapped can change frame to frame (a borderline identity match, a source that
+    ran out), it takes it intermittently, which is a flicker rather than a
+    steady artefact.
+
     Returns None when fewer than two faces actually compete for pixels — the
     normal case, decided by bounding-box tests before anything is rasterised.
     Indices are positions in `faces`; a face with no usable geometry, or one
@@ -275,7 +286,10 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
 
     if order is None:
         order = range(len(faces))
+    # -1 for anything never painted, so it sorts before every painted face and
+    # every one of them therefore treats it as already on the canvas.
     paint_pos = {idx: k for k, idx in enumerate(order)}
+    painted = set(paint_pos)
 
     def _best(fs):
         return fs[0] if len(fs) == 1 else np.maximum.reduce(fs)
@@ -288,12 +302,16 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
     band = max(1e-4, 2.0 * feather, min(MIN_BAND_PX / max(r_ref, 1.0), MAX_BAND_FRAC))
     regions = {}
     for i, field in fields.items():
+        if i not in painted:
+            continue            # a claimant, not a paste — nothing to trim
         own = np.ones_like(field)
         # Against faces ALREADY painted: stop at the boundary. Going past it
         # would paint this face's swap over one that is already down, which is
-        # the bleed being removed.
+        # the bleed being removed. Unswapped bystanders count as already painted
+        # (paint_pos -1): what is on the canvas there is the original footage,
+        # and it should stay.
         earlier = [f for j, f in fields.items()
-                   if j != i and paint_pos[j] < paint_pos[i]]
+                   if j != i and paint_pos.get(j, -1) < paint_pos[i]]
         if earlier:
             own *= np.clip(0.5 + (field - _best(earlier)) / band, 0.0, 1.0)
         # Against faces STILL TO COME: carry on one band past the boundary. They
@@ -307,7 +325,7 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
         # the other's hair. Withdrawing it uncovers the real plate there, which
         # is the right answer, not a gap to be filled.
         later = [f for j, f in fields.items()
-                 if j != i and paint_pos[j] > paint_pos[i]]
+                 if j != i and paint_pos.get(j, -1) > paint_pos[i]]
         if later:
             own *= np.clip(_BACKING + (field - _best(later)) / band, 0.0, 1.0)
         regions[i] = FaceRegion(x0, y0, x1, y1, own.astype(np.float32))

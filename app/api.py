@@ -396,6 +396,28 @@ def map_mask_engine(selected_mask_engine, clip_text):
     return None
 
 
+def map_mask_engines(primary, secondary, clip_text):
+    """Both occlusion engines, as the list `get_processing_plugins` takes.
+
+    Two rather than one because a single engine failing to recognise a
+    particular object is the usual reason a hand, a mug or a microphone ends up
+    with a face painted over it. The engines were trained on different data and
+    compose as a union of "not face", so a second one can only ever restore MORE
+    of the original — it cannot eat into the swap.
+
+    Returns a plain string when there is only one, so the common case is
+    byte-for-byte the old call.
+    """
+    engines = []
+    for name in (primary, secondary):
+        mapped = map_mask_engine(name, clip_text)
+        if mapped and mapped not in engines:
+            engines.append(mapped)
+    if not engines:
+        return None
+    return engines[0] if len(engines) == 1 else engines
+
+
 class ApiProgress:
     """gradio.Progress-compatible shim that records progress into _progress."""
     def __call__(self, value=0, desc="", total=None, unit=None):
@@ -2155,7 +2177,9 @@ def preview(payload: dict = Body(...)):
         # above (before the box-overlay detection) so both paths agree.
 
         swap_model = payload.get("swap_model", "inswapper")
-        mask_engine = map_mask_engine(payload.get("mask_engine", "None"), payload.get("clip_text", ""))
+        mask_engine = map_mask_engines(payload.get("mask_engine", "None"),
+                                       payload.get("mask_engine_2", "None"),
+                                       payload.get("clip_text", ""))
         face_index = state.selected_input_face_index
         if len(roop_globals.INPUT_FACESETS) <= face_index:
             face_index = 0
@@ -2291,6 +2315,8 @@ def _run_swap(payload):
         processing_method = payload.get("video_method", roop_globals.CFG.video_swapping_method)
         upsample = payload.get("upscale", roop_globals.CFG.subsample_upscale)
         selected_mask_engine = payload.get("mask_engine", roop_globals.CFG.mask_engine)
+        selected_mask_engine_2 = payload.get(
+            "mask_engine_2", getattr(roop_globals.CFG, "mask_engine_2", "None"))
         clip_text = payload.get("clip_text", roop_globals.CFG.mask_clip_text)
 
         roop_globals.selected_enhancer = enhancer
@@ -2338,7 +2364,7 @@ def _run_swap(payload):
         roop_globals.video_quality = roop_globals.CFG.video_quality
         roop_globals.max_memory = roop_globals.CFG.memory_limit if roop_globals.CFG.memory_limit > 0 else None
 
-        mask_engine = map_mask_engine(selected_mask_engine, clip_text)
+        mask_engine = map_mask_engines(selected_mask_engine, selected_mask_engine_2, clip_text)
 
         if roop_globals.face_swap_mode == "selected" and len(roop_globals.TARGET_FACES) < 1:
             _progress.update({"processing": False, "error": "No target face selected"})

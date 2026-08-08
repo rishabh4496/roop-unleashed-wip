@@ -366,7 +366,20 @@ def start() -> None:
 
 
 def get_processing_plugins(masking_engine, swap_model='inswapper'):
-    """Build the processor dict for ProcessOptions."""
+    """Build the processor dict for ProcessOptions.
+
+    `masking_engine` may be one engine name or several. Several compose, and they
+    compose the right way round for occlusion: each mask processor blends the
+    swapped crop back toward the untouched one wherever it says "not face", so a
+    pair of them restores the UNION of what either recognised. That matters
+    because the engines are not redundant — they were trained on different data
+    and miss different things, and "the mask failed when something came in front
+    of the face" is usually one engine not knowing about that particular
+    something rather than masking being off.
+
+    Order in the dict is order of execution (dicts preserve insertion), and the
+    mask stage runs after the swap and the enhancer because it is inserted last.
+    """
     processors = {"faceswap": {"swap_model": swap_model}}
 
     if roop.globals.selected_enhancer == 'GFPGAN':
@@ -393,8 +406,14 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         # when the sidecar isn't installed. See app/sidecar_keep/README.md.
         processors.update({"keep": {}})
 
-    if masking_engine is not None:
-        processors.update({masking_engine: {}})
+    # A bare string stays a bare string for every existing caller (the Gradio
+    # tab, virtualcam, the per-frame mask path) — none of them has to learn
+    # about this.
+    if isinstance(masking_engine, str):
+        masking_engine = [masking_engine]
+    for engine in (masking_engine or ()):
+        if engine and engine not in processors:
+            processors[engine] = {}
 
     return processors
 

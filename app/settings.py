@@ -194,6 +194,11 @@ class Settings:
         self.wait_after_extraction = self.default_get(data, 'wait_after_extraction', False)
         self.output_method = self.default_get(data, 'output_method', 'File')
         self.mask_engine = self.default_get(data, 'mask_engine', 'DFL XSeg')
+        # A second, independent occlusion engine. They compose as a union of
+        # "not face", so this can only restore more of the original footage —
+        # which is the answer to one engine not recognising the particular object
+        # that came in front of the face. 'None' = one engine, as before.
+        self.mask_engine_2 = self.default_get(data, 'mask_engine_2', 'None')
         self.mask_clip_text = self.default_get(data, 'mask_clip_text', 'cup,hands,hair,banana')
         self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
         self.track_identities = self.default_get(data, 'track_identities', False)
@@ -361,6 +366,7 @@ class Settings:
             'wait_after_extraction': self.wait_after_extraction,
             'output_method': self.output_method,
             'mask_engine': self.mask_engine,
+            'mask_engine_2': self.mask_engine_2,
             'mask_clip_text': self.mask_clip_text,
             'sam2_model_size': self.sam2_model_size,
             'track_identities': self.track_identities,

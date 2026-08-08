@@ -2462,7 +2462,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         num_faces_found += 1
                         pending.append((self.options.selected_index, face))
 
-            temp_frame = self._composite_faces(pending, frame, temp_frame)
+            # Every OTHER face in the frame is handed over too. They are not
+            # swapped and never painted, but they own their own pixels, and until
+            # now nothing said so: ownership was decided among the matched faces
+            # alone, so a bystander standing next to a swapped face was outside the
+            # competition entirely and took the neighbour's dilated matte, feather
+            # and invented forehead across their face.
+            #
+            # It is worse than a static artefact, because whether a face is in
+            # `pending` is not stable: a borderline identity match, a gender
+            # verdict, a source that ran out — any of them can drop a face out for
+            # a frame or two. The face then alternates between defending itself
+            # and being smeared, which is a flicker on BOTH faces, and it happens
+            # precisely when two people are close enough to interact.
+            _matched = {id(f) for _, f in pending}
+            _others = [f for f in faces if id(f) not in _matched]
+            temp_frame = self._composite_faces(pending, frame, temp_frame, _others)
 
             for face in faces:
                 del face
@@ -2503,12 +2518,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return num_faces_found, temp_frame
 
 
-    def _composite_faces(self, pending, plate, temp_frame):
+    def _composite_faces(self, pending, plate, temp_frame, bystanders=None):
         """Swap and paste every matched face of one frame.
 
-        `pending` is [(source_index, face), ...] in MATCH order. Two things are
-        decided here that the per-face swap cannot decide for itself, because
-        both are about the faces as a set:
+        `pending` is [(source_index, face), ...] in MATCH order. `bystanders` are
+        the faces detected in this frame that are NOT being swapped; they are
+        never painted, but they compete for pixels, because an unswapped face
+        still owns its own. Two things are decided here that the per-face swap
+        cannot decide for itself, because both are about the faces as a set:
 
         Ownership — when faces overlap, each one's matte is trimmed where a
         neighbour owns the pixels, so the join between two swapped faces is a
@@ -2548,7 +2565,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 return (-1e3, 0.0)
 
         order = sorted(range(len(pending)), key=lambda k: _depth(pending[k][1]))
-        regions = build_face_regions([f for _, f in pending], plate.shape, order)
+        # Painted faces first, so `order` and the region keys stay indices into
+        # `pending`; the bystanders sit past the end and are claimants only.
+        claimants = [f for _, f in pending] + list(bystanders or ())
+        regions = build_face_regions(claimants, plate.shape, order)
         for k in order:
             src_index, face = pending[k]
             temp_frame = self.process_face(

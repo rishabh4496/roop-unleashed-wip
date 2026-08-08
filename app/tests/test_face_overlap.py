@@ -171,6 +171,78 @@ class Partition(unittest.TestCase):
         self.assertLess(mid, 460)
 
 
+class UnswappedBystanders(unittest.TestCase):
+    """A face that is NOT being swapped still owns its own pixels.
+
+    Ownership used to be decided among the matched faces alone, so anybody else
+    in the frame was outside the competition entirely and simply took whatever
+    a neighbour's dilated matte, feather and invented forehead reached over them.
+
+    That is worse than a static artefact, because membership of the matched set
+    is not stable: a borderline identity match, a gender verdict, a source that
+    ran out — any of them drops a face for a frame or two. The face then
+    alternates between defending itself and being smeared, which reads as both
+    faces flickering, and it only happens when two people are close enough to
+    interact. Which is the report.
+    """
+
+    def setUp(self):
+        self.swapped = _Face(340, 200, 140)
+        self.bystander = _Face(460, 200, 140)
+        # Index 1 is present as a claimant but absent from `order`.
+        self.regions = build_regions([self.swapped, self.bystander], SHAPE,
+                                     order=[0])
+
+    def test_the_bystander_gets_no_region_of_its_own(self):
+        """Nothing is pasted for it, so there is nothing to trim."""
+        self.assertIsNotNone(self.regions)
+        self.assertEqual(sorted(self.regions), [0])
+
+    def test_the_swap_does_not_reach_into_the_bystanders_face(self):
+        self.assertEqual(_own_at(self.regions[0], 460, 200), 0.0)
+
+    def test_the_swapped_face_still_owns_its_own_middle(self):
+        self.assertEqual(_own_at(self.regions[0], 340, 200), 1.0)
+
+    def test_it_stops_at_the_boundary_and_does_not_back_past_it(self):
+        """A bystander counts as ALREADY painted — what is on the canvas there is
+        the original footage, and it stays. Treating it as still to come would
+        have the swap carry on a band past the midline to back a ramp that is
+        never going to be drawn over it."""
+        r = self.regions[0]
+        row = r.own[200 - r.y0]
+        mid = int(np.argmin(np.abs(row - 0.5))) + r.x0
+        self.assertAlmostEqual(mid, 400, delta=6)
+
+    def test_a_bystander_far_away_costs_nothing(self):
+        self.assertIsNone(build_regions([_Face(340, 200, 140), _Face(700, 200, 60)],
+                                        SHAPE, order=[0]))
+
+    def test_the_pipeline_hands_them_over(self):
+        """The wiring, not the geometry: `_composite_faces` has to be given the
+        unmatched faces, or none of the above is reachable from a real render."""
+        mgr = ProcessMgr.__new__(ProcessMgr)
+        painted = []
+        mgr.process_face = lambda i, f, frame, plate=None, region=None: (
+            painted.append(region) or frame)
+        plate = np.zeros(SHAPE, dtype=np.uint8)
+        mgr._composite_faces([(0, _Face(340, 200, 140))], plate, plate.copy(),
+                             [_Face(460, 200, 140)])
+        self.assertEqual(len(painted), 1)
+        self.assertIsNotNone(painted[0],
+                             'the swapped face got no region, so the bystander '
+                             'was not competing for pixels')
+
+    def test_the_call_site_passes_the_unmatched_faces(self):
+        """Source guard. The bug this fixes is a missing ARGUMENT, and everything
+        keeps working without it — silently, and only on frames with two people
+        in them."""
+        src = open(os.path.join(APP, 'roop', 'ProcessMgr.py'),
+                   encoding='utf-8').read()
+        call = src[src.index('temp_frame = self._composite_faces(pending'):]
+        self.assertIn('_others', call[:120])
+
+
 class OrderIndependence(unittest.TestCase):
     """Match order changes frame to frame — in identity-lock mode the faces are
     re-sorted by identity distance every frame. If the boundary moved with it,

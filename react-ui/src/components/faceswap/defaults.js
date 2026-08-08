@@ -44,6 +44,9 @@ export const FACESWAP_DEFAULTS = {
 
   // Masking parameters
   mask_engine: 'DFL XSeg',
+  // A second occlusion engine, composed as a union with the first. 'None' is
+  // the previous behaviour; the pairing to reach for is XSeg + Face Occluder.
+  mask_engine_2: 'None',
   mask_clip_text: 'cup,hands,hair,banana',
   sam2_model_size: 'tiny',
   show_mask_offsets: false,

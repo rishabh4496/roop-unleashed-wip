@@ -371,7 +371,8 @@ export default function FaceSwap({
       ...sp,
       enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
       output_method: sp.output_method, video_method: sp.video_swapping_method,
-      upscale: sp.subsample_upscale, mask_engine: sp.mask_engine, clip_text: sp.mask_clip_text,
+      upscale: sp.subsample_upscale, mask_engine: sp.mask_engine,
+      mask_engine_2: sp.mask_engine_2, clip_text: sp.mask_clip_text,
       sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
       autorotate: sp.autorotate_faces,
       face_distance: num(sp.max_face_distance, 0.75), blend_ratio: num(sp.blend_ratio, 0.8),
@@ -577,7 +578,8 @@ export default function FaceSwap({
       enhancer: activeParams.selected_enhancer, codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
       detection: activeParams.face_detection_mode,
       face_distance: num(activeParams.max_face_distance, 0.75), blend_ratio: num(activeParams.blend_ratio, 0.8),
-      mask_engine: activeParams.mask_engine, clip_text: activeParams.mask_clip_text,
+      mask_engine: activeParams.mask_engine, mask_engine_2: activeParams.mask_engine_2,
+      clip_text: activeParams.mask_clip_text,
       no_face_action: activeParams.no_face_action, vr_mode: activeParams.vr_mode, autorotate: activeParams.autorotate_faces,
       show_mask_offsets: activeParams.show_mask_offsets, restore_original_mouth: activeParams.restore_original_mouth,
       num_swap_steps: num(activeParams.num_swap_steps, 1), upscale: activeParams.subsample_upscale,
@@ -2021,6 +2023,7 @@ export default function FaceSwap({
 
         <Section title="Masking parameters" collapsible defaultOpen={false}>
           <Select label="Masking engine" info="Choose this one on quality, not speed — the models are all cheap and within a few ms of each other. Measured on an RTX 4070, TensorRT FP16, isolated: Face Parser 2.4ms, DFL XSeg 2.9ms, XSeg-3 4.7ms, Face Occluder 5.0ms, MobileSAM 5.8ms+decoder, FastSAM 5.8ms. The whole spread is ~3ms against a masking stage that costs ~42ms per face, because almost all of that stage is the CPU work around the model — the landmark hull, the mouth mask, the blurs and the non-frontal unwarp — not the model itself. So switching engines to go faster will not work; switch when one of them handles YOUR occlusions better. SAM2 (tracked) is not comparable here: it runs a whole-clip pre-pass instead of per-crop inference." value={p.mask_engine} onChange={(v) => set('mask_engine', v)} options={meta.mask_engines} />
+          <Select label="Second masking engine (occlusion)" info="A second, independent occlusion engine, run after the first. They compose as a union of &quot;not face&quot;, so this can only ever restore MORE of the original footage — it cannot eat into the swap, and turning it off is exactly the previous behaviour. Why you would: when something comes in front of a face and the swap gets painted over it anyway, the usual reason is not that masking is off, it is that the one engine you picked was not trained on that particular object. The engines miss different things — XSeg and XSeg-3 come from DeepFaceLab&apos;s hand/object data, Face Occluder from a different set again, Face Parser segments facial regions rather than occluders, and the SAM variants segment anything at all. Running two costs one more model call per face, which is 2–6ms against a masking stage of ~42ms. Start with DFL XSeg + Face Occluder. &quot;None&quot; = one engine, as before." value={p.mask_engine_2 || 'None'} onChange={(v) => set('mask_engine_2', v)} options={meta.mask_engines} />
           {String(p.mask_engine || '').startsWith('Face Parser') && (
             <ParserRegions
               regions={p.parser_regions}

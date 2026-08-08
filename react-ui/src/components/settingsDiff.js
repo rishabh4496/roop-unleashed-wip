@@ -13,6 +13,7 @@ export const LABELS = {
   selected_enhancer: 'Enhancer',
   face_detection_mode: 'Detection',
   mask_engine: 'Mask',
+  mask_engine_2: 'Mask 2',
   max_threads: 'Threads',
   subsample_upscale: 'Pixel boost',
   video_swapping_method: 'Method',
