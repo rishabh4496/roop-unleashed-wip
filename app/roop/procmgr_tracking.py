@@ -23,6 +23,7 @@ from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MA
                                   _TRACK_STITCH, _TRACK_STITCH_GAP,
                                   _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
                                   _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
+                                  _TRACK_INHERIT_MAX, _TRACK_INHERIT_GAIN,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -533,7 +534,8 @@ class TrackingMixin:
 
         # Assign each track to a source (person rank), once, by mean embedding.
         track_map = {t['id']: t for t in tracks}
-        track_src, assign_max, refused_margin = self._assign_track_sources(tracks)
+        track_src, assign_max, refused_margin, inherited = (
+            self._assign_track_sources(tracks, per_frame))
 
         self._track_assignments = {
             f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
@@ -554,7 +556,10 @@ class TrackingMixin:
         # bad stretch, and it not having a source is the bug. One at 1.0+ is
         # somebody else, and it not having a source is correct. Both are one
         # column of one line, and there are only ever a handful of tracks.
-        span = max(1, len(per_frame))
+        # The frame RANGE the scan covered, not the number of scanned entries:
+        # with a stride they differ by the stride, and a track's length is in
+        # frames — which printed coverage as "299.2% of clip".
+        span = max(1, (max(per_frame) - min(per_frame) + 1) if per_frame else 1)
         rows = []
         for t in sorted(tracks, key=lambda x: int(x.get('first_seen', 0))):
             dd = {}
@@ -573,9 +578,15 @@ class TrackingMixin:
                   f"same person, 1.0+ is somebody else):", flush=True)
             for n_frames, t, near, dd, src in sorted(rows, key=lambda r: -r[0]):
                 ds = ' '.join(f'p{g}={d:.2f}' for g, d in sorted(dd.items()))
-                verdict = (f'-> source {src}' if src is not None
-                           else ('-> NO SOURCE (over the gate)' if near > assign_max
-                                 else '-> NO SOURCE (refused by margin/concurrency)'))
+                if src is not None and t['id'] in inherited:
+                    via, vd = inherited[t['id']]
+                    verdict = f'-> source {src} (via track {via}, d={vd:.2f})'
+                elif src is not None:
+                    verdict = f'-> source {src}'
+                elif near > assign_max:
+                    verdict = '-> NO SOURCE (over the gate)'
+                else:
+                    verdict = '-> NO SOURCE (refused by margin/concurrency)'
                 print(f"    track {t['id']:>3}  frames {n_frames:>5} ({100.0 * n_frames / span:4.1f}% of clip)"
                       f"  {ds:<24} {verdict}", flush=True)
         if _DEBUG_MATCH:
@@ -724,10 +735,20 @@ class TrackingMixin:
 
         return [t for t in tracks if int(t.get('id')) not in alias], alias
 
-    def _assign_track_sources(self, tracks):
+    def _assign_track_sources(self, tracks, per_frame=None):
         """Bind each tracklet to at most one source (person rank) by mean embedding.
 
-        Returns (track_src, assign_max, refused_by_margin).
+        Returns (track_src, assign_max, refused_by_margin, inherited), where
+        `inherited` is ``{track_id: (via_track_id, distance)}`` for the tracks
+        bound by the second pass rather than against the captured stills.
+
+        `per_frame` is the scan's ``{frame: [(centroid, track_id)]}``. When it is
+        given, "were these two on screen at the same time?" is answered exactly,
+        from the frames each track was actually observed on. Without it the
+        concurrency gate falls back to comparing [first_seen, last_seen] SPANS,
+        which is much coarser and wrong in the case that matters: a person whose
+        track keeps breaking produces fragments that interleave with the main
+        track, so their spans overlap heavily while they never share a frame.
 
         Three gates, in the order they run:
 
@@ -764,6 +785,10 @@ class TrackingMixin:
 
         candidates = []
         track_map = {t['id']: t for t in tracks}
+        # Every track's distance to every person's captured angles, kept whether
+        # or not it passed the gate — the second pass needs the ones that failed,
+        # to ask whether a track explains them better than the photo does.
+        photo_d = {}
         for t in tracks:
             t_emb = t.get('emb_mean')
             if t_emb is None:
@@ -774,27 +799,38 @@ class TrackingMixin:
                 if not embs:
                     continue
                 d = min(compute_cosine_distance(e, t_emb) for e in embs)
+                photo_d[(t['id'], g)] = d
                 if d <= assign_max:
                     candidates.append((d, g, t['id']))
 
         candidates.sort(key=lambda c: c[0])
 
-        # Frames already claimed by this person. Two representations because the
-        # per-frame observations only exist when the caller asked for them:
-        # `collect_obs=True` is the temporal pre-pass, but the STANDALONE identity
-        # -tracking pass (the `_precompute_tracks(...)` call with defaults) leaves
-        # `obs` empty. Keying the guard on obs alone therefore made it a no-op in
-        # exactly that mode — every track's frame set was empty, overlap was
-        # always 0, and two concurrent tracks both received the same person's
-        # source: the inter-swapping this guard exists to prevent. Fall back to
-        # the track's [first_seen, last_seen] span there, which needs no
-        # per-frame storage and answers the same question ("were these two on
-        # screen at the same time?").
+        # Which frames each track was actually SEEN on. `per_frame` is the scan's
+        # own record and is always populated, so this is exact — including in the
+        # standalone identity pass, where `obs` is empty because the caller did
+        # not ask for the Face objects to be kept.
+        #
+        # That matters more than it looks. The old fallback for that mode
+        # compared [first_seen, last_seen] SPANS, and spans are the wrong
+        # question for the case this gate decides: a person whose track keeps
+        # breaking produces fragments that INTERLEAVE with the main track — they
+        # never share a frame, but their spans overlap almost completely. Judged
+        # on spans, every one of those fragments is "a second body" and is
+        # refused the source, which is the person flickering in and out.
+        frames_of = {}
+        if per_frame:
+            for f, entries in per_frame.items():
+                for _c, tid in entries:
+                    frames_of.setdefault(tid, set()).add(f)
+
         person_assigned_frames = {g: set() for g in persons}
         person_assigned_spans = {g: [] for g in persons}
         # Distance of the closest track this person accepted. candidates is sorted
         # ascending, so the first acceptance is that person's best evidence.
         person_anchor = {}
+        # The first (closest) track each person accepted — the one the second
+        # pass below compares leftovers against.
+        person_owner = {}
         track_src = {t['id']: None for t in tracks}
         refused_margin = 0
 
@@ -811,7 +847,6 @@ class TrackingMixin:
                 refused_margin += 1
                 continue
             t = track_map[tid]
-            obs = t.get('obs') or {}
             # One person can't be in two places at once, so a track that runs
             # CONCURRENTLY with one already given to this person is someone else.
             # But a handoff — the same person's track breaking and restarting over
@@ -819,8 +854,8 @@ class TrackingMixin:
             # rejecting those fragments leaves them with no source at all: every
             # one of their frames falls to per-frame matching and the person
             # flickers in and out. Require a real overlap, not an incidental one.
-            if obs:
-                t_frames = set(obs.keys())
+            t_frames = self._track_frames(t, frames_of)
+            if t_frames is not None:
                 t_len = max(1, len(t_frames))
                 overlap = len(person_assigned_frames[g].intersection(t_frames))
             else:
@@ -833,12 +868,121 @@ class TrackingMixin:
                 continue
             track_src[tid] = self.options.selected_index if single_person else rank[g]
             person_anchor.setdefault(g, d)
-            if obs:
+            person_owner.setdefault(g, tid)
+            if t_frames is not None:
                 person_assigned_frames[g].update(t_frames)
-            else:
-                person_assigned_spans[g].append((lo, hi))
+            # Spans recorded either way. The frame sets are the better evidence
+            # when they exist, but the second pass has to be able to fall back to
+            # spans when they do not — and refusing for want of evidence is only
+            # safe if the evidence is actually there to fall back ON.
+            person_assigned_spans[g].append(
+                (int(t.get('first_seen', 0)), int(t.get('last_seen', 0))))
 
-        return track_src, assign_max, refused_margin
+        # ── Second pass: judge the leftovers against the TRACK, not the photo ──
+        #
+        # Everything above compares a track's mean to the captured stills, and
+        # that comparison has a floor nothing here can lower: the same person's
+        # turned or badly-lit stretch sits 0.7-1.0 from a frontal capture, which
+        # is past this gate. Measured on the reported clip — one target, one
+        # bystander, 717 frames:
+        #
+        #   track  0   715 frames   0.27  -> source 0
+        #   track  2   133 frames   0.72  -> refused (over the 0.60 gate)
+        #   track  1   715 frames   1.05  -> refused  (the other person)
+        #   tracks 3,6,8,9,10       0.93-1.07 -> refused
+        #
+        # Track 2 is 133 frames — 19% of the clip — sitting in the band where a
+        # person's own bad stretch lives, and it was being thrown away while the
+        # bystander sat 0.33 further out. That is not a threshold that can be
+        # tuned: 0.72 is genuinely ambiguous against a photograph.
+        #
+        # It is not ambiguous against the TRACK. Comparing a fragment to a track
+        # that ran through the same clip — same camera, same lighting, same
+        # grade, and a mean averaged over many poses rather than a few captured
+        # angles — is a far better posed question than comparing it to a still,
+        # and it is the comparison nobody was making.
+        #
+        # Still gated, still one-to-one, and still refused on concurrency: a
+        # fragment that shares frames with the track it would inherit from is a
+        # second body, and that check is exact now (see frames_of).
+        inherited = {}
+        if _TRACK_INHERIT_MAX > 0:
+            for t in tracks:
+                tid = t['id']
+                if track_src.get(tid) is not None or t.get('emb_mean') is None:
+                    continue
+                t_frames = self._track_frames(t, frames_of)
+                best = None
+                for g, owner in person_owner.items():
+                    own_t = track_map.get(owner)
+                    if own_t is None or own_t.get('emb_mean') is None:
+                        continue
+                    d = compute_cosine_distance(own_t['emb_mean'], t['emb_mean'])
+                    if d > _TRACK_INHERIT_MAX:
+                        continue
+                    # ...and the track has to explain this fragment BETTER than
+                    # the captured stills do. Proximity alone cannot separate a
+                    # stranger at 0.55 from the target on a bad stretch — that is
+                    # the same ambiguity _TRACK_ASSIGN_MARGIN refuses, and
+                    # without this the guard test for that reported bug fails.
+                    # See _TRACK_INHERIT_GAIN.
+                    ref = photo_d.get((tid, g))
+                    if ref is None or d > ref - _TRACK_INHERIT_GAIN:
+                        continue
+                    # ...and it has to be a fragment OF that track, which means
+                    # lying inside its span while never sharing a frame with it.
+                    #
+                    # This is the distinction _TRACK_ASSIGN_MARGIN was built on,
+                    # and it is what tells the two shapes apart. The target's own
+                    # broken-off stretch interleaves with its main track: same
+                    # stretch of clip, alternating frames. A bystander's fragment
+                    # sits in a run where the target is OFF SCREEN — disjoint,
+                    # after or before, never inside. Without this the second pass
+                    # gives the bystander the swap all over again.
+                    if not (int(own_t.get('first_seen', 0)) <= int(t.get('first_seen', 0))
+                            and int(t.get('last_seen', 0)) <= int(own_t.get('last_seen', 0))):
+                        continue
+                    if t_frames is not None:
+                        t_len = max(1, len(t_frames))
+                        overlap = len(person_assigned_frames[g].intersection(t_frames))
+                    else:
+                        # No per-frame record: fall back to spans, exactly as the
+                        # first pass does. Coarse, and coarse in the safe
+                        # direction — two tracks covering the same stretch are
+                        # refused rather than guessed at.
+                        lo = int(t.get('first_seen', 0))
+                        hi = int(t.get('last_seen', lo))
+                        t_len = max(1, hi - lo + 1)
+                        overlap = sum(max(0, min(hi, b) - max(lo, a) + 1)
+                                      for a, b in person_assigned_spans[g])
+                    if overlap > _TRACK_OVERLAP_FRAC * t_len:
+                        continue
+                    if best is None or d < best[0]:
+                        best = (d, g, owner)
+                if best is None:
+                    continue
+                d, g, owner = best
+                track_src[tid] = self.options.selected_index if single_person else rank[g]
+                inherited[tid] = (owner, d)
+                if t_frames is not None:
+                    person_assigned_frames[g].update(t_frames)
+
+        return track_src, assign_max, refused_margin, inherited
+
+    @staticmethod
+    def _track_frames(t, frames_of):
+        """The frames a track was observed on, or None when nothing recorded them.
+
+        `frames_of` comes from the scan and is always populated; `obs` only when
+        the caller asked for the Face objects. Preferring the scan's record is
+        what makes the concurrency gate exact in the standalone identity pass,
+        where obs is empty and the fallback was a span comparison.
+        """
+        seen = frames_of.get(t['id']) if frames_of else None
+        if seen:
+            return seen
+        obs = t.get('obs') or {}
+        return set(obs.keys()) if obs else None
 
     def _precompute_temporal(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Temporal detection pre-pass (anti-flicker).

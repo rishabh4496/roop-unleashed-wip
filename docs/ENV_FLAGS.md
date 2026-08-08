@@ -261,6 +261,8 @@ mostly alone" behaviour.
 | `ROOP_TRACK_STITCH_SIZE` | `1.8` | How much its apparent size may change, as a ratio either way. |
 | `ROOP_TRACK_STITCH_EMB` | `1.05` | Appearance **veto** — above this the two are clearly different people. Deliberately looser than every other identity gate; see below. |
 | `ROOP_TRACK_STITCH_AMBIG` | `0.6` | How much better the best candidate must be than the runner-up before a link is taken at all. |
+| `ROOP_TRACK_INHERIT_MAX` | `0.6` | Second pass: a fragment the first pass refused may inherit a source from a track that matched, if it is this close **to that track**. `0` disables. |
+| `ROOP_TRACK_INHERIT_GAIN` | `0.15` | ...and only if the track explains it this much better than the captured stills do. |
 
 Reported as *"the swap flickers enormously when the face touches an object, at
 lateral poses, whatever the mask engine"*. The audit from that clip:
@@ -295,6 +297,45 @@ outright — a fragment with two comparable candidates is left alone rather than
 guessed at.
 
 Look for `(stitched down from N)` in the `[Track]` line to see it working.
+
+### When the fragment overlaps the track instead of following it
+
+Stitching only joins tracks separated by a **gap**. A person whose track keeps
+breaking mid-shot produces fragments that *interleave* with the main track
+instead — same stretch of clip, alternating frames — and those cannot be chained.
+They still have to be judged, and judging them is where the second pass comes in.
+From a real clip (one target, one bystander, 717 frames):
+
+```
+track  0   715 frames   0.27  -> source 0
+track  2   133 frames   0.72  -> NO SOURCE (over the gate)
+track  1   715 frames   1.05  -> NO SOURCE      (the other person)
+tracks 3,6,8,9,10       0.93-1.07 -> NO SOURCE
+```
+
+Track 2 is 19 % of the clip, sitting in the band where a person's own turned or
+badly-lit stretch lives, and it was thrown away while the bystander sat 0.33
+further out. **No threshold fixes that** — 0.72 against a *photograph* is
+genuinely ambiguous, and loosening the gate to admit it admits the 0.93 too.
+
+It is not ambiguous against the **track**. A track that ran through the same clip
+shares the camera, the lighting and the grade, and its mean averages many poses
+rather than a handful of captured angles. So a refused fragment is compared to
+the track that matched, and may inherit its source — under three conditions, each
+of which exists because removing it reintroduces a bug that has already been
+reported:
+
+* **close to that track** (`ROOP_TRACK_INHERIT_MAX`);
+* **the track explains it better than the photo does** (`ROOP_TRACK_INHERIT_GAIN`)
+  — a stranger is equally far from both, because the matched track *is* the person
+  in the photo, so proximity alone cannot separate it from the target on a bad
+  stretch;
+* **contained inside the track's span while never sharing a frame with it** — a
+  broken-off stretch interleaves, a bystander appears in a run where the target is
+  off screen. This is the distinction `ROOP_TRACK_ASSIGN_MARGIN` was built on, and
+  without it the second pass hands the bystander the swap all over again.
+
+Shown as `-> source 0 (via track 0, d=0.35)` in the per-track block.
 
 ## Interacting faces (two or more swaps that touch)
 

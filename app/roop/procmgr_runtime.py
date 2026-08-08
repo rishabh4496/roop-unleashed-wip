@@ -289,6 +289,51 @@ _TRACK_STITCH_EMB = float(os.environ.get('ROOP_TRACK_STITCH_EMB', '1.05'))
 _TRACK_STITCH_AMBIG = float(os.environ.get('ROOP_TRACK_STITCH_AMBIG', '0.6'))
 
 
+# ── Judging a leftover fragment against the TRACK instead of the photo ───────
+# Every gate above compares a track's mean to the CAPTURED STILLS, and that
+# comparison has a floor nothing can lower: the same person's turned or
+# badly-lit stretch sits 0.7-1.0 from a frontal capture. Measured on the clip
+# this came from — one target, one bystander, 717 frames:
+#
+#   track  0   715 frames   0.27  -> source 0
+#   track  2   133 frames   0.72  -> refused, over the 0.60 gate
+#   track  1   715 frames   1.05  -> refused (the other person)
+#   tracks 3,6,8,9,10       0.93-1.07 -> refused
+#
+# Track 2 is 19% of the clip sitting in the band where a person's own bad
+# stretch lives, thrown away while the bystander sat 0.33 further out. No
+# threshold fixes that: 0.72 against a PHOTOGRAPH is genuinely ambiguous.
+#
+# It is not ambiguous against the TRACK. Comparing a fragment to one that ran
+# through the same clip — same camera, same lighting, same grade, and a mean
+# averaged over many poses rather than a handful of captured angles — is a far
+# better posed question, and it is the comparison nobody was making.
+#
+# Applied only to tracks the first pass REFUSED, only against a track that pass
+# accepted, and still subject to the exact concurrency check. 0 disables it.
+_TRACK_INHERIT_MAX = float(os.environ.get('ROOP_TRACK_INHERIT_MAX', '0.6'))
+
+# ...and the gate that makes it safe, which an absolute bar cannot be.
+#
+# A stranger sitting 0.55 from the captured person is indistinguishable from the
+# target on a bad stretch BY DISTANCE ALONE — that ambiguity is exactly what
+# _TRACK_ASSIGN_MARGIN exists to refuse, and a second pass with a looser absolute
+# bar would hand the stranger the swap all over again (it did: the guard test for
+# that reported bug failed the moment this was added).
+#
+# What separates them is not how close the fragment is to the track, but whether
+# the TRACK EXPLAINS IT BETTER THAN THE PHOTO DOES. The target's turned stretch
+# is far from a frontal capture and near its own frontal track — a large gain.
+# A stranger is equally far from both, because the assigned track IS the person
+# in the photo — no gain, whatever the absolute numbers happen to be.
+#
+# So inheritance requires the improvement, not just the proximity. On the
+# reported clip that is 0.72 against the stills versus a track distance that has
+# to beat 0.57 to count; on the bystander fixture it is 0.55 against 0.55, which
+# gains nothing and is refused.
+_TRACK_INHERIT_GAIN = float(os.environ.get('ROOP_TRACK_INHERIT_GAIN', '0.15'))
+
+
 _prof_lock = Lock()
 
 

@@ -265,6 +265,116 @@ class ItRefusesWhenItShould(unittest.TestCase):
         self.assertLessEqual(n, 1)
 
 
+class InheritingFromTheTrackInsteadOfThePhoto(unittest.TestCase):
+    """Second pass: judge a refused fragment against the track that DID match.
+
+    Built from the shape of the reported clip — one target, one bystander, 717
+    frames, and this per-track block:
+
+        track  0   715 frames   0.27  -> source 0
+        track  2   133 frames   0.72  -> refused, over the 0.60 gate
+        track  1   715 frames   1.05  -> refused (the other person)
+        tracks 3,6,8,9,10       0.93-1.07 -> refused
+
+    Track 2 is 19% of the clip sitting in the band where a person's own turned or
+    badly-lit stretch lives, thrown away while the bystander sat 0.33 further
+    out. No threshold fixes that — 0.72 against a PHOTOGRAPH is genuinely
+    ambiguous. Against a track from the same clip it is not.
+    """
+
+    @staticmethod
+    def _assign(tracks, per_frame=None):
+        mgr = _Mgr([TARGET])
+        return mgr._assign_track_sources(tracks, per_frame)
+
+    @staticmethod
+    def _t(tid, emb_d, first, last):
+        return {'id': tid, 'emb_mean': _at_distance(TARGET, emb_d),
+                'first_seen': first, 'last_seen': last}
+
+    def _clip(self):
+        """Owner across the whole clip, a fragment interleaved inside it, and a
+        bystander also across the whole clip. Frames alternate between owner and
+        fragment over the stretch the fragment covers, which is what "the track
+        broke and came back" looks like."""
+        owner = self._t(0, 0.27, 0, 716)
+        frag = self._t(2, 0.72, 200, 400)
+        other = self._t(1, 1.05, 0, 716)
+        per_frame = {}
+        for f in range(0, 717):
+            ents = [(np.zeros(2, np.float32), 1)]
+            if 200 <= f <= 400 and f % 2:
+                ents.append((np.zeros(2, np.float32), 2))
+            else:
+                ents.append((np.zeros(2, np.float32), 0))
+            per_frame[f] = ents
+        return [owner, frag, other], per_frame
+
+    def test_the_fragment_inherits_the_owners_source(self):
+        tracks, per_frame = self._clip()
+        src, _max, _refused, inherited = self._assign(tracks, per_frame)
+        self.assertEqual(src[0], 0, 'the owner must still match directly')
+        self.assertEqual(src[2], 0, 'the fragment is still unswapped')
+        self.assertIn(2, inherited)
+        self.assertEqual(inherited[2][0], 0)
+
+    def test_the_other_person_still_gets_nothing(self):
+        tracks, per_frame = self._clip()
+        src, _max, _refused, _inh = self._assign(tracks, per_frame)
+        self.assertIsNone(src[1])
+
+    def test_a_fragment_sharing_frames_with_the_owner_is_a_second_body(self):
+        """Interleaved is a broken track; concurrent is two people. The
+        difference is exact now — it comes from the frames each was seen on, not
+        from comparing spans, which for an interleaved fragment overlap almost
+        completely while it never shares a single frame."""
+        tracks, per_frame = self._clip()
+        for f in range(200, 401):
+            per_frame[f] = [(np.zeros(2, np.float32), 0),
+                            (np.zeros(2, np.float32), 1),
+                            (np.zeros(2, np.float32), 2)]
+        src, _max, _refused, _inh = self._assign(tracks, per_frame)
+        self.assertIsNone(src[2])
+
+    def test_a_fragment_outside_the_owners_span_is_not_inherited(self):
+        """The bystander shape from the earlier reported bug: a fragment lying
+        in a run where the target is off screen. Disjoint, not interleaved — and
+        appearance cannot tell it from the target on a bad stretch, which is why
+        the containment rule and not a distance is what refuses it."""
+        owner = self._t(0, 0.27, 0, 199)
+        away = self._t(2, 0.72, 200, 400)
+        per_frame = {f: [(np.zeros(2, np.float32), 0 if f < 200 else 2)]
+                     for f in range(401)}
+        src, _max, _refused, inherited = self._assign([owner, away], per_frame)
+        self.assertIsNone(src[2])
+        self.assertEqual(inherited, {})
+
+    def test_a_fragment_no_closer_to_the_track_than_to_the_photo_is_refused(self):
+        """The gain requirement. A stranger is equally far from the photo and
+        from the track — because the track IS the person in the photo — so
+        proximity alone cannot separate it from the target on a bad stretch."""
+        owner = {'id': 0, 'emb_mean': _at_distance(TARGET, 0.27),
+                 'first_seen': 0, 'last_seen': 716}
+        # Perturbed on a different axis, so it is ~0.7 from BOTH the photo and
+        # the owner rather than lying between them.
+        stranger = {'id': 2, 'emb_mean': _at_distance(TARGET, 0.7, axis=3),
+                    'first_seen': 200, 'last_seen': 400}
+        per_frame = {}
+        for f in range(717):
+            per_frame[f] = [(np.zeros(2, np.float32),
+                             2 if (200 <= f <= 400 and f % 2) else 0)]
+        src, _max, _refused, inherited = self._assign([owner, stranger], per_frame)
+        self.assertIsNone(src[2])
+        self.assertEqual(inherited, {})
+
+    def test_the_kill_switch(self):
+        tracks, per_frame = self._clip()
+        with mock.patch.object(_pt, '_TRACK_INHERIT_MAX', 0.0):
+            src, _max, _refused, inherited = self._assign(tracks, per_frame)
+        self.assertIsNone(src[2])
+        self.assertEqual(inherited, {})
+
+
 class TheMechanicsHold(unittest.TestCase):
     def test_stitching_runs_before_the_identity_gates(self):
         """Order is the point: a chain has to be judged as a chain. Assigning
@@ -274,7 +384,7 @@ class TheMechanicsHold(unittest.TestCase):
                    encoding='utf-8').read()
         stitch = src.index('tracks, stitch_alias = self._stitch_tracks(tracks)')
         truemean = src.index("t['emb_mean'] = (np.asarray(t['emb_sum']")
-        assign = src.index('self._assign_track_sources(tracks)')
+        assign = src.index('self._assign_track_sources(tracks, per_frame)')
         self.assertLess(stitch, truemean)
         self.assertLess(truemean, assign)
 
@@ -332,7 +442,7 @@ class TheMechanicsHold(unittest.TestCase):
                    encoding='utf-8').read()
         # Nothing may gate it between the assignment that produces the rows and
         # the print that shows them.
-        between = src[src.index('_assign_track_sources(tracks)'):
+        between = src[src.index('_assign_track_sources(tracks, per_frame)'):
                       src.index('per-track assignment')]
         self.assertNotIn('if _DEBUG_MATCH', between,
                          'the per-track summary is gated behind ROOP_DEBUG_MATCH')

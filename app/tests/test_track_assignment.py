@@ -88,7 +88,7 @@ class BystanderInheritsSourceTest(unittest.TestCase):
 
     def _assign(self, tracks, threshold=0.75):
         mgr = _Mgr([TARGET], [0], threshold)
-        track_src, _assign_max, refused = mgr._assign_track_sources(tracks)
+        track_src, _assign_max, refused, _inh = mgr._assign_track_sources(tracks)
         return track_src, refused
 
     def test_disjoint_bystander_track_is_refused(self):
@@ -194,7 +194,7 @@ class MultiPersonTest(unittest.TestCase):
             _track(1, _at_distance(TARGET, 0.30), 0, 199),
             _track(2, _at_distance(other, 0.30), 0, 199),
         ]
-        track_src, _assign_max, refused = mgr._assign_track_sources(tracks)
+        track_src, _assign_max, refused, _inh = mgr._assign_track_sources(tracks)
         self.assertEqual(track_src[1], 0)
         self.assertEqual(track_src[2], 1)
         self.assertEqual(refused, 0)
@@ -205,7 +205,7 @@ class MultiPersonTest(unittest.TestCase):
         profile = _at_distance(TARGET, 0.45)
         mgr = _Mgr([TARGET, profile], [0, 0])
         tracks = [_track(1, _at_distance(profile, 0.05), 0, 400)]
-        track_src, _assign_max, _refused = mgr._assign_track_sources(tracks)
+        track_src, _assign_max, _refused, _inh = mgr._assign_track_sources(tracks)
         self.assertEqual(track_src[1], 0)
 
 
