@@ -28,7 +28,7 @@ from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -1088,6 +1088,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # previous clip's, which is precisely the confusion the report exists to
         # remove. This block already exists to clear per-clip state.
         _audit_reset()
+        # ...and the stage timings, for exactly the same reason and in the same
+        # place. These two blocks print one after the other and invite being read
+        # together, so one of them accumulating across clips while the other does
+        # not is worse than either being wrong alone.
+        _prof_reset()
         # Temporal detection (anti-flicker): its pre-pass gap-fills detection
         # misses AND applies the kps/lm106 smoothing itself, so the per-frame
         # kps stabilizer and the kps-only 2-pass become redundant — disable

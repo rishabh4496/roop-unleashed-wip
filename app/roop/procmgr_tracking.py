@@ -539,16 +539,49 @@ class TrackingMixin:
             f: [(c, track_src.get(tid), track_map[tid]['emb_mean']) for (c, tid) in lst] for f, lst in per_frame.items()
         }
         persons = self._person_angle_indices()
+
+        # One line per track, ALWAYS — not behind ROOP_DEBUG_MATCH.
+        #
+        # "N tracks, 1 matched to a source" is the summary everyone reads, and on
+        # its own it is unreadable: a clip with two people in it and one of them
+        # captured SHOULD leave most tracks unmatched, and a clip where the target
+        # fragmented and lost its source looks identical. The difference is
+        # entirely in the distances, and they were only visible under a verbose
+        # debug flag that also prints a line per face per frame — i.e. you had to
+        # already suspect this to see it.
+        #
+        # A track sitting at 0.4-0.6 from a captured person is that person on a
+        # bad stretch, and it not having a source is the bug. One at 1.0+ is
+        # somebody else, and it not having a source is correct. Both are one
+        # column of one line, and there are only ever a handful of tracks.
+        span = max(1, len(per_frame))
+        rows = []
+        for t in sorted(tracks, key=lambda x: int(x.get('first_seen', 0))):
+            dd = {}
+            for g, tis in persons.items():
+                embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
+                embs = [e for e in embs if e is not None]
+                if embs and t.get('emb_mean') is not None:
+                    dd[g] = min(compute_cosine_distance(e, t['emb_mean']) for e in embs)
+            near = min(dd.values()) if dd else float('nan')
+            n_frames = len(t.get('obs', {})) or max(
+                1, int(t.get('last_seen', 0)) - int(t.get('first_seen', 0)) + 1)
+            src = track_src.get(t['id'])
+            rows.append((n_frames, t, near, dd, src))
+        if rows:
+            print(f"[Track] per-track assignment (gate {assign_max:.2f}; below it is the "
+                  f"same person, 1.0+ is somebody else):", flush=True)
+            for n_frames, t, near, dd, src in sorted(rows, key=lambda r: -r[0]):
+                ds = ' '.join(f'p{g}={d:.2f}' for g, d in sorted(dd.items()))
+                verdict = (f'-> source {src}' if src is not None
+                           else ('-> NO SOURCE (over the gate)' if near > assign_max
+                                 else '-> NO SOURCE (refused by margin/concurrency)'))
+                print(f"    track {t['id']:>3}  frames {n_frames:>5} ({100.0 * n_frames / span:4.1f}% of clip)"
+                      f"  {ds:<24} {verdict}", flush=True)
         if _DEBUG_MATCH:
             for t in tracks:
-                dd = {}
-                for g, tis in persons.items():
-                    embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
-                    embs = [e for e in embs if e is not None]
-                    if embs and t.get('emb_mean') is not None:
-                        dd[g] = round(min(compute_cosine_distance(e, t['emb_mean']) for e in embs), 3)
                 bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
-                          f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
+                          f"obs={t.get('emb_n')} assign_max={assign_max} "
                           f"-> src={track_src.get(t['id'])}")
         matched = sum(1 for v in track_src.values() if v is not None)
         print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames'

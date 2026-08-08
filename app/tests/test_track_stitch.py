@@ -320,6 +320,40 @@ class TheMechanicsHold(unittest.TestCase):
         self.assertLess(interp_hit - swap_hit, 1200)
         self.assertIn("of those SWAPPED, gap-filled", rt)
 
+    def test_the_per_track_distances_are_printed_unconditionally(self):
+        """"N tracks, 1 matched to a source" is unreadable on its own: a clip
+        with two people and one captured SHOULD leave most tracks unmatched, and
+        a clip where the target fragmented and lost its source looks identical.
+        The difference is entirely in the DISTANCES, and they used to be visible
+        only under a debug flag that also prints a line per face per frame — so
+        you had to already suspect this to see it."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'roop', 'procmgr_tracking.py'),
+                   encoding='utf-8').read()
+        # Nothing may gate it between the assignment that produces the rows and
+        # the print that shows them.
+        between = src[src.index('_assign_track_sources(tracks)'):
+                      src.index('per-track assignment')]
+        self.assertNotIn('if _DEBUG_MATCH', between,
+                         'the per-track summary is gated behind ROOP_DEBUG_MATCH')
+
+    def test_stage_timings_are_cleared_per_clip(self):
+        """They print directly above the audit, which IS cleared per clip, so
+        letting them accumulate makes the two blocks describe different amounts
+        of work with nothing saying so — a swap count of 858 beside a swap-stage
+        call count of 2368 reads as a broken pipeline and was three clips of
+        timing beside one clip of audit."""
+        pm = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'roop', 'ProcessMgr.py'), encoding='utf-8').read()
+        self.assertIn('_prof_reset()', pm)
+        self.assertLess(abs(pm.index('_prof_reset()') - pm.index('_audit_reset()')), 600)
+        from roop.procmgr_runtime import _prof_reset, _prof_times, _prof_counts
+        _prof_times['x'] = 1.0
+        _prof_counts['x'] = 1
+        _prof_reset()
+        self.assertEqual(len(_prof_times), 0)
+        self.assertEqual(len(_prof_counts), 0)
+
     def test_the_launcher_scans_every_frame(self):
         """The stride is what makes most of those interpolated faces, and it is a
         launcher setting rather than a code default — so the code default being

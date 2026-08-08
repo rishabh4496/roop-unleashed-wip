@@ -313,6 +313,23 @@ def _prof(stage):
             _prof_counts[stage] += 1
 
 
+def _prof_reset():
+    """Clear the stage timings, per clip, alongside _audit_reset.
+
+    They used to accumulate for the life of the backend while the audit next to
+    them was cleared per clip, so the two blocks printed together described
+    DIFFERENT amounts of work — and nothing said so. Reading a swap count of 858
+    against a swap-stage call count of 2368 in the same report looks like the
+    pipeline swapping a third of what it processes; it was three clips of timing
+    beside one clip of audit. Anything comparing the two (which is the natural
+    thing to do, since they are printed one after the other) was wrong by however
+    many clips had been rendered since the app started.
+    """
+    with _prof_lock:
+        _prof_times.clear()
+        _prof_counts.clear()
+
+
 def _prof_report():
     if not _PROFILE or not _prof_times:
         return
