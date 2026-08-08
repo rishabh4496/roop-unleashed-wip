@@ -2324,6 +2324,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
                     if src_index is not None:
                         _audit_hit('swapped (identity lock)')
+                        # How much of the OUTPUT is drawn from landmarks nobody
+                        # detected. The count above is of every face seen, which
+                        # is dominated by whoever is not being swapped; this one
+                        # is about the face you are looking at. An interpolated
+                        # face carries a bbox, kps and 106 landmarks linearly
+                        # interpolated between its neighbours, and those decide
+                        # the crop, the paste mask and the mouth region — so on a
+                        # MOVING head a high number here is a swap that shifts
+                        # every other frame, which reads as flicker with nothing
+                        # in front of the face. It is set by the scan stride
+                        # (ROOP_TEMPORAL_STEP) and by real detection misses, and
+                        # only the first of those is free to fix.
+                        if isinstance(face, dict) and face.get('_interpolated'):
+                            _audit_hit('  of those SWAPPED, gap-filled')
                         claimed_sources_in_frame.add(src_index)
                         pending.append((src_index, face))
                         num_faces_found += 1

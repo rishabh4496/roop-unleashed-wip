@@ -299,6 +299,38 @@ class TheMechanicsHold(unittest.TestCase):
         self.assertEqual(len(tracks), 1)
         self.assertEqual(_src_at(_run_scan(script)[0], 10), 0)
 
+    def test_the_audit_separates_interpolated_swaps(self):
+        """Two different artefacts share one word. "The swap is missing on this
+        frame" and "the swap is here but registered from landmarks nobody
+        detected" both read as flicker and need opposite fixes, and the existing
+        gap-filled count could not distinguish them: it counts every face SEEN,
+        which on a two-person clip is dominated by whoever is not being swapped.
+        """
+        pm = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'roop', 'ProcessMgr.py'),
+                  encoding='utf-8').read()
+        rt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'roop', 'procmgr_runtime.py'),
+                  encoding='utf-8').read()
+        self.assertIn("_audit_hit('  of those SWAPPED, gap-filled')", pm)
+        # Counted inside the branch that actually swapped, not beside it.
+        swap_hit = pm.index("_audit_hit('swapped (identity lock)')")
+        interp_hit = pm.index("_audit_hit('  of those SWAPPED, gap-filled')")
+        self.assertLess(swap_hit, interp_hit)
+        self.assertLess(interp_hit - swap_hit, 1200)
+        self.assertIn("of those SWAPPED, gap-filled", rt)
+
+    def test_the_launcher_scans_every_frame(self):
+        """The stride is what makes most of those interpolated faces, and it is a
+        launcher setting rather than a code default — so the code default being
+        1 is not enough on its own."""
+        import re
+        js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', '..', 'start_react.js'), encoding='utf-8').read()
+        m = re.search(r'ROOP_TEMPORAL_STEP:\s*"(\d+)"', js)
+        self.assertIsNotNone(m, 'ROOP_TEMPORAL_STEP is no longer pinned here')
+        self.assertEqual(m.group(1), '1')
+
     def test_first_bbox_is_recorded_at_creation(self):
         """The link compares one track's LAST position with the next one's
         FIRST. `bbox` stops being the first the moment the track updates, so

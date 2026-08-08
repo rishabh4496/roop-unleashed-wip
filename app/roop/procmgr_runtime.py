@@ -391,6 +391,14 @@ def _audit_report():
               flush=True)
         print("     Frames where a face was found but left un-swapped are what reads as "
               "flicker. The largest refusal line above is the gate to loosen.", flush=True)
+    interp = _audit.get('  of those SWAPPED, gap-filled', 0)
+    if swapped and interp:
+        print(f"     {interp} of the {swapped} faces actually swapped ({100.0 * interp / swapped:.1f}%) "
+              "had INTERPOLATED landmarks — nobody detected them, their box and keypoints "
+              "were filled in between neighbours.", flush=True)
+        print("     That is a different artefact from the one above: the swap is not missing, "
+              "it is registered from a guess, so on a moving head it shifts every other frame. "
+              "Set ROOP_TEMPORAL_STEP=1 if this is high.", flush=True)
     blind = _audit.get('frames with no face detected at all', 0)
     if blind:
         print(f"     Separately, {blind} frames had NO face detected at all — that is the "
