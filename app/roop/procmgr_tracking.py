@@ -560,6 +560,50 @@ class TrackingMixin:
         # with a stride they differ by the stride, and a track's length is in
         # frames — which printed coverage as "299.2% of clip".
         span = max(1, (max(per_frame) - min(per_frame) + 1) if per_frame else 1)
+
+        # WHERE each unmatched track is, relative to the one that matched.
+        #
+        # The distances alone stop being enough as soon as a track is refused for
+        # CONCURRENCY rather than for appearance, because then the question is no
+        # longer "is this the same person" but "is this even a different face".
+        # A third simultaneous detection on a two-person clip is either a real
+        # third face or the SAME face detected twice, and those are opposite
+        # problems: one is nothing to do, the other is a detector producing
+        # duplicate boxes and is a bug upstream of everything here.
+        #
+        # Separation of the two centroids over the frames they share, in units of
+        # face width, tells them apart at a glance. Near 0 means the two boxes sit
+        # on top of each other — the same face, detected twice. Above ~1 means
+        # genuinely separate faces.
+        seen_at = {}
+        for f, entries in per_frame.items():
+            for c, tid in entries:
+                seen_at.setdefault(tid, {})[f] = np.asarray(c, np.float64)
+        owners = [tid for tid, s in track_src.items() if s is not None]
+
+        def _overlap_note(tid):
+            mine = seen_at.get(tid) or {}
+            if not mine:
+                return ''
+            best = None
+            for otid in owners:
+                if otid == tid:
+                    continue
+                theirs = seen_at.get(otid) or {}
+                shared = set(mine).intersection(theirs)
+                if not shared:
+                    continue
+                w = max(1.0, float(np.asarray(track_map[otid]['bbox'], np.float64)[2]
+                                   - np.asarray(track_map[otid]['bbox'], np.float64)[0]))
+                sep = float(np.mean([np.linalg.norm(mine[f] - theirs[f]) for f in shared])) / w
+                if best is None or len(shared) > best[1]:
+                    best = (otid, len(shared), sep)
+            if best is None:
+                return ''
+            otid, n, sep = best
+            what = 'THE SAME FACE, detected twice' if sep < 0.35 else 'a separate face'
+            return f'  [shares {n} frames with track {otid}, {sep:.2f} widths apart = {what}]'
+
         rows = []
         for t in sorted(tracks, key=lambda x: int(x.get('first_seen', 0))):
             dd = {}
@@ -587,8 +631,9 @@ class TrackingMixin:
                     verdict = '-> NO SOURCE (over the gate)'
                 else:
                     verdict = '-> NO SOURCE (refused by margin/concurrency)'
+                note = '' if src is not None else _overlap_note(t['id'])
                 print(f"    track {t['id']:>3}  frames {n_frames:>5} ({100.0 * n_frames / span:4.1f}% of clip)"
-                      f"  {ds:<24} {verdict}", flush=True)
+                      f"  {ds:<24} {verdict}{note}", flush=True)
         if _DEBUG_MATCH:
             for t in tracks:
                 bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "

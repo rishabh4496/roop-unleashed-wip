@@ -118,6 +118,12 @@ _RECT_PAD = 0.15
 # face's ramp.
 _BACKING = 1.5
 
+# How much of an unpainted claim has to sit inside a painted one before it is
+# treated as a duplicate detection of that same face rather than as a neighbour.
+# Two people cheek to cheek reach maybe 0.2-0.3 containment through the padded
+# boxes; a second box on one head is 0.8+. 0.6 sits in the empty middle.
+_DUP_CONTAIN = _env_float('ROOP_FACE_DEMARCATE_DUP', 0.6)
+
 
 class FaceRegion:
     """One face's share of the frame, as a 0..1 field over a rectangle.
@@ -197,6 +203,14 @@ def _rects_overlap(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+def _containment(a, b):
+    """Fraction of rect `a` that lies inside rect `b`."""
+    iw = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    ih = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = max(1, (a[2] - a[0]) * (a[3] - a[1]))
+    return (iw * ih) / float(area)
+
+
 def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None):
     """Ownership fields for `faces`, as ``{index: FaceRegion}``.
 
@@ -238,6 +252,31 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
         r = float(np.sqrt(max(1.0, float(w) * float(h))))
         pad = int(max(2.0, r * _RECT_PAD))
         claims.append((pts, (x - pad, y - pad, x + w + pad, y + h + pad), r))
+
+    # A face cannot be its own bystander. Detectors do produce two boxes on one
+    # face — a partial box beside a full one, or two engines' worth of the same
+    # head — and such a duplicate is not being swapped (only one of them can hold
+    # the source), so it arrives here as an unpainted claimant sitting exactly on
+    # top of a painted one. Left in, it wins half of that face's own pixels and
+    # the swap is carved apart along a line through the middle of it, on only the
+    # frames where the duplicate happened to be detected. That is worse than the
+    # smearing this whole module exists to fix, and it appears and disappears.
+    #
+    # Concentric claims are therefore dropped rather than competed with. The test
+    # is containment, not IoU: a duplicate box is often much smaller than the real
+    # one (a partial detection), which puts IoU low while the two are plainly the
+    # same face.
+    if order is not None:
+        painted_idx = set(order)
+        for i in range(len(claims)):
+            if claims[i] is None or i in painted_idx:
+                continue
+            for j in painted_idx:
+                if claims[j] is None:
+                    continue
+                if _containment(claims[i][1], claims[j][1]) > _DUP_CONTAIN:
+                    claims[i] = None
+                    break
 
     hot = set()
     for i in range(len(claims)):

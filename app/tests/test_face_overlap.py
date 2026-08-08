@@ -233,6 +233,38 @@ class UnswappedBystanders(unittest.TestCase):
                              'the swapped face got no region, so the bystander '
                              'was not competing for pixels')
 
+    def test_a_duplicate_box_on_the_swapped_face_is_not_a_bystander(self):
+        """A face cannot be its own bystander.
+
+        Detectors do produce two boxes on one head — a partial beside a full one,
+        or two engines' worth of the same face. Only one can hold the source, so
+        the other arrives here as an unpainted claimant sitting on top of a
+        painted one. Competed with, it wins half of that face's own pixels and
+        carves the swap apart along a line through the middle of it — on only the
+        frames where the duplicate was detected, so it flickers too. Worse than
+        the smearing this module exists to fix, and introduced BY the fix that
+        gave bystanders a claim.
+        """
+        face = _Face(340, 200, 140)
+        dup = _Face(345, 205, 130)          # same head, slightly different box
+        self.assertIsNone(build_regions([face, dup], SHAPE, order=[0]),
+                          'the duplicate competed for the face it is a copy of')
+
+    def test_a_smaller_partial_box_on_the_same_face_is_also_dropped(self):
+        """Containment, not IoU: a partial detection is much smaller than the
+        real one, which puts IoU low while the two are plainly the same face."""
+        face = _Face(340, 200, 200)
+        partial = _Face(350, 210, 70)
+        self.assertIsNone(build_regions([face, partial], SHAPE, order=[0]))
+
+    def test_a_genuine_neighbour_is_still_a_claimant(self):
+        """The guard must not swallow the case it was built alongside — two
+        people close enough to interact still each own their own pixels."""
+        regions = build_regions([_Face(340, 200, 140), _Face(460, 200, 140)],
+                                SHAPE, order=[0])
+        self.assertIsNotNone(regions)
+        self.assertEqual(_own_at(regions[0], 460, 200), 0.0)
+
     def test_the_call_site_passes_the_unmatched_faces(self):
         """Source guard. The bug this fixes is a missing ARGUMENT, and everything
         keeps working without it — silently, and only on frames with two people
