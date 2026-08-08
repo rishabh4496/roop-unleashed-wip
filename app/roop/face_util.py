@@ -1775,6 +1775,33 @@ def _pose_placement(yaw_deg, pitch_deg, base_dst, jaw=0.0):
 # trade.
 VIS_POLY_MARGIN = 0.04          # dilation, as a fraction of the crop size
 
+# ...and a hard ceiling on the whole layer, because the margin above is sized
+# against HEAD SHAPE variation and that is not the error that hurts.
+#
+# The polygon is drawn for the pose the 5-point solve reports, and that solve
+# fits one reference head, so a person whose nose is more prominent than the
+# reference reads 15-20 deg further round than they are (see
+# tests/test_pose_shape.py — yaw 30 read as 44.6). The polygon is then the
+# visible surface of a head turned 45 deg, applied to a head turned 30, and it
+# cuts the far side of a face that is entirely visible. Half the head keeps the
+# original texture beside the swapped half, with a line down the middle. That is
+# the failure this layer actually gets reported for, and no safety margin
+# expressed in head widths can prevent it, because the input is wrong by more
+# than a head.
+#
+# So the trim is additionally bounded by how much it is allowed to REMOVE.
+# Whatever the polygon says, the layer may not take more than this fraction of
+# the matte; past that its weight is scaled back until it does not. A wrong pose
+# then costs an over-trimmed cheek — soft, because the trim is feathered — rather
+# than a split face.
+#
+# 0.25 sits above everything the layer legitimately does (measured max 10.2% of
+# the matte, at pitch -40, mean 2.5% over the pose grid) and well below the ~50%
+# a mirrored or badly over-estimated yaw asks for. It is a backstop, not a tuning
+# knob: if a clip is hitting it, the pose estimate is wrong and the layer should
+# be off for that clip.
+VIS_TRIM_MAX_FRAC = 0.25
+
 # Head model for the visible-surface test: an ellipsoid fitted to the project's
 # own reference head, so this cannot disagree with the pose solve or the
 # alignment template about head shape. AZ is the front-to-back extent of the

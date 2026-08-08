@@ -84,7 +84,7 @@ touch the render pipeline, which uses its own readers.
 | `ROOP_UPSCALE_TRT` | 0 | `1` runs ESRGAN x4 upscalers under TensorRT (**not recommended** — goes all-black under TRT FP16; default forces CUDA/CPU FP32). |
 | `ROOP_UPSCALE_TILE` | 256 | Tile size (px) for AI upscalers; lower if VRAM is tight on heavy ×4 models. |
 | `ROOP_CAS_STRENGTH` | 0.5 | Contrast-Adaptive Sharpening strength for the `fsr` classical upscaler (0 = plain Lanczos). |
-| `ROOP_YAW_ALIGN` | `pose` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`, and `0`/`off`/`false` for `off`. `stabilize` fades in from 40° off-axis; `pose` covers yaw **and** pitch and fades in from 15°. Frontal faces are bit-identical in every mode. **Default changed from `off` to `pose`** — the fixed frontal template breathes 1.354× in crop scale over yaw 0–88 × pitch ±40 against 1.072× for `pose`, and since frontal faces are untouched either way the old default was paying nothing and fixing nothing. Set `ROOP_YAW_ALIGN=off` for the previous behaviour exactly. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
+| `ROOP_YAW_ALIGN` | `off` | Seeds the **Angled-face alignment** selector in the Face Swap tab (the selector overrides it per run; a saved setting wins once you touch it). `off` \| `stabilize` \| `pose` — `1`/`on`/`true` are accepted as legacy aliases for `stabilize`, and `0`/`off`/`false` for `off`. `stabilize` fades in from 40° off-axis; `pose` covers yaw **and** pitch and fades in from 15°. Frontal faces are bit-identical in every mode. **Default is `off`.** It was `pose` for one day; see *Angle handling* below for the measurement that moved it back — the pose it solves is 15–20° wrong on a head whose nose differs from the reference, systematically and per person. `ROOP_YAW_ALIGN=pose` to A/B it on your own footage. Not to be confused with `ROOP_PROFILE` (stage timing). See below. |
 
 ### Angled-face alignment modes
 
@@ -159,13 +159,48 @@ shared code and apply identically to every model:
 
 | Layer | What it fixes | Control | Default |
 |---|---|---|---|
-| 1. Pose-matched alignment | Crop breathes 1.354× in scale over the pose sphere, so the model is handed a face at a size it was not trained on and the crop wobbles frame to frame. Holds it to 1.072×. | `ROOP_YAW_ALIGN` / *Angled-face alignment* | `pose` |
-| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull), and the hull over-claims the lower face once the head tilts. Measured: a **pitch** correction only — 0% on a level head at any yaw, up to 10.2% chin-up. Small; keep expectations accordingly. | *Angle: trim hidden surface* | on |
-| 3. Off-axis fade | Past ~55° off-axis the crop is outside every model's training distribution and the model stops reconstructing and starts inventing. Fades the swapped crop back toward the original footage instead. **This is the layer that bounds how wrong an extreme angle can look.** | *Angle: extreme-angle fade* (0–100) | 65 |
+| 1. Pose-matched alignment | Crop breathes 1.354× in scale over the pose sphere, so the model is handed a face at a size it was not trained on and the crop wobbles frame to frame. Holds it to 1.072×. | `ROOP_YAW_ALIGN` / *Angled-face alignment* | `off` |
+| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull), and the hull over-claims the lower face once the head tilts. Measured: a **pitch** correction only — 0% on a level head at any yaw, up to 10.2% chin-up. Small; keep expectations accordingly. | *Angle: trim hidden surface* | off |
+| 3. Off-axis fade | Past ~55° off-axis the crop is outside every model's training distribution and the model stops reconstructing and starts inventing. Fades the swapped crop back toward the original footage instead. **This is the layer that bounds how wrong an extreme angle can look.** | *Angle: extreme-angle fade* (0–100) | 0 |
 
 All three key on the **same** pose solve and share the same off-axis fade band, so
 they are one continuous function of pose rather than three gates that can flicker
 independently. Frontal faces are untouched by all three.
+
+### All three ship OFF, and why
+
+They shipped **on** on 2026-08-07 and were reported worse on real footage the next
+day — flicker, a swapped face that does not match the original's size, and doubled
+features, all on lateral poses. Sharing one pose solve is what makes them coherent;
+it is also what makes them fail together, because **that solve is only as accurate
+as one reference head is a match for the person in frame**, and in five keypoints
+most of the yaw signal is carried by how far the nose stands out from the face:
+
+| true yaw | 15° | 30° | 45° | 60° | 75° |
+|---|---|---|---|---|---|
+| reference head | 15.0 | 30.0 | 45.0 | 60.0 | 75.0 |
+| nose +40 % | **24.6** | **44.6** | 59.6 | 71.3 | 81.1 |
+| nose −40 % | **4.5** | **9.7** | **16.5** | **27.1** | 47.8 |
+
+(`app/tests/test_pose_shape.py`, which pins these so they cannot drift.)
+
+A prominent-nosed person turning 30° is read as 45°, which saturates the 15–40°
+engagement band: they get the **full** pose-matched crop, the hidden-surface trim
+and the fade all drawn for a pose they are not in. It is a per-person systematic
+error, not frame noise, so no amount of temporal smoothing touches it — and a
+flat-nosed person gets the opposite, no correction where it is needed. Fixing it
+properly needs a pose estimate that is not a single-frame fit to a fixed head:
+per-identity head-shape calibration over a clip, or the 106-point contour instead
+of 5 keypoints.
+
+Until then all three are opt-in, and the two whose failure modes are visible have
+been bounded so that switching them on cannot produce the artefacts above:
+
+* the **trim** can no longer remove more than 25 % of the matte, so a wrong pose
+  costs a soft over-trim rather than half a face showing the original texture;
+* the **fade** withdraws the swap from the outside in rather than cross-dissolving
+  the whole crop, so it can no longer superimpose two differently-shaped faces and
+  double the eyes, nose and mouth.
 
 Layer 2 is a **pitch** correction, not a yaw one. Fraction of the matte removed:
 

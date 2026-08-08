@@ -17,7 +17,8 @@ import numpy as np
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop.face_util import clamp_cut_values, kps_pose_ratios, VIS_POLY_MARGIN
+from roop.face_util import (clamp_cut_values, kps_pose_ratios, VIS_POLY_MARGIN,
+                            VIS_TRIM_MAX_FRAC)
 from roop.nonfrontal import nonfrontal_score
 
 
@@ -233,7 +234,7 @@ class MaskingMixin:
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, vis_poly=None, vis_weight=0.0):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, vis_poly=None, vis_weight=0.0, model_mask=None, model_mask_weight=0.0):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -266,6 +267,9 @@ class MaskingMixin:
         # the overlap trim.
         vis_matte = self._visibility_matte(vis_poly, vis_weight, img_matte.shape,
                                            IM, target_img.shape)
+        # ...and the swap model's own mask, where it emits one.
+        mm_matte = self._model_mask_matte(model_mask, model_mask_weight,
+                                          img_matte.shape, IM, target_img.shape)
 
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
@@ -296,8 +300,20 @@ class MaskingMixin:
         # -> 18px, a 38% tighter seam, on exactly the high-pose faces where a seam
         # shows most. Trimming afterwards leaves the feather untouched, so this
         # layer can only ever remove matte and never sharpen it.
-        if vis_matte is not None:
-            img_matte *= vis_matte
+        # Capped, because the polygon is placed from a pose SOLVE and that solve
+        # is 15-20 deg wrong on a head whose nose differs from the reference one
+        # (see face_util.VIS_TRIM_MAX_FRAC). Uncapped, a wrong pose cuts the far
+        # half of a fully visible face and the two halves then show different
+        # texture with a line between them. This is the layer's backstop and it
+        # does not touch a trim that is behaving.
+        self._trim_capped(img_matte, vis_matte, VIS_TRIM_MAX_FRAC)
+
+        # The swap net's own verdict, applied in the same place and for the same
+        # two reasons: the feather would spread the swap back over the hair this
+        # removes, and applying it earlier would shrink the matte that blur_area
+        # sizes its feather from.
+        if mm_matte is not None:
+            img_matte *= mm_matte
 
         # Save 2D mask before reshape — used by show_face_area_overlay
         mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
@@ -328,7 +344,109 @@ class MaskingMixin:
         return paste_face.astype(np.uint8)
 
     @staticmethod
-    def _visibility_matte(vis_poly, vis_weight, crop_shape, IM, frame_shape):
+    def _trim_capped(matte, trim, cap):
+        """Multiply `matte` by `trim` in place, but never remove more than `cap`
+        of the matte's own weight.
+
+        Measured against the matte itself, at the moment of application, rather
+        than against any proxy for it — the matte is an ellipse intersected with a
+        landmark hull and then feathered, and every cheaper stand-in for it
+        (the crop, the crop's inscribed ellipse) is so much larger than the face
+        that a normal trim scores as an extreme one against it.
+
+        The trim is `1 - w·(1 - m)` and is therefore linear in its weight, so the
+        correction is one ratio: scaling the shortfall by `cap / removed` lands
+        exactly on the cap instead of near it.
+        """
+        if trim is None:
+            return matte
+        total = float(matte.sum())
+        if not (total > 0.0):
+            return matte
+        kept = float(np.multiply(matte, trim).sum())
+        removed = 1.0 - kept / total
+        if removed > cap > 0.0:
+            # In place on a temporary, not on `trim`: the caller may hold it (the
+            # tests do) and a helper that quietly rewrites its argument is a trap.
+            trim = 1.0 - (cap / removed) * (1.0 - trim)
+        matte *= trim
+        return matte
+
+    @classmethod
+    def _crop_mask_to_frame(cls, mask8, weight, IM, frame_shape, margin_frac):
+        """Turn a crop-space 0-255 keep-mask into a FRAME-space multiplier.
+
+        Shared by the two things that trim the matte from crop space — the pose
+        visibility polygon and a swap model's own mask output — because both need
+        the identical treatment and it is easy to get subtly different.
+
+        `margin_frac` is a dilation, as a fraction of the crop, for shapes that
+        may sit slightly inside the real face. Pass 0 for a mask the model itself
+        produced from this image, which needs no slack for head-shape variation.
+        """
+        h, w = mask8.shape[:2]
+        if margin_frac > 0:
+            # MORPH_RECT, not MORPH_ELLIPSE: rect dilation is separable, measured
+            # 5.72ms -> 0.36ms for the 41x41 the polygon's margin needs on a 512
+            # crop. Marginally more generous at the diagonals, which is the safe
+            # direction for a margin whose whole job is to not clip skin.
+            r = max(1, int(min(w, h) * margin_frac))
+            k = cv2.getStructuringElement(cv2.MORPH_RECT, (r * 2 + 1, r * 2 + 1))
+            mask8 = cv2.dilate(mask8, k, iterations=1)
+        # Soften the trim's own edge so it ramps into the matte instead of
+        # stepping. The feather applied to the matte is already sized and spent by
+        # the time this lands, so nothing else will smooth this boundary. A FIXED
+        # small radius, not the margin: the two answer different questions — the
+        # margin is slack, this is anti-aliasing.
+        b = max(1, int(min(w, h) * 0.008))
+        mask8 = cv2.GaussianBlur(mask8, (b * 2 + 1, b * 2 + 1), 0)
+
+        # Fold the weight in HERE, in crop space, then warp the finished
+        # multiplier. The other way round — warp, then build
+        # `1 - w*(1 - m/255)` at frame size — costs 15ms of full-frame float
+        # temporaries at 1080p against 0.05ms here, for the same result, because
+        # the warp is linear.
+        #
+        # borderValue 255: outside the crop's footprint there is no verdict to
+        # apply, and 255 means "keep". The matte is zero out there anyway, but a 0
+        # border would mean this returns "delete everything" for the rest of the
+        # frame, which is a trap for any future caller.
+        keep = 255.0 - float(weight) * (255.0 - mask8.astype(np.float32))
+        out = cv2.warpAffine(keep, IM, (frame_shape[1], frame_shape[0]),
+                             flags=cv2.INTER_LINEAR,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=255.0)
+        # In place: `out / 255.0` would allocate a second full-frame float32
+        # (8 MB at 1080p) purely to divide.
+        return np.multiply(out, 1.0 / 255.0, out=out)
+
+    @classmethod
+    def _model_mask_matte(cls, model_mask, weight, crop_shape, IM, frame_shape):
+        """Multiplier that trims the matte to where the SWAP MODEL says it put a
+        face. `model_mask` is a float 0-1 map in the swap crop's own coordinates.
+
+        This is a better answer than any geometric guess, because the net produced
+        it from this image at this pose. Measured against hififace's verdict, the
+        matte claims 15-27% territory the model calls not-face on a frontal head
+        and 31% on a profile — and looked at, that excess is hair above the
+        hairline frontally, and hair plus background behind the head on a profile.
+        Hence no dilation margin: the mask is about this face, not a reference one.
+        """
+        if model_mask is None or not (weight > 0.0):
+            return None
+        try:
+            m = np.asarray(model_mask, dtype=np.float32)
+            if m.ndim != 2 or m.size == 0 or not np.isfinite(m).all():
+                return None
+            h, w = crop_shape[:2]
+            if m.shape[:2] != (h, w):
+                m = cv2.resize(m, (w, h), interpolation=cv2.INTER_LINEAR)
+            mask8 = (np.clip(m, 0.0, 1.0) * 255.0).astype(np.uint8)
+            return cls._crop_mask_to_frame(mask8, weight, IM, frame_shape, 0.0)
+        except Exception:
+            return None       # a bad mask costs the old behaviour, not a frame
+
+    @classmethod
+    def _visibility_matte(cls, vis_poly, vis_weight, crop_shape, IM, frame_shape):
         """Multiplier that trims the paste matte to the face surface still facing
         the camera, in FRAME space, or None when this layer is not engaged.
 
@@ -353,47 +471,23 @@ class MaskingMixin:
                 return None
             vis = np.zeros((h, w), dtype=np.uint8)
             cv2.fillPoly(vis, [poly.astype(np.int32)], 255)
-            # Safety margin. The polygon comes from a REFERENCE head, not this
-            # face, so it can sit a little inside a wider one; without the margin
-            # 1-2 truly-visible landmarks get trimmed at yaw 88, and a matte that
+            # Two safeties, for two different errors, and they are not
+            # substitutes for each other:
+            #
+            # The MARGIN covers head shape — the polygon comes from a reference
+            # head and can sit a little inside a wider one. Without it 1-2
+            # truly-visible landmarks get trimmed at yaw 88, and a matte that
             # clips visible skin is a worse artefact than the over-coverage it is
             # removing. Measured zero cut at every pose with it.
             #
-            # MORPH_RECT, not MORPH_ELLIPSE: rect dilation is separable, measured
-            # 5.72ms -> 0.36ms for the 41x41 this margin needs on a 512 crop. It is
-            # marginally more generous at the diagonals, which is the safe
-            # direction for a margin whose whole job is to not clip skin.
-            r = max(1, int(min(w, h) * VIS_POLY_MARGIN))
-            k = cv2.getStructuringElement(cv2.MORPH_RECT, (r * 2 + 1, r * 2 + 1))
-            vis = cv2.dilate(vis, k, iterations=1)
-            # Soften the trim's own edge so it ramps into the matte instead of
-            # stepping. The feather applied to the matte is already sized and spent
-            # by the time this lands, so nothing else will smooth this boundary.
-            #
-            # A FIXED small radius, not `r`. The two are answering different
-            # questions: `r` is how much slack the reference head needs against a
-            # real one, this is anti-aliasing.
-            b = max(1, int(min(w, h) * 0.008))
-            vis = cv2.GaussianBlur(vis, (b * 2 + 1, b * 2 + 1), 0)
-
-            # Fold the weight in HERE, in crop space, then warp the finished
-            # multiplier. Doing it the other way round — warp, then build
-            # `1 - w*(1 - vis/255)` at frame size — costs 15ms of full-frame float
-            # temporaries at 1080p against 0.05ms here, for the same result. The
-            # warp is linear, so weighting before or after it is equivalent.
-            #
-            # borderValue 255: outside the crop's footprint there is no verdict to
-            # apply, and 255 means "keep". The matte is zero out there anyway, but
-            # a 0 border would mean this function returns "delete everything" for
-            # the whole rest of the frame, which is a trap for any future caller.
-            keep = 255.0 - float(vis_weight) * (255.0 - vis.astype(np.float32))
-            out = cv2.warpAffine(keep, IM, (frame_shape[1], frame_shape[0]),
-                                 flags=cv2.INTER_LINEAR,
-                                 borderMode=cv2.BORDER_CONSTANT,
-                                 borderValue=255.0)
-            # In place: `out / 255.0` would allocate a second full-frame float32
-            # (8 MB at 1080p) purely to divide.
-            return np.multiply(out, 1.0 / 255.0, out=out)
+            # The CAP covers the pose being wrong, which is the larger error and
+            # the one the margin cannot express: fed a yaw 15 deg too high — which
+            # a prominent nose alone is worth, see face_util.VIS_TRIM_MAX_FRAC —
+            # the polygon describes a different head position entirely, and no
+            # dilation in head-widths rescues that. Bounding the AMOUNT removed
+            # does.
+            return cls._crop_mask_to_frame(vis, vis_weight, IM, frame_shape,
+                                           VIS_POLY_MARGIN)
         except Exception:
             # Broad on purpose, and matching how the mask stages in process_face
             # guard themselves: this is an optional refinement running per face per

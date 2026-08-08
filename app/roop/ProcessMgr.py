@@ -2584,12 +2584,89 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
 
     @staticmethod
-    def _fade_toward_plate(img, plate_crop, fade):
-        """Blend a swapped crop back toward the untouched plate crop by `fade`.
+    def _explode_mask(masks, model_size, total, out_size):
+        """Reassemble per-tile model masks into one (out_size, out_size) float32
+        map in [0, 1].
 
-        A method rather than a closure inside process_face so it can actually be
-        tested — the surrounding function needs models, a frame and a matched face
-        before it will run a single line.
+        Mirrors `explode_pixel_boost`, which hardcodes 3 channels — the mask is
+        single-channel, and adding a channel just to strip it again would be the
+        more confusing of the two options.
+        """
+        arr = np.stack([np.asarray(m, dtype=np.float32) for m in masks], axis=0)
+        if arr.shape[0] != total * total:
+            raise ValueError(f'{arr.shape[0]} mask tiles for a {total}x{total} grid')
+        if arr.shape[1] != model_size or arr.shape[2] != model_size:
+            arr = np.stack([cv2.resize(m, (model_size, model_size),
+                                       interpolation=cv2.INTER_LINEAR) for m in arr])
+        out = arr.reshape(total, total, model_size, model_size)
+        out = out.transpose(2, 0, 3, 1).reshape(out_size, out_size)
+        return np.clip(out, 0.0, 1.0)
+
+    # How far outside the facial features every pixel of a swap crop is, as a map
+    # in [0, 1]. Keyed by (template, height, width); there are only a handful of
+    # both, and it is a constant per key, so it is built once.
+    _FADE_FIELD_CACHE = {}
+    _FADE_FIELD_LOCK = Lock()
+
+    # Width of the ramp between "still swapped" and "back to the plate", in the
+    # units of that map. It sets the one trade this fade has left: narrower is a
+    # visible edge crossing the cheek, wider mixes two faces over more of the
+    # face. 0.25 also fixes when the FEATURES start to dissolve — the ramp reaches
+    # them (field 0) at fade 1/(1+0.25) = 0.8 — so with the default ceiling the
+    # eyes, nose and mouth are either fully swapped or fully original and never a
+    # superposition of both.
+    _FADE_BAND = 0.25
+
+    @classmethod
+    def _fade_field(cls, template, shape):
+        """Distance from the 5 template keypoints' hull, 0 on the features and 1
+        at the furthest corner of the crop.
+
+        The five points are where `estimate_norm` puts the eyes, nose and mouth,
+        so this is "how far is this pixel from the part of the face that carries
+        the likeness" — measured in the crop's own coordinates, which is why it
+        can be a constant: every face is aligned to the same template.
+        """
+        h, w = int(shape[0]), int(shape[1])
+        key = (template, h, w)
+        hit = cls._FADE_FIELD_CACHE.get(key)
+        if hit is not None:
+            return hit
+        pts = swap_template_points(min(h, w), template)
+        pts = np.asarray(pts, dtype=np.float64)
+        # The template is square; a non-square surface never happens here, but
+        # scaling per axis rather than assuming keeps it honest if one turns up.
+        pts = pts * np.array([w / float(min(h, w)), h / float(min(h, w))])
+        mask = np.full((h, w), 255, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, cv2.convexHull(pts.astype(np.int32)), 0)
+        field = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+        peak = float(field.max())
+        field = (field / peak) if peak > 1e-6 else np.zeros_like(field)
+        with cls._FADE_FIELD_LOCK:
+            if len(cls._FADE_FIELD_CACHE) > 8:
+                cls._FADE_FIELD_CACHE.clear()
+            cls._FADE_FIELD_CACHE[key] = field
+        return field
+
+    @classmethod
+    def _fade_toward_plate(cls, img, plate_crop, fade, template='arcface'):
+        """Withdraw a swapped crop back toward the untouched plate, from the
+        OUTSIDE IN, by `fade`.
+
+        Not a cross-dissolve, and that is the whole point. Blending the two crops
+        uniformly — which is what this used to do — superimposes two faces that
+        are not the same shape, because an identity swap moves the eyes, the nose
+        and the mouth. At any middling fade you then see both sets at once: the
+        doubled features people report on lateral poses, produced by the very
+        layer that exists to make lateral poses look better. There is no strength
+        at which a cross-dissolve does not do this; it is what alpha-blending two
+        misaligned faces means.
+
+        So the swap is given up spatially instead. Everything keeps full strength
+        or none, and the boundary between them starts outside the face and moves
+        inward as the pose gets worse, features last (see `_fade_field` and
+        `_FADE_BAND`). What is mixed at the boundary is skin against skin, which
+        has no structure to double.
 
         `plate_crop` is resized when the surface is bigger than the swap crop (GPEN
         outputs 1024/2048), with the same INTER_CUBIC the mask-engine blend above
@@ -2601,8 +2678,29 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         if img.shape[:2] != plate_crop.shape[:2]:
             plate_crop = cv2.resize(plate_crop, (img.shape[1], img.shape[0]),
                                     interpolation=cv2.INTER_CUBIC)
-        return (img.astype(np.float32) * (1.0 - f)
-                + plate_crop.astype(np.float32) * f).astype(np.uint8)
+        if f >= 1.0:
+            return plate_crop.copy()
+
+        band = cls._FADE_BAND
+        # edge1 is where the plate has fully taken over, edge0 where it starts.
+        # At f = 0 edge0 is 1 and the ramp is entirely outside the crop, so
+        # nothing is faded; at f = 1 both are at or below 0 and nothing is kept.
+        edge1 = (1.0 + band) * (1.0 - f)
+        edge0 = edge1 - band
+        try:
+            field = cls._fade_field(template, img.shape[:2])
+        except Exception:
+            # A fade that cannot place itself falls back to the uniform blend
+            # rather than to no fade at all: the caller asked for the swap to be
+            # pulled back at a pose the model cannot serve, and doing nothing is
+            # the worse of the two answers.
+            keep = np.full(img.shape[:2], 1.0 - f, dtype=np.float32)
+        else:
+            t = np.clip((field - edge0) / max(band, 1e-6), 0.0, 1.0)
+            keep = 1.0 - (t * t * (3.0 - 2.0 * t))      # smoothstep, as elsewhere
+        keep = keep[:, :, None]
+        return (img.astype(np.float32) * keep
+                + plate_crop.astype(np.float32) * (1.0 - keep)).astype(np.uint8)
 
     def process_face(self, face_index, target_face:Face, frame:Frame, plate:Frame=None, region=None):
         """Swap one face and composite it into `frame`.
@@ -2639,6 +2737,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         enhanced_frame = None
         # inputface is assigned after pose computation below (supports source bank)
         inputface = None
+        # Cleared per face: the swap net's mask is stashed per THREAD, so without
+        # this a face whose swap produced no mask (a model without the output, or
+        # the cross-frame batcher path) would inherit the previous face's mask on
+        # the same worker and get trimmed to someone else's geometry.
+        self._tls.swap_model_mask = None
 
         rotation_action = None
         if roop.globals.autorotate_faces:
@@ -2925,6 +3028,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # threads would share a single non-thread-safe TensorRT context
                 # and corrupt/hang the CUDA context.
                 _pooled = getattr(p, 'pool', None) is not None
+                # Per-tile masks from nets that emit one (hififace, hyperswap).
+                # None when the net has no mask output, or on the cross-frame
+                # batcher path — that coalesces tiles from several worker threads
+                # into one inference, so a mask cannot be attributed back to a
+                # request without changing the batcher's contract. Losing the mask
+                # there costs the old behaviour, not correctness.
+                _swap_masks = None
                 if self._swap_batcher is not None and hasattr(p, 'RunBatchMulti'):
                     # Cross-frame batching: submit every tile to the batcher (which
                     # coalesces them with crops from other worker threads), then
@@ -2943,19 +3053,49 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         prepared = [self.prepare_crop_frame(t, p) for t in tiles]   # CPU
                         with _gpu_guard(pooled=_pooled):
                             outs = p.RunBatch(inputface, target_face, prepared)
+                        _m = p.take_masks() if hasattr(p, 'take_masks') else None
+                        if _m:
+                            _swap_masks = _m
                         tiles = [self.normalize_swap_frame(o, p) for o in outs]      # CPU
                     swap_result_frames = tiles
                 else:
                     swap_result_frames = []
+                    _tile_masks = []
                     for sliced_frame in subsample_frames:
+                        _m = None
                         for _ in range(0, self.options.num_swap_steps):
                             sliced_frame = self.prepare_crop_frame(sliced_frame, p)   # CPU
                             with _gpu_guard(pooled=_pooled):
                                 sliced_frame = p.Run(inputface, target_face, sliced_frame)
+                            # Collected every step, so the mask that survives is
+                            # the LAST pass's — the one that made this pixel data.
+                            _got = p.take_masks() if hasattr(p, 'take_masks') else None
+                            if _got:
+                                _m = _got[0]
                             sliced_frame = self.normalize_swap_frame(sliced_frame, p)  # CPU
                         swap_result_frames.append(sliced_frame)
+                        _tile_masks.append(_m)
+                    if _tile_masks and all(m is not None for m in _tile_masks):
+                        _swap_masks = _tile_masks
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
+
+                # Reassemble the model's own face mask over the same tiling, into
+                # the crop's coordinates, so paste_upscale can trim to it. Stashed
+                # on self because the paste happens well below this loop.
+                #
+                # The tiles are an INTERLEAVED subsample of the crop, not
+                # contiguous blocks, so each tile's mask covers the whole face at
+                # 1/n resolution and the same transpose that reassembles the image
+                # reassembles the mask. With the default settings there is exactly
+                # one tile and this is a reshape of a single 256² mask.
+                self._tls.swap_model_mask = None
+                if _swap_masks:
+                    try:
+                        self._tls.swap_model_mask = self._explode_mask(
+                            _swap_masks, model_output_size, subsample_total, subsample_size)
+                    except Exception as e:
+                        bar_write(f"[ProcessMgr] swap mask reassembly failed: {e}")
                 
                 # Dynamic color tone correction: transfer target crop's skin tone
                 # and lighting highlights/shadows to the swapped face.
@@ -3285,9 +3425,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         _fade = angle_fade_weight(tgt_yaw_deg, tgt_pitch_deg,
                                   getattr(roop.globals, 'angle_fade_strength', 0.0))
         if _fade > 0.0:
-            fake_frame = self._fade_toward_plate(fake_frame, aligned_img, _fade)
+            # swap_template, not a default: the fade is withdrawn from around the
+            # facial features, and where those sit in the crop is the model's own
+            # template's business (ghost/simswap are arcface_112_v1, hififace is
+            # mtcnn_512). Guessing it here would put the ramp somewhere else.
+            fake_frame = self._fade_toward_plate(fake_frame, aligned_img, _fade,
+                                                 swap_template)
             if enhanced_frame is not None:
-                enhanced_frame = self._fade_toward_plate(enhanced_frame, aligned_img, _fade)
+                enhanced_frame = self._fade_toward_plate(enhanced_frame, aligned_img,
+                                                         _fade, swap_template)
             if _DEBUG_ANGLE:
                 print(f"[ANGLE] fade={_fade:.3f} at yaw={tgt_yaw_deg:+.1f}° "
                       f"pitch={tgt_pitch_deg:+.1f}° "
@@ -3337,11 +3483,27 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         vis_poly = np.asarray(_poly, np.float64) / float(subsample_size)
                         vis_weight = _w
 
+        # The swap net's own face mask, for the nets that emit one (hififace,
+        # hyperswap). Not pose-gated, unlike the visibility polygon: the model
+        # produced this from THIS image, and its excess over our matte is wrong at
+        # every angle — hair above the hairline frontally, hair and background
+        # behind the head on a profile.
+        model_mask = getattr(self._tls, 'swap_model_mask', None)
+        model_mask_weight = 0.0
+        if model_mask is not None:
+            try:
+                model_mask_weight = max(0.0, min(1.0, float(
+                    getattr(roop.globals, 'swap_model_mask_strength', 0.0)) / 100.0))
+            except (TypeError, ValueError):
+                model_mask_weight = 0.0
+        if model_mask_weight <= 0.0:
+            model_mask = None
+
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight, model_mask=model_mask, model_mask_weight=model_mask_weight)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight, model_mask=model_mask, model_mask_weight=model_mask_weight)
 
         # Lip-sync and restore_original_mouth write the same bounding box, so at
         # most one of them may run. Decided once, here, ahead of both: the UI

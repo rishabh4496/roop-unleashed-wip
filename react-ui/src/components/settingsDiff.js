@@ -34,6 +34,7 @@ export const LABELS = {
   yaw_align: 'Angled-face alignment',
   angle_visibility_mask: 'Angle: hidden-surface trim',
   angle_fade_strength: 'Angle: extreme-angle fade',
+  swap_model_mask_strength: "Swap model's face mask",
   rescue_small_faces: 'Small-face rescue',
   jaw_reshape: 'Jaw reshape',
   autorotate_faces: 'Autorotate',

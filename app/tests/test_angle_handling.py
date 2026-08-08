@@ -358,10 +358,28 @@ class PipelineWiring(unittest.TestCase):
         self.masking = open(os.path.join(here, '..', 'roop', 'procmgr_masking.py'),
                             encoding='utf-8').read()
 
-    def test_defaults_are_on(self):
-        self.assertEqual(yaw_align_mode(), 'pose')
-        self.assertIs(getattr(g, 'angle_visibility_mask'), True)
-        self.assertGreater(float(getattr(g, 'angle_fade_strength')), 0.0)
+    def test_defaults_are_off(self):
+        """All three ship OFF, and this asserts it rather than merely allowing it.
+
+        They were on for one day and made real footage worse. The cause is in
+        test_pose_shape.py: every one of them keys on a 5-point pose solve whose
+        error against a real head is 15-20 deg, systematically, per person. Any
+        change that turns one of them back on by default has to argue with that
+        measurement first — which is what this test is for.
+        """
+        self.assertEqual(yaw_align_mode(), 'off')
+        self.assertIs(getattr(g, 'angle_visibility_mask'), False)
+        self.assertEqual(float(getattr(g, 'angle_fade_strength')), 0.0)
+        self.assertEqual(float(getattr(g, 'swap_model_mask_strength')), 0.0)
+
+    def test_the_layers_still_work_when_switched_on(self):
+        """Off by default must not mean unreachable: the gates are the only thing
+        holding them, so each one has to act on the very next face once its
+        setting is raised."""
+        self.assertGreater(angle_fade_weight(88, 0, 65.0), 0.0)
+        poly = pose_visibility_polygon(60.0, -20.0,
+                                       swap_template_points(512, 'arcface'))
+        self.assertIsNotNone(poly)
 
     def test_the_fade_reads_its_global(self):
         self.assertIn('angle_fade_weight(tgt_yaw_deg, tgt_pitch_deg', self.procmgr)
@@ -435,7 +453,7 @@ class PipelineWiring(unittest.TestCase):
         what would otherwise spread the swap back over the hair being removed.
         """
         feather = self.masking.index('img_matte = self.blur_area(img_matte')
-        trim = self.masking.index('img_matte *= vis_matte')
+        trim = self.masking.index('self._trim_capped(img_matte, vis_matte')
         self.assertLess(feather, trim)
 
     def test_paste_upscale_defaults_to_no_trim(self):
@@ -472,10 +490,52 @@ class FadeTowardPlate(unittest.TestCase):
         out = self.fade(self.swap, self.plate, 1.0)
         np.testing.assert_allclose(out, self.plate, atol=1)
 
-    def test_half_fade_is_the_midpoint(self):
-        out = self.fade(self.swap, self.plate, 0.5).astype(np.float64)
-        want = (self.swap.astype(np.float64) + self.plate.astype(np.float64)) / 2.0
-        self.assertLess(np.abs(out - want).max(), 1.5)
+    def _keep(self, f):
+        """Per-pixel share of the SWAP that survived a fade of `f`, recovered by
+        fading two constant crops so the arithmetic is exact."""
+        from roop.ProcessMgr import ProcessMgr
+        white = np.full((512, 512, 3), 255, np.uint8)
+        black = np.zeros((512, 512, 3), np.uint8)
+        return ProcessMgr._fade_toward_plate(white, black, f)[:, :, 0] / 255.0
+
+    def test_it_withdraws_from_the_outside_in(self):
+        """The property that stops it doubling features. A uniform cross-dissolve
+        superimposes two differently-shaped faces, so every feature appears twice;
+        this gives up the swap spatially instead, so a pixel is either swapped or
+        original and only the ring between them is mixed."""
+        keep = self._keep(0.5)
+        from roop.face_util import swap_template_points
+        pts = np.asarray(swap_template_points(512, 'arcface'))
+        centre = tuple(int(v) for v in pts.mean(axis=0))
+
+        # Middle of the face keeps the swap; the corner of the crop has given it up.
+        self.assertGreater(keep[centre[1], centre[0]], 0.99)
+        self.assertLess(keep[2, 2], 0.01)
+
+    def test_the_features_are_never_a_superposition(self):
+        """At every fade the default ceiling can reach, each of the five keypoints
+        is either fully swapped or fully plate — never a blend of the two, which
+        is what a doubled eye or a doubled mouth actually is."""
+        from roop.face_util import swap_template_points
+        pts = np.asarray(swap_template_points(512, 'arcface')).astype(int)
+        for f in (0.1, 0.25, 0.4, 0.5, 0.65, 0.75):
+            keep = self._keep(f)
+            for x, y in pts:
+                with self.subTest(fade=f, pt=(x, y)):
+                    k = keep[y, x]
+                    self.assertTrue(k > 0.99 or k < 0.01,
+                                    f'keypoint half-faded ({k:.3f}) at fade {f}')
+
+    def test_periphery_goes_before_the_features(self):
+        """Which is the ordering that makes the previous test possible: the swap
+        is given up at the edge of the face first and around the eyes, nose and
+        mouth last."""
+        from roop.face_util import swap_template_points
+        pts = np.asarray(swap_template_points(512, 'arcface')).astype(int)
+        keep = self._keep(0.5)
+        edge = keep[256, 8]
+        feature = min(keep[y, x] for x, y in pts)
+        self.assertLess(edge, feature)
 
     def test_it_is_monotone_in_the_fade(self):
         prev = None
@@ -536,7 +596,8 @@ class PasteUpscaleExecutes(unittest.TestCase):
         rng = np.random.default_rng(7)
         self.target = rng.integers(0, 255, (400, 400, 3), dtype=np.uint8)
         self.face = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
-        _, kp = _project(70, -30)
+        self.lm, self.kp = _project(70, -30)
+        kp = self.kp
         old = g.yaw_align
         g.yaw_align = 'pose'
         try:
@@ -589,6 +650,66 @@ class PasteUpscaleExecutes(unittest.TestCase):
         self.assertLess(np.abs(half - base).mean(), np.abs(full - base).mean())
         self.assertLess(np.abs(half - full).mean(), np.abs(base - full).mean() * 1.05)
 
+    def test_a_wildly_wrong_polygon_cannot_take_half_the_face(self):
+        """The backstop for the failure this layer is actually reported for.
+
+        A pose read 15-20 deg too far round — which a prominent nose is worth on
+        its own (tests/test_pose_shape.py) — puts the polygon over the wrong half
+        of a fully visible face. Uncapped that reads as one half swapped and one
+        half original with a line between them. The cap turns it into an
+        over-trimmed cheek.
+
+        Driven here with a polygon that is deliberately absurd rather than merely
+        wrong — half the crop, exactly — so the test measures the CAP and not how
+        wrong some particular pose happens to be.
+        """
+        from roop.face_util import VIS_TRIM_MAX_FRAC
+        half = np.array([[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]])
+        IM = cv2.invertAffineTransform(self.M)
+        trim = self.paster._visibility_matte(half, 1.0, (512, 512), IM,
+                                             self.target.shape)
+        self.assertIsNotNone(trim)
+
+        matte = self._matte()
+        before = float(matte.sum())
+        self.paster._trim_capped(matte, trim, VIS_TRIM_MAX_FRAC)
+        removed = 1.0 - float(matte.sum()) / before
+        self.assertGreater(removed, 0.0, 'the trim did nothing at all')
+        self.assertLessEqual(removed, VIS_TRIM_MAX_FRAC + 1e-6,
+                             f'trim removed {removed:.1%} of the matte')
+
+    def test_the_cap_leaves_a_normal_trim_alone(self):
+        """It is a backstop, not a strength control: a polygon from a pose the
+        solve got right trims well under the cap, so capping must not touch it."""
+        from roop.face_util import VIS_TRIM_MAX_FRAC
+        IM = cv2.invertAffineTransform(self.M)
+        trim = self.paster._visibility_matte(self.poly, 1.0, (512, 512), IM,
+                                             self.target.shape)
+        capped = self.paster._trim_capped(self._matte(), trim, VIS_TRIM_MAX_FRAC)
+        uncapped = self._matte() * trim
+        np.testing.assert_allclose(capped, uncapped, atol=1e-6)
+
+    def _matte(self):
+        """The paste matte this face would actually get, up to the point the trim
+        is applied — the quantity the cap is a fraction OF.
+
+        The landmark hull matters here and is not optional detail: against the
+        bare warped ellipse the same polygon at the same pose scores 40% removed
+        where against the real matte it scores 1.9%, because the ellipse claims
+        most of a square crop and the face does not. A cap measured against the
+        wrong quantity would fire on every angled face.
+        """
+        h, w = self.target.shape[:2]
+        IM = cv2.invertAffineTransform(self.M)
+        m = np.zeros((512, 512), np.uint8)
+        cv2.ellipse(m, (256, 256), (256, 256), 0, 0, 360, 255, -1)
+        m = cv2.warpAffine(m, IM, (w, h), flags=cv2.INTER_LINEAR, borderValue=0.0)
+        hull = self.paster.create_landmark_mask(
+            np.asarray(self.lm, np.float32), self.target.shape, 20.0,
+            kps=np.asarray(self.kp, np.float32))
+        m = self.paster.blur_area(np.minimum(m, hull), 20.0)
+        return m.astype(np.float32) / 255.0
+
     def test_outside_the_crop_footprint_the_multiplier_keeps(self):
         """The warp's border fill has to mean "keep", not "delete".
 
@@ -639,13 +760,13 @@ class PasteUpscaleExecutes(unittest.TestCase):
 class SettingsSurface(unittest.TestCase):
     """The env override has to keep working, or there is no way to A/B this."""
 
-    def test_env_can_still_force_the_old_behaviour(self):
+    def test_env_can_still_select_every_mode(self):
         from settings import initial_yaw_align
         old = os.environ.get('ROOP_YAW_ALIGN')
         try:
             for raw, want in (('off', 'off'), ('0', 'off'), ('false', 'off'),
                               ('stabilize', 'stabilize'), ('1', 'stabilize'),
-                              ('pose', 'pose'), ('', 'pose'), ('nonsense', 'pose')):
+                              ('pose', 'pose'), ('', 'off'), ('nonsense', 'off')):
                 os.environ['ROOP_YAW_ALIGN'] = raw
                 with self.subTest(raw=raw):
                     self.assertEqual(initial_yaw_align(), want)
@@ -690,9 +811,10 @@ class SettingsSurface(unittest.TestCase):
             except ValueError:
                 return v.strip('\'"')
 
-        for key, expected in (('yaw_align', 'pose'),
-                              ('angle_visibility_mask', True),
-                              ('angle_fade_strength', 65.0)):
+        for key, expected in (('yaw_align', 'off'),
+                              ('angle_visibility_mask', False),
+                              ('angle_fade_strength', 0.0),
+                              ('swap_model_mask_strength', 0.0)):
             with self.subTest(key=key):
                 j = re.findall(rf'^\s*{key}:\s*([^,\n]+)', js, re.M)
                 self.assertEqual(len(j), 1, f'{key} not declared once in defaults.js')

@@ -60,14 +60,32 @@ def initial_yaw_align():
         return 'stabilize'
     if raw in ('0', 'off', 'false', 'no'):
         return 'off'
-    # Default 'pose', not 'off'. The fixed frontal template makes the crop
-    # BREATHE 1.354x in scale over yaw 0-88 x pitch +/-40, which both wobbles
-    # frame to frame and hands the swap model a face at a size it was not
-    # trained on; 'pose' holds that to 1.072x. Frontal faces are unaffected
-    # either way — the correction fades in from 15 deg off-axis — so the old
-    # default was paying nothing and fixing nothing. ROOP_YAW_ALIGN=off still
-    # gets the previous behaviour exactly, for A/B.
-    return 'pose'
+    # Default 'off'. This shipped as 'pose' for one day and was reported worse on
+    # real footage — flicker and a swapped face that does not match the original's
+    # size, both on lateral poses, which is precisely where 'pose' acts.
+    #
+    # The measurement that justified 'pose' still stands (the fixed template makes
+    # the crop breathe 1.354x over yaw 0-88 x pitch +/-40 against 1.072x), but it
+    # is not the measurement that decides this. 'pose' rebuilds the alignment
+    # template from a SOLVED yaw and pitch, and that solve fits ONE reference head
+    # by weak perspective, so it is only as good as that head matching the person
+    # in frame. It does not, and the error is large — nose protrusion is what
+    # carries most of the yaw signal in 5 points, so (tests/test_pose_shape.py):
+    #
+    #   true yaw            15     30     45     60     75
+    #   reference head    15.0   30.0   45.0   60.0   75.0
+    #   nose +40%         24.6   44.6   59.6   71.3   81.1
+    #   nose -40%          4.5    9.7   16.5   27.1   47.8
+    #
+    # A prominent-nosed person turning 30 deg is read as 45 and gets the FULL
+    # pose-matched template (the band saturates at 40), i.e. a crop matched to a
+    # pose they are not in. That is a per-person systematic error, not noise, so
+    # it cannot be averaged or smoothed away — and it is inherited by both of the
+    # other angle layers, which key on the same number.
+    #
+    # Kept selectable, and worth re-testing per clip: ROOP_YAW_ALIGN=pose, or the
+    # selector in the Face Swap tab.
+    return 'off'
 
 
 class Settings:
@@ -217,8 +235,13 @@ class Settings:
         # Angle handling, layers 2 and 3 — see roop.face_util
         # (pose_visibility_polygon, angle_fade_weight). Layer 1 is yaw_align
         # above; all three are one structure and share its off-axis fade band.
-        self.angle_visibility_mask = self.default_get(data, 'angle_visibility_mask', True)
-        self.angle_fade_strength = self.default_get(data, 'angle_fade_strength', 65.0)
+        # Both default OFF, with yaw_align — see initial_yaw_align for the pose
+        # error all three inherit, and roop.globals for what each one does with it.
+        self.angle_visibility_mask = self.default_get(data, 'angle_visibility_mask', False)
+        self.angle_fade_strength = self.default_get(data, 'angle_fade_strength', 0.0)
+        # Swap-model face mask — only hififace/hyperswap emit one; the models that
+        # do not are unaffected at any value.
+        self.swap_model_mask_strength = self.default_get(data, 'swap_model_mask_strength', 0.0)
         # Jaw / chin reshape toward the source face shape
         self.jaw_reshape = self.default_get(data, 'jaw_reshape', False)
         self.jaw_reshape_strength = self.default_get(data, 'jaw_reshape_strength', 0.5)
@@ -374,6 +397,7 @@ class Settings:
             'yaw_align': self.yaw_align,
             'angle_visibility_mask': self.angle_visibility_mask,
             'angle_fade_strength': self.angle_fade_strength,
+            'swap_model_mask_strength': self.swap_model_mask_strength,
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,
             'detail_transfer_strength': self.detail_transfer_strength,

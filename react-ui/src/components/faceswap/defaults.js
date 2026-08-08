@@ -19,13 +19,17 @@ export const FACESWAP_DEFAULTS = {
   // either side of it and was the last Face Swap control missing here, so
   // "Reset defaults" restored its neighbours and silently left this one at
   // whatever it was — the same gap expression_restore_strength had below.
-  // 'pose' rather than 'off': the fixed frontal template breathes 1.354x in crop
-  // scale over the pose sphere against 1.072x here, and frontal faces are
-  // unaffected in either mode. Keep in step with settings.initial_yaw_align.
-  yaw_align: 'pose',
+  // 'off'. All three angle layers below key on a 5-point pose solve that fits ONE
+  // reference head, and nose protrusion carries most of the yaw signal — so a
+  // prominent-nosed person turning 30° is read as 45° and gets a crop, a trim and
+  // a fade meant for a pose they are not in. Kept selectable; see
+  // settings.initial_yaw_align for the measured table.
+  yaw_align: 'off',
   // The other two layers of the same angle structure.
-  angle_visibility_mask: true,
-  angle_fade_strength: 65,
+  angle_visibility_mask: false,
+  angle_fade_strength: 0,
+  // Only hififace / hyperswap emit a mask; ignored by every other swapper.
+  swap_model_mask_strength: 0,
   rescue_small_faces: true,
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',

@@ -1,4 +1,6 @@
 import os
+import threading
+
 import roop.globals
 import cv2
 import numpy as np
@@ -320,6 +322,20 @@ class FaceSwapInsightFace():
         self.model_standard_deviation = [1.0, 1.0, 1.0]
         self.model_denormalize = False
         self.model_template = "arcface"
+        # Some swappers emit their own face mask as a SECOND graph output —
+        # hififace and hyperswap both do. It says where the net actually
+        # synthesised a face, which the paste matte cannot know: the matte is an
+        # ellipse intersected with a landmark hull whose forehead extension runs
+        # 60% above the brows and therefore into the HAIR. Measured against the
+        # model's own verdict, 15-27% of the matte is territory hififace says is
+        # not face on a frontal head, and 31% on a profile.
+        #
+        # The mask lands here, per thread, because the swap runs on N workers and
+        # `Run` cannot change its return type without touching every caller
+        # (RunBatch, RunBatchMulti, swap_batcher, ProcessMgr). ProcessMgr reads it
+        # immediately after its own Run call, on the same thread.
+        self.model_has_mask = False
+        self._mask_tls = threading.local()
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
@@ -425,6 +441,10 @@ class FaceSwapInsightFace():
             self.model_standard_deviation = spec["standard_deviation"]
             self.model_denormalize = spec["denormalize"]
             self.model_template = spec.get("template", "arcface")
+            # Read from the GRAPH, not from the spec table: whether a net emits a
+            # mask is a property of the file, and a hand-kept flag would be one
+            # more thing to get wrong when a model is added.
+            self.model_has_mask = len(self.model_swap_insightface.get_outputs()) > 1
             self.loaded_model_key = swap_model
 
     @staticmethod
@@ -530,6 +550,30 @@ class FaceSwapInsightFace():
               f"(shape verification); rebuilt on CUDA/CPU for this model.")
         return True
 
+    def _stash_masks(self, ort_outs, count=1):
+        """Keep this call's mask output(s) for the calling thread to collect.
+
+        `take_masks` below is the only reader, and it clears as it reads, so a
+        model WITHOUT a mask cannot serve a stale one left behind by a previous
+        model in the same session.
+        """
+        masks = None
+        if len(ort_outs) > 1 and ort_outs[1] is not None:
+            m = np.asarray(ort_outs[1])
+            # (B,1,H,W) -> list of (H,W); some exports drop the channel axis.
+            if m.ndim == 4:
+                masks = [m[i, 0] for i in range(m.shape[0])]
+            elif m.ndim == 3:
+                masks = [m[i] for i in range(m.shape[0])]
+        self._mask_tls.masks = masks if masks and len(masks) >= count else None
+
+    def take_masks(self):
+        """The mask(s) from this thread's most recent inference, or None. Clears,
+        so each swap's mask is consumed exactly once."""
+        masks = getattr(self._mask_tls, 'masks', None)
+        self._mask_tls.masks = None
+        return masks
+
     def _infer(self, feed):
         """Run the swap net, transparently falling back off a broken TensorRT
         engine to CUDA/CPU the first time it fails (see _rebuild_without_trt).
@@ -559,7 +603,10 @@ class FaceSwapInsightFace():
         # _infer leases an independent pool session (own TensorRT context) when
         # pooling is on, and falls back off a broken TRT engine transparently.
         ort_outs = self._infer(feed)
-        # Some models (HyperSwap) emit (image, mask); the image is output [0].
+        # Some models (hififace, HyperSwap) emit (image, mask). The image is
+        # output [0]; the mask is kept for this thread rather than dropped — see
+        # `model_has_mask` and `take_masks`.
+        self._stash_masks(ort_outs, 1)
         return ort_outs[0][0]
 
     def RunBatch(self, source_face: Face, target_face: Face, temp_frames: list) -> list:
@@ -578,6 +625,7 @@ class FaceSwapInsightFace():
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
         ort_outs = self._infer(feed)
         out = ort_outs[0]   # [B,3,H,W]
+        self._stash_masks(ort_outs, out.shape[0])
         return [out[i] for i in range(out.shape[0])]
 
     def RunBatchMulti(self, requests: list) -> list:
@@ -594,6 +642,7 @@ class FaceSwapInsightFace():
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
         ort_outs = self._infer(feed)
         out = ort_outs[0]
+        self._stash_masks(ort_outs, out.shape[0])
         return [out[i] for i in range(out.shape[0])]
 
     def Release(self):
@@ -605,3 +654,4 @@ class FaceSwapInsightFace():
         self.emap = None
         self.converter = None
         self.loaded_model_key = None
+        self.model_has_mask = False

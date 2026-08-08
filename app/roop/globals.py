@@ -62,17 +62,37 @@ refine_landmarks = False
 # Seeded from ROOP_YAW_ALIGN (1/on/true == 'stabilize', or name a mode);
 # the UI selector overrides it per run. See face_util._maybe_constrained.
 yaw_align = initial_yaw_align()
-# Angle handling, the other two layers of the same structure as yaw_align:
+# Angle handling, the other two layers of the same structure as yaw_align. BOTH
+# DEFAULT OFF, with yaw_align — see settings.initial_yaw_align for the pose-solve
+# error all three inherit, and the notes below for what each one does with it.
+#
 #   angle_visibility_mask — trim the paste matte to the face surface still
 #       facing the camera, so a profile stops pasting swap pixels over hair and
 #       neck (face_util.pose_visibility_polygon). Only acts while yaw_align is
-#       'pose', because it is placed by that alignment's template.
+#       'pose', because it is placed by that alignment's template. Its failure
+#       mode is the one that gets reported: fed a yaw 15 deg too high it cuts the
+#       far side of a face that is entirely visible, and half the head then shows
+#       the original texture beside the swapped one. Capped now so it can never
+#       remove more than VIS_TRIM_MAX_FRAC of the matte, which bounds that to a
+#       soft edge instead of a split face — see procmgr_masking._visibility_matte.
 #   angle_fade_strength — percent, the ceiling on how far the swap fades back
-#       toward the plate at 90 deg off-axis (face_util.angle_fade_weight). This
-#       is the layer that bounds an out-of-distribution swap, and the only one
-#       that behaves identically for every swap model. 0 disables it.
-angle_visibility_mask = True
-angle_fade_strength = 65.0
+#       toward the plate at 90 deg off-axis (face_util.angle_fade_weight). It
+#       bounds an out-of-distribution swap, and it is the only angle layer that
+#       behaves identically for every swap model. It is also the layer that
+#       DOUBLES features if it is done naively: a straight cross-dissolve of the
+#       swapped crop with the plate superimposes two differently-shaped faces, so
+#       the eyes, nose and mouth appear twice. It is applied from the outside in
+#       instead (ProcessMgr._fade_toward_plate). 0 disables it.
+angle_visibility_mask = False
+angle_fade_strength = 0.0
+# Swap-model face mask (hififace / hyperswap emit one as a second graph output).
+# Percent: how strongly to trim the paste matte to where the NET says it drew a
+# face. Unlike the two above this is not pose-gated — the model's verdict is
+# derived from the actual image. Off by default because it is new and unproven on
+# real footage, not because it is suspected: turning it up is the first thing to
+# try when a hififace/hyperswap paste reaches into hair. See
+# procmgr_masking._model_mask_matte.
+swap_model_mask_strength = 0.0
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
 # geometry). strength 0..1 = amount of the shape difference applied.
