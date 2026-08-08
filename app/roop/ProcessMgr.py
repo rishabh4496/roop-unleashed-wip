@@ -2654,15 +2654,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         stays the fallback for stills and tracking-off runs, which have no
         sequence to be continuous along.
         """
-        roll = None
-        try:
-            roll = original_face.get('roll_deg') if isinstance(original_face, dict) \
-                else getattr(original_face, 'roll_deg', None)
-        except Exception:
-            roll = None
+        roll = self._resolved_roll(original_face)
         if roll is not None:
-            return orientation.action_for_roll(float(roll))
+            return orientation.action_for_roll(roll)
         return face_rotation_action(original_face, frame.shape[:2])
+
+
+    @staticmethod
+    def _resolved_roll(face):
+        """The roll roop.orientation stamped on this face, or None when the
+        tracking pre-pass did not run (stills, tracking off, latch disabled)."""
+        try:
+            roll = (face.get('roll_deg') if isinstance(face, dict)
+                    else getattr(face, 'roll_deg', None))
+            return None if roll is None else float(roll)
+        except Exception:
+            return None
 
 
     @staticmethod
