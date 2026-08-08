@@ -257,6 +257,43 @@ class UnswappedBystanders(unittest.TestCase):
         partial = _Face(350, 210, 70)
         self.assertIsNone(build_regions([face, partial], SHAPE, order=[0]))
 
+    def test_the_duplicate_is_dropped_whichever_box_holds_the_source(self):
+        """Which of two duplicate boxes ends up swapped is ARBITRARY — it is
+        whichever one the tracker happened to associate — so the leftover is as
+        often the larger box as the smaller.
+
+        Tested in one direction only ("is the leftover inside the swapped
+        face?") half of all duplicates sail straight through: containment of a
+        big box in a small one is 0.12, nothing fires, and the full-size
+        duplicate carves the swapped face in half exactly as if the guard were
+        not there. Same pair as the test above, swapped over.
+        """
+        full = _Face(340, 200, 200)
+        partial = _Face(350, 210, 70)
+        self.assertIsNone(build_regions([partial, full], SHAPE, order=[0]),
+                          'the duplicate is only caught when it is the smaller '
+                          'of the two boxes')
+
+    def test_a_smaller_separate_face_nested_in_a_bigger_ones_box_still_competes(self):
+        """And this is why containment cannot simply be made symmetric.
+
+        A smaller head standing behind and to one side of a bigger one is 95%
+        contained in the bigger one's padded box while being a completely
+        different person. On containment alone that is indistinguishable from a
+        partial duplicate; what separates them is that duplicates are
+        CONCENTRIC, and these two sit 0.71 radii apart.
+
+        The claim is doing real work here, which is what makes dropping it the
+        smear this module exists to remove: the bigger face's ownership goes to
+        zero over the smaller one's face.
+        """
+        behind = _Face(300, 160, 110)
+        near = _Face(360, 230, 190)
+        regions = build_regions([behind, near], SHAPE, order=[1])
+        self.assertIsNotNone(regions, 'the bystander was swallowed as a duplicate')
+        self.assertEqual(float(regions[1].own.min()), 0.0,
+                         'the bystander is in the competition but defends nothing')
+
     def test_a_genuine_neighbour_is_still_a_claimant(self):
         """The guard must not swallow the case it was built alongside — two
         people close enough to interact still each own their own pixels."""

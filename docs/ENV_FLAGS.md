@@ -344,6 +344,10 @@ Shown as `-> source 0 (via track 0, d=0.35)` in the per-track block.
 | `ROOP_FACE_DEMARCATE` | 1 (on) | Draw a boundary between faces that overlap, instead of letting each one paste its whole matte. `0` restores the old behaviour — use it to check whether an artefact on interacting faces comes from this or from the swap itself. |
 | `ROOP_FACE_DEMARCATE_FEATHER` | `0.02` | Width of the hand-over band where one face blends into the other, as a fraction of face radius (~4 px on a 200 px face). Larger mixes the two faces over a wider band; smaller risks aliasing along the join. |
 | `ROOP_FACE_DEMARCATE_DEPTH` | `0.10` | How much on-screen size counts as "in front", per doubling of face radius. `0` treats every face as the same distance away, so the boundary sits on the geometric midline regardless of who is nearer the camera. |
+| `ROOP_FACE_DEMARCATE_MIN_BAND_PX` | `16.0` | Floor on the hand-over band, in PIXELS. Detection noise moves a boundary by a fixed number of pixels rather than a fixed fraction, so without a pixel floor the join between two large faces shimmers frame to frame. |
+| `ROOP_FACE_DEMARCATE_MAX_BAND` | `0.16` | Cap on that floor as a fraction of face radius, so a small face is not turned into all ramp and no face. |
+| `ROOP_FACE_DEMARCATE_DUP` | `0.6` | How much of one claim must sit inside the other before the two are treated as **one face detected twice** rather than two faces. A duplicate is dropped instead of competed with — left in, it wins half of the swapped face's own pixels and carves it apart, on only the frames where the duplicate was detected, so it flickers. Measured both ways round: which of the two boxes ends up holding the source is arbitrary. |
+| `ROOP_FACE_DEMARCATE_DUP_SEP` | `0.35` | ...and how concentric they must be, as centre separation over the smaller claim's radius. Containment alone is not enough: it is also 1.0 for a genuinely separate smaller head nested in a bigger one's padded box, and dropping *that* claim is the smear this whole feature exists to remove. Duplicates measure 0.07–0.24 here, separate faces 0.52–1.08. |
 
 ### What goes wrong when two swapped faces meet
 

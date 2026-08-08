@@ -28,7 +28,7 @@ from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -2105,16 +2105,31 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     self._apply_stab(f)
 
             if self.options.swap_mode == "all":
+                # Audited like every other mode. Nothing is ever refused here, so
+                # the refusal half of the report is vacuous — but the gap-fill
+                # half is not, and it is the half that says whether the swap is
+                # registered from landmarks nobody detected. That question does
+                # not care which mode selected the face.
+                _audit_hit('faces seen', len(faces))
                 for face in faces:
                     num_faces_found += 1
                     pending.append((self.options.selected_index, face))
+                    _audit_hit('swapped (every face)')
+                    _audit_swapped_gapfill(face)
 
             elif self.options.swap_mode == "all_input":
+                _audit_hit('faces seen', len(faces))
                 for i, face in enumerate(faces):
                     num_faces_found += 1
                     if i < len(self.input_face_datas):
                         pending.append((i, face))
+                        _audit_hit('swapped (nth face -> nth source)')
+                        _audit_swapped_gapfill(face)
                     else:
+                        # The loop STOPS here, so every remaining face is refused
+                        # too — counted, or `faces seen` would not add up.
+                        _audit_hit('refused: no source faceset for that person',
+                                   len(faces) - i)
                         break
 
             elif self.options.swap_mode == "selected" and getattr(self, '_track_mode', False) and frame_idx is not None:
@@ -2329,20 +2344,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
                     if src_index is not None:
                         _audit_hit('swapped (identity lock)')
-                        # How much of the OUTPUT is drawn from landmarks nobody
-                        # detected. The count above is of every face seen, which
-                        # is dominated by whoever is not being swapped; this one
-                        # is about the face you are looking at. An interpolated
-                        # face carries a bbox, kps and 106 landmarks linearly
-                        # interpolated between its neighbours, and those decide
-                        # the crop, the paste mask and the mouth region — so on a
-                        # MOVING head a high number here is a swap that shifts
-                        # every other frame, which reads as flicker with nothing
-                        # in front of the face. It is set by the scan stride
-                        # (ROOP_TEMPORAL_STEP) and by real detection misses, and
-                        # only the first of those is free to fix.
-                        if isinstance(face, dict) and face.get('_interpolated'):
-                            _audit_hit('  of those SWAPPED, gap-filled')
+                        _audit_swapped_gapfill(face)
                         claimed_sources_in_frame.add(src_index)
                         pending.append((src_index, face))
                         num_faces_found += 1
@@ -2399,6 +2401,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 pending.append((src_index, face))
                                 num_faces_found += 1
                                 _audit_hit('swapped (per-frame match)')
+                                _audit_swapped_gapfill(face)
                             else:
                                 _audit_hit('fallback missed (no source for person)')
                         else:
@@ -2468,6 +2471,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
                 claimed_faces, claimed_persons = set(), set()
                 _audit_hit('faces seen', len(faces))
+                # Same sub-count of `faces seen` the identity-lock path keeps,
+                # and for the same reason — this is the DEFAULT mode, so a
+                # gap-fill line that only exists over there describes the path
+                # most runs do not take.
+                _gapfilled = sum(1 for f in faces
+                                 if isinstance(f, dict) and f.get('_interpolated'))
+                if _gapfilled:      # or the report grows a permanent 0 line
+                    _audit_hit('  of those, gap-filled', _gapfilled)
                 for d, g, fidx in candidates:
                     if fidx in claimed_faces or g in claimed_persons:
                         continue
@@ -2478,6 +2489,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         pending.append((src_index, faces[fidx]))
                         num_faces_found += 1
                         _audit_hit('swapped (identity match)')
+                        _audit_swapped_gapfill(faces[fidx])
                     else:
                         _audit_hit('refused: no source faceset for that person')
                         if _DEBUG_MATCH:
@@ -2504,10 +2516,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
                 gender = 'F' if self.options.swap_mode == "all_female" else 'M'
+                _audit_hit('faces seen', len(faces))
                 for face in faces:
                     if face.sex == gender:
                         num_faces_found += 1
                         pending.append((self.options.selected_index, face))
+                        _audit_hit('swapped (gender match)')
+                        _audit_swapped_gapfill(face)
+                    else:
+                        # Named for what it is. A gender verdict that flips on a
+                        # turned or shadowed head is its own on/off flicker, and
+                        # it looked identical to an identity gate refusing.
+                        _audit_hit('refused: the other gender')
 
             # Every OTHER face in the frame is handed over too. They are not
             # swapped and never painted, but they own their own pixels, and until

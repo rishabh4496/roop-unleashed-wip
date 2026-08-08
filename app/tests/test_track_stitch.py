@@ -422,13 +422,21 @@ class TheMechanicsHold(unittest.TestCase):
         rt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                '..', 'roop', 'procmgr_runtime.py'),
                   encoding='utf-8').read()
-        self.assertIn("_audit_hit('  of those SWAPPED, gap-filled')", pm)
+        self.assertIn('_audit_swapped_gapfill(face)', pm)
         # Counted inside the branch that actually swapped, not beside it.
         swap_hit = pm.index("_audit_hit('swapped (identity lock)')")
-        interp_hit = pm.index("_audit_hit('  of those SWAPPED, gap-filled')")
+        interp_hit = pm.index('_audit_swapped_gapfill(face)', swap_hit)
         self.assertLess(swap_hit, interp_hit)
         self.assertLess(interp_hit - swap_hit, 1200)
-        self.assertIn("of those SWAPPED, gap-filled", rt)
+        self.assertIn('of those SWAPPED, gap-filled', rt)
+        # ...and at EVERY other site that swaps, which is a separate property
+        # with its own guard — see test_swap_audit. Counted here only in the
+        # identity-lock branch, the printed percentage is measured against a
+        # total that includes the other modes, and in the DEFAULT mode it is
+        # zero so the line never prints at all.
+        from tests.test_swap_audit import _swap_site_counts
+        appends, gapfills, _successes = _swap_site_counts()
+        self.assertEqual(appends, gapfills)
 
     def test_the_per_track_distances_are_printed_unconditionally(self):
         """"N tracks, 1 matched to a source" is unreadable on its own: a clip

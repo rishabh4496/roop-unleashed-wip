@@ -35,6 +35,36 @@ def _swap_faces_body():
     raise AssertionError('swap_faces not found in ProcessMgr.py')
 
 
+def _swap_site_counts():
+    """(pending.append, _audit_swapped_gapfill, 'swapped ...' hits) in swap_faces.
+
+    Counted per enclosing BLOCK rather than over the whole function, so a single
+    call at the top cannot stand in for one at each site.
+    """
+    body = _swap_faces_body()
+    appends = gapfills = successes = 0
+    for node in ast.walk(body):
+        for field in ('body', 'orelse', 'finalbody'):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for stmt in block:
+                if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+                    continue
+                fn = stmt.value.func
+                if (isinstance(fn, ast.Attribute) and fn.attr == 'append'
+                        and isinstance(fn.value, ast.Name) and fn.value.id == 'pending'):
+                    appends += 1
+                elif isinstance(fn, ast.Name) and fn.id == '_audit_swapped_gapfill':
+                    gapfills += 1
+                elif (isinstance(fn, ast.Name) and fn.id == '_audit_hit'
+                        and stmt.value.args
+                        and isinstance(stmt.value.args[0], ast.Constant)
+                        and str(stmt.value.args[0].value).startswith('swapped')):
+                    successes += 1
+    return appends, gapfills, successes
+
+
 class TestAuditBuckets(unittest.TestCase):
     def setUp(self):
         _audit_reset()
@@ -81,6 +111,62 @@ class TestAuditBuckets(unittest.TestCase):
         known = {'VETO_SOURCE_REUSED', 'VETO_SINGLE_ABS',
                  'VETO_OTHER_FITS', 'VETO_FAR_FROM_OWN'}
         self.assertEqual(used, known)
+
+    def test_every_swap_site_counts_gap_filled_landmarks(self):
+        """The gap-fill sub-count has to be taken at EVERY site that swaps.
+
+        There are three: identity lock, its per-frame fallback, and per-frame
+        identity matching — and the last is the DEFAULT mode. Counted at one of
+        them, the printed percentage is measured against a total that includes
+        the other two, so it under-reports; in the default mode it is zero, the
+        line never prints, and the diagnostic says nothing at all about the path
+        most runs take. That is the same shape as the bug the counter was added
+        to fix ("the audit could not have told you"), so it is worth a structural
+        guard rather than trusting the next edit to remember.
+
+        Paired structurally: every `pending.append(...)` in swap_faces must have
+        an `_audit_swapped_gapfill(...)` call in the same enclosing block.
+        """
+        appends, gapfills, successes = _swap_site_counts()
+        self.assertGreaterEqual(appends, 3, 'expected at least 3 swap sites')
+        self.assertEqual(appends, gapfills,
+                         f'{appends} sites append to `pending` but only {gapfills} '
+                         f'count gap-filled landmarks — the audit under-reports '
+                         f'how much of the output is drawn from a guess')
+
+    def test_every_swap_site_records_a_success_bucket(self):
+        """...and names itself as a swap, which is a separate failure.
+
+        `_audit_report` totals the swaps by the "swapped" PREFIX and subtracts
+        that from `faces seen`. A site that counts the face as seen and then
+        appends it to `pending` without a success bucket is therefore reported
+        as a REFUSAL — the report would tell a user that a mode which swaps
+        every single face swapped none of them.
+        """
+        appends, _gapfills, successes = _swap_site_counts()
+        self.assertEqual(appends, successes,
+                         f'{appends} sites append to `pending` but only '
+                         f'{successes} record a "swapped ..." bucket — those '
+                         f'swaps would be reported as refusals')
+
+    def test_the_gapfill_bucket_is_not_counted_as_a_fourth_swap_bucket(self):
+        """It is a SUB-count of the swap buckets, and `_audit_report` totals
+        those by prefix — so a name beginning "swapped" would be added to the
+        total it is a fraction of, and could report more swaps than faces."""
+        from roop.procmgr_runtime import AUDIT_SWAPPED_GAPFILL
+        self.assertFalse(AUDIT_SWAPPED_GAPFILL.startswith('swapped'))
+
+    def test_report_measures_gapfill_against_every_swap_bucket(self):
+        import contextlib
+        import io
+        from roop.procmgr_runtime import AUDIT_SWAPPED_GAPFILL
+        _audit_hit('faces seen', 10)
+        _audit_hit('swapped (identity match)', 8)      # the default mode
+        _audit_hit(AUDIT_SWAPPED_GAPFILL, 4)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _audit_report()
+        self.assertIn('4 of the 8 faces actually swapped (50.0%)', buf.getvalue())
 
     def test_bucket_names_are_distinct(self):
         # Two buckets sharing a name would silently merge two gates in the report.

@@ -118,11 +118,37 @@ _RECT_PAD = 0.15
 # face's ramp.
 _BACKING = 1.5
 
-# How much of an unpainted claim has to sit inside a painted one before it is
-# treated as a duplicate detection of that same face rather than as a neighbour.
-# Two people cheek to cheek reach maybe 0.2-0.3 containment through the padded
-# boxes; a second box on one head is 0.8+. 0.6 sits in the empty middle.
+# How much of one claim has to sit inside the other before the two are treated
+# as duplicate detections of one face rather than as neighbours. Two people cheek
+# to cheek reach maybe 0.2-0.3 containment through the padded boxes; a second box
+# on one head is 0.8+. 0.6 sits in the empty middle.
+#
+# Measured EITHER WAY ROUND, which is the whole content of this being a pair of
+# numbers rather than one. Which of two duplicate boxes ends up holding the
+# source is arbitrary — it is whichever the tracker happened to associate — so
+# the unpainted one is as often the LARGER box as the smaller. Tested in one
+# direction only, "is the leftover inside the swapped face", half of all
+# duplicates sail through: containment of a big box in a small one is ~0.12 and
+# nothing fires.
 _DUP_CONTAIN = _env_float('ROOP_FACE_DEMARCATE_DUP', 0.6)
+
+# ...and containment on its own cannot be made symmetric safely, because it is
+# also 1.0 for a genuinely separate SMALL face sitting anywhere inside a large
+# one's padded box — a background head over a foreground shoulder. Dropping that
+# claim is the smear this module exists to remove.
+#
+# What separates the two is where the claims sit, not how much they overlap:
+# duplicate boxes of one head are concentric, two faces have centres a real
+# distance apart however nested their boxes are. Centre separation over the
+# SMALLER claim's radius, measured across the cases:
+#
+#   duplicate, jittered box        0.07     separate, cheek to cheek     0.76
+#   duplicate, partial box         0.18     separate, small over big     1.08
+#   duplicate, partial offset      0.24     separate, overlapping        0.52
+#
+# 0.35 sits in the empty band between them, and is the same number the per-track
+# diagnostic in procmgr_tracking prints "THE SAME FACE, detected twice" at.
+_DUP_CONCENTRIC = _env_float('ROOP_FACE_DEMARCATE_DUP_SEP', 0.35)
 
 
 class FaceRegion:
@@ -211,6 +237,22 @@ def _containment(a, b):
     return (iw * ih) / float(area)
 
 
+def _same_face(claim_a, claim_b):
+    """Whether two claims are one head detected twice rather than two faces.
+
+    Nested AND concentric. Either test alone gets it wrong in a way that matters:
+    containment is 1.0 for a small separate face anywhere inside a big one's
+    padded box, and concentricity alone would collapse two people standing dead
+    in line. See _DUP_CONTAIN and _DUP_CONCENTRIC for the measurements.
+    """
+    (_, ra, r_a), (_, rb, r_b) = claim_a, claim_b
+    if max(_containment(ra, rb), _containment(rb, ra)) <= _DUP_CONTAIN:
+        return False
+    sep = float(np.hypot((ra[0] + ra[2]) - (rb[0] + rb[2]),
+                         (ra[1] + ra[3]) - (rb[1] + rb[3])) * 0.5)
+    return sep < _DUP_CONCENTRIC * min(r_a, r_b)
+
+
 def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None):
     """Ownership fields for `faces`, as ``{index: FaceRegion}``.
 
@@ -265,7 +307,8 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
     # Concentric claims are therefore dropped rather than competed with. The test
     # is containment, not IoU: a duplicate box is often much smaller than the real
     # one (a partial detection), which puts IoU low while the two are plainly the
-    # same face.
+    # same face. It is measured in BOTH directions, because which of the two
+    # boxes ends up holding the source is arbitrary — see _same_face.
     if order is not None:
         painted_idx = set(order)
         for i in range(len(claims)):
@@ -274,7 +317,7 @@ def build_regions(faces, frame_shape, order=None, feather=None, depth_bias=None)
             for j in painted_idx:
                 if claims[j] is None:
                     continue
-                if _containment(claims[i][1], claims[j][1]) > _DUP_CONTAIN:
+                if _same_face(claims[i], claims[j]):
                     claims[i] = None
                     break
 

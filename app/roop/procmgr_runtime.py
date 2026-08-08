@@ -413,6 +413,41 @@ def _audit_hit(key, n=1):
     _audit[key] += n
 
 
+# The bucket below is a SUB-COUNT of the swap buckets, not a fourth one, so it
+# must never begin with "swapped" — _audit_report sums that prefix to get the
+# total and would count these twice.
+AUDIT_SWAPPED_GAPFILL = '  of those SWAPPED, gap-filled'
+
+
+def _audit_swapped_gapfill(face):
+    """Count a swapped face whose landmarks nobody detected.
+
+    How much of the OUTPUT is drawn from a guess. The 'faces seen' gap-fill line
+    counts every face detected, which on a two-person clip is dominated by
+    whoever is NOT being swapped — so a number that is really about the
+    bystander reads as if it were about the face you are looking at. This one is
+    only about faces that were actually swapped.
+
+    An interpolated face carries a bbox, kps and 106 landmarks linearly
+    interpolated between its neighbours, and those decide the swap crop, the
+    paste mask and the mouth region. On a MOVING head a high number here is a
+    swap that shifts every other frame — flicker with nothing in front of the
+    face. It comes from the scan stride (ROOP_TEMPORAL_STEP) and from real
+    detection misses, and only the first of those is free to fix.
+
+    Called from EVERY site that appends to `pending`, which is the thing to keep
+    true: there are three of them (identity lock, its per-frame fallback, and
+    per-frame identity matching, which is the default mode). Counted at one of
+    them, the percentage silently under-reports — and in the default mode it is
+    zero, so the line does not print at all and the diagnostic says nothing
+    about the one path most runs take. That is the same shape as the bug this
+    counter was added to fix.
+    """
+    # A Face is a dict subclass, but nothing here assumes it.
+    if isinstance(face, dict) and face.get('_interpolated'):
+        _audit_hit(AUDIT_SWAPPED_GAPFILL)
+
+
 def _audit_reset():
     _audit.clear()
 
@@ -445,20 +480,29 @@ def _audit_report():
     # as a refusal, which would report a clean run as a broken one.
     swapped = sum(v for k, v in _audit.items() if k.startswith('swapped'))
     print("\n==== SWAP AUDIT — why each detected face was or was not swapped ====", flush=True)
+    # Widened to the longest bucket actually present rather than a fixed 34, or
+    # the two longest refusal names push their own counts out of the column and
+    # the table stops being scannable — which is the only thing it is for.
+    kw = max(34, max(len(k) for k in _audit))
     for k in sorted(_audit, key=lambda x: -_audit[x]):
-        print(f"  {k:34s} {_audit[k]:8d} {100.0 * _audit[k] / seen:6.1f}%", flush=True)
+        print(f"  {k:{kw}s} {_audit[k]:8d} {100.0 * _audit[k] / seen:6.1f}%", flush=True)
     missed = seen - swapped
     if missed > 0:
         print(f"  -> {missed} of {seen} detected faces ({100.0 * missed / seen:.1f}%) were NOT swapped.",
               flush=True)
         print("     Frames where a face was found but left un-swapped are what reads as "
               "flicker. The largest refusal line above is the gate to loosen.", flush=True)
-    interp = _audit.get('  of those SWAPPED, gap-filled', 0)
+    interp = _audit.get(AUDIT_SWAPPED_GAPFILL, 0)
     if swapped and interp:
         print(f"     {interp} of the {swapped} faces actually swapped ({100.0 * interp / swapped:.1f}%) "
               "had INTERPOLATED landmarks — nobody detected them, their box and keypoints "
               "were filled in between neighbours.", flush=True)
-        print("     That is a different artefact from the one above: the swap is not missing, "
+        # "...from the one above" only when there IS one above: in a mode that
+        # refuses nothing (swap_mode 'all') this is the only artefact reported,
+        # and pointing at an absent paragraph reads as a missing line.
+        print("     That is a different artefact"
+              + (" from the one above" if missed > 0 else "")
+              + ": the swap is not missing, "
               "it is registered from a guess, so on a moving head it shifts every other frame. "
               "Set ROOP_TEMPORAL_STEP=1 if this is high.", flush=True)
     blind = _audit.get('frames with no face detected at all', 0)
