@@ -678,6 +678,61 @@ class PasteUpscaleExecutes(unittest.TestCase):
         self.assertLessEqual(removed, VIS_TRIM_MAX_FRAC + 1e-6,
                              f'trim removed {removed:.1%} of the matte')
 
+    def test_the_trim_never_cuts_the_forehead(self):
+        """The artefact this layer actually produced, and the one its own safety
+        test could not see.
+
+        Split by region, ALL of what the trim removed was forehead — 0.0% below
+        the brow line at every pose over yaw 0-75 x pitch -40..+20, and up to
+        8.1% above it. The forehead is the one part of the face where neither
+        shape has evidence: the 106 landmarks stop at the eyebrows, so the matte's
+        hull extrapolates up by 0.6 of the brow-chin distance and the polygon
+        extrapolates by carrying the reference ellipsoid 0.62 past the brows. The
+        difference between two guesses at the same unknown was being cut out of
+        the face, leaving the forehead showing original texture above a swapped
+        one with a seam across the brow.
+
+        And the "never trims real face" test is blind to it by construction:
+        there are no landmarks up there to report as trimmed.
+        """
+        IM = cv2.invertAffineTransform(self.M)
+        trim = self.paster._visibility_matte(self.poly, 1.0, (512, 512), IM,
+                                             self.target.shape)
+        self.assertIsNotNone(trim)
+        matte = self._matte()
+        cut = matte * (1.0 - trim)
+
+        # Brow line along the head's own up-axis, so a tilted head is measured
+        # against its own forehead rather than against image-up.
+        k = np.asarray(self.kp, np.float64)
+        up = ((k[0] + k[1]) / 2.0) - ((k[3] + k[4]) / 2.0)
+        up /= np.linalg.norm(up)
+        brow = float((np.asarray(self.lm, np.float64)[33:53] @ up).max())
+        ys, xs = np.mgrid[0:self.target.shape[0], 0:self.target.shape[1]]
+        above = (xs * up[0] + ys * up[1]) > brow
+
+        total = float(matte.sum())
+        self.assertLess(float(cut[above].sum()) / total, 0.005,
+                        'the trim is cutting the forehead again')
+
+    def test_the_trim_can_still_cut_the_sides(self):
+        """Opening the top edge must not disarm the layer entirely: the left and
+        right terminator is the real visible-surface information, and a column
+        the polygon never enters has to stay empty."""
+        IM = cv2.invertAffineTransform(self.M)
+        matte = self._matte()
+
+        def _removed(lo, hi):
+            keep = np.array([[lo, 0.0], [hi, 0.0], [hi, 1.0], [lo, 1.0]])
+            trim = self.paster._visibility_matte(keep, 1.0, (512, 512), IM,
+                                                 self.target.shape)
+            return 1.0 - float((matte * trim).sum()) / float(matte.sum())
+
+        # Full-height keep-bands, so the suffix-max cannot help them: what is
+        # being measured is purely the left/right boundary.
+        self.assertGreater(_removed(0.0, 0.35), 0.5)
+        self.assertGreater(_removed(0.5, 1.0), 0.5)
+
     def test_the_cap_leaves_a_normal_trim_alone(self):
         """It is a backstop, not a strength control: a polygon from a pose the
         solve got right trims well under the cap, so capping must not touch it."""

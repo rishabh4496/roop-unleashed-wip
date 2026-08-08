@@ -471,6 +471,36 @@ class MaskingMixin:
                 return None
             vis = np.zeros((h, w), dtype=np.uint8)
             cv2.fillPoly(vis, [poly.astype(np.int32)], 255)
+
+            # THE TOP EDGE IS OPENED UP, and this is the whole difference between
+            # this layer being a small correction and being the artefact people
+            # report. Measured contribution of the trim, split by region, over
+            # yaw 0-75 x pitch -40..+20 against the real matte:
+            #
+            #   below the brow line   0.0%   at every pose tested
+            #   forehead              0.0 - 8.1%
+            #
+            # i.e. ALL of it was forehead. Nothing else was ever being removed.
+            # And the forehead is the one part of the face where neither shape
+            # has any evidence: the 106-pt landmarks stop at the eyebrows, so the
+            # matte's hull extrapolates upward by 0.6 of the brow-chin distance
+            # and the polygon extrapolates by carrying the reference ellipsoid
+            # 0.62 past the brows. Two different extrapolations of the same
+            # unknown, and the difference between them was being cut out of the
+            # face — leaving the forehead showing original texture above a
+            # swapped face, with a seam across the brow. On a head tilted down
+            # they diverge most, which is where it was reported.
+            #
+            # It also means the safety test could not see this: it asserts that
+            # no truly-visible LANDMARK is trimmed, and there are no landmarks up
+            # there to trim.
+            #
+            # A suffix-maximum down each column keeps whatever the polygon says
+            # about the SIDES — the left/right terminator, which is the real
+            # visible-surface information and the reason this layer exists — and
+            # discards only its opinion about how high the face goes. A column
+            # the polygon never enters stays empty.
+            vis = np.maximum.accumulate(vis[::-1], axis=0)[::-1]
             # Two safeties, for two different errors, and they are not
             # substitutes for each other:
             #

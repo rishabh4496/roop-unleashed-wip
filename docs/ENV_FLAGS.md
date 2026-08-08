@@ -160,7 +160,7 @@ shared code and apply identically to every model:
 | Layer | What it fixes | Control | Default |
 |---|---|---|---|
 | 1. Pose-matched alignment | Crop breathes 1.354× in scale over the pose sphere, so the model is handed a face at a size it was not trained on and the crop wobbles frame to frame. Holds it to 1.072×. | `ROOP_YAW_ALIGN` / *Angled-face alignment* | `off` |
-| 2. Hidden-surface trim | The paste matte is a frontal footprint (canonical ellipse ∧ 106-pt convex hull), and the hull over-claims the lower face once the head tilts. Measured: a **pitch** correction only — 0% on a level head at any yaw, up to 10.2% chin-up. Small; keep expectations accordingly. | *Angle: trim hidden surface* | off |
+| 2. Hidden-surface trim | Meant to stop a profile pasting swap pixels over hair and neck. Measured, **everything it actually removed was forehead** — see below. Its top edge is now opened up, which takes it to 0% at every pose on test geometry. Leave it off. | *Angle: trim hidden surface* | off |
 | 3. Off-axis fade | Past ~55° off-axis the crop is outside every model's training distribution and the model stops reconstructing and starts inventing. Fades the swapped crop back toward the original footage instead. **This is the layer that bounds how wrong an extreme angle can look.** | *Angle: extreme-angle fade* (0–100) | 0 |
 
 All three key on the **same** pose solve and share the same off-axis fade band, so
@@ -202,26 +202,41 @@ been bounded so that switching them on cannot produce the artefacts above:
   the whole crop, so it can no longer superimpose two differently-shaped faces and
   double the eyes, nose and mouth.
 
-Layer 2 is a **pitch** correction, not a yaw one. Fraction of the matte removed:
+### Layer 2 only ever cut the forehead
 
-| pitch ↓ / yaw → | 0 | 30 | 55 | 70 | 80 | 88 |
-|---|---|---|---|---|---|---|
-| **0** | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
-| **−20** | 4.0% | 6.4% | 5.3% | 3.9% | 2.3% | 1.3% |
-| **−40** | 2.7% | 10.2% | 10.2% | 7.2% | 5.4% | 4.0% |
-| **+20** | 0.0% | 0.0% | 0.0% | 0.1% | 0.4% | 0.8% |
+Reported as *"with the trim on, only the middle of the face is swapped and the
+rest keeps the original texture"*, with a seam across the brow. Measured against
+the real paste mask and split by region, over yaw 0–75° × pitch −40…+20°:
 
-On a **level** head it trims exactly nothing at any yaw, out to an 88° profile.
-Everything it removes is the under-chin / lower-face region the 106-pt hull
-over-claims once the head **tilts** — so it is relevant to the chin-up
-near-profile case, and irrelevant to a level turned head. Mean 2.5%, max 10.2%.
+| region | removed |
+|---|---|
+| below the brow line | **0.0 %** at every pose tested |
+| forehead | 0.0 – 8.1 % |
 
-It never cuts real face: zero truly-visible landmarks are trimmed at any pose over
-yaw 0–88° × pitch −40…+20°, which is what the safety margin is sized for. The
-margin cannot be smaller because the polygon comes from a **reference** head and
-real heads differ from it by more than the over-coverage being removed — that, not
-tuning, is the ceiling on this layer. Beating it needs a per-face visibility
-estimate.
+**All of it was forehead.** Nothing else was ever removed at any pose — so two
+earlier versions of this section, which described it as an under-chin correction
+that fires on a tilted head, were describing the pitch *dependence* of a forehead
+cut and calling it a chin cut.
+
+The forehead is the one part of the face where neither shape has evidence. The
+106-point landmarks stop at the eyebrows, so the paste mask's hull extrapolates
+upward by 0.6 of the brow-chin distance and the visibility polygon extrapolates by
+carrying the reference ellipsoid past the brows. Two guesses at the same unknown,
+and the difference between them was being cut out of the face. On a head tilted
+down they diverge most, which is where it was reported.
+
+The trim's **top edge is now opened up** — a suffix-maximum down each column keeps
+the left/right terminator, which is the real visible-surface information, and
+discards its opinion about how high the face goes. On synthetic geometry that
+takes the layer to **0.0 % at every pose**: everything it was measurably doing was
+the artefact. Whatever value is left rests on a *real* detector's 106 points
+over-claiming the far side of a real profile, which the synthetic head does not
+reproduce and nothing here can measure. Off by default; do not reach for it.
+
+**Why the safety test never caught this.** The property it asserts is "no
+truly-visible landmark is trimmed", and there are no landmarks above the eyebrows.
+A safety property expressed in terms of the evidence is blind exactly where the
+evidence stops — which is where extrapolation happens, and where the bug was.
 
 Cost: **+8.3 ms per off-axis face at 1080p (+6% of `paste_upscale`)**, and nothing
 at all on frontal faces. It started at +29 ms; the difference was doing the weight

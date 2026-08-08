@@ -1727,21 +1727,37 @@ def _pose_placement(yaw_deg, pitch_deg, base_dst, jaw=0.0):
 # Measured in crop space, with pose-matched alignment active, the matte covers
 # this much more than the visible face surface:
 #
-# SIZE AND SHAPE OF THE EFFECT, honestly. This is a PITCH correction, not a yaw
-# one. Fraction of the matte trimmed, with the polygon correctly placed and the
-# safety margin below:
+# SIZE AND SHAPE OF THE EFFECT, honestly, on the third attempt at describing it.
 #
-#   yaw ->        0     30     55     70     80     88
-#   pitch   0   0.0%   0.0%   0.0%   0.0%   0.0%   0.0%
-#   pitch -20   4.0%   6.4%   5.3%   3.9%   2.3%   1.3%
-#   pitch -40   2.7%  10.2%  10.2%   7.2%   5.4%   4.0%
-#   pitch +20   0.0%   0.0%   0.0%   0.1%   0.4%   0.8%
+# It was reported as "with the trim on, only the middle of the face is swapped
+# and the rest keeps the original texture", with a screenshot showing a seam
+# across the brow. Measured against the real matte and split by region, over
+# yaw 0-75 x pitch -40..+20:
 #
-# On a LEVEL head it trims exactly nothing, at any yaw, right out to an 88 deg
-# profile. Everything it removes is the under-chin / lower-face region the 106-pt
-# landmark hull over-claims once the head TILTS. Mean over the grid 2.5%, max
-# 10.2%. So it is relevant to the chin-up near-profile case it was built for, and
-# irrelevant to a level turned head.
+#   below the brow line   0.0%   at every pose tested
+#   forehead              0.0 - 8.1%
+#
+# ALL of it was forehead. Nothing else was ever removed at any pose — so the two
+# previous versions of this comment, which described it as an under-chin
+# correction that fires on a tilted head, were both describing the pitch
+# DEPENDENCE of a forehead cut and calling it a chin cut.
+#
+# The forehead is the one part of the face where neither shape has evidence. The
+# 106-pt landmarks stop at the eyebrows, so `landmark_hull` extrapolates upward
+# by 0.6 of the brow-chin distance and `_face_patch_rows` extrapolates by
+# carrying the reference ellipsoid `brow_extend` past the brows. Two guesses at
+# the same unknown, and the difference between them was being cut out of the
+# face. On a head tilted down they diverge most, which is where it was reported.
+#
+# The trim's TOP EDGE is therefore opened up before it is applied (see
+# `_visibility_matte`): the left/right terminator is kept, which is the real
+# visible-surface information and the reason this layer exists, and its opinion
+# about how high the face goes is discarded. On synthetic geometry that takes the
+# whole layer to 0.0% at every pose — i.e. everything it was measurably doing was
+# the artefact. Whatever value it has left rests on a REAL detector's 106 points
+# over-claiming the far side of a real profile, which the synthetic head does not
+# reproduce and which nothing here can measure. Hence: off by default, and do not
+# reach for it.
 #
 # An earlier version of this comment claimed 10.6% at yaw 88 and framed it as a
 # yaw fix. That was measured with the polygon placed against the wrong template
@@ -1761,8 +1777,15 @@ def _pose_placement(yaw_deg, pitch_deg, base_dst, jaw=0.0):
 # CRITICALLY it must never cut real face: a matte that clips visible skin is a
 # worse artefact (a hard edge across a cheek) than the soft over-coverage it is
 # removing. 0.04 is the smallest margin at which zero truly-visible landmarks are
-# trimmed at any pose over yaw 0-88 x pitch -40..+20. Measured poses with at least
-# one landmark clipped, against margin:
+# trimmed at any pose over yaw 0-88 x pitch -40..+20.
+#
+# NOTE WHAT THAT PROPERTY CANNOT SEE. It is stated in landmarks, and there are no
+# landmarks above the eyebrows — so the forehead cut described above passed this
+# test at every pose while being the only thing the layer did. A safety property
+# expressed in terms of the evidence is blind exactly where the evidence stops,
+# which is exactly where extrapolation happens and where the bug was.
+#
+# Measured poses with at least one landmark clipped, against margin:
 #
 #   margin    0.010  0.015  0.020  0.025  0.030  0.040
 #   poses        13     11      6      4      1      0

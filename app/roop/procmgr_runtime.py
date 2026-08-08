@@ -317,8 +317,12 @@ def _audit_report():
     """Print the swap-decision breakdown for the run just finished."""
     seen = _audit.get('faces seen', 0)
     if not seen:
-        return          # track mode never ran — nothing was gated
-    swapped = _audit.get('swapped (identity lock)', 0) + _audit.get('swapped (per-frame match)', 0)
+        return          # nothing was gated — no faces reached a matcher at all
+    # Every bucket that means "this face WAS swapped", by prefix rather than by
+    # name: there are now three of them (identity lock, per-frame fallback,
+    # per-frame identity match) and a fourth would otherwise be silently counted
+    # as a refusal, which would report a clean run as a broken one.
+    swapped = sum(v for k, v in _audit.items() if k.startswith('swapped'))
     print("\n==== SWAP AUDIT — why each detected face was or was not swapped ====", flush=True)
     for k in sorted(_audit, key=lambda x: -_audit[x]):
         print(f"  {k:34s} {_audit[k]:8d} {100.0 * _audit[k] / seen:6.1f}%", flush=True)
@@ -328,6 +332,12 @@ def _audit_report():
               flush=True)
         print("     Frames where a face was found but left un-swapped are what reads as "
               "flicker. The largest refusal line above is the gate to loosen.", flush=True)
+    blind = _audit.get('frames with no face detected at all', 0)
+    if blind:
+        print(f"     Separately, {blind} frames had NO face detected at all — that is the "
+              "detector losing the face, not a gate refusing it, and no threshold will "
+              "bring those back. Try a lower detector threshold, another detector "
+              "engine, or temporal detection.", flush=True)
     print("===================================================================\n", flush=True)
 
 

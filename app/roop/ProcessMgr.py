@@ -2084,6 +2084,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         if recovered:
                             faces = recovered
             if not faces:
+                # Counted, because a frame where the detector found NOTHING is
+                # the other half of the flicker and is invisible from the
+                # per-face buckets below — nothing reaches them to be refused.
+                # An object crossing a turned face is exactly the case that can
+                # take the detection out for a few frames at a time.
+                _audit_hit('frames with no face detected at all')
                 return num_faces_found, frame
             self.last_found_bboxes = np.array([f.bbox for f in faces])   # cache for next frame
             if precomp:
@@ -2442,6 +2448,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         bar_write(f"[MATCH] diag failed: {_e}")
 
                 claimed_faces, claimed_persons = set(), set()
+                _audit_hit('faces seen', len(faces))
                 for d, g, fidx in candidates:
                     if fidx in claimed_faces or g in claimed_persons:
                         continue
@@ -2451,9 +2458,30 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     if src_index < len(self.input_face_datas):
                         pending.append((src_index, faces[fidx]))
                         num_faces_found += 1
-                    elif _DEBUG_MATCH:
-                        bar_write(f"[MATCH] person g={g} matched face {fidx} but src_index="
-                                  f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
+                        _audit_hit('swapped (identity match)')
+                    else:
+                        _audit_hit('refused: no source faceset for that person')
+                        if _DEBUG_MATCH:
+                            bar_write(f"[MATCH] person g={g} matched face {fidx} but src_index="
+                                      f"{src_index} >= sources({len(self.input_face_datas)}) — NOT swapped")
+
+                # Why every OTHER detected face was left alone. This is the path
+                # the app runs by default — track mode is opt-in — and until now
+                # it was the one path that could not say anything about a face it
+                # declined to swap. "The swap flickers when something crosses the
+                # face" has two candidate causes that look identical on screen and
+                # need completely different fixes: the detector losing the face
+                # (it never reaches here at all), or the identity distance
+                # crossing the threshold because the occluder changed what the
+                # recognition model sees. One run now distinguishes them.
+                _paired = {f for _, _, f in candidates}
+                for fidx in range(len(faces)):
+                    if fidx in claimed_faces:
+                        continue
+                    if fidx not in _paired:
+                        _audit_hit('refused: over the identity threshold')
+                    else:
+                        _audit_hit('refused: that person matched a closer face')
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
                 gender = 'F' if self.options.swap_mode == "all_female" else 'M'
