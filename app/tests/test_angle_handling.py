@@ -416,10 +416,19 @@ class PipelineWiring(unittest.TestCase):
         """The alignment template is built from `solve_pose_jaw_5pt`. Placing the
         polygon from the jaw-blind solve would put it at a different pose than
         the template that decides where the face lands — and the disagreement is
-        largest on a talking head, which is most footage."""
+        largest on a talking head, which is most footage.
+
+        It reads the shared `_jaw_pose` rather than solving again: the restore
+        fades below need the same answer, and one solve per face is enough. The
+        property is that the polygon is placed from the jaw-aware angles, not
+        which line computes them.
+        """
         body = self.procmgr[self.procmgr.index('vis_poly, vis_weight = None, 0.0'):]
         body = body[:body.index('if enhanced_frame is None:')]
-        self.assertIn('solve_pose_jaw_5pt(face_kps)', body)
+        code = '\n'.join(ln.split('#')[0] for ln in body.splitlines())
+        self.assertIn('_jp = _jaw_pose', code)
+        self.assertNotIn('solve_pose_5pt', code)
+        self.assertNotIn('tgt_yaw_deg', code)
 
     def test_the_trim_uses_the_alignments_own_template(self):
         """Reconstructing the template by hand is how this shipped 53 px out of

@@ -241,16 +241,50 @@ class TestTheWiringInProcessMgr(unittest.TestCase):
         self.assertIn('bank_yaw_deg', m.group(1))
         self.assertIn('bank_pitch_deg', m.group(2))
 
-    def test_the_restores_are_handed_the_corrected_angles(self):
+    def test_the_restores_are_handed_the_jaw_aware_angles(self):
+        """And specifically NOT the jaw-blind pair.
+
+        The restore fades ask "how far is this head turned" — past ~25 deg the
+        plate's mouth and eyes no longer sit where the swap's do and pasting
+        them doubles the feature. `solve_pose_5pt` cannot answer that question,
+        because two of its five points are the MOUTH CORNERS: on a dead-frontal
+        head it reads a dropped jaw as -28 deg of pitch. Fed that, the fades
+
+          * cut the restore to 0.765 on a frontal face at full mouth opening,
+            varying continuously through a sentence — including the EYE restore,
+            which has nothing to do with the jaw;
+          * and move the WRONG WAY where the fade is meant to act: at a true yaw
+            of 35 deg the phantom pitch pulls the solved yaw down to 33, so
+            opening the mouth takes the fade from 0.231 to 0.388 and the restore
+            gets STRONGER on the turned head.
+
+        So they take `_head_angles()`, which is the jaw-aware solve with a
+        fallback to the jaw-blind pair when it declines.
+        """
         for call in ('apply_mouth_area', 'apply_eyes_area'):
             idx = self.code.find(call + '(')
-            while idx != -1 and 'def ' + call not in self.code[max(0, idx - 12):idx]:
-                chunk = self.code[idx:idx + 600]
-                if 'yaw=' in chunk:
-                    self.assertIn('yaw=tgt_yaw_deg', chunk, f'{call} lost the target yaw')
-                    self.assertIn('pitch=tgt_pitch_deg', chunk, f'{call} lost the target pitch')
-                    break
+            seen = 0
+            while idx != -1:
+                if 'def ' + call not in self.code[max(0, idx - 12):idx]:
+                    chunk = self.code[idx:idx + 600]
+                    if 'yaw=' in chunk:
+                        seen += 1
+                        self.assertIn('yaw=_hy', chunk, f'{call} lost the head yaw')
+                        self.assertIn('pitch=_hp', chunk, f'{call} lost the head pitch')
+                        self.assertNotIn('yaw=tgt_yaw_deg', chunk,
+                                         f'{call} is back on the jaw-blind angles')
                 idx = self.code.find(call + '(', idx + 1)
+            self.assertTrue(seen, f'no call site found for {call}')
+
+    def test_the_jaw_solve_runs_at_most_once_per_face(self):
+        """It costs 84us against solve_pose_5pt's 11 — nothing beside a masking
+        stage of ~42ms, but there are four consumers in process_face and paying
+        it four times would be careless. One memoised helper, one call."""
+        block = self.code.split('def process_face')[1]
+        self.assertEqual(block.count('solve_pose_jaw_5pt('), 1,
+                         'process_face solves the jaw pose more than once')
+        self.assertIn('nonlocal _jaw_pose', block,
+                      'the jaw solve is no longer memoised across consumers')
 
 
 if __name__ == '__main__':

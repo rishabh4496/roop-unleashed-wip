@@ -17,7 +17,12 @@ open-mouth frame looks bad in every swapper at once: the model never sees a
 correctly scaled crop, whichever model it is.
 
 `solve_pose_5pt` still reports it that way, deliberately — it is the cheap hot
-path and every gate keyed on it is tuned around that behaviour. What changed is
+path, and the gates that only need "is this face roughly frontal" are tuned
+around that behaviour. ("Every gate keyed on it is tuned around it" is what this
+said, and it was not true: the mouth and eye RESTORE fades were not, in two
+directions at once. See TheRestoreFadesAskAboutTheHeadNotTheMouth below — that
+is a consumer asking how far the HEAD is turned, and it now uses the jaw-aware
+solve too.) What changed first is
 that the pose-matched ALIGNMENT templates no longer use it. They were the one
 consumer that could not survive it: 'pose' mode projects the reference head at
 the angles it is handed, so a phantom -28 degrees moved the template to a place
@@ -302,6 +307,55 @@ class TheAlignmentNoLongerActsOnPhantomPitch(ModeSwitch):
                 t = trans.SimilarityTransform()
                 t.estimate(k, arcface_dst * 2.0)
                 np.testing.assert_array_equal(estimate_norm(k, 224), t.params[0:2, :])
+
+
+def _restore_fade(yaw, pitch):
+    """The fade in apply_mouth_area / apply_eyes_area, as shipped."""
+    m = max(abs(yaw), abs(pitch))
+    if m <= 25.0:
+        return 1.0
+    return max(0.0, min(1.0, (38.0 - m) / 13.0))
+
+
+class TheRestoreFadesAskAboutTheHeadNotTheMouth(unittest.TestCase):
+    """The mouth and eye restores fade out past ~25 deg, because that is where
+    the plate's features stop sitting where the swap's do and pasting them
+    doubles the feature.
+
+    That is a question about the HEAD, so it cannot be answered by
+    `solve_pose_5pt` — two of its five points are the mouth corners. The
+    docstring at the top of this file says every gate keyed on it is tuned
+    around the phantom pitch; this gate was not, in two different directions.
+    """
+
+    def test_a_frontal_talking_head_no_longer_fades_its_own_restore(self):
+        """0.765 at full opening, sliding continuously as the mouth moves — so
+        the restore strength modulated with speech, on the exact footage the
+        feature exists for. The EYE restore too, which has no jaw in it."""
+        for j in (0.0, 0.15, 0.30, 0.45, 0.60):
+            y, p, _r, _j = solve_pose_jaw_5pt(kps(0, 0, jaw=j))
+            self.assertEqual(_restore_fade(y, p), 1.0,
+                             f'jaw {j} fades the restore on a frontal head')
+
+    def test_the_fade_no_longer_moves_the_wrong_way_on_a_turned_head(self):
+        """The sharper half. At a true yaw of 35 the fade SHOULD bite — and fed
+        the jaw-blind solve, opening the mouth made the restore stronger
+        (0.231 -> 0.388), because the phantom pitch drags the solved yaw down
+        (35.0 -> 33.0) while staying under it, so max(|yaw|, |pitch|) falls."""
+        blind = [_restore_fade(*solve_pose_5pt(kps(35, 0, jaw=j))[:2])
+                 for j in (0.0, 0.60)]
+        self.assertGreater(blind[1], blind[0] + 0.1,
+                           'the jaw-blind fade no longer inverts — retune this test')
+        aware = [_restore_fade(*solve_pose_jaw_5pt(kps(35, 0, jaw=j))[:2])
+                 for j in (0.0, 0.60)]
+        self.assertAlmostEqual(aware[0], aware[1], places=2,
+                               msg='the fade still moves when only the mouth does')
+
+    def test_a_real_turn_still_fades(self):
+        """The guard on the fix: taking the jaw out must not take the fade out.
+        It is there to stop a doubled lip and that failure is real."""
+        self.assertEqual(_restore_fade(*solve_pose_jaw_5pt(kps(50, 0, jaw=0.6))[:2]), 0.0)
+        self.assertLess(_restore_fade(*solve_pose_jaw_5pt(kps(35, 0))[:2]), 0.3)
 
 
 class WhyALinearSolveCannotDoIt(unittest.TestCase):

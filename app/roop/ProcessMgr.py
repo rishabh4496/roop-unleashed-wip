@@ -2917,6 +2917,37 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         if _pose5 is not None:
             tgt_yaw_deg, tgt_pitch_deg = float(_pose5[0]), float(_pose5[1])
 
+        # ...and the same head with the JAW taken out, for the callers that are
+        # asking how far it is TURNED rather than where its five points are.
+        #
+        # Two of those five points are the mouth corners, and a jaw is a moving
+        # part, so solve_pose_5pt reads a dropped mouth as head pitch — measured
+        # on a dead-frontal synthetic head, 0.0 deg closed rising to -28.0 deg at
+        # full opening. That is deliberate for the hot path, but it is not
+        # something a consumer can be "tuned around" if what it wants is the
+        # head: the phantom pitch appears on ordinary talking frames, varies
+        # continuously through a sentence, and (see _head_angles) can push a gate
+        # the WRONG WAY on a head that really is turned.
+        #
+        # Lazy, and shared. The jaw solve is 84us against solve_pose_5pt's 11 —
+        # nothing beside a masking stage of ~42ms, but not worth paying on frames
+        # where nobody asks. Computed at most once per face.
+        _jaw_pose, _jaw_done = None, False
+
+        def _head_angles():
+            """(yaw, pitch) of the head itself, jaw excluded.
+
+            Falls back to the jaw-blind pair when the jaw solve declines (bad or
+            missing keypoints), which is the previous behaviour exactly.
+            """
+            nonlocal _jaw_pose, _jaw_done
+            if not _jaw_done:
+                _jaw_done = True
+                _jaw_pose = solve_pose_jaw_5pt(getattr(target_face, 'kps', None))
+            if _jaw_pose is None:
+                return tgt_yaw_deg, tgt_pitch_deg
+            return float(_jaw_pose[0]), float(_jaw_pose[1])
+
         # The EPnP angles are kept for the source bank ALONE. Its stored source
         # poses are measured with the same estimate_pose/decompose_yaw_pitch
         # pair, so the convention error cancels in the yaw/pitch DIFFERENCE the
@@ -3555,7 +3586,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             # decides where the face lands — and on a talking head the jaw-blind
             # solve reports pitch that is not there, so the disagreement would be
             # largest exactly on the frames people look at.
-            _jp = solve_pose_jaw_5pt(face_kps)
+            # Shared with the restore fades below, which need the same solve —
+            # _head_angles() populates it, so at most one jaw solve runs per face
+            # however many consumers ask.
+            _head_angles()
+            _jp = _jaw_pose
             if _jp is not None:
                 _yaw, _pitch, _, _jaw = _jp
                 _w = pose_weight_for(_yaw, _pitch)
@@ -3606,7 +3641,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
         if self.options.restore_original_mouth and not lipsync_wins:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, plate, mask_offsets)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg, region=region)
+            # _head_angles(), not the jaw-blind pair: this fade exists to stop a
+            # doubled lip on a head turned far enough that the plate's mouth no
+            # longer sits where the swap's does, and it is fed the head's angles
+            # for that reason. See _head_angles.
+            _hy, _hp = _head_angles()
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5], yaw=_hy, pitch=_hp, region=region)
 
         # Eye restore. Read off globals rather than threaded through
         # ProcessOptions like restore_original_mouth is: that parameter is
@@ -3614,6 +3654,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # tab, so adding six more would mean editing app/ui/. Every setting
         # added since the React UI took over uses this path.
         if getattr(roop.globals, 'restore_original_eyes', False):
+            _hy, _hp = _head_angles()
             result = self.apply_eyes_area(
                 result, plate, target_face,
                 strength=float(getattr(roop.globals, 'eyes_blend_amount', 1.0) or 0.0),
@@ -3621,7 +3662,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 size=float(getattr(roop.globals, 'eyes_size_factor', 1.0) or 1.0),
                 rx=float(getattr(roop.globals, 'eyes_radius_x', 1.0) or 1.0),
                 ry=float(getattr(roop.globals, 'eyes_radius_y', 1.0) or 1.0),
-                yaw=tgt_yaw_deg, pitch=tgt_pitch_deg, region=region)
+                # The eyes have nothing to do with the jaw, which is exactly why
+                # this one mattered: fed the jaw-blind pitch, opening the MOUTH
+                # faded the EYE restore.
+                yaw=_hy, pitch=_hp, region=region)
 
         # ── Lip-sync (post-composite) ──────────────────────────────────────────
         # Same slot as restore_original_mouth/apply_eyes_area: full-frame space,
@@ -3648,8 +3692,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         # the (much smaller) mouth box.
                         crop_box = prepared.get('crop_box') if prepared else None
                         lipsync_cutout = restorer.finish(raw, crop_box, mouth_bb)
+                        _hy, _hp = _head_angles()
                         result = self.apply_mouth_area(result, lipsync_cutout, mouth_bb, mouth_polygon,
-                                                       mask_offsets[5], yaw=tgt_yaw_deg, pitch=tgt_pitch_deg,
+                                                       mask_offsets[5], yaw=_hy, pitch=_hp,
                                                        region=region)
             except Exception as e:
                 bar_write(f"[ProcessMgr] lip-sync failed: {e}")
