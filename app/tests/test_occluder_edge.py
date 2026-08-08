@@ -121,5 +121,26 @@ class TestItCannotCrash(unittest.TestCase):
 
 
 
+    def test_the_kernel_is_always_odd_and_bounded(self):
+        for s in (20, 60, 120, 400, 900, 4000):
+            for ss in (128, 256, 512, 1024):
+                k = _edge_blur_kernel(estimate_norm(face_kps(s), ss),
+                                      (ss, ss), MASK_SHAPE)
+                self.assertEqual(k % 2, 1, 'GaussianBlur needs an odd kernel')
+                self.assertGreaterEqual(k, 1)
+                self.assertLessEqual(k, 17)
+
+    def test_a_zero_sized_mask_does_not_divide_by_zero(self):
+        k = _edge_blur_kernel(estimate_norm(face_kps(300), 256), (0, 0), (0, 0))
+        self.assertEqual(k % 2, 1)
+
+    def test_the_old_fixed_kernel_really_was_that_wide(self):
+        """Guards the premise, so this cannot pass by accident if the geometry
+        it is reasoning about ever changes."""
+        M = estimate_norm(face_kps(900), 256)
+        crop_per_frame = math.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0]))
+        self.assertGreater(5.0 / crop_per_frame, 20.0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -666,5 +666,17 @@ class TestClippedFaceCrop(unittest.TestCase):
                            "pick coordinates that do, or this suite proves nothing")
 
 
+class TestTheSolveIsNotFooledByPitch(unittest.TestCase):
+    def test_pitch_does_not_leak_into_the_reported_yaw(self):
+        """The defect that made the ratio proxies unusable: pitch inflates
+        yaw_ratio, so a tilted profile reads as a mid-angle face. The 5-point
+        solve separates the two."""
+        from roop.face_util import solve_pose_5pt
+        for pitch in (-40, -20, 0, 20, 40):
+            yaw, _, _ = solve_pose_5pt(project_kps(90, pitch))
+            self.assertAlmostEqual(abs(yaw), 90.0, delta=0.5,
+                                   msg=f"pitch={pitch} corrupted the yaw solve")
+
+
 if __name__ == "__main__":
     unittest.main()

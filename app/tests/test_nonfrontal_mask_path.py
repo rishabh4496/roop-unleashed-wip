@@ -245,5 +245,27 @@ class TestFrontalizationGate(unittest.TestCase):
         self.assertGreater(abs(178.5), 25.0)
 
 
+class TheAlignmentIsAPureSimilarity(unittest.TestCase):
+    def test_the_alignment_produces_a_pure_similarity(self):
+        """A similarity is a rotation, a uniform scale and a translation. Shear
+        or anisotropy here would distort the face the swapper is handed."""
+        worst_aniso, worst_shear = 0.0, 0.0
+        for yaw in range(-90, 91, 15):
+            for pitch in (-40, 0, 40):
+                for roll in (-30, 0, 30):
+                    for size in (112, 256, 512):
+                        A = np.asarray(estimate_norm(
+                            kps_at(yaw, pitch, roll), size))[:, :2]
+                        sv = np.linalg.svd(A, compute_uv=False)
+                        worst_aniso = max(worst_aniso,
+                                          abs(sv[0] / max(sv[1], 1e-12) - 1.0))
+                        c0, c1 = A[:, 0], A[:, 1]
+                        cos = float(c0 @ c1 / (np.linalg.norm(c0)
+                                               * np.linalg.norm(c1) + 1e-12))
+                        worst_shear = max(worst_shear, abs(cos))
+        self.assertLess(worst_aniso, 1e-9, 'the fit is not a uniform scale')
+        self.assertLess(worst_shear, 1e-9, 'the fit shears')
+
+
 if __name__ == '__main__':
     unittest.main()

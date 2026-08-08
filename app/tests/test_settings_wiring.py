@@ -245,6 +245,25 @@ class TestSettingsPersistence(unittest.TestCase):
 
 
 
+    def test_settings_defaults_are_exposed_for_the_ui(self):
+        """GET /api/settings returns CFG.__dict__, so a field missing from
+        Settings.__init__ never reaches the UI."""
+        from settings import Settings
+        cfg = Settings(str(REPO / "app" / "config.yaml"))
+        for field in ("refine_landmarks", "swap_model", "mask_engine"):
+            self.assertIn(field, cfg.__dict__, f"{field} missing from Settings")
+
+    def test_saved_settings_round_trip(self):
+        """Every field the UI can POST back must also be written by save(), or
+        it silently resets on restart."""
+        saved = re.findall(r"'([a-z_0-9]+)':\s*self\.",
+                           _function_body(
+                               (REPO / "app" / "settings.py").read_text(encoding="utf-8"),
+                               "def save("))
+        for field in ("refine_landmarks", "jaw_reshape"):
+            self.assertIn(field, saved, f"{field} is loaded but never saved")
+
+
 class TestPerfKnobWiring(unittest.TestCase):
     """The env-backed 'Advanced performance' knobs, which have a LONGER chain
     than the render settings above and no other test covering them.

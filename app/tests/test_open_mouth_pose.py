@@ -332,5 +332,21 @@ class WhyALinearSolveCannotDoIt(unittest.TestCase):
         self.assertAlmostEqual(solve_pose_jaw_5pt(k)[1], 0.0, delta=1.0)
 
 
+class TheAlignmentIsThePlainFit(unittest.TestCase):
+    def test_estimate_norm_is_exactly_the_plain_similarity_fit(self):
+        """Load-bearing since the pose-matched template was deleted: there is
+        one alignment path now, and it must be the ordinary least-squares fit
+        with no branch — including on a head that is turned AND talking."""
+        from skimage import transform as trans
+        from roop.face_util import arcface_dst
+        for yaw in (0, 30, 60, 90):
+            for j in (0.0, 0.3, 0.6):
+                k = kps(yaw, -20, 0.0, j)
+                t = trans.SimilarityTransform()
+                t.estimate(k, arcface_dst * 2.0)
+                np.testing.assert_array_equal(estimate_norm(k, 224),
+                                              t.params[0:2, :])
+
+
 if __name__ == '__main__':
     unittest.main()
