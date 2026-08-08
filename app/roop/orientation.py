@@ -1,0 +1,219 @@
+"""Which way up is this face, when the detector cannot tell you.
+
+THE PROBLEM. Every orientation signal in this app is derived from the detected
+keypoints, and on a face that is both turned to profile AND rolled past about
+90 degrees the detector does not fail loudly — it finds the face, reports 0.99
+confidence, and assigns the keypoints as though the head were oriented some
+other way. Measured on a profile plate rolled to a true 101 degrees, the
+eye->mouth midline reads -22.9. That is below `face_util.FACE_ROLL_LOWER`, so
+`face_rotation_action` concludes the face is already upright and returns None,
+and its "a trustworthy axis said upright, do not second-guess it" early return
+stops the 106-point and bbox fallbacks from ever running. The swapper is then
+handed an upside-down profile, and the swap collapses: identity against the
+source falls to 0.10-0.18 where two DIFFERENT people score 0.13. Turning the
+frame upright by hand restores it to 0.68-0.74.
+
+WHY IT IS NOT FIXED FROM ONE FRAME. Measured on the same plates, none of the
+obvious single-image discriminators survive contact:
+
+  - detector confidence is 0.99-1.00 in all four quarter turns, so argmax over
+    it picks nonsense (a level frontal face "prefers" being turned 90 degrees);
+  - the 106-point midline and the 68-point 3-D midline fail on exactly the same
+    frames as the 5 keypoints, because all three read the same bad detection;
+  - rotating the frame four ways and taking the consensus of the keypoints
+    mapped back disagrees with the truth about a third of the time.
+
+The face is genuinely ambiguous to this detector in one frame. What is NOT
+ambiguous is a sequence: roll is continuous, a head does not jump from 20
+degrees to 200 between frames, and the estimate is reliable everywhere except
+this one pocket. So the ambiguity is resolved along the track — predict the
+roll from where it has been going, accept an observation that agrees, and coast
+through the ones that do not.
+
+The estimate is trusted again as soon as it agrees with the prediction, so a
+track re-acquires rather than drifting forever on a stale rate.
+"""
+
+import os
+
+import numpy as np
+
+# Quarter turns only, matching what apply_rotation can actually do. Sharing the
+# thresholds with face_util would couple this to the estimator it exists to
+# work around, so they are stated here against the RESOLVED roll.
+ROLL_LOWER = 45.0        # below this, a similarity transform handles the tilt
+ROLL_UPPER = 135.0       # above this, a half turn is nearer than a quarter
+
+# How far an observation may sit from the prediction and still be believed.
+# Sized from the two populations this has to separate: on the plates, a trusted
+# estimate tracks the true roll to within about 10 degrees frame to frame,
+# while the failures land 123-184 degrees away. Anything in between is rare, so
+# a wide band costs nothing and avoids rejecting genuine fast rotation.
+TRUST_DEG = 40.0
+
+# Frames a track may coast on prediction alone before the estimate is taken at
+# face value again. Coasting is only as good as the rate it extrapolates, so it
+# is for crossing the ambiguous pocket, not for riding out a long occlusion.
+MAX_COAST = 45
+
+
+# A/B switch, so the fix can be measured against the behaviour it replaces on
+# the same clip rather than against a memory of it. ROOP_ROLL_LATCH=0 leaves
+# every face unstamped, which sends ProcessMgr.rotation_action back to the
+# single-frame heuristic.
+ENABLED = os.environ.get("ROOP_ROLL_LATCH", "1") != "0"
+
+
+def wrap180(deg):
+    """Fold an angle into (-180, 180]."""
+    return float((float(deg) + 180.0) % 360.0 - 180.0)
+
+
+def angdiff(a, b):
+    """Signed a - b, folded into (-180, 180]."""
+    return wrap180(float(a) - float(b))
+
+
+def roll_from_kps(kps):
+    """In-plane roll in degrees from the 5 keypoints, or None.
+
+    0 = upright, +-180 = upside down, positive = the chin has swung toward
+    image +x. Same eye->mouth midline `face_util.face_down_axis` uses, and it
+    is the same number when the detection is good; this exists so the resolver
+    below does not have to import the module it is correcting.
+    """
+    if kps is None:
+        return None
+    pts = np.asarray(kps, dtype=np.float64)
+    if pts.shape[0] < 5 or not np.isfinite(pts).all():
+        return None
+    axis = (pts[3] + pts[4]) / 2.0 - (pts[0] + pts[1]) / 2.0
+    if float(np.hypot(axis[0], axis[1])) < 1e-3:
+        return None
+    return float(np.degrees(np.arctan2(axis[0], axis[1])))
+
+
+def action_for_roll(roll):
+    """The quarter turn that stands a face at this roll up, or None.
+
+    Mirrors face_util._action_for_down_axis, against a roll that has already
+    been resolved. np.rot90 sends a direction (dx, dy) to (dy, -dx), so a chin
+    pointing image-left is stood up by an anticlockwise turn.
+    """
+    if roll is None:
+        return None
+    r = wrap180(roll)
+    if abs(r) < ROLL_LOWER:
+        return None
+    if abs(r) > ROLL_UPPER:
+        return "rotate_180"
+    return "rotate_anticlockwise" if r < 0 else "rotate_clockwise"
+
+
+def residual_roll(roll, action):
+    """The roll left over once `action` has been applied — what the swapper's
+    aligned crop still has to absorb."""
+    if action == "rotate_clockwise":
+        return wrap180(roll - 90.0)
+    if action == "rotate_anticlockwise":
+        return wrap180(roll + 90.0)
+    if action == "rotate_180":
+        return wrap180(roll - 180.0)
+    return wrap180(roll)
+
+
+class RollTrack:
+    """One face's roll over time, with the 180-degree ambiguity resolved.
+
+    Deliberately a plain sequential object rather than the index-keyed event log
+    `nonfrontal.NonFrontalRouter` needs. That class solves a harder problem: it
+    is queried from the round-robin worker pool, where adjacent frames belong to
+    different threads. This one is driven only from `_faces_from_tracks`, which
+    already walks one track's frames in order on one thread, so ordinary state
+    is both correct and much easier to reason about. Do not call it from the
+    worker pool without revisiting that.
+    """
+
+    def __init__(self, trust_deg=TRUST_DEG, max_coast=MAX_COAST):
+        self.trust_deg = float(trust_deg)
+        self.max_coast = int(max_coast)
+        self.roll = None         # last resolved roll
+        self.rate = 0.0          # degrees per observation, for the prediction
+        self.coasted = 0
+        self.coasts = 0          # observations replaced by the prediction
+
+    def update(self, kps):
+        """Resolve this observation's roll. Returns (roll, trusted)."""
+        est = roll_from_kps(kps)
+
+        if self.roll is None:
+            # Nothing to be continuous with. The estimate is all there is, and
+            # for a face that enters the shot anywhere near upright it is right.
+            if est is None:
+                return None, False
+            self.roll, self.rate, self.coasted = est, 0.0, 0
+            return est, True
+
+        pred = wrap180(self.roll + self.rate)
+
+        if est is not None and abs(angdiff(est, pred)) <= self.trust_deg:
+            self.rate = 0.5 * self.rate + 0.5 * angdiff(est, self.roll)
+            self.roll = est
+            self.coasted = 0
+            return self.roll, True
+
+        # The reading disagrees with where the head was going. Coast.
+        #
+        # Note what is NOT done here: offering `est + 180` as a second candidate
+        # and taking whichever lands nearer the prediction. That is the obvious
+        # move, since the failure IS a near-half-turn misreading — but the
+        # misreading is 123-184 degrees, not 180, so the flipped value still
+        # sits up to 57 degrees off. Accepting it drags the rate with it, and
+        # because the rate then drives the prediction the track walks away from
+        # the truth and never returns: measured, it ends 164 degrees out, worse
+        # than the bug it was meant to fix. A wrong reading is evidence that
+        # this observation cannot be positioned, so it is not used to position
+        # anything. Coasting on a rate learned from good frames is exact through
+        # a steady turn and degrades gracefully otherwise.
+        #
+        # Bounded, because a stale rate eventually beats nothing by less than a
+        # fresh look does.
+        if self.coasted < self.max_coast:
+            self.coasted += 1
+            self.coasts += 1
+            # The rate is HELD, not bled off. Decaying it (0.9 per frame was
+            # tried) makes the prediction stall while the head keeps turning,
+            # so the track falls behind by exactly the rotation it was supposed
+            # to follow — 124 degrees by the end of the measured band. Coasting
+            # is only worth anything if it coasts at the speed it was going.
+            # `max_coast` is what stops a lost track spinning forever.
+            self.roll = pred
+            return self.roll, False
+
+        if est is None:
+            return self.roll, False
+        self.roll, self.rate, self.coasted = est, 0.0, 0
+        return self.roll, True
+
+
+def resolve_track_rolls(faces_in_order):
+    """Stamp `roll_deg` on each face of one track, in frame order.
+
+    `faces_in_order` is the track's faces sorted by frame index. Returns
+    `coasts` for the diagnostic line — a run that coasted nowhere did nothing,
+    which is worth being able to see rather than infer.
+    """
+    if not ENABLED:
+        return 0
+    tr = RollTrack()
+    for face in faces_in_order:
+        kps = face.get("kps") if isinstance(face, dict) else getattr(face, "kps", None)
+        roll, trusted = tr.update(kps)
+        if roll is None:
+            continue
+        try:
+            face["roll_deg"] = float(roll)
+            face["roll_trusted"] = bool(trusted)
+        except Exception:
+            pass
+    return tr.coasts

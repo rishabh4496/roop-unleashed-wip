@@ -8,6 +8,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
+from roop import orientation
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
 from roop.face_util import (angle_fade_weight, offaxis_deg, pose_weight_for,
                             pose_visibility_polygon, swap_template_points,
@@ -2645,6 +2646,22 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
 
     def rotation_action(self, original_face:Face, frame:Frame):
+        """Which quarter turn stands this face up.
+
+        Prefers the roll the tracking pre-pass resolved along this face's own
+        track (`roll_deg`); see roop.orientation for why the per-frame estimate
+        under it cannot be trusted on a rolled profile. The single-frame call
+        stays the fallback for stills and tracking-off runs, which have no
+        sequence to be continuous along.
+        """
+        roll = None
+        try:
+            roll = original_face.get('roll_deg') if isinstance(original_face, dict) \
+                else getattr(original_face, 'roll_deg', None)
+        except Exception:
+            roll = None
+        if roll is not None:
+            return orientation.action_for_roll(float(roll))
         return face_rotation_action(original_face, frame.shape[:2])
 
 
@@ -2849,7 +2866,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # the face MORE upright. Without this the orientation heuristic
                 # gets the last word, and a wrong call feeds the swapper an
                 # upside-down crop -- an unrecognisable face, not a rough one.
-                if rotface is None or not rotation_improves_upright(target_face, rotface):
+                # The outcome gate re-measures the tilt after turning, which is
+                # right for the single-frame heuristic and wrong for a
+                # track-resolved roll: it scores against the very reading the
+                # resolver exists to overrule. See roop.orientation.
+                _resolved = self._resolved_roll(target_face) is not None
+                if rotface is None or (not _resolved
+                                       and not rotation_improves_upright(target_face, rotface)):
                     rotation_action = None
                 else:
                     saved_frame = frame.copy()

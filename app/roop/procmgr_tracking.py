@@ -1160,12 +1160,14 @@ class TrackingMixin:
         smooth kps/lm106/bbox per track with the configured filter. Faces per
         frame are sorted by x so ordering matches get_all_faces."""
         from roop.one_euro import OneEuroFilter
+        from roop import orientation
         stab_on = bool(getattr(self.options, 'stabilize_face', False))
         method = getattr(self.options, 'stabilize_method', 'one_euro')
         mc = float(getattr(self.options, 'stabilize_min_cutoff', 0.05))
         bt = float(getattr(self.options, 'stabilize_beta', 0.02))
         out = {}
         self._interp_refused = 0
+        total_coasts = 0
         for t in tracks:
             obs = t.get('obs') or {}
             if not obs:
@@ -1214,8 +1216,24 @@ class TrackingMixin:
                     bb = getattr(f, 'bbox', None)
                     if bb is not None:
                         f['bbox'] = _smooth('bbox', np.asarray(bb, np.float64), i).astype(np.float32)
+            # Resolve this track's in-plane roll along its own timeline, and
+            # stamp it on each face for ProcessMgr.rotation_action.
+            #
+            # Here because this is the only place one face's frames are walked
+            # in order on one thread — the swap workers see frames round-robin,
+            # where a sequential latch would be pushed through every transition
+            # once per worker (the problem nonfrontal.NonFrontalRouter had to
+            # solve with an index-keyed event log). After the gap fill and the
+            # smoothing, so it reads the same keypoints the swap will.
+            total_coasts += orientation.resolve_track_rolls(
+                [merged[i] for i in sorted(merged)])
+
             for i, f in merged.items():
                 out.setdefault(i, []).append(f)
+        if total_coasts:
+            bar_write(f"[Orientation] roll resolved by continuity on "
+                      f"{total_coasts} observations the per-frame estimate "
+                      f"could not place")
         for i in out:
             out[i].sort(key=lambda f: f.bbox[0])
         return out
