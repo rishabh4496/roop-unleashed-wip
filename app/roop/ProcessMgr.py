@@ -9,6 +9,7 @@ from roop.ProcessOptions import ProcessOptions
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import swap_moved_the_face
+from roop.processors.FaceSwapInsightFace import verify_tol_for as _swap_verify_tol_for
 from roop import orientation
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
 from roop.face_util import offaxis_deg, swap_template_points
@@ -2690,11 +2691,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             return None
 
     @staticmethod
-    def _verify_after(result, snap):
-        """Undo this face's swap if it moved the face off where the plate's was."""
+    def _verify_after(result, snap, tol=None):
+        """Undo this face's swap if it moved the face off where the plate's was.
+
+        `tol` is the loaded swap model's own tolerance when it publishes one
+        (see FaceSwapInsightFace.verify_tol_for); None keeps face_util's shared
+        default, which is what every model but hififace uses.
+        """
         try:
             kps, bbox, (rx0, ry0, rx1, ry1), patch = snap
-            if not swap_moved_the_face(result, kps, bbox):
+            if not swap_moved_the_face(result, kps, bbox, tol=tol):
                 return result
             _audit_hit(AUDIT_SWAP_MOVED)
             result[ry0:ry1, rx0:rx1] = patch
@@ -3646,7 +3652,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
 
         if _vs is not None:
-            result = self._verify_after(result, _vs)
+            result = self._verify_after(
+                result, _vs, tol=_swap_verify_tol_for(swap_p))
 
         return result
 

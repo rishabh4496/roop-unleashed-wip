@@ -200,8 +200,47 @@ SWAP_MODELS = {
         "template": "mtcnn_512",
         "converter_file": "crossface_hififace.onnx",
         "converter_url": _FF34 + "crossface_hififace.onnx",
+        # See "verify_tol" below. hififace's clean swaps sit further from the
+        # outcome guard's threshold than any other model's here, so it can
+        # afford a tighter one.
+        "verify_tol": 0.65,
     },
 }
+
+
+# ── Per-model outcome-guard tolerance ────────────────────────────────────────
+# face_util.swap_moved_the_face rejects a swap that put the face somewhere the
+# plate's face was not, by measuring keypoint displacement in interocular units.
+# Its threshold (face_util.SWAP_MOVED_TOL = 1.0) is one number for every model,
+# and that is one number too few: how far a CLEAN swap moves the keypoints is a
+# property of the swapper. Measured over a 107-frame full-turn sweep, with the
+# guard disabled so every frame's reading survives:
+#
+#                    clean swaps          frames the swap wrecks
+#   hififace         max 0.42             from 0.61
+#   hyperswap        max 0.79             from 0.79
+#   inswapper        max 0.79             from 0.60   (distributions OVERLAP)
+#
+# hififace's clean band stops at 0.42 where the others run to 0.79, so 1.0 sits
+# 2.4x above its worst honest frame and lets three wrecked ones through.
+# hyperswap and inswapper are left alone deliberately: hyperswap's two bands are
+# 0.004 apart and inswapper's overlap outright, so no threshold separates them
+# and lowering either would start discarding real profiles to catch nothing.
+#
+# 0.65 is not a clean separator either — inside hififace's own band the readings
+# interleave (0.61 wrecked, 0.71 clean, 0.88 wrecked) — so it is a stated trade,
+# not a fitted boundary: it discards two frames that paint a face onto the back
+# of a turned head, and costs one legitimate 88-degree profile, which reverts to
+# the plate. That is the same trade the guard itself was introduced under.
+#
+# CALIBRATED ON ONE CLIP (a synthetic head, one source identity, 3 frames in the
+# decision band). Re-measure on real footage before trusting the exact value;
+# the mechanism is the durable part, the constant is not.
+def verify_tol_for(swap_processor):
+    """The outcome guard's tolerance for the loaded swap model, or None to use
+    the global default. Reads the published attribute rather than the spec so a
+    processor that never loaded a model cannot force a threshold."""
+    return getattr(swap_processor, 'model_verify_tol', None)
 
 
 # Opt-in batched swap (ROOP_BATCH_SWAP=1): runs multiple face crops through one
@@ -322,6 +361,9 @@ class FaceSwapInsightFace():
         self.model_standard_deviation = [1.0, 1.0, 1.0]
         self.model_denormalize = False
         self.model_template = "arcface"
+        # Outcome-guard tolerance for this model; None = face_util's default.
+        # See verify_tol_for / SWAP_MODELS above.
+        self.model_verify_tol = None
         # Some swappers emit their own face mask as a SECOND graph output —
         # hififace and hyperswap both do. It says where the net actually
         # synthesised a face, which the paste matte cannot know: the matte is an
@@ -441,6 +483,10 @@ class FaceSwapInsightFace():
             self.model_standard_deviation = spec["standard_deviation"]
             self.model_denormalize = spec["denormalize"]
             self.model_template = spec.get("template", "arcface")
+            # Absent for every model but hififace, which is the point: a model
+            # without a measured value keeps face_util's shared default rather
+            # than inheriting whichever one was loaded before it.
+            self.model_verify_tol = spec.get("verify_tol")
             # Read from the GRAPH, not from the spec table: whether a net emits a
             # mask is a property of the file, and a hand-kept flag would be one
             # more thing to get wrong when a model is added.
@@ -655,3 +701,4 @@ class FaceSwapInsightFace():
         self.converter = None
         self.loaded_model_key = None
         self.model_has_mask = False
+        self.model_verify_tol = None
