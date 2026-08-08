@@ -219,7 +219,15 @@ class TestTheWiringInProcessMgr(unittest.TestCase):
             self.code,
             r'tgt_yaw_deg,\s*tgt_pitch_deg\s*=\s*float\(_pose5\[0\]\),\s*float\(_pose5\[1\]\)',
             'process_face no longer takes its target angles from solve_pose_5pt')
-        self.assertIn('solve_pose_5pt', self.code.split('def process_face')[1][:4000])
+        # Bounded to process_face's OWN body rather than a fixed 4000-character
+        # prefix of everything after it. The prefix was a proxy for "somewhere
+        # in this function", and it broke twice on additions near the top that
+        # had nothing to do with the pose solve — a guard that fails for where
+        # code sits rather than what it does. Cutting at the next method keeps
+        # the same property and stops it drifting.
+        body = self.code.split('def process_face')[1]
+        body = re.split(r'\n    (?:@|def )', body)[0]
+        self.assertIn('solve_pose_5pt', body)
 
     def test_the_epnp_angles_no_longer_reach_the_restores(self):
         """tgt_* must not be assigned from decompose_yaw_pitch any more. The
