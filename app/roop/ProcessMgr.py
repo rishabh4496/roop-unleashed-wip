@@ -552,11 +552,28 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # all of which are off by default and guard their use with hasattr(). Skipping
         # it when they're all off removes one per-face model inference every frame with
         # no quality change. It is re-added automatically when any of those is enabled.
+        #
+        # AUTOROTATE also requires it, and that is not a quality preference —
+        # it is the only trustworthy orientation signal this pipeline has. On a
+        # head rolled past ~140 degrees the detector does not fail: it reports
+        # ~0.98 confidence and hallucinates an UPRIGHT face, putting the two
+        # "mouth" keypoints on the forehead. Measured over a full turn
+        # (tests/frontal_roll_video.py), the worst error of each candidate axis
+        # is 172 deg for the 5 detector keypoints, 179 deg for the 2D-106
+        # chin->forehead midline, and 5.4 deg for the 3D-68 midline. The first
+        # two also fail in the SAME direction, so their agreement proves
+        # nothing. Nothing derivable from the 5 keypoints separates the two
+        # cases either — the arcface fit residual, the eye-to-mouth ratio, the
+        # nose offset and the bbox placement were all measured across the turn
+        # and every one of them overlaps the healthy range at roll 180.
+        # Without this model autorotate declines to turn an inverted face and
+        # the swapper is handed a crop with the eyes where the mouth belongs.
         modules = ["landmark_2d_106", "detection", "recognition"]
         if (getattr(options, 'use_3d_recon', False)
                 or getattr(options, 'use_source_bank', False)
                 or getattr(options, 'use_frontalization', False)
-                or getattr(roop.globals, 'refine_landmarks', False)):
+                or getattr(roop.globals, 'refine_landmarks', False)
+                or getattr(roop.globals, 'autorotate_faces', False)):
             modules.insert(0, "landmark_3d_68")
         roop.globals.g_desired_face_analysis = modules
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":

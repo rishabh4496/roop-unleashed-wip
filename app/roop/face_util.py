@@ -1,4 +1,5 @@
 import math
+import os
 import threading
 import contextlib
 from queue import Queue
@@ -536,6 +537,109 @@ def _rescue_rotated(frame: Frame):
     return None
 
 
+# A face rolled past FACE_ROLL_LOWER is re-measured on an uprighted frame
+# before anything downstream reads it. ROOP_UPRIGHT_REMEASURE=0 for an A/B.
+UPRIGHT_REMEASURE = os.environ.get('ROOP_UPRIGHT_REMEASURE', '1') != '0'
+
+
+def _upright_remeasure(frame, faces):
+    """Re-measure heavily ROLLED faces on an uprighted frame, in place.
+
+    `_rescue_rotated` already turns the frame when the upright pass finds
+    NOTHING. This is the other half, and it is the one that matters on an
+    inverted face: the detector does not fail there, it succeeds badly. On a
+    frontal head rolled 180 it reports 0.98 confidence and keypoints that are
+    labelled correctly but geometrically crushed — measured against ground
+    truth (the roll-0 keypoints carried by the same warp), interocular collapses
+    177 -> 136px and eye->mouth 202 -> 134px, putting the mouth corners 0.45
+    interocular out of place.
+
+    Two things read those keypoints, and both break:
+
+      * RECOGNITION. `norm_crop` fits them to the arcface template, so a
+        crushed pair of eyes over-zooms the crop and pushes the mouth out of
+        frame. The embedding of an inverted face then scores ~0.0 cosine
+        against the SAME PERSON upright, where two different people score
+        0.128 — below the cross-identity floor. Downstream that is
+        "the upside-down face is not recognised as the selected target and is
+        never swapped", and it also splits one continuous face into two tracks,
+        which in turn breaks the roll latch's continuity.
+      * ALIGNMENT. `align_crop` fits the same points, so the swapped crop is
+        mis-scaled and off-centre.
+
+    Turning the frame upright first fixes both at the source: re-detected on an
+    uprighted frame the same face scores 1.000 against its upright self at
+    EVERY roll angle. The embedding computed there is already the one we want,
+    and it survives the coordinate mapping untouched because it is not a
+    coordinate. Only bbox/kps/landmarks need carrying back.
+
+    Guarded by the same outcome test the autorotate path uses, measured BEFORE
+    the coordinates are mapped back (afterwards the face reads at its original
+    roll again, and the test would be meaningless). A turn that did not stand
+    the face up is discarded, so a bad call costs the old reading rather than a
+    worse one.
+    """
+    turns = {"rotate_clockwise": ("clockwise", rotate_clockwise),
+             "rotate_anticlockwise": ("anticlockwise", rotate_anticlockwise),
+             "rotate_180": ("180", rotate_image_180)}
+    # Group by the turn each face needs: the cost here is a detection pass per
+    # DISTINCT turn (at most three), not one per face.
+    wanted = {}
+    for i, f in enumerate(faces):
+        axis = face_down_axis(f)
+        if axis is None:
+            continue
+        action = _action_for_down_axis(*axis)
+        if action in turns:
+            wanted.setdefault(action, []).append(i)
+    if not wanted:
+        return faces
+
+    h, w = frame.shape[:2]
+    for action, idxs in wanted.items():
+        angle, rotate = turns[action]
+        try:
+            cands = _detect_faces_raw(rotate(frame))
+        except Exception:
+            continue
+        if not cands:
+            continue
+        # Uprightness has to be read here, in rotated space, while the turn is
+        # still expressed in the coordinates.
+        scored = []
+        for c in cands:
+            tilt = face_roll_tilt(c)
+            _unrotate_face_coords(c, w, h, angle)
+            scored.append((c, tilt))
+
+        for i in idxs:
+            orig = faces[i]
+            ox = (float(orig.bbox[0]) + float(orig.bbox[2])) / 2.0
+            oy = (float(orig.bbox[1]) + float(orig.bbox[3])) / 2.0
+            osize = max(float(orig.bbox[2] - orig.bbox[0]),
+                        float(orig.bbox[3] - orig.bbox[1]))
+            otilt = face_roll_tilt(orig)
+            best, best_d = None, None
+            for c, tilt in scored:
+                cx = (float(c.bbox[0]) + float(c.bbox[2])) / 2.0
+                cy = (float(c.bbox[1]) + float(c.bbox[3])) / 2.0
+                d = float(np.hypot(cx - ox, cy - oy))
+                # Same face, not the neighbour: centres must agree to well
+                # inside a face width.
+                if d > 0.5 * osize:
+                    continue
+                if best_d is None or d < best_d:
+                    best, best_d = (c, tilt), d
+            if best is None:
+                continue
+            cand, tilt = best
+            if tilt is None or otilt is None:
+                continue
+            if abs(tilt) < abs(otilt) - 5.0:
+                faces[i] = cand
+    return faces
+
+
 def _detect_faces(frame):
     """Run the selected detector engine and return raw Face objects (unsorted).
     Applies small-face (upscale), close-up scale (downscale), clipped boundary (padded), and rotated face rescues."""
@@ -553,6 +657,10 @@ def _detect_faces(frame):
         # 4. Rotated face rescue
         if not faces:
             faces = _rescue_rotated(frame)
+
+    # Before anything downstream reads the keypoints or the embedding.
+    if faces and UPRIGHT_REMEASURE:
+        faces = _upright_remeasure(frame, faces)
 
     if faces and getattr(roop.globals, 'refine_landmarks', False):
         for f in faces:
@@ -812,13 +920,57 @@ FACE_ROLL_LOWER = 54.5          # vs the 9.1 deg worst-case axis error
 FACE_ROLL_UPPER = 135.0         # above this a quarter turn stops helping and a half turn starts
 
 
+def _axis_from_68(face):
+    """Eye-mid -> mouth-mid from the 68-point landmarks, or None.
+
+    Preferred over the 5 detector keypoints, and the difference is not a
+    refinement — it is the difference between right and 180 degrees wrong.
+    Measured on a frontal head rolled through a full turn in 10 degree steps
+    (tests/frontal_roll_video.py builds exactly this clip):
+
+        axis source            worst error over 0..360
+        5 detector keypoints              172 deg
+        2D-106 chin->forehead             179 deg
+        3D-68 eye-mid->mouth-mid          5.4 deg
+
+    Between roll 140 and 210 the detector does not lose the face — it reports
+    ~0.98 confidence and hallucinates an UPRIGHT one, putting the two "mouth"
+    keypoints on the forehead. The 5-point midline then reads +7.6 degrees on a
+    head that is genuinely at 180, so every consumer concludes the face is
+    already upright: autorotate declines to turn it, and the swapper is handed
+    a crop with the eyes where the mouth belongs. The 2D-106 model fails on the
+    same frames in the same direction, so the two agreeing proves nothing (they
+    agree to within 4.8 degrees at roll 180, both ~177 degrees wrong).
+    """
+    lm = getattr(face, 'landmark_3d_68', None)
+    if lm is None:
+        return None
+    try:
+        pts = np.asarray(lm, dtype=np.float64)[:, :2]
+    except Exception:
+        return None
+    if pts.shape[0] < 68 or not np.isfinite(pts).all():
+        return None
+    eye_mid = (pts[36:42].mean(axis=0) + pts[42:48].mean(axis=0)) / 2.0
+    mouth_mid = (pts[48] + pts[54]) / 2.0
+    axis = mouth_mid - eye_mid
+    if float(np.hypot(axis[0], axis[1])) < 1e-3:
+        return None
+    return float(axis[0]), float(axis[1])
+
+
 def face_down_axis(face):
     """The face's chin direction as (dx, dy) in image space, or None.
 
-    Built from the 5 detector keypoints, which every detector engine emits
-    (align_crop already depends on them), so this works where the 106-point
-    landmarks are unavailable.
+    The 68-point midline when the landmark model supplied one (see
+    _axis_from_68 for why it is not merely preferred but load-bearing on an
+    inverted face), otherwise the 5 detector keypoints, which every detector
+    engine emits (align_crop already depends on them) so this still works where
+    the landmarks are unavailable.
     """
+    axis = _axis_from_68(face)
+    if axis is not None:
+        return axis
     kps = getattr(face, 'kps', None)
     if kps is None or len(kps) < 5:
         return None

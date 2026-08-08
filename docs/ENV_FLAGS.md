@@ -479,6 +479,32 @@ loop.
 | `ROOP_TRACK_ROI_CROP` | 0 | `1` enables ROI-crop pre-pass during identity tracking. |
 | `ROOP_CAPTURE_PIPE` | auto | How preview/timeline decode video. `auto` uses OpenCV except on HEVC pixel formats where it silently returns the wrong frame (10-bit, 4:2:2, 4:4:4 — measured up to 16 frames off), which go through an ffmpeg pipe instead. `1` forces the pipe for everything (slower seeks, always exact), `0` forces OpenCV (fast, wrong on those formats). |
 
+## Upside-down / heavily rolled faces
+
+Between roll ~140° and ~220° the detector does **not** lose the face: it reports
+~0.98 confidence and returns a self-consistent set of 5 keypoints describing an
+*upright* face, with the two "mouth" points on the forehead. Worst error of each
+candidate orientation axis over a full turn, measured by
+`app/tests/frontal_roll_video.py`:
+
+| axis | worst error over 0-360° |
+|------|------------------------|
+| 5 detector keypoints | 172° |
+| 2D-106 chin→forehead midline | 179° |
+| **3D-68 eye-mid→mouth-mid** | **5.4°** |
+
+The first two fail on the same frames *in the same direction*, so their
+agreement is not evidence, and nothing derived from the 5 keypoints separates
+the cases (the arcface fit residual, eye-to-mouth ratio, nose offset and bbox
+placement were each measured across the turn and all overlap the healthy range
+at roll 180). So the 68-point model is required, and `autorotate_faces` now
+pulls it into the analysis pipeline: **+3.9 ms/frame (+7.5%) on detection**.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_UPRIGHT_REMEASURE` | **1 (on)** | Re-detect a heavily rolled face on an uprighted frame and adopt that reading (keypoints, landmarks **and embedding**), gated on the turn actually having stood the face up. Fixes the geometry the detector crushes when the head is inverted — interocular 177→136 px and eye→mouth 202→134 px at roll 180, which puts the recognition embedding at ~0.0 cosine against the *same person* upright, below the 0.128 two-different-people floor, so the face stops matching the selected target and is never swapped. Costs one extra detection pass **only for frames containing a rolled face** — it fired on 0/381 frames of ordinary footage. `0` restores the old behaviour for an A/B. |
+| `ROOP_DEBUG_ROLL` | 0 | Dump the track latch's per-observation estimate, resolved roll and whether it was believed. The summary coast count alone cannot tell a latch that usefully crossed an ambiguous pocket from one that rejected good readings and walked the track away from the truth. |
+
 ## Process priority
 
 | Flag | Default | Effect |

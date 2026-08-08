@@ -74,6 +74,32 @@ def angdiff(a, b):
     return wrap180(float(a) - float(b))
 
 
+def roll_from_face(face):
+    """In-plane roll for one face, preferring the 68-point landmarks.
+
+    Same ordering `face_util.face_down_axis` uses and for the same measured
+    reason: on a head rolled past ~140 degrees the 5 detector keypoints are up
+    to 172 degrees wrong, while the 68-point midline stays within 5.4 degrees
+    over a full turn. Duplicated rather than imported so this module stays free
+    of face_util, which is the module it exists to correct.
+    """
+    lm = face.get("landmark_3d_68") if isinstance(face, dict) \
+        else getattr(face, "landmark_3d_68", None)
+    if lm is not None:
+        try:
+            pts = np.asarray(lm, dtype=np.float64)[:, :2]
+            if pts.shape[0] >= 68 and np.isfinite(pts).all():
+                eye = (pts[36:42].mean(axis=0) + pts[42:48].mean(axis=0)) / 2.0
+                mouth = (pts[48] + pts[54]) / 2.0
+                ax = mouth - eye
+                if float(np.hypot(ax[0], ax[1])) >= 1e-3:
+                    return float(np.degrees(np.arctan2(ax[0], ax[1])))
+        except Exception:
+            pass
+    kps = face.get("kps") if isinstance(face, dict) else getattr(face, "kps", None)
+    return roll_from_kps(kps)
+
+
 def roll_from_kps(kps):
     """In-plane roll in degrees from the 5 keypoints, or None.
 
@@ -142,9 +168,15 @@ class RollTrack:
         self.coasted = 0
         self.coasts = 0          # observations replaced by the prediction
 
-    def update(self, kps):
-        """Resolve this observation's roll. Returns (roll, trusted)."""
-        est = roll_from_kps(kps)
+    def update(self, kps, est=None):
+        """Resolve this observation's roll. Returns (roll, trusted).
+
+        `est` lets the caller supply an already-computed estimate (the
+        68-point one, when the face carries landmarks); `kps` remains the
+        fallback so existing callers and the tests keep working unchanged.
+        """
+        if est is None:
+            est = roll_from_kps(kps)
 
         if self.roll is None:
             # Nothing to be continuous with. The estimate is all there is, and
@@ -196,19 +228,34 @@ class RollTrack:
         return self.roll, True
 
 
+DEBUG = os.environ.get("ROOP_DEBUG_ROLL", "0") != "0"
+
+
 def resolve_track_rolls(faces_in_order):
     """Stamp `roll_deg` on each face of one track, in frame order.
 
     `faces_in_order` is the track's faces sorted by frame index. Returns
     `coasts` for the diagnostic line — a run that coasted nowhere did nothing,
     which is worth being able to see rather than infer.
+
+    `ROOP_DEBUG_ROLL=1` dumps the per-observation estimate, what it resolved to
+    and whether it was believed. The summary count alone cannot distinguish a
+    latch that coasted usefully across an ambiguous pocket from one that
+    rejected good readings and walked the track away from the truth, and those
+    need opposite fixes.
     """
     if not ENABLED:
         return 0
     tr = RollTrack()
-    for face in faces_in_order:
+    for n, face in enumerate(faces_in_order):
         kps = face.get("kps") if isinstance(face, dict) else getattr(face, "kps", None)
-        roll, trusted = tr.update(kps)
+        est = roll_from_face(face)
+        roll, trusted = tr.update(kps, est=est)
+        if DEBUG:
+            print(f"[roll] n={n:>4} est={'None' if est is None else f'{est:7.1f}'} "
+                  f"resolved={'None' if roll is None else f'{roll:7.1f}'} "
+                  f"{'trusted' if trusted else 'COAST'} "
+                  f"action={action_for_roll(roll)}", flush=True)
         if roll is None:
             continue
         try:
