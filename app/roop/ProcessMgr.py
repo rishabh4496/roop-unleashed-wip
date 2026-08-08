@@ -11,9 +11,7 @@ from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import swap_moved_the_face
 from roop import orientation
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
-from roop.face_util import (angle_fade_weight, offaxis_deg, pose_weight_for,
-                            pose_visibility_polygon, swap_template_points,
-                            yaw_align_mode)
+from roop.face_util import offaxis_deg, swap_template_points
 from roop.lipsync_audio import frame_time
 import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
@@ -2757,105 +2755,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         out = out.transpose(2, 0, 3, 1).reshape(out_size, out_size)
         return np.clip(out, 0.0, 1.0)
 
-    # How far outside the facial features every pixel of a swap crop is, as a map
-    # in [0, 1]. Keyed by (template, height, width); there are only a handful of
-    # both, and it is a constant per key, so it is built once.
-    _FADE_FIELD_CACHE = {}
-    _FADE_FIELD_LOCK = Lock()
-
-    # Width of the ramp between "still swapped" and "back to the plate", in the
-    # units of that map. It sets the one trade this fade has left: narrower is a
-    # visible edge crossing the cheek, wider mixes two faces over more of the
-    # face. 0.25 also fixes when the FEATURES start to dissolve — the ramp reaches
-    # them (field 0) at fade 1/(1+0.25) = 0.8 — so with the default ceiling the
-    # eyes, nose and mouth are either fully swapped or fully original and never a
-    # superposition of both.
-    _FADE_BAND = 0.25
-
-    @classmethod
-    def _fade_field(cls, template, shape):
-        """Distance from the 5 template keypoints' hull, 0 on the features and 1
-        at the furthest corner of the crop.
-
-        The five points are where `estimate_norm` puts the eyes, nose and mouth,
-        so this is "how far is this pixel from the part of the face that carries
-        the likeness" — measured in the crop's own coordinates, which is why it
-        can be a constant: every face is aligned to the same template.
-        """
-        h, w = int(shape[0]), int(shape[1])
-        key = (template, h, w)
-        hit = cls._FADE_FIELD_CACHE.get(key)
-        if hit is not None:
-            return hit
-        pts = swap_template_points(min(h, w), template)
-        pts = np.asarray(pts, dtype=np.float64)
-        # The template is square; a non-square surface never happens here, but
-        # scaling per axis rather than assuming keeps it honest if one turns up.
-        pts = pts * np.array([w / float(min(h, w)), h / float(min(h, w))])
-        mask = np.full((h, w), 255, dtype=np.uint8)
-        cv2.fillConvexPoly(mask, cv2.convexHull(pts.astype(np.int32)), 0)
-        field = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-        peak = float(field.max())
-        field = (field / peak) if peak > 1e-6 else np.zeros_like(field)
-        with cls._FADE_FIELD_LOCK:
-            if len(cls._FADE_FIELD_CACHE) > 8:
-                cls._FADE_FIELD_CACHE.clear()
-            cls._FADE_FIELD_CACHE[key] = field
-        return field
-
-    @classmethod
-    def _fade_toward_plate(cls, img, plate_crop, fade, template='arcface'):
-        """Withdraw a swapped crop back toward the untouched plate, from the
-        OUTSIDE IN, by `fade`.
-
-        Not a cross-dissolve, and that is the whole point. Blending the two crops
-        uniformly — which is what this used to do — superimposes two faces that
-        are not the same shape, because an identity swap moves the eyes, the nose
-        and the mouth. At any middling fade you then see both sets at once: the
-        doubled features people report on lateral poses, produced by the very
-        layer that exists to make lateral poses look better. There is no strength
-        at which a cross-dissolve does not do this; it is what alpha-blending two
-        misaligned faces means.
-
-        So the swap is given up spatially instead. Everything keeps full strength
-        or none, and the boundary between them starts outside the face and moves
-        inward as the pose gets worse, features last (see `_fade_field` and
-        `_FADE_BAND`). What is mixed at the boundary is skin against skin, which
-        has no structure to double.
-
-        `plate_crop` is resized when the surface is bigger than the swap crop (GPEN
-        outputs 1024/2048), with the same INTER_CUBIC the mask-engine blend above
-        uses on the same array, so the two paths cannot disagree about the plate.
-        """
-        if fade <= 0.0:
-            return img
-        f = float(min(max(fade, 0.0), 1.0))
-        if img.shape[:2] != plate_crop.shape[:2]:
-            plate_crop = cv2.resize(plate_crop, (img.shape[1], img.shape[0]),
-                                    interpolation=cv2.INTER_CUBIC)
-        if f >= 1.0:
-            return plate_crop.copy()
-
-        band = cls._FADE_BAND
-        # edge1 is where the plate has fully taken over, edge0 where it starts.
-        # At f = 0 edge0 is 1 and the ramp is entirely outside the crop, so
-        # nothing is faded; at f = 1 both are at or below 0 and nothing is kept.
-        edge1 = (1.0 + band) * (1.0 - f)
-        edge0 = edge1 - band
-        try:
-            field = cls._fade_field(template, img.shape[:2])
-        except Exception:
-            # A fade that cannot place itself falls back to the uniform blend
-            # rather than to no fade at all: the caller asked for the swap to be
-            # pulled back at a pose the model cannot serve, and doing nothing is
-            # the worse of the two answers.
-            keep = np.full(img.shape[:2], 1.0 - f, dtype=np.float32)
-        else:
-            t = np.clip((field - edge0) / max(band, 1e-6), 0.0, 1.0)
-            keep = 1.0 - (t * t * (3.0 - 2.0 * t))      # smoothstep, as elsewhere
-        keep = keep[:, :, None]
-        return (img.astype(np.float32) * keep
-                + plate_crop.astype(np.float32) * (1.0 - keep)).astype(np.uint8)
 
     def process_face(self, face_index, target_face:Face, frame:Frame, plate:Frame=None, region=None):
         """Swap one face and composite it into `frame`.
@@ -3606,37 +3505,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 except Exception as e:
                     bar_write(f"[ProcessMgr] Warp-based mask application failed: {e}")
 
-        # ── Off-axis confidence fade ──────────────────────────────────────────
-        # Fade the swapped crop back toward the plate as the head leaves the pose
-        # range the swap models were trained for. See angle_fade_weight: this is
-        # the one angle lever that is identical for all 13 swappers, because it
-        # acts on the crop after the swap and does not care which model made it.
-        #
-        # Applied in CROP space, before the paste, so it composes with every
-        # downstream stage (mask engines have already run above; the mouth and eye
-        # restores below read the plate anyway) instead of having to be repeated
-        # per output surface.
-        #
-        # Both surfaces have to be faded, not just one. `fake_frame` is what gets
-        # blended by `blend_ratio` inside paste_upscale, so fading only the
-        # enhanced copy would leave up to 20% un-faded swap in the result.
-        _fade = angle_fade_weight(tgt_yaw_deg, tgt_pitch_deg,
-                                  getattr(roop.globals, 'angle_fade_strength', 0.0))
-        if _fade > 0.0:
-            # swap_template, not a default: the fade is withdrawn from around the
-            # facial features, and where those sit in the crop is the model's own
-            # template's business (ghost/simswap are arcface_112_v1, hififace is
-            # mtcnn_512). Guessing it here would put the ramp somewhere else.
-            fake_frame = self._fade_toward_plate(fake_frame, aligned_img, _fade,
-                                                 swap_template)
-            if enhanced_frame is not None:
-                enhanced_frame = self._fade_toward_plate(enhanced_frame, aligned_img,
-                                                         _fade, swap_template)
-            if _DEBUG_ANGLE:
-                print(f"[ANGLE] fade={_fade:.3f} at yaw={tgt_yaw_deg:+.1f}° "
-                      f"pitch={tgt_pitch_deg:+.1f}° "
-                      f"(offaxis={offaxis_deg(tgt_yaw_deg, tgt_pitch_deg):.1f}°)")
-
         upscale = 512
         orig_width = fake_frame.shape[1]
         if orig_width != upscale:
@@ -3656,35 +3524,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # skipped entirely when that alignment is off: the polygon is the
         # reference head placed by the alignment template, so it only sits where
         # the real face is while the alignment is putting it there too.
-        vis_poly, vis_weight = None, 0.0
-        if (getattr(roop.globals, 'angle_visibility_mask', False)
-                and yaw_align_mode() == 'pose'):
-            # The JAW-aware solve, not the tgt_yaw_deg/tgt_pitch_deg pair above:
-            # those come from solve_pose_5pt, while the alignment template is
-            # built from solve_pose_jaw_5pt. Using the other one here would put
-            # the polygon at a slightly different pose than the template that
-            # decides where the face lands — and on a talking head the jaw-blind
-            # solve reports pitch that is not there, so the disagreement would be
-            # largest exactly on the frames people look at.
-            # Shared with the restore fades below, which need the same solve —
-            # _head_angles() populates it, so at most one jaw solve runs per face
-            # however many consumers ask.
-            _head_angles()
-            _jp = _jaw_pose
-            if _jp is not None:
-                _yaw, _pitch, _, _jaw = _jp
-                _w = pose_weight_for(_yaw, _pitch)
-                if _w > 0.0:
-                    # The SAME template estimate_norm fitted this crop to. Do not
-                    # reconstruct it — every size here takes the `% 128` branch,
-                    # so the obvious `arcface_dst * size/112` is 53 px out on a
-                    # 512 crop. See swap_template_points.
-                    _base = swap_template_points(subsample_size, swap_template)
-                    _poly = pose_visibility_polygon(_yaw, _pitch, _base, _jaw)
-                    if _poly is not None:
-                        vis_poly = np.asarray(_poly, np.float64) / float(subsample_size)
-                        vis_weight = _w
-
         # The swap net's own face mask, for the nets that emit one (hififace,
         # hyperswap). Not pose-gated, unlike the visibility polygon: the model
         # produced this from THIS image, and its excess over our matte is wrong at
@@ -3703,9 +3542,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight, model_mask=model_mask, model_mask_weight=model_mask_weight)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, vis_poly=vis_poly, vis_weight=vis_weight, model_mask=model_mask, model_mask_weight=model_mask_weight)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
 
         # Lip-sync and restore_original_mouth write the same bounding box, so at
         # most one of them may run. Decided once, here, ahead of both: the UI

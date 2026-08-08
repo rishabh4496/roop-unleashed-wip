@@ -136,14 +136,6 @@ def init_pipeline(provider, swap_model, enhancer, mask_engine):
     return g
 
 
-def angle_settings(g, yaw_align, fade, vis_mask):
-    """Set the three angle layers. Kept in one place so a run's configuration
-    is one line in the log rather than three scattered assignments."""
-    g.yaw_align = yaw_align
-    g.angle_fade_strength = float(fade)
-    g.angle_visibility_mask = bool(vis_mask)
-
-
 def build_options(g, swap_model, mask_engine, source_bank=None):
     from roop.core import get_processing_plugins
     from roop.ProcessOptions import ProcessOptions
@@ -596,9 +588,6 @@ def main():
     ap.add_argument("--swap-model", default="inswapper")
     ap.add_argument("--enhancer", default="None")
     ap.add_argument("--mask-engine", default="None")
-    ap.add_argument("--yaw-align", default="off")
-    ap.add_argument("--fade", type=float, default=0.0)
-    ap.add_argument("--vis-mask", action="store_true")
     ap.add_argument("--source-bank", choices=["on", "off"], default=None,
                     help="override CFG.use_source_bank for this run")
     ap.add_argument("--autorotate", choices=["on", "off"], default=None,
@@ -622,7 +611,6 @@ def main():
     a, b = args.facesets.split(",")
 
     g = init_pipeline(args.provider, args.swap_model, args.enhancer, args.mask_engine)
-    angle_settings(g, args.yaw_align, args.fade, args.vis_mask)
     bank = None if args.source_bank is None else (args.source_bank == "on")
     if args.autorotate is not None:
         g.autorotate_faces = (args.autorotate == "on")
@@ -636,8 +624,7 @@ def main():
 
     print(f"[angle_bench] tag={args.tag} provider={args.provider} "
           f"model={args.swap_model} enhancer={args.enhancer} "
-          f"mask={args.mask_engine} yaw_align={args.yaw_align} "
-          f"fade={args.fade} vis_mask={args.vis_mask} "
+          f"mask={args.mask_engine} "
           f"source_bank={options.use_source_bank} "
           f"autorotate={g.autorotate_faces}"
           f"{'  [CONTROL: no swap]' if args.control else ''}", flush=True)

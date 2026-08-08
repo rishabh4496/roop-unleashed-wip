@@ -23,11 +23,7 @@ export const FACESWAP_DEFAULTS = {
   // reference head, and nose protrusion carries most of the yaw signal — so a
   // prominent-nosed person turning 30° is read as 45° and gets a crop, a trim and
   // a fade meant for a pose they are not in. Kept selectable; see
-  // settings.initial_yaw_align for the measured table.
-  yaw_align: 'off',
   // The other two layers of the same angle structure.
-  angle_visibility_mask: false,
-  angle_fade_strength: 0,
   // Only hififace / hyperswap emit a mask; ignored by every other swapper.
   swap_model_mask_strength: 0,
   rescue_small_faces: true,

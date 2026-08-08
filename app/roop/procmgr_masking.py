@@ -17,8 +17,7 @@ import numpy as np
 
 import roop.globals
 from roop.typing import Frame, Face
-from roop.face_util import (clamp_cut_values, kps_pose_ratios, VIS_POLY_MARGIN,
-                            VIS_TRIM_MAX_FRAC)
+from roop.face_util import clamp_cut_values, kps_pose_ratios
 from roop.nonfrontal import nonfrontal_score
 
 
@@ -234,7 +233,7 @@ class MaskingMixin:
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, vis_poly=None, vis_weight=0.0, model_mask=None, model_mask_weight=0.0):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, model_mask=None, model_mask_weight=0.0):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -262,11 +261,6 @@ class MaskingMixin:
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
-        # The visibility trim is built here, in canonical crop space, but APPLIED
-        # after the feather below — see `_visibility_matte` and its use next to
-        # the overlap trim.
-        vis_matte = self._visibility_matte(vis_poly, vis_weight, img_matte.shape,
-                                           IM, target_img.shape)
         # ...and the swap model's own mask, where it emits one.
         mm_matte = self._model_mask_matte(model_mask, model_mask_weight,
                                           img_matte.shape, IM, target_img.shape)
@@ -300,13 +294,6 @@ class MaskingMixin:
         # -> 18px, a 38% tighter seam, on exactly the high-pose faces where a seam
         # shows most. Trimming afterwards leaves the feather untouched, so this
         # layer can only ever remove matte and never sharpen it.
-        # Capped, because the polygon is placed from a pose SOLVE and that solve
-        # is 15-20 deg wrong on a head whose nose differs from the reference one
-        # (see face_util.VIS_TRIM_MAX_FRAC). Uncapped, a wrong pose cuts the far
-        # half of a fully visible face and the two halves then show different
-        # texture with a line between them. This is the layer's backstop and it
-        # does not touch a trim that is behaving.
-        self._trim_capped(img_matte, vis_matte, VIS_TRIM_MAX_FRAC)
 
         # The swap net's own verdict, applied in the same place and for the same
         # two reasons: the feather would spread the swap back over the hair this
@@ -343,34 +330,6 @@ class MaskingMixin:
 
         return paste_face.astype(np.uint8)
 
-    @staticmethod
-    def _trim_capped(matte, trim, cap):
-        """Multiply `matte` by `trim` in place, but never remove more than `cap`
-        of the matte's own weight.
-
-        Measured against the matte itself, at the moment of application, rather
-        than against any proxy for it — the matte is an ellipse intersected with a
-        landmark hull and then feathered, and every cheaper stand-in for it
-        (the crop, the crop's inscribed ellipse) is so much larger than the face
-        that a normal trim scores as an extreme one against it.
-
-        The trim is `1 - w·(1 - m)` and is therefore linear in its weight, so the
-        correction is one ratio: scaling the shortfall by `cap / removed` lands
-        exactly on the cap instead of near it.
-        """
-        if trim is None:
-            return matte
-        total = float(matte.sum())
-        if not (total > 0.0):
-            return matte
-        kept = float(np.multiply(matte, trim).sum())
-        removed = 1.0 - kept / total
-        if removed > cap > 0.0:
-            # In place on a temporary, not on `trim`: the caller may hold it (the
-            # tests do) and a helper that quietly rewrites its argument is a trap.
-            trim = 1.0 - (cap / removed) * (1.0 - trim)
-        matte *= trim
-        return matte
 
     @classmethod
     def _crop_mask_to_frame(cls, mask8, weight, IM, frame_shape, margin_frac):
@@ -445,86 +404,6 @@ class MaskingMixin:
         except Exception:
             return None       # a bad mask costs the old behaviour, not a frame
 
-    @classmethod
-    def _visibility_matte(cls, vis_poly, vis_weight, crop_shape, IM, frame_shape):
-        """Multiplier that trims the paste matte to the face surface still facing
-        the camera, in FRAME space, or None when this layer is not engaged.
-
-        `vis_poly` arrives in normalised [0, 1] crop units so it does not have to
-        know whether it is landing on a 512 swap crop or a 1024 GPEN one.
-
-        It is rasterised in crop space and warped, rather than being projected as
-        a polygon, because the polygon is not convex — `fillPoly` on transformed
-        vertices and a warp of the filled mask agree here, and the warp is the one
-        that cannot go wrong on a self-intersecting ring. The cost is one extra
-        single-channel warp, paid only on off-axis faces.
-        """
-        if vis_poly is None or not (vis_weight > 0.0):
-            return None
-        h, w = crop_shape[:2]
-        try:
-            poly = (np.asarray(vis_poly, dtype=np.float64)
-                    * np.array([w, h], dtype=np.float64))
-            if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
-                return None
-            if not np.isfinite(poly).all():
-                return None
-            vis = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(vis, [poly.astype(np.int32)], 255)
-
-            # THE TOP EDGE IS OPENED UP, and this is the whole difference between
-            # this layer being a small correction and being the artefact people
-            # report. Measured contribution of the trim, split by region, over
-            # yaw 0-75 x pitch -40..+20 against the real matte:
-            #
-            #   below the brow line   0.0%   at every pose tested
-            #   forehead              0.0 - 8.1%
-            #
-            # i.e. ALL of it was forehead. Nothing else was ever being removed.
-            # And the forehead is the one part of the face where neither shape
-            # has any evidence: the 106-pt landmarks stop at the eyebrows, so the
-            # matte's hull extrapolates upward by 0.6 of the brow-chin distance
-            # and the polygon extrapolates by carrying the reference ellipsoid
-            # 0.62 past the brows. Two different extrapolations of the same
-            # unknown, and the difference between them was being cut out of the
-            # face — leaving the forehead showing original texture above a
-            # swapped face, with a seam across the brow. On a head tilted down
-            # they diverge most, which is where it was reported.
-            #
-            # It also means the safety test could not see this: it asserts that
-            # no truly-visible LANDMARK is trimmed, and there are no landmarks up
-            # there to trim.
-            #
-            # A suffix-maximum down each column keeps whatever the polygon says
-            # about the SIDES — the left/right terminator, which is the real
-            # visible-surface information and the reason this layer exists — and
-            # discards only its opinion about how high the face goes. A column
-            # the polygon never enters stays empty.
-            vis = np.maximum.accumulate(vis[::-1], axis=0)[::-1]
-            # Two safeties, for two different errors, and they are not
-            # substitutes for each other:
-            #
-            # The MARGIN covers head shape — the polygon comes from a reference
-            # head and can sit a little inside a wider one. Without it 1-2
-            # truly-visible landmarks get trimmed at yaw 88, and a matte that
-            # clips visible skin is a worse artefact than the over-coverage it is
-            # removing. Measured zero cut at every pose with it.
-            #
-            # The CAP covers the pose being wrong, which is the larger error and
-            # the one the margin cannot express: fed a yaw 15 deg too high — which
-            # a prominent nose alone is worth, see face_util.VIS_TRIM_MAX_FRAC —
-            # the polygon describes a different head position entirely, and no
-            # dilation in head-widths rescues that. Bounding the AMOUNT removed
-            # does.
-            return cls._crop_mask_to_frame(vis, vis_weight, IM, frame_shape,
-                                           VIS_POLY_MARGIN)
-        except Exception:
-            # Broad on purpose, and matching how the mask stages in process_face
-            # guard themselves: this is an optional refinement running per face per
-            # frame, so anything unexpected here must cost a skipped trim, never a
-            # dead frame. cv2.error alone is too narrow — the polygon also goes
-            # through numpy casts on its way in.
-            return None
 
     @staticmethod
     def _scale_paste(IM, crop_shape, face_landmarks):
@@ -749,7 +628,7 @@ class MaskingMixin:
         # head. That premise is false, and measurably so.
         #
         # estimate_norm forces a SimilarityTransform (use_affine = False, and
-        # both yaw_align variants return similarities too). A similarity is a
+        # the alignment fit returns a similarity). A similarity is a
         # rotation, a uniform scale and a translation. It cannot shear, squash or
         # otherwise distort anything. Measured over yaw +/-90 x pitch +/-40 x
         # roll +/-30 x four crop sizes, in all three alignment modes: anisotropy

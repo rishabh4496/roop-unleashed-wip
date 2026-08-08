@@ -2107,9 +2107,6 @@ def preview(payload: dict = Body(...)):
     roop_globals.face_detector_threshold = float(payload.get("face_detector_threshold", roop_globals.CFG.face_detector_threshold))
     roop_globals.face_detector_nms = float(payload.get("face_detector_nms", roop_globals.CFG.face_detector_nms))
     roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", getattr(roop_globals.CFG, "refine_landmarks", False)))
-    roop_globals.yaw_align = payload.get("yaw_align", getattr(roop_globals.CFG, "yaw_align", 'off'))   # mode name, not a bool
-    roop_globals.angle_visibility_mask = bool(payload.get("angle_visibility_mask", getattr(roop_globals.CFG, "angle_visibility_mask", False)))
-    roop_globals.angle_fade_strength = float(payload.get("angle_fade_strength", getattr(roop_globals.CFG, "angle_fade_strength", 0.0)))
     roop_globals.swap_model_mask_strength = float(payload.get("swap_model_mask_strength", getattr(roop_globals.CFG, "swap_model_mask_strength", 0.0)))
     roop_globals.jaw_reshape = bool(payload.get("jaw_reshape", getattr(roop_globals.CFG, "jaw_reshape", False)))
     roop_globals.jaw_reshape_strength = float(payload.get("jaw_reshape_strength", getattr(roop_globals.CFG, "jaw_reshape_strength", 0.5)))
@@ -2144,8 +2141,8 @@ def preview(payload: dict = Body(...)):
                 #
                 # Solved HERE rather than in the browser on purpose. The whole
                 # value of showing an angle is that it is the same number the
-                # pipeline gates on — the yaw_align crossfade, the non-frontal
-                # mask router, the angle-bank intake. A second implementation in
+                # pipeline gates on — the non-frontal mask router and the
+                # angle-bank intake. A second implementation in
                 # JS would drift from this one and quietly become a liar, which
                 # is worse than showing nothing.
                 pose = solve_pose_5pt(k) if k is not None else None
@@ -2343,9 +2340,6 @@ def _run_swap(payload):
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", roop_globals.CFG.color_transfer_mode)
         roop_globals.refine_landmarks = bool(payload.get("refine_landmarks", roop_globals.CFG.refine_landmarks))
-        roop_globals.yaw_align = payload.get("yaw_align", getattr(roop_globals.CFG, "yaw_align", 'off'))   # mode name, not a bool
-        roop_globals.angle_visibility_mask = bool(payload.get("angle_visibility_mask", getattr(roop_globals.CFG, "angle_visibility_mask", False)))
-        roop_globals.angle_fade_strength = float(payload.get("angle_fade_strength", getattr(roop_globals.CFG, "angle_fade_strength", 0.0)))
         roop_globals.swap_model_mask_strength = float(payload.get("swap_model_mask_strength", getattr(roop_globals.CFG, "swap_model_mask_strength", 0.0)))
         roop_globals.jaw_reshape = bool(payload.get("jaw_reshape", getattr(roop_globals.CFG, "jaw_reshape", False)))
         roop_globals.jaw_reshape_strength = float(payload.get("jaw_reshape_strength", getattr(roop_globals.CFG, "jaw_reshape_strength", 0.5)))

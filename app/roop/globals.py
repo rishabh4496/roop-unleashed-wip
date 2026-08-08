@@ -1,5 +1,5 @@
 import os
-from settings import Settings, initial_yaw_align
+from settings import Settings
 from typing import List
 
 source_path = None
@@ -52,40 +52,6 @@ color_transfer_mode = 'rct'
 # Alignment refinement: derive the 5 arcface keypoints from the 68-point
 # landmarks (more stable at angles than the detector's raw 5 kps).
 refine_landmarks = False
-# Profile alignment mode: 'off' | 'stabilize' | 'pose'.
-# At near-profile yaw the two eyes project to almost the same point, so the
-# 5-point similarity fit against a frontal template is ill-conditioned:
-#   'stabilize' takes the rotation from the eye->mouth axis, which stops pitch
-#               leaking into in-plane roll (a head nodding +/-25 deg at 90 deg
-#               yaw otherwise swings the crop rotation ~30 deg);
-#   'pose'      replaces the template with the reference head projected at the
-#               estimated yaw, which makes the fit well posed (residual -60%).
-# Seeded from ROOP_YAW_ALIGN (1/on/true == 'stabilize', or name a mode);
-# the UI selector overrides it per run. See face_util._maybe_constrained.
-yaw_align = initial_yaw_align()
-# Angle handling, the other two layers of the same structure as yaw_align. BOTH
-# DEFAULT OFF, with yaw_align — see settings.initial_yaw_align for the pose-solve
-# error all three inherit, and the notes below for what each one does with it.
-#
-#   angle_visibility_mask — trim the paste matte to the face surface still
-#       facing the camera, so a profile stops pasting swap pixels over hair and
-#       neck (face_util.pose_visibility_polygon). Only acts while yaw_align is
-#       'pose', because it is placed by that alignment's template. Its failure
-#       mode is the one that gets reported: fed a yaw 15 deg too high it cuts the
-#       far side of a face that is entirely visible, and half the head then shows
-#       the original texture beside the swapped one. Capped now so it can never
-#       remove more than VIS_TRIM_MAX_FRAC of the matte, which bounds that to a
-#       soft edge instead of a split face — see procmgr_masking._visibility_matte.
-#   angle_fade_strength — percent, the ceiling on how far the swap fades back
-#       toward the plate at 90 deg off-axis (face_util.angle_fade_weight). It
-#       bounds an out-of-distribution swap, and it is the only angle layer that
-#       behaves identically for every swap model. It is also the layer that
-#       DOUBLES features if it is done naively: a straight cross-dissolve of the
-#       swapped crop with the plate superimposes two differently-shaped faces, so
-#       the eyes, nose and mouth appear twice. It is applied from the outside in
-#       instead (ProcessMgr._fade_toward_plate). 0 disables it.
-angle_visibility_mask = False
-angle_fade_strength = 0.0
 # Swap-model face mask (hififace / hyperswap emit one as a second graph output).
 # Percent: how strongly to trim the paste matte to where the NET says it drew a
 # face. Unlike the two above this is not pose-gated — the model's verdict is

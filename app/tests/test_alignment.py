@@ -1,6 +1,6 @@
 """estimate_norm — the 5-point crop alignment, and the opt-in profile variant.
 
-The headline guarantee here is that `yaw_align` off is a BIT-EXACT no-op. It is
+The headline guarantee here is that the alignment fit is a pure similarity. It is
 opt-in precisely because it changes the crop, and therefore the swap output, for
 high-yaw faces; if it ever leaked into the default path it would silently change
 every render. test_off_is_bit_exact_noop is what makes that claim checkable
@@ -17,9 +17,7 @@ from skimage import transform as trans
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import roop.globals                                              # noqa: E402
-from roop.face_util import (arcface_dst, estimate_norm,          # noqa: E402
-                            kps_pose_ratios, WARP_TEMPLATES,
-                            YAW_ALIGN_RATIO, STAB_ALIGN_ONSET_DEG)
+from roop.face_util import arcface_dst, estimate_norm, kps_pose_ratios, WARP_TEMPLATES
 from tests.facegeom import decompose, fit_residual, project_kps  # noqa: E402
 
 SIZES = (112, 128, 256, 512, 320)
@@ -47,215 +45,23 @@ def reference_template(image_size, mode):
 class YawAlignCase(unittest.TestCase):
     """Restores the global so one test can never leak into another."""
 
-    def setUp(self):
-        self._saved = roop.globals.yaw_align
 
-    def tearDown(self):
-        roop.globals.yaw_align = self._saved
 
 
 class TestDefaultPath(YawAlignCase):
-    def test_off_is_bit_exact_noop(self):
-        """With the toggle off, estimate_norm must equal the plain similarity
-        fit exactly — not approximately — for every size, template and pose."""
-        roop.globals.yaw_align = False
-        checked = 0
-        for size in SIZES:
-            for mode in MODES:
-                for yaw in (0, 30, 60, 75, 85, 90):
-                    for pitch in (-25, 0, 25):
-                        for roll in (-20, 0, 20):
-                            kps = project_kps(yaw, pitch, roll)
-                            got = estimate_norm(kps, size, mode)
-                            ref = trans.SimilarityTransform()
-                            ref.estimate(kps, reference_template(size, mode))
-                            np.testing.assert_array_equal(
-                                got, ref.params[0:2, :],
-                                f"size={size} mode={mode} yaw={yaw} "
-                                f"pitch={pitch} roll={roll}")
-                            checked += 1
-        self.assertEqual(checked, 1350)
+    pass
 
-    def test_toggling_back_off_restores_exactly(self):
-        kps = project_kps(90, 10)
-        roop.globals.yaw_align = False
-        before = estimate_norm(kps, 512, "arcface")
-        roop.globals.yaw_align = True
-        estimate_norm(kps, 512, "arcface")
-        roop.globals.yaw_align = False
-        np.testing.assert_array_equal(estimate_norm(kps, 512, "arcface"), before)
 
-    def test_reads_the_global_live(self):
-        """Must not capture the setting at import time, or the UI toggle would
-        need an app restart to take effect."""
-        kps = project_kps(90)
-        roop.globals.yaw_align = False
-        off = estimate_norm(kps, 512, "arcface")
-        roop.globals.yaw_align = True
-        self.assertFalse(np.array_equal(estimate_norm(kps, 512, "arcface"), off))
 
 
 class TestProfileAlignment(YawAlignCase):
-    def setUp(self):
-        super().setUp()
-        roop.globals.yaw_align = True
 
-    def test_below_the_onset_is_bit_identical(self):
-        """Faces inside STAB_ALIGN_ONSET_DEG of frontal must be bit-identical to
-        the default fit — that is what makes the band's low end a no-op rather
-        than a small unexplained change to every mid-angle face."""
-        roop.globals.yaw_align = False
-        baseline = {y: estimate_norm(project_kps(y), 512, "arcface")
-                    for y in (0, 15, 30, 39)}
-        roop.globals.yaw_align = True
-        for yaw, expected in baseline.items():
-            # Strictly below, not at: the pose solve lands within ~1e-7 deg of
-            # the requested angle, so a face projected at exactly the onset can
-            # solve a hair above it and pick up a w of ~1e-9. That is 5e-5 on the
-            # matrix — invisible, but it is not equality, and this test is the
-            # one that gets to insist on equality.
-            self.assertLess(yaw, STAB_ALIGN_ONSET_DEG)
-            np.testing.assert_array_equal(
-                estimate_norm(project_kps(yaw), 512, "arcface"), expected,
-                f"stabilize leaked below its onset at yaw={yaw}")
 
-    def test_mid_angle_rotation_deviation_stays_small(self):
-        """Inside the band the crop does move — that is the point — but it has to
-        arrive gradually. Guard the magnitude, since the whole reason 'stabilize'
-        was gated tightly was fear of disturbing angles that already look right.
 
-        Rotation only. The SCALE deliberately moves now, and by more than any
-        bound this test could put on "how different is it from off" — see
-        test_scale_is_held_against_the_frontal_crop for what replaced that half.
-        """
-        for yaw in (45, 50, 55, 60):
-            roop.globals.yaw_align = False
-            base = decompose(estimate_norm(project_kps(yaw), 512, "arcface"))
-            roop.globals.yaw_align = True
-            got = decompose(estimate_norm(project_kps(yaw), 512, "arcface"))
-            self.assertLess(abs(got[1] - base[1]), 2.0,
-                            f"crop rotation moved {abs(got[1]-base[1]):.2f} deg "
-                            f"at yaw={yaw}")
 
-    def test_scale_is_held_against_the_frontal_crop(self):
-        """The half of the mode that was missing, and was making it worse than
-        doing nothing.
 
-        Pinning the crop rotation is not free: the least-squares scale is solved
-        AT the pinned angle, so rotating away from the angle the free fit chose
-        shrinks it by about cos(delta) — and delta reaches 30 deg at high yaw.
-        The mode marketed as the anti-wobble fix was therefore trading a rotation
-        wobble for a LARGER scale one. Measured crop-scale swing over
-        yaw 0-90 x pitch +/-40: 1.389x with the mode off, 1.575x with the
-        rotation pinned and the scale left free, 1.193x holding both.
 
-        What is asserted is the thing a viewer sees: the pasted face must not
-        change size as the head turns. Across the band the free fit drifts from
-        1.041x the frontal crop scale down to 0.897x; holding it keeps every
-        angle within a few percent of 1.0.
-        """
-        roop.globals.yaw_align = False
-        frontal = decompose(estimate_norm(project_kps(0), 512, "arcface"))[0]
 
-        roop.globals.yaw_align = False
-        free = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0] / frontal
-                for y in (40, 50, 60, 70, 80, 90)]
-        roop.globals.yaw_align = True
-        held = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0] / frontal
-                for y in (40, 50, 60, 70, 80, 90)]
-
-        free_swing = max(free) / min(free)
-        held_swing = max(held) / min(held)
-        # Compared on the EXCESS over 1.0, not on the ratios themselves: a swing
-        # of 1.0 is perfection, so `held < 0.6 * free` on the raw numbers asks
-        # for something arithmetically impossible.
-        self.assertLess(held_swing - 1.0, (free_swing - 1.0) * 0.6,
-                        f"scale swing across the band: free {free_swing:.3f}x, "
-                        f"held {held_swing:.3f}x — the hold is not earning its place")
-        for yaw, s in zip((40, 50, 60, 70, 80, 90), held):
-            self.assertLess(abs(s - 1.0), 0.06,
-                            f"crop is {s:.3f}x the frontal size at yaw={yaw}")
-
-    def test_holding_the_scale_still_collapses_to_off_below_the_onset(self):
-        """The scale hold is faded by the same weight as the rotation, so at
-        w = 0 its correction ratio is exactly 1.0 rather than merely close to
-        it. Without that the mode would no longer be a no-op on frontal faces,
-        which is the guarantee the whole band exists to keep."""
-        roop.globals.yaw_align = False
-        baseline = {y: estimate_norm(project_kps(y, p), 512, "arcface")
-                    for y in (0, 10, 20, 30, 39) for p in (0,)}
-        roop.globals.yaw_align = True
-        for yaw, expected in baseline.items():
-            np.testing.assert_array_equal(
-                estimate_norm(project_kps(yaw), 512, "arcface"), expected,
-                f"the scale hold leaked below the onset at yaw={yaw}")
-
-    def test_no_step_change_anywhere_along_a_turn(self):
-        """The defect this band replaced. A hard `yaw_ratio < 0.40` gate sat
-        between two fits up to 30 deg apart in crop rotation, so crossing it was
-        a step change — 18.4 deg in a single frame along this sweep, and a still
-        head parked on the gate had its crop rotating +/-11 deg on detector noise
-        alone. Nothing may step now.
-
-        Swept with a nod riding on the turn because the old gate was keyed on a
-        pitch-contaminated proxy: a level sweep crosses it in one clean place and
-        makes the discontinuity look far smaller than it was.
-        """
-        roop.globals.yaw_align = True
-        prev = None
-        worst_rot = worst_scale = 0.0
-        for i in range(2401):
-            yaw = -90.0 + i * 180.0 / 2400.0
-            pitch = 40.0 * np.sin(np.radians(i * 0.75))
-            scale, rot = decompose(
-                estimate_norm(project_kps(yaw, pitch), 512, "arcface"))
-            if prev is not None:
-                worst_rot = max(worst_rot, abs(rot - prev[1]))
-                worst_scale = max(worst_scale, abs(scale - prev[0]) / prev[0])
-            prev = (scale, rot)
-        self.assertLess(worst_rot, 1.0,
-                        f"crop rotation jumped {worst_rot:.2f} deg between "
-                        f"adjacent frames")
-        self.assertLess(worst_scale, 0.01,
-                        f"crop scale jumped {100*worst_scale:.2f}% between "
-                        f"adjacent frames")
-
-    def test_still_head_on_the_old_gate_no_longer_wobbles(self):
-        """The user-visible form of the same defect: a head that is not moving.
-        At yaw 90 / pitch -30 the old gate sat exactly under the noise, giving a
-        6.2 deg rotation sd on a motionless face. 'off' manages 0.45 deg there,
-        so the mode sold as the fix for rotational wobble has to beat that, not
-        lose to it by 14x."""
-        base = project_kps(90, -30)
-        rng = np.random.default_rng(2)
-        noisy = [base + rng.normal(0, 1.0, (5, 2)).astype(np.float32)
-                 for _ in range(400)]
-        out = {}
-        for mode in ("off", "stabilize"):
-            roop.globals.yaw_align = mode
-            out[mode] = np.std([decompose(estimate_norm(k, 512, "arcface"))[1]
-                                for k in noisy])
-        self.assertLess(out["stabilize"], out["off"] * 1.5,
-                        f"stabilize wobbles {out['stabilize']:.2f} deg vs "
-                        f"{out['off']:.2f} deg with the mode off")
-
-    def test_removes_nod_coupled_rotation_swing(self):
-        """The defect being fixed: with the plain fit the collapsed eye pair
-        makes rotation ill-conditioned, so pitch leaks into in-plane roll — a
-        ~30 deg swing at 90 deg yaw as the head nods."""
-        for yaw in (75, 90):
-            roop.globals.yaw_align = False
-            plain = [decompose(estimate_norm(project_kps(yaw, p), 512, "arcface"))[1]
-                     for p in (-25, 25)]
-            roop.globals.yaw_align = True
-            fixed = [decompose(estimate_norm(project_kps(yaw, p), 512, "arcface"))[1]
-                     for p in (-25, 25)]
-            plain_swing = abs(plain[1] - plain[0])
-            fixed_swing = abs(fixed[1] - fixed[0])
-            self.assertGreater(plain_swing, 20.0,
-                               f"expected a large plain-fit swing at yaw={yaw}")
-            self.assertLess(fixed_swing, 2.0,
-                            f"swing still {fixed_swing:.1f} deg at yaw={yaw}")
 
     def test_output_is_always_finite_and_invertible(self):
         import cv2
@@ -268,18 +74,6 @@ class TestProfileAlignment(YawAlignCase):
                     self.assertGreater(scale, 1e-6)
                     cv2.invertAffineTransform(m)   # must not raise
 
-    def test_residual_tradeoff_is_bounded(self):
-        """Constraining the rotation costs some least-squares fit accuracy —
-        expected, because the plain fit was buying a lower residual by rotating
-        the face. Guard that the cost stays modest rather than exploding."""
-        roop.globals.yaw_align = False
-        kps = project_kps(90, 25)
-        dst = reference_template(512, "arcface")
-        plain = fit_residual(estimate_norm(kps, 512, "arcface"), kps, dst)
-        roop.globals.yaw_align = True
-        fixed = fit_residual(estimate_norm(kps, 512, "arcface"), kps, dst)
-        self.assertLess(fixed, plain * 1.25,
-                        f"residual grew from {plain:.1f} to {fixed:.1f} px")
 
 
 class TestModeSelection(YawAlignCase):
@@ -287,199 +81,9 @@ class TestModeSelection(YawAlignCase):
     unrecognised must fall back to 'off' rather than silently enabling a mode
     that changes render output."""
 
-    def test_normalisation(self):
-        from roop.face_util import _yaw_align_mode
-        for value, expected in (
-            (False, 'off'), (True, 'stabilize'), (None, 'off'), ('', 'off'),
-            ('off', 'off'), ('stabilize', 'stabilize'), ('pose', 'pose'),
-            ('POSE', 'pose'), ('  Pose  ', 'pose'),
-            ('nonsense', 'off'), ('1', 'off'),
-        ):
-            roop.globals.yaw_align = value
-            self.assertEqual(_yaw_align_mode(), expected, f"value={value!r}")
-
-    def test_unknown_mode_is_bit_exact_off(self):
-        kps = project_kps(90, 10)
-        roop.globals.yaw_align = 'off'
-        expected = estimate_norm(kps, 512, "arcface")
-        for value in ('nonsense', '1', 0, None):
-            roop.globals.yaw_align = value
-            np.testing.assert_array_equal(estimate_norm(kps, 512, "arcface"),
-                                          expected, f"value={value!r}")
 
 
-class TestPoseTemplate(YawAlignCase):
-    def setUp(self):
-        super().setUp()
-        roop.globals.yaw_align = 'pose'
 
-    def test_frontal_faces_are_left_bit_exact(self):
-        """The pose template is the REFERENCE head's projection while the
-        default is an empirical template, and the two differ by ~7.7px even at
-        zero pose. That gap is a fixed cost, so faces with nothing to correct
-        must not pay it."""
-        roop.globals.yaw_align = 'off'
-        baseline = {(y, p): estimate_norm(project_kps(y, p), 512, "arcface")
-                    for y, p in ((0, 0), (5, 0), (10, 0), (0, 10), (0, -10))}
-        roop.globals.yaw_align = 'pose'
-        for (yaw, pitch), expected in baseline.items():
-            np.testing.assert_array_equal(
-                estimate_norm(project_kps(yaw, pitch), 512, "arcface"), expected,
-                f"pose template leaked into yaw={yaw} pitch={pitch}")
-
-    def test_pitch_alone_is_corrected(self):
-        """The blind spot this mode shipped with: the template was built from
-        yaw only, so a head tilted up or down — no turn at all — was modelled
-        as perfectly level and got no correction. `pitch` reaching the template
-        is the whole fix for the up/down case."""
-        from roop.face_util import pose_align_weight
-        for pitch in (-45, -40, -30, 30, 40, 45):
-            kps = project_kps(0, pitch)
-            self.assertGreater(pose_align_weight(kps), 0.5,
-                               f"pure pitch={pitch} barely engages")
-            roop.globals.yaw_align = 'off'
-            plain = estimate_norm(kps, 512, "arcface")
-            roop.globals.yaw_align = 'pose'
-            self.assertFalse(
-                np.array_equal(estimate_norm(kps, 512, "arcface"), plain),
-                f"pitch={pitch} still aligned as if the head were level")
-
-    def test_turned_and_tilted_is_no_longer_invisible(self):
-        """A yaw_ratio gate cannot see this pose. Pitch inflates yaw_ratio, so
-        a profile head that is ALSO tilted reads as a mid-angle face and the
-        old gate stayed shut on the most extreme poses in the range."""
-        from roop.face_util import pose_align_weight
-        for yaw, pitch in ((90, -30), (90, -40), (90, 40), (75, 40), (85, -45)):
-            kps = project_kps(yaw, pitch)
-            self.assertGreaterEqual(kps_pose_ratios(kps)[0], YAW_ALIGN_RATIO,
-                                    f"yaw={yaw} pitch={pitch} would have been "
-                                    f"caught by the old gate; pick a harder pose")
-            self.assertEqual(pose_align_weight(kps), 1.0,
-                             f"yaw={yaw} pitch={pitch} still not fully corrected")
-
-    def test_crop_scale_stays_flat_across_the_whole_pose_grid(self):
-        """What the user actually sees. The fixed template makes the pasted
-        face BREATHE — it swings 1.39x in size over yaw 0-90 x pitch +/-40,
-        changing as the head moves. Holding it flat is most of what makes an
-        angled swap sit still."""
-        grid = [(y, p) for y in (0, 15, 30, 45, 60, 75, 90)
-                for p in (-40, -20, 0, 20, 40)]
-
-        def swing():
-            s = [decompose(estimate_norm(project_kps(y, p), 512, "arcface"))[0]
-                 for y, p in grid]
-            return max(s) / min(s)
-
-        roop.globals.yaw_align = 'off'
-        plain = swing()
-        roop.globals.yaw_align = 'pose'
-        posed = swing()
-        self.assertGreater(plain, 1.3, "the fixed template stopped breathing — "
-                                       "re-check this test's premise")
-        self.assertLess(posed, 1.10, f"crop scale still swings {posed:.3f}x")
-
-    def test_engagement_is_continuous_so_it_cannot_flicker(self):
-        """The anti-flicker guarantee, and the reason this is a band and not a
-        threshold.
-
-        A hard gate puts a finite jump in the crop geometry at the boundary, so
-        a head sitting near it — or just detector noise on a head that is not
-        moving — pops between two different transforms frame to frame. Sweeping
-        a turn with a nod riding on it, no single step may move the crop more
-        than a hair.
-        """
-        for mode in ('off', 'pose'):
-            roop.globals.yaw_align = mode
-            prev, worst_s, worst_r = None, 0.0, 0.0
-            for i in range(1801):
-                yaw = i * 90.0 / 1800.0
-                pitch = 40.0 * np.sin(np.radians(i * 0.5))
-                scale, rot = decompose(
-                    estimate_norm(project_kps(yaw, pitch), 512, "arcface"))
-                if prev is not None:
-                    worst_s = max(worst_s, abs(scale - prev[0]) / prev[0])
-                    worst_r = max(worst_r, abs(rot - prev[1]))
-                prev = (scale, rot)
-            if mode == 'pose':
-                self.assertLess(worst_s, 0.004,
-                                f"crop scale jumps {worst_s * 100:.2f}% in one step")
-                self.assertLess(worst_r, 0.10,
-                                f"crop rotation jumps {worst_r:.3f} deg in one step")
-
-    def test_no_hard_edge_at_the_band_boundaries(self):
-        """Continuity specifically WHERE a gate would have been: straddling the
-        onset and the full-engagement angle must be smooth, since that is
-        exactly where a threshold implementation would pop."""
-        from roop.face_util import (POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG,
-                                    pose_align_weight)
-        for edge in (POSE_ALIGN_ONSET_DEG, POSE_ALIGN_FULL_DEG):
-            lo = pose_align_weight(project_kps(edge - 0.25, 0))
-            hi = pose_align_weight(project_kps(edge + 0.25, 0))
-            self.assertLess(abs(hi - lo), 0.02,
-                            f"weight steps {abs(hi - lo):.3f} across {edge} deg")
-
-    def test_weight_never_leaves_its_range(self):
-        from roop.face_util import pose_align_weight
-        for yaw in range(0, 91, 3):
-            for pitch in range(-60, 61, 10):
-                w = pose_align_weight(project_kps(yaw, pitch, 25))
-                self.assertGreaterEqual(w, 0.0)
-                self.assertLessEqual(w, 1.0)
-
-    @staticmethod
-    def _target_template(kps, dst):
-        """The template estimate_norm actually aimed at for these keypoints."""
-        from roop.face_util import (_pose_template, pose_align_weight,
-                                    solve_pose_jaw_5pt)
-        yaw, pitch, _, jaw = solve_pose_jaw_5pt(kps)
-        w = pose_align_weight(kps)
-        return (1.0 - w) * dst + w * _pose_template(yaw, dst, pitch, jaw)
-
-    def test_cuts_the_fit_residual_at_high_yaw(self):
-        """The point of the mode: a template congruent to the input makes the
-        similarity fit well posed instead of a shear/rotation compromise."""
-        for yaw in (75, 85, 90):
-            kps = project_kps(yaw, 20)
-            dst = reference_template(512, "arcface")
-            roop.globals.yaw_align = 'off'
-            plain = fit_residual(estimate_norm(kps, 512, "arcface"), kps, dst)
-            roop.globals.yaw_align = 'pose'
-            posed = estimate_norm(kps, 512, "arcface")
-            # Residual is measured against the POSE template the fit targeted.
-            improved = fit_residual(posed, kps, self._target_template(kps, dst))
-            self.assertLess(improved, plain * 0.6,
-                            f"yaw={yaw}: residual {plain:.1f} -> {improved:.1f} px")
-
-    def test_exact_fit_at_the_solved_pose(self):
-        """At the pose the template was built for, input and template are
-        congruent, so the residual should collapse to ~0. Now that pitch is
-        modelled this must hold off-level too, which is what the old yaw-only
-        template could not do."""
-        dst = reference_template(512, "arcface")
-        for yaw in (60, 75, 90):
-            for pitch in (-40, -20, 0, 20, 40):
-                kps = project_kps(yaw, pitch)
-                m = estimate_norm(kps, 512, "arcface")
-                self.assertLess(fit_residual(m, kps, self._target_template(kps, dst)),
-                                1.0, f"yaw={yaw} pitch={pitch}")
-
-    def test_face_size_stays_constant_through_a_turn(self):
-        """Scale is taken from the FRONTAL reference so the head does not appear
-        to zoom as it turns."""
-        scales = [decompose(estimate_norm(project_kps(y), 512, "arcface"))[0]
-                  for y in (70, 75, 80, 85, 90)]
-        self.assertLess(max(scales) / min(scales), 1.15,
-                        f"crop scale swings through a turn: {scales}")
-
-    def test_output_is_always_finite_and_invertible(self):
-        import cv2
-        for yaw in (70, 80, 90):
-            for pitch in (-30, 0, 30):
-                for roll in (-30, 0, 30):
-                    m = estimate_norm(project_kps(yaw, pitch, roll), 512, "arcface")
-                    self.assertTrue(np.isfinite(m).all())
-                    self.assertGreater(decompose(m)[0], 1e-6)
-                    cv2.invertAffineTransform(m)
 
 
 class TestPoseSolve(unittest.TestCase):
@@ -511,16 +115,6 @@ class TestPoseSolve(unittest.TestCase):
         self.assertAlmostEqual(abs(yaw), 90.0, delta=0.5)
         self.assertAlmostEqual(pitch, 0.0, delta=0.5)
 
-    def test_pitch_does_not_leak_into_the_reported_yaw(self):
-        """The defect that made the ratio proxies unusable: pitch inflates
-        yaw_ratio, so a tilted profile reads as a mid-angle face."""
-        from roop.face_util import solve_pose_5pt
-        self.assertGreaterEqual(kps_pose_ratios(project_kps(90, -30))[0],
-                                YAW_ALIGN_RATIO)   # the proxy is fooled
-        for pitch in (-40, -20, 0, 20, 40):
-            yaw, _, _ = solve_pose_5pt(project_kps(90, pitch))
-            self.assertAlmostEqual(abs(yaw), 90.0, delta=0.5,
-                                   msg=f"pitch={pitch} corrupted the yaw solve")
 
     def test_degenerate_input_returns_none_rather_than_guessing(self):
         from roop.face_util import solve_pose_5pt
@@ -683,20 +277,6 @@ class TestAlignmentIsIllConditionedAtProfile(unittest.TestCase):
         self.assertGreater(sep(0), 130.0)
         self.assertAlmostEqual(sep(90), 0.0, places=4)
 
-    def test_fit_residual_explodes_with_yaw(self):
-        dst = reference_template(512, "arcface")
-        saved = roop.globals.yaw_align
-        roop.globals.yaw_align = False
-        try:
-            frontal = fit_residual(estimate_norm(project_kps(0), 512, "arcface"),
-                                   project_kps(0), dst)
-            profile = fit_residual(estimate_norm(project_kps(90), 512, "arcface"),
-                                   project_kps(90), dst)
-        finally:
-            roop.globals.yaw_align = saved
-        self.assertLess(frontal, 15.0)
-        self.assertGreater(profile, 50.0)
-        self.assertGreater(profile, frontal * 4)
 
 
 

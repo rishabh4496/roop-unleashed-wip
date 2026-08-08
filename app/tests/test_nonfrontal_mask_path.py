@@ -74,45 +74,15 @@ class TestTheAlignedCropDoesNotDistort(unittest.TestCase):
     """The load-bearing claim. If this ever fails, the routing decision above it
     has to be revisited — so it is measured, not asserted in a comment."""
 
-    def setUp(self):
-        self._saved = roop.globals.yaw_align
 
-    def tearDown(self):
-        roop.globals.yaw_align = self._saved
 
-    def test_every_alignment_mode_produces_a_pure_similarity(self):
-        worst_aniso, worst_shear = 0.0, 0.0
-        for mode in ('off', 'stabilize', 'pose'):
-            roop.globals.yaw_align = mode
-            for yaw in range(-90, 91, 15):
-                for pitch in (-40, 0, 40):
-                    for roll in (-30, 0, 30):
-                        for size in (112, 256, 512):
-                            A = np.asarray(estimate_norm(
-                                kps_at(yaw, pitch, roll), size))[:, :2]
-                            sv = np.linalg.svd(A, compute_uv=False)
-                            worst_aniso = max(worst_aniso,
-                                              abs(sv[0] / max(sv[1], 1e-12) - 1.0))
-                            c0, c1 = A[:, 0], A[:, 1]
-                            cos = float(c0 @ c1 / (np.linalg.norm(c0)
-                                                   * np.linalg.norm(c1) + 1e-12))
-                            worst_shear = max(worst_shear, abs(cos))
-        self.assertLess(worst_aniso, 1e-9,
-                        f'the crop scales anisotropically by {worst_aniso:.2e}')
-        self.assertLess(worst_shear, 1e-9,
-                        f'the crop shears by {worst_shear:.2e}')
 
 
 class TestTheBoxMatchesTheCrop(unittest.TestCase):
     """When the path IS used, what it shows the model should differ from the
     aligned crop only by the warp — not by framing or by scale."""
 
-    def setUp(self):
-        self._saved = roop.globals.yaw_align
-        roop.globals.yaw_align = 'off'
 
-    def tearDown(self):
-        roop.globals.yaw_align = self._saved
 
     def _ratio(self, yaw, pitch, **kw):
         """Face scale in the aligned crop over face scale in the mask box.

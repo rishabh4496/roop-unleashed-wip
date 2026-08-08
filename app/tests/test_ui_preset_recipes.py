@@ -101,8 +101,6 @@ ENUMS = {
     'upscale_model_after': set(re.findall(
         r"value:\s*'([^']+)'", re.search(r'AI_UPSCALE_MODELS = \[(.*?)\];',
                                          _read(UI, 'FaceSwap.jsx'), re.S).group(1))),
-    'yaw_align': set(re.findall(r"'([a-z]+)'", re.search(
-        r'YAW_ALIGN_MODES = \((.*?)\)', _read(APP, 'settings.py'), re.S).group(1))),
 }
 
 # Every setting the Face Swap tab can change, straight from its set('key', …)

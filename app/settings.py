@@ -43,51 +43,6 @@ def _enable_tensorrt_runtime():
 _enable_tensorrt_runtime()
 
 
-YAW_ALIGN_MODES = ('off', 'stabilize', 'pose')
-
-
-def initial_yaw_align():
-    """Seed value for the profile-alignment mode, read from ROOP_YAW_ALIGN.
-
-    Accepts a mode name, or a legacy boolean-ish value meaning 'stabilize'.
-    Lives here rather than in roop.globals because globals imports settings, so
-    this is the one place both can reach without a circular import.
-    """
-    raw = (os.environ.get('ROOP_YAW_ALIGN') or '').strip().lower()
-    if raw in YAW_ALIGN_MODES:
-        return raw
-    if raw in ('1', 'on', 'true', 'yes'):
-        return 'stabilize'
-    if raw in ('0', 'off', 'false', 'no'):
-        return 'off'
-    # Default 'off'. This shipped as 'pose' for one day and was reported worse on
-    # real footage — flicker and a swapped face that does not match the original's
-    # size, both on lateral poses, which is precisely where 'pose' acts.
-    #
-    # The measurement that justified 'pose' still stands (the fixed template makes
-    # the crop breathe 1.354x over yaw 0-88 x pitch +/-40 against 1.072x), but it
-    # is not the measurement that decides this. 'pose' rebuilds the alignment
-    # template from a SOLVED yaw and pitch, and that solve fits ONE reference head
-    # by weak perspective, so it is only as good as that head matching the person
-    # in frame. It does not, and the error is large — nose protrusion is what
-    # carries most of the yaw signal in 5 points, so (tests/test_pose_shape.py):
-    #
-    #   true yaw            15     30     45     60     75
-    #   reference head    15.0   30.0   45.0   60.0   75.0
-    #   nose +40%         24.6   44.6   59.6   71.3   81.1
-    #   nose -40%          4.5    9.7   16.5   27.1   47.8
-    #
-    # A prominent-nosed person turning 30 deg is read as 45 and gets the FULL
-    # pose-matched template (the band saturates at 40), i.e. a crop matched to a
-    # pose they are not in. That is a per-person systematic error, not noise, so
-    # it cannot be averaged or smoothed away — and it is inherited by both of the
-    # other angle layers, which key on the same number.
-    #
-    # Kept selectable, and worth re-testing per clip: ROOP_YAW_ALIGN=pose, or the
-    # selector in the Face Swap tab.
-    return 'off'
-
-
 class Settings:
     def __init__(self, config_file):
         self.config_file = config_file
@@ -233,17 +188,6 @@ class Settings:
         self.color_transfer_mode = self.default_get(data, 'color_transfer_mode', 'rct')
         # Detection refinements
         self.refine_landmarks = self.default_get(data, 'refine_landmarks', False)
-        # Profile alignment (see roop.globals.yaw_align). Defaults to whatever
-        # ROOP_YAW_ALIGN says, so the env var still works on a config that has
-        # never had the selector touched; once it is saved, the saved value wins.
-        self.yaw_align = self.default_get(data, 'yaw_align', initial_yaw_align())
-        # Angle handling, layers 2 and 3 — see roop.face_util
-        # (pose_visibility_polygon, angle_fade_weight). Layer 1 is yaw_align
-        # above; all three are one structure and share its off-axis fade band.
-        # Both default OFF, with yaw_align — see initial_yaw_align for the pose
-        # error all three inherit, and roop.globals for what each one does with it.
-        self.angle_visibility_mask = self.default_get(data, 'angle_visibility_mask', False)
-        self.angle_fade_strength = self.default_get(data, 'angle_fade_strength', 0.0)
         # Swap-model face mask — only hififace/hyperswap emit one; the models that
         # do not are unaffected at any value.
         self.swap_model_mask_strength = self.default_get(data, 'swap_model_mask_strength', 0.0)
@@ -400,9 +344,6 @@ class Settings:
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
             'color_transfer_mode': self.color_transfer_mode,
             'refine_landmarks': self.refine_landmarks,
-            'yaw_align': self.yaw_align,
-            'angle_visibility_mask': self.angle_visibility_mask,
-            'angle_fade_strength': self.angle_fade_strength,
             'swap_model_mask_strength': self.swap_model_mask_strength,
             'jaw_reshape': self.jaw_reshape,
             'jaw_reshape_strength': self.jaw_reshape_strength,

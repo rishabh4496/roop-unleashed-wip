@@ -158,7 +158,6 @@ def main():
     a, b = args.facesets.split(",")
     g = ab.init_pipeline(args.provider, args.swap_model, args.enhancer,
                          args.mask_engine)
-    ab.angle_settings(g, "off", 0.0, False)
     g.video_encoder = "libx264"
     g.video_quality = 12
     g.execution_threads = 4

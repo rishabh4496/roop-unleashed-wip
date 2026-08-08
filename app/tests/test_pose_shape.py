@@ -33,9 +33,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.facegeom import HEAD_5PT, rotation                       # noqa: E402
-from roop.face_util import (POSE_ALIGN_FULL_DEG, POSE_ALIGN_ONSET_DEG,  # noqa: E402
-                            pose_weight_for, solve_pose_5pt,
-                            solve_pose_jaw_5pt)
+from roop.face_util import solve_pose_5pt, solve_pose_jaw_5pt
 
 
 def project(head, yaw, pitch=0.0, roll=0.0, scale=200.0, cx=256.0, cy=256.0):
@@ -113,28 +111,7 @@ class NoseDepthDominatesTheYawEstimate(unittest.TestCase):
         self.assertGreater(bias, 10.0)
         self.assertGreater(bias, 5.0 * jitter)
 
-    def test_a_prominent_nose_saturates_the_engagement_band(self):
-        """The consequence, stated in the units the pipeline gates on.
 
-        `pose` mode, the trim and the fade all ramp over
-        POSE_ALIGN_ONSET_DEG..POSE_ALIGN_FULL_DEG. A head at 30 deg is meant to
-        sit part-way up that ramp; read as 45 it is past the top of it, so the
-        corrections are applied at FULL strength for a pose the person is not in.
-        """
-        self.assertLess(POSE_ALIGN_ONSET_DEG, 30.0)
-        self.assertLess(30.0, POSE_ALIGN_FULL_DEG)      # 30 deg is mid-band...
-
-        kps = project(nose(1.4), 30)
-        pose = solve_pose_jaw_5pt(kps)
-        self.assertGreaterEqual(pose_weight_for(pose[0], pose[1]), 0.99)  # ...but reads as saturated
-
-    def test_a_flat_nose_leaves_a_real_turn_uncorrected(self):
-        """The mirror-image failure, which is the quieter one: nothing engages
-        where something should, so it looks like the feature does not work rather
-        than like it misbehaves."""
-        kps = project(nose(0.6), 30)
-        pose = solve_pose_jaw_5pt(kps)
-        self.assertEqual(pose_weight_for(pose[0], pose[1]), 0.0)
 
 
 class OtherShapeDifferencesAreSecondOrder(unittest.TestCase):

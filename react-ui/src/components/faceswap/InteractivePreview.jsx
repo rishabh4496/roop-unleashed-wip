@@ -519,7 +519,7 @@ export default function InteractivePreview({
   // ── Debug overlay: the geometry the pipeline actually saw ─────────────────
   //
   // The 5 arcface keypoints and the solved head pose drive nearly every
-  // decision downstream — the alignment crop, the yaw_align crossfade, the
+  // decision downstream — the alignment crop, the
   // non-frontal mask router, whether an angle is worth banking. All of it was
   // only ever visible as numbers in a log, so "the mask is wrong on this frame"
   // and "the detector put the nose in the wrong place on this frame" looked
