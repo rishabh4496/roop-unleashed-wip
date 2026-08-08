@@ -137,6 +137,8 @@ def main():
     ap.add_argument("--mask-engine", default="None")
     ap.add_argument("--step", type=float, default=2.0)
     ap.add_argument("--facesets", default="ashna,harjot")
+    ap.add_argument("--yaws", default="",
+                    help="comma-separated yaws to render, e.g. -90,90; default all five")
     ap.add_argument("--out", default=os.path.join(APP, "temp", "angle_video"))
     args = ap.parse_args()
 
@@ -151,7 +153,14 @@ def main():
     # The whole point is the tracking pre-pass, which is where the roll is
     # resolved. Without it every frame is detected independently and there is
     # no track to be continuous along.
+    #
+    # temporal_detection specifically: it is the ONLY mode that builds per-frame
+    # Face objects up front (_build_temporal_faces), which is what the latch
+    # stamps. The track_identities-only pre-pass stores source assignments, not
+    # faces, so the latch has nothing to write on there.
     g.CFG.track_identities = True
+    g.temporal_detection = True
+    g.CFG.temporal_detection = True
     options = ab.build_options(g, args.swap_model, args.mask_engine, False)
 
     from roop import orientation
@@ -172,8 +181,12 @@ def main():
         tgt = ab.plates(os.path.join(fs_dir, tgt_name + ".fsz"))
         pair = f"{src_name}->{tgt_name}"
 
+        want = ({int(v) for v in args.yaws.split(",") if v.strip()}
+                if args.yaws else None)
         for pi, plate in enumerate(tgt):
             yaw = YAWS.get(pi, pi)
+            if want is not None and yaw not in want:
+                continue
             square, bg = ab.prepare_plate(plate)
             if square is None:
                 continue
