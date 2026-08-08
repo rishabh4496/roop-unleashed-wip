@@ -418,6 +418,10 @@ def _audit_hit(key, n=1):
 # total and would count these twice.
 AUDIT_SWAPPED_GAPFILL = '  of those SWAPPED, gap-filled'
 
+# Discarded after the fact by the outcome check, so it is visible rather than
+# silently missing from the output.
+AUDIT_SWAP_MOVED = 'discarded: the swap put the face somewhere it was not'
+
 
 def _audit_swapped_gapfill(face):
     """Count a swapped face whose landmarks nobody detected.

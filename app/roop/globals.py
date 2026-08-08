@@ -1,3 +1,4 @@
+import os
 from settings import Settings, initial_yaw_align
 from typing import List
 
@@ -93,6 +94,12 @@ angle_fade_strength = 0.0
 # try when a hififace/hyperswap paste reaches into hair. See
 # procmgr_masking._model_mask_matte.
 swap_model_mask_strength = 0.0
+# Discard a swap that moved the face somewhere the plate's face was not. Past
+# ~90 deg of yaw the detector claims a face on a head pointing away and the
+# swapper paints a frontal one onto its cheek; no pose test separates that from
+# a real profile, but the outcome does. See face_util.swap_moved_the_face.
+# Costs one small re-detect per swapped face; ROOP_VERIFY_SWAP=0 turns it off.
+verify_swap = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
 # geometry). strength 0..1 = amount of the shape difference applied.

@@ -8,6 +8,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
+from roop.face_util import swap_moved_the_face
 from roop import orientation
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
 from roop.face_util import (angle_fade_weight, offaxis_deg, pose_weight_for,
@@ -29,7 +30,7 @@ from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -2661,6 +2662,49 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
 
     @staticmethod
+    def _verify_before(frame, target_face):
+        """Snapshot what this face's neighbourhood looked like before the swap.
+
+        Only the box is copied, not the frame: a full-frame copy per face is
+        real money at 1080p and up, and the undo only ever has to reach as far
+        as the paste did. Padded well beyond the bbox because the matte is
+        feathered outside it.
+
+        Restoring this exact patch — rather than repainting from the plate —
+        keeps any face already composited into the same box, which repainting
+        would silently wipe out.
+        """
+        try:
+            kps = getattr(target_face, 'kps', None)
+            bbox = getattr(target_face, 'bbox', None)
+            if kps is None or bbox is None:
+                return None
+            h, w = frame.shape[:2]
+            x0, y0, x1, y1 = [float(v) for v in bbox]
+            pad = 0.6 * max(x1 - x0, y1 - y0)
+            rx0, ry0 = max(0, int(x0 - pad)), max(0, int(y0 - pad))
+            rx1, ry1 = min(w, int(x1 + pad)), min(h, int(y1 + pad))
+            if rx1 - rx0 < 2 or ry1 - ry0 < 2:
+                return None
+            return (np.asarray(kps).copy(), np.asarray(bbox).copy(),
+                    (rx0, ry0, rx1, ry1), frame[ry0:ry1, rx0:rx1].copy())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _verify_after(result, snap):
+        """Undo this face's swap if it moved the face off where the plate's was."""
+        try:
+            kps, bbox, (rx0, ry0, rx1, ry1), patch = snap
+            if not swap_moved_the_face(result, kps, bbox):
+                return result
+            _audit_hit(AUDIT_SWAP_MOVED)
+            result[ry0:ry1, rx0:rx1] = patch
+            return result
+        except Exception:
+            return result
+
+    @staticmethod
     def _resolved_roll(face):
         """The roll roop.orientation stamped on this face, or None when the
         tracking pre-pass did not run (stills, tracking off, latch disabled)."""
@@ -2834,6 +2878,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
         if plate is None:
             plate = frame
+
+        # Captured BEFORE autorotate rebinds frame/plate/target_face, so the
+        # outcome check at the end compares against the original geometry.
+        _vs = None
+        if getattr(roop.globals, 'verify_swap', False):
+            _vs = self._verify_before(frame, target_face)
 
         # Count each target face processed (density = total_swaps / frames). A
         # lost increment under thread races is harmless for a coarse average.
@@ -3755,7 +3805,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
-        
+
+        if _vs is not None:
+            result = self._verify_after(result, _vs)
+
         return result
 
 

@@ -2487,3 +2487,65 @@ def create_blank_image(width, height):
     img[:] = [0,0,0,0]
     return img
 
+
+
+# ── Did the swap move the face? ──────────────────────────────────────────────
+# Threshold in interocular units for how far the swapped face's keypoints may
+# sit from the plate's before the swap is discarded.
+#
+# A swap is image-to-image: the output face belongs where the input face was, so
+# this number is tiny for any honest result. Measured on a clip rotating a head
+# through a full turn (317 graded frames), keypoint displacement against the
+# plate:
+#
+#   clean frames                 median 0.019   p90 0.056
+#   frames the swap wrecks       median 3.752   p10 1.978
+#
+# — a 35x gap with nothing in between, against a correlation of only 0.46
+# between this and yaw, which is exactly why the pose-threshold and
+# crop-self-consistency gates both failed: they measured the POSE, and the
+# failure is not a pose, it is an outcome. 1.0 sits ~18x above the clean p90 and
+# ~2x below the wrecked p10. The 80-88 degree band — real profiles, which swap
+# acceptably — sits at 0.340 and is deliberately spared.
+SWAP_MOVED_TOL = 1.0
+
+
+def swap_moved_the_face(result, plate_kps, bbox, tol=None):
+    """True when the swapped result no longer has the face where the plate did.
+
+    Past roughly 90 degrees of yaw a head shows cheek and ear and no face at
+    all, but the detector still returns one at 0.985 confidence, every gate
+    passes it, and the swapper paints a complete frontal face onto the side of a
+    head that is pointing away. Nothing about the POSE separates that from a
+    legitimate profile — both gates built on pose were measured and thrown away.
+    What separates it is the result: a real swap leaves the eyes, nose and mouth
+    where they were, and this one does not.
+
+    Re-detects inside a padded box around the face rather than the whole frame,
+    so the cost is one small detection per swapped face.
+
+    A miss (no face found in the box) returns False — the swap stands. On the
+    measured clip that is 2 frames in 317, and refusing on a miss would throw
+    away good swaps to catch almost nothing.
+    """
+    if tol is None:
+        tol = SWAP_MOVED_TOL
+    try:
+        if plate_kps is None or bbox is None:
+            return False
+        kps = np.asarray(plate_kps, dtype=np.float64)
+        if kps.shape[0] < 5:
+            return False
+        interocular = float(np.linalg.norm(kps[0] - kps[1]))
+        if not (interocular > 1e-6):
+            return False
+        found = get_all_faces_in_roi(result, bbox, pad_ratio=0.6)
+        if not found:
+            return False
+        best = max(found, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        k2 = np.asarray(best.kps, dtype=np.float64)
+        moved = float(np.linalg.norm(k2 - kps, axis=1).mean() / interocular)
+        return moved > float(tol)
+    except Exception:
+        # A check that throws must never cost a swap that would otherwise stand.
+        return False
