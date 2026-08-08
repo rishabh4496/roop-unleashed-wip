@@ -109,8 +109,15 @@ def run_swap(clip_path, src_fs, options, out_dir):
     return os.path.join(out_dir, fresh[-1])
 
 
-def grade_clip(plate_frames, swap_frames, rolls, bg, src_embed, pair, yaw):
-    """Per-frame drift and identity, graded upright."""
+def grade_clip(plate_frames, swap_frames, rolls, bg, src_embed, pair, yaw,
+               ref_pts=None):
+    """Per-frame drift and identity, graded upright.
+
+    `ref_pts` is the un-rolled plate's landmarks at roll 0, so every row carries
+    the same measurement floor the still bench does. Without it the floor column
+    is empty, and the floor is the one column that catches a grader failing at
+    an angle and being credited to the pipeline.
+    """
     rows = []
     n = min(len(plate_frames), len(swap_frames))
     for i in range(n):
@@ -122,7 +129,7 @@ def grade_clip(plate_frames, swap_frames, rolls, bg, src_embed, pair, yaw):
             rows.append(dict(pair=pair, yaw=yaw, roll=roll, detected=0,
                              note="DETECT MISS on plate"))
             continue
-        row = ab.grade_frame(plate, swapped, src_embed, pf)
+        row = ab.grade_frame(plate, swapped, src_embed, pf, ref_pts)
         row.update(pair=pair, yaw=yaw, roll=roll)
         rows.append(row)
     return rows
@@ -139,7 +146,12 @@ def main():
     ap.add_argument("--facesets", default="ashna,harjot")
     ap.add_argument("--yaws", default="",
                     help="comma-separated yaws to render, e.g. -90,90; default all five")
-    ap.add_argument("--out", default=os.path.join(APP, "temp", "angle_video"))
+    # NOT under app/temp. roop.utilities.delete_temp_frames does an unguarded
+    # shutil.rmtree of os.path.dirname(os.path.dirname(frame_path)) as part of
+    # normal post-processing, so anything a bench leaves two levels inside the
+    # app TEMP tree is deleted by the very run it is measuring. This bench lost
+    # a complete set of results that way.
+    ap.add_argument("--out", default=os.path.join(APP, "output", "bench_angle_video"))
     args = ap.parse_args()
 
     ensure_ffmpeg()
@@ -198,8 +210,10 @@ def main():
                 continue
             plate_frames = read_frames(clip)
             swap_frames = read_frames(final)
+            ref_face = ab.biggest_face(ab.unroll(plate_frames[0], rolls[0], bg))
+            ref_pts = ab.lm68(ref_face) if ref_face is not None else None
             got = grade_clip(plate_frames, swap_frames, rolls, bg, src_embed,
-                             pair, yaw)
+                             pair, yaw, ref_pts)
             rows += got
             ok = [r for r in got if r.get("detected")]
             ids = [float(r["id_source"]) for r in ok if r.get("id_source") != ""]

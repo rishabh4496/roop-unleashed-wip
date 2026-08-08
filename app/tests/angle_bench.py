@@ -609,7 +609,12 @@ def main():
     ap.add_argument("--rolls", default=",".join(str(r) for r in ROLLS))
     ap.add_argument("--sheet-rolls", default="0,40,180")
     ap.add_argument("--facesets", default="ashna,harjot")
-    ap.add_argument("--out", default=os.path.join(APP, "temp", "angle_bench"))
+    # NOT under app/temp. roop.utilities.delete_temp_frames does an unguarded
+    # shutil.rmtree of os.path.dirname(os.path.dirname(frame_path)) as part of
+    # normal post-processing, so anything a bench leaves two levels inside the
+    # app TEMP tree is deleted by the very run it is measuring. This bench lost
+    # a complete set of results that way.
+    ap.add_argument("--out", default=os.path.join(APP, "output", "bench_angle_bench"))
     args = ap.parse_args()
 
     rolls = [int(x) for x in args.rolls.split(",") if x.strip() != ""]
