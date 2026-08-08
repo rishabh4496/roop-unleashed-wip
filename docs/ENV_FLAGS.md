@@ -251,6 +251,51 @@ if profiles lose too much likeness. Note it fades toward the *plate*, so the fad
 region also loses any enhancement — that is the intended "leave the original face
 mostly alone" behaviour.
 
+## Track stitching (the swap switching off for whole stretches)
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_TRACK_STITCH` | 1 (on) | Chain tracklets that are one person interrupted, on geometry, before any identity gate runs. `0` restores the previous behaviour. |
+| `ROOP_TRACK_STITCH_GAP` | `45` | How many frames a face may be missing and still be the same person. |
+| `ROOP_TRACK_STITCH_DIST` | `1.5` | How far it may have moved over that gap, as a multiple of its own width, from the position predicted by its last velocity. |
+| `ROOP_TRACK_STITCH_SIZE` | `1.8` | How much its apparent size may change, as a ratio either way. |
+| `ROOP_TRACK_STITCH_EMB` | `1.05` | Appearance **veto** — above this the two are clearly different people. Deliberately looser than every other identity gate; see below. |
+| `ROOP_TRACK_STITCH_AMBIG` | `0.6` | How much better the best candidate must be than the runner-up before a link is taken at all. |
+
+Reported as *"the swap flickers enormously when the face touches an object, at
+lateral poses, whatever the mask engine"*. The audit from that clip:
+
+```
+15 tracks over 287 frames, 2 matched to a source (gate 0.60)
+faces seen 1784, swapped 780, NOT swapped 1004 (56.3%)
+   of the refusals: "track matched but has no source"  951
+```
+
+So the swap was off for whole stretches, not single frames, and the cause sits
+upstream of every identity gate: **the track broke.** For the same person a
+profile sits 0.7–1.0 in cosine distance from a frontal capture, which is past the
+scan's association bar (`EMB_MAX` 0.7), past the source-assignment gate (0.60)
+and past the per-frame fallback (0.75). A turned or occluded stretch therefore
+becomes a track of its own — and that fragment is then judged on a mean built
+entirely from the frames that broke it. Nothing downstream can recover from that,
+which is why no threshold and no mask engine changed anything.
+
+The link that survives what appearance cannot is **spatio-temporal**: a track that
+ends here and one that begins a moment later, in the same place, at the same size,
+is one person interrupted. Fragments are chained on that, before any identity gate
+sees them and before the mean is finalised — so a chain's identity is averaged
+over all of its segments, which is also a better estimate than any fragment had
+alone. Appearance is demoted to a veto for the clearly impossible.
+
+The two failure modes are **asymmetric**, and the gates are set accordingly: a
+missed link costs what the pipeline already did, while a wrong link hands one
+person's face to another for a stretch. So it is one-to-one (each fragment takes
+at most one predecessor and gives at most one successor) and it refuses ambiguity
+outright — a fragment with two comparable candidates is left alone rather than
+guessed at.
+
+Look for `(stitched down from N)` in the `[Track]` line to see it working.
+
 ## Interacting faces (two or more swaps that touch)
 
 | Flag | Default | Effect |

@@ -230,6 +230,65 @@ _TRACK_ASSIGN_MARGIN = float(os.environ.get('ROOP_TRACK_ASSIGN_MARGIN', '0.15'))
 _TRACK_ASSIGN_FLOOR = float(os.environ.get('ROOP_TRACK_ASSIGN_FLOOR', '0.45'))
 
 
+# ── Stitching fragments back together ────────────────────────────────────────
+# Every gate above judges a track on its MEAN EMBEDDING against the captured
+# stills, and that comparison has a floor set by something nothing in this file
+# can fix: for the same person, a profile sits 0.7-1.0 in cosine distance from a
+# frontal capture, which is past every gate here and past the per-frame fallback
+# too. So a stretch of turned or occluded frames does not merely score badly —
+# it breaks ASSOCIATION during the scan (EMB_MAX 0.7), becomes a track of its
+# own, and that fragment is then judged on a mean built entirely from the frames
+# that broke it. Measured on the clip this was reported from: 15 tracks over 287
+# scanned frames, 2 of them matched to a source, 56% of all detected faces left
+# un-swapped. That is the "enormous flicker when something crosses the face at a
+# lateral pose" — the swap is off for whole stretches, not single frames.
+#
+# The link that survives what appearance cannot is SPATIO-TEMPORAL: a track that
+# ends here and another that begins a moment later, in the same place, at the
+# same size, is one person interrupted. So fragments are chained on geometry
+# before any of the identity gates run, and appearance is demoted to a veto for
+# the clearly-impossible. A chain's mean is then built over both segments, which
+# is also a better estimate than either had alone.
+#
+# It is deliberately one-to-one and refuses ambiguity: a fragment with two
+# plausible predecessors is left alone rather than guessed at, because the cost
+# of a wrong link is a stranger inheriting a swap for a stretch, while the cost
+# of a missed link is what the pipeline already does today.
+#
+# ROOP_TRACK_STITCH=0 disables it entirely.
+_TRACK_STITCH = os.environ.get('ROOP_TRACK_STITCH', '1').strip().lower() not in ('0', 'off', 'false')
+
+# How long a fragment may be missing and still be the same person, in FRAMES of
+# the source video. Generous relative to STALE (15) because that constant governs
+# live association where a stale track costs matching work every frame, whereas
+# this runs once over a finished scan. Someone can be behind a passing head for a
+# second and a half.
+_TRACK_STITCH_GAP = int(os.environ.get('ROOP_TRACK_STITCH_GAP', '45') or '45')
+
+# How far the face may have moved over that gap, as a multiple of its own width.
+# Scaled by face size rather than pixels so it means the same thing on a close-up
+# and a wide shot, and applied to the position PREDICTED from the fragment's own
+# velocity, so a head that was already moving is not penalised for continuing.
+_TRACK_STITCH_DIST = float(os.environ.get('ROOP_TRACK_STITCH_DIST', '1.5'))
+
+# ...and how much its apparent size may change, as a ratio either way. A face
+# walking toward the camera grows; a different person standing behind is usually
+# a different size to begin with.
+_TRACK_STITCH_SIZE = float(os.environ.get('ROOP_TRACK_STITCH_SIZE', '1.8'))
+
+# Appearance VETO only, not evidence. Set above the same-person profile band
+# (0.7-1.0) on purpose: the whole point is to survive a stretch where appearance
+# has collapsed, so requiring appearance to agree would refuse exactly the links
+# worth making. What it still catches is two clearly different people passing
+# through the same place — those sit above this.
+_TRACK_STITCH_EMB = float(os.environ.get('ROOP_TRACK_STITCH_EMB', '1.05'))
+
+# The runner-up must be this much worse before a link is taken. Two candidates of
+# comparable quality means two people crossing, and a coin-flip there hands one
+# person's swap to the other.
+_TRACK_STITCH_AMBIG = float(os.environ.get('ROOP_TRACK_STITCH_AMBIG', '0.6'))
+
+
 _prof_lock = Lock()
 
 

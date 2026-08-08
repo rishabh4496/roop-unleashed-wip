@@ -20,6 +20,9 @@ import numpy as np
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
                                   _TRACK_ASSIGN_MARGIN, _TRACK_ASSIGN_FLOOR,
                                   _TRACK_REID_MAX,
+                                  _TRACK_STITCH, _TRACK_STITCH_GAP,
+                                  _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
+                                  _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -271,6 +274,12 @@ class TrackingMixin:
                     best = {
                         'id': next_id,
                         'bbox': bbox,
+                        # Where this track STARTED, which `bbox` stops being the
+                        # moment it is updated. _stitch_tracks needs it: a link
+                        # is judged between one track's last position and the
+                        # next one's first, and using the latter's current bbox
+                        # would compare against wherever it ended up.
+                        'first_bbox': bbox.copy(),
                         'prev_bbox': None,
                         'vel': np.zeros(4, dtype=np.float32),
                         'emb_sum': emb.astype(np.float64).copy(),
@@ -495,6 +504,15 @@ class TrackingMixin:
         self._track_scanned = idx
 
         tracks = active + retired
+        # Chain fragments that are one person interrupted, BEFORE any identity
+        # gate sees them — including the true-mean finalisation just below, so a
+        # chain's identity is averaged over all its segments rather than over the
+        # frames that broke it. See _stitch_tracks.
+        _pre_stitch = len(tracks)
+        tracks, stitch_alias = self._stitch_tracks(tracks)
+        if stitch_alias:
+            per_frame = {f: [(c, stitch_alias.get(tid, tid)) for (c, tid) in lst]
+                         for f, lst in per_frame.items()}
         # Finalize each track's identity vector: replace the ONLINE EMA (alpha
         # 0.25, i.e. effectively the last ~10 observations) with the TRUE mean
         # over every accepted observation. The EMA is right for association
@@ -533,8 +551,9 @@ class TrackingMixin:
                           f"obs={t.get('emb_n')} d(person)={dd} assign_max={assign_max} "
                           f"-> src={track_src.get(t['id'])}")
         matched = sum(1 for v in track_src.values() if v is not None)
-        print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames, '
-              f'{matched} matched to a source (gate {assign_max:.2f})'
+        print(f'[Track] {len(tracks)} tracks over {len(per_frame)} frames'
+              + (f' (stitched down from {_pre_stitch})' if stitch_alias else '')
+              + f', {matched} matched to a source (gate {assign_max:.2f})'
               + (f', {refused_margin} refused as too far from their person\'s '
                  f'closest track (margin {_TRACK_ASSIGN_MARGIN})' if refused_margin else '')
               + (f'; {reid_refused} detections refused by the appearance-only '
@@ -548,6 +567,129 @@ class TrackingMixin:
         for i, g in enumerate(groups[:len(self.target_face_datas)]):
             persons.setdefault(g, []).append(i)
         return persons
+
+    @staticmethod
+    def _stitch_tracks(tracks):
+        """Chain tracklets that are one person interrupted. Returns
+        ``(tracks, alias)`` — the surviving tracks, and ``{old_id: new_id}`` for
+        every fragment absorbed into one.
+
+        Linked on GEOMETRY, because that is the evidence that survives what
+        breaks the tracks in the first place: a turned or occluded face is 0.7-1.0
+        from its own frontal capture in cosine distance, so appearance is exactly
+        the signal that has failed by the time a fragment exists. Appearance is
+        kept only as a veto for the impossible (see _TRACK_STITCH_EMB).
+
+        One-to-one and ambiguity-refusing by construction: each fragment takes at
+        most one predecessor and gives at most one successor, and a fragment with
+        two comparable candidates is left alone. A wrong link hands one person's
+        swap to another for a stretch; a missed link is what happens today.
+
+        Must run BEFORE the true-mean finalisation, so a chain's identity is
+        averaged over all of its segments — which is most of the point, since a
+        fragment's own mean is built entirely from the frames that broke it.
+        """
+        if not _TRACK_STITCH or len(tracks) < 2:
+            return tracks, {}
+
+        def _centre(bb):
+            bb = np.asarray(bb, np.float32)
+            return np.array([(bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5], np.float32)
+
+        def _width(bb):
+            bb = np.asarray(bb, np.float32)
+            return max(1.0, float(bb[2] - bb[0]))
+
+        # Earliest first, so a fragment only ever looks BACKWARD for a
+        # predecessor and every candidate it could take has already been placed.
+        order = sorted(tracks, key=lambda t: (int(t.get('first_seen', 0)),
+                                              int(t.get('id', 0))))
+        taken_prev, taken_next = set(), set()
+        link = {}                       # successor id -> predecessor id
+
+        for b in order:
+            b_first = int(b.get('first_seen', 0))
+            b_box = b.get('first_bbox')
+            if b_box is None:
+                continue                # pre-stitch tracks always record this
+            b_c, b_w = _centre(b_box), _width(b_box)
+
+            scored = []
+            for a in order:
+                if a is b or int(a.get('id')) in taken_next:
+                    continue
+                a_last = int(a.get('last_seen', 0))
+                gap = b_first - a_last
+                if gap <= 0 or gap > _TRACK_STITCH_GAP:
+                    continue
+                a_box = np.asarray(a.get('bbox'), np.float32)
+                a_w = _width(a_box)
+                ratio = max(a_w, b_w) / max(1e-6, min(a_w, b_w))
+                if ratio > _TRACK_STITCH_SIZE:
+                    continue
+                # Where the fragment was heading. Velocity is per frame and was
+                # measured over the last step, so it is only trusted for a short
+                # projection — beyond that a stationary prediction is the safer
+                # guess than an extrapolated one.
+                vel = a.get('vel')
+                pred = a_box.copy()
+                if vel is not None and np.any(vel) and gap <= 6:
+                    proj = a_box + np.asarray(vel, np.float32) * gap
+                    if proj[2] > proj[0] and proj[3] > proj[1]:
+                        pred = proj
+                moved = float(np.linalg.norm(_centre(pred) - b_c))
+                norm = moved / (0.5 * (a_w + b_w))
+                if norm > _TRACK_STITCH_DIST:
+                    continue
+                if (a.get('emb_mean') is not None and b.get('emb_mean') is not None
+                        and compute_cosine_distance(a['emb_mean'], b['emb_mean'])
+                        > _TRACK_STITCH_EMB):
+                    continue
+                scored.append((norm, int(a.get('id'))))
+
+            if not scored:
+                continue
+            scored.sort()
+            if len(scored) > 1 and scored[0][0] > _TRACK_STITCH_AMBIG * scored[1][0]:
+                continue                # two plausible predecessors — do not guess
+            prev_id = scored[0][1]
+            link[int(b.get('id'))] = prev_id
+            taken_next.add(prev_id)
+            taken_prev.add(int(b.get('id')))
+
+        if not link:
+            return tracks, {}
+
+        # Follow each chain to its head, then fold every follower into it. Chains
+        # are walked from the head so a three-fragment chain merges once rather
+        # than merging a pair and then re-merging the result.
+        by_id = {int(t.get('id')): t for t in tracks}
+        alias = {}
+        for tid in sorted(by_id):
+            head = tid
+            seen = {head}
+            while head in link and link[head] not in seen:
+                head = link[head]
+                seen.add(head)
+                if len(seen) > len(by_id):
+                    break               # cycle guard; cannot happen, cheap anyway
+            if head != tid:
+                alias[tid] = head
+
+        for tid in sorted(alias, key=lambda i: int(by_id[i].get('first_seen', 0))):
+            src, dst = by_id[tid], by_id[alias[tid]]
+            if src.get('emb_sum') is not None and dst.get('emb_sum') is not None:
+                dst['emb_sum'] = np.asarray(dst['emb_sum'], np.float64) + np.asarray(src['emb_sum'], np.float64)
+                dst['emb_n'] = int(dst.get('emb_n') or 0) + int(src.get('emb_n') or 0)
+            if src.get('obs'):
+                dst.setdefault('obs', {}).update(src['obs'])
+            dst['first_seen'] = min(int(dst.get('first_seen', 0)), int(src.get('first_seen', 0)))
+            if int(src.get('last_seen', 0)) >= int(dst.get('last_seen', 0)):
+                dst['last_seen'] = int(src.get('last_seen', 0))
+                dst['bbox'] = src.get('bbox')       # the chain's latest position
+                dst['vel'] = src.get('vel')
+
+        return [t for t in tracks if int(t.get('id')) not in alias], alias
 
     def _assign_track_sources(self, tracks):
         """Bind each tracklet to at most one source (person rank) by mean embedding.
