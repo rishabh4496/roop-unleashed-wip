@@ -31,7 +31,7 @@ from roop.face_overlap import build_regions as build_face_regions
 from roop import face_contact
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED, VERIFY_MIN_OFFAXIS
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, audit_face_begin, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED, VERIFY_MIN_OFFAXIS, VERIFY_SWAP
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -2266,6 +2266,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     _dist_to_any_person(f)))
 
                 for face in faces:
+                    audit_face_begin(frame_idx, face)
                     _audit_hit('faces seen')
                     # Same isinstance guard the claim-ordering sort above uses —
                     # a Face is a dict subclass, but the sort does not assume it.
@@ -2385,7 +2386,23 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 # they part — which is the reported flicker.
                                 pass
                             elif (multi_person and d_own is not None
-                                    and d_own > _ada.scale(_TRACK_VETO_DIST, threshold)):
+                                    and d_own > _ada.scale(_TRACK_VETO_DIST, threshold)
+                                    and not (d_other is not None and d_own < d_other)):
+                                # `and not ...`: the absolute test is here to
+                                # catch a bystander or a tracker identity
+                                # switch, and both of those look like a face
+                                # that is far from its assigned person AND no
+                                # better explained by them than by anyone else.
+                                # A face that is still NEAREST its own person is
+                                # neither; the large number is its pose, not its
+                                # identity — a profile sits 0.7-1.0 from a
+                                # frontal capture — and the track it came from
+                                # was bound on the track MEAN, which is cleaner
+                                # evidence than this one frame. Re-litigating a
+                                # durable binding on the noisiest measurement
+                                # available is the pattern _TRACK_VETO_SINGLE
+                                # was turned off for. The relative test below
+                                # still fires when somebody else fits better.
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
                                 veto_kind = VETO_FAR_FROM_OWN
                             elif (not multi_person and _TRACK_VETO_SINGLE > 0
@@ -2827,6 +2844,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         detector reads worst.
         """
         try:
+            if not VERIFY_SWAP:
+                return False
             if rotation_action is not None:
                 return True
             yaw, pitch = head_angles()

@@ -188,10 +188,12 @@ def trim(video, start, end, out_path, fps=None):
 def run_swap(clip_path, facesets, targets, groups, options, out_dir):
     import roop.globals as g
     from roop import ProcessMgr as _pm
+    from roop import procmgr_runtime as _rt
     from roop.core import batch_process_with_options
     from roop.ProcessEntry import ProcessEntry
 
     _pm._SWAP_LOG = {}
+    _rt.FACE_LOG = {}
 
     g.INPUT_FACESETS = list(facesets)
     g.TARGET_FACES = list(targets)
@@ -205,6 +207,9 @@ def run_swap(clip_path, facesets, targets, groups, options, out_dir):
 
     log = _pm._SWAP_LOG
     _pm._SWAP_LOG = None
+    faces_log = _rt.FACE_LOG
+    _rt.FACE_LOG = None
+    log = (log, faces_log)
 
     if entry.finalname and os.path.exists(entry.finalname):
         return entry.finalname, log
@@ -240,7 +245,39 @@ def faceset_mean(fs):
     return np.mean(embs, axis=0) if embs else None
 
 
-def grade(plate, swapped, means):
+def plate_person(plate_faces, targets, groups, contam):
+    """Which captured person each PLATE face is, or None when it cannot be said.
+
+    The bench pairs faces left to right, which is right for position and wrong
+    for identity: the detector regularly returns two boxes on ONE person (a
+    duplicate, or one of them partial), and the second of those is then graded
+    as "person 1" and reports the swap as the wrong faceset when the pipeline
+    did exactly the right thing. Frames where a face cannot be attributed —
+    a shared crop, or no clear nearest person — are not graded for identity at
+    all rather than graded wrongly.
+    """
+    from roop.utilities import compute_cosine_distance as cd
+    persons = {}
+    for i, g in enumerate(groups):
+        persons.setdefault(g, []).append(i)
+    out = []
+    for k, f in enumerate(plate_faces):
+        emb = getattr(f, "embedding", None)
+        if emb is None or contam[k] >= GRADE_CONTAM_MAX:
+            out.append(None)
+            continue
+        ds = sorted((min(cd(targets[ti].embedding, emb) for ti in tis), g)
+                    for g, tis in persons.items())
+        # Nearest, and clearly nearest — 0.25 is the same margin the pipeline's
+        # own track inheritance uses to call an identity decisive.
+        if len(ds) > 1 and ds[1][0] - ds[0][0] < 0.25:
+            out.append(None)
+        else:
+            out.append(ds[0][1])
+    return out
+
+
+def grade(plate, swapped, means, targets=None, groups=None):
     """One row per detected face: where it is, whether it moved, whose it looks
     like now. Detection is run on the PLATE so the two people are located by
     the untouched footage; a swap that fails is then still measured.
@@ -259,7 +296,10 @@ def grade(plate, swapped, means):
     faces = sorted(get_all_faces(plate) or [], key=lambda f: float(f.bbox[0]))
     swapped_faces = get_all_faces(swapped) or []
     contam = crop_contamination(swapped_faces)
-    for f in faces:
+    plate_contam = crop_contamination(faces)
+    who = (plate_person(faces, targets, groups, plate_contam)
+           if targets is not None else [None] * len(faces))
+    for fi, f in enumerate(faces):
         x0, y0, x1, y1 = [int(round(v)) for v in f.bbox]
         x0, y0 = max(0, x0), max(0, y0)
         x1 = min(plate.shape[1], x1)
@@ -283,6 +323,7 @@ def grade(plate, swapped, means):
             ident = [cos(best.embedding, m) if m is not None else float("nan")
                      for m in means]
         rows.append({"box": (x0, y0, x1, y1), "touched": d, "ident": ident,
+                     "who": who[fi] if who else None,
                      "contam": bestc if best is not None else float("nan")})
     return rows
 
@@ -306,6 +347,31 @@ def applied_sources(entries):
             d = (sx - cx) ** 2 + (sy - cy) ** 2
             if d < bestd:
                 best, bestd = src, d
+        return best
+    return lookup
+
+
+def face_reasons(entries):
+    """Lookup from a plate face box to the audit buckets that face hit.
+
+    One frame of procmgr_runtime.FACE_LOG. "It flickered" and "it was refused
+    by gate X" look identical in the output, and only this says which.
+    """
+    def _c(b):
+        return ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5)
+
+    def lookup(box):
+        cx, cy = _c(box)
+        tol = 0.5 * (box[2] - box[0])
+        best, bestd = "", tol * tol
+        for bb, buckets in entries:
+            sx, sy = _c(bb)
+            d = (sx - cx) ** 2 + (sy - cy) ** 2
+            if d < bestd:
+                # `faces seen` is on every one of them; the informative bucket
+                # is whatever else was hit.
+                best = " | ".join(k for k in buckets if k != "faces seen")
+                bestd = d
         return best
     return lookup
 
@@ -384,7 +450,7 @@ def main():
     print(f"[bench] clip: {len(plates)} frames "
           f"[{args.start}..{args.start + len(plates)})", flush=True)
 
-    out, swap_log = run_swap(clip, facesets, targets, groups, options, work)
+    out, (swap_log, face_log) = run_swap(clip, facesets, targets, groups, options, work)
     if not out:
         raise SystemExit("no output produced")
     swapped = read_frames(out)
@@ -394,7 +460,9 @@ def main():
     rows = []
     for i in range(n):
         applied = applied_sources(swap_log.get(i) or [])
-        for person, r in enumerate(grade(plates[i], swapped[i], means)):
+        reason = face_reasons(face_log.get(i) or [])
+        for person, r in enumerate(grade(plates[i], swapped[i], means,
+                                         targets, groups)):
             own = r["ident"][person] if person < len(r["ident"]) else float("nan")
             other = r["ident"][1 - person] if len(r["ident"]) > 1 else float("nan")
             rows.append({
@@ -404,6 +472,8 @@ def main():
                 "touched": round(r["touched"], 3),
                 "contam": round(r["contam"], 3) if r["contam"] == r["contam"] else "",
                 "src": applied(r["box"]),
+                "who": "" if r["who"] is None else r["who"],
+                "why": reason(r["box"]),
                 "own": round(own, 4) if own == own else "",
                 "other": round(other, 4) if other == other else "",
             })
@@ -426,8 +496,11 @@ def main():
         # The decision, not a re-measurement: which faceset the pipeline
         # actually put on this person's face. Unlike the cosine columns this
         # is exact on contact frames, which is the only place it matters.
-        got = [r["src"] for r in rs if r["src"] != ""]
-        wrong_src = sum(1 for v in got if v != person)
+        # Only frames where the PLATE face is confidently this person. A
+        # duplicate box on the other person graded here is how a correct run
+        # reports an inter-swap that never happened.
+        got = [r for r in rs if r["src"] != "" and str(r["who"]) == str(person)]
+        wrong_src = sum(1 for r in got if r["src"] != person)
         flips = sum(1 for a, b in zip(sw[:-1], sw[1:]) if a != b)
         print(f"  person {person} ({names[person]}): {len(rs)} frames, "
               f"swapped {int(sw.sum())} ({100.0*sw.mean():.1f}%), "

@@ -24,6 +24,7 @@ from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MA
                                   _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
                                   _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
                                   _TRACK_INHERIT_MAX, _TRACK_INHERIT_GAIN,
+                                  _TRACK_INHERIT_MARGIN,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -1006,67 +1007,128 @@ class TrackingMixin:
         # Still gated, still one-to-one, and still refused on concurrency: a
         # fragment that shares frames with the track it would inherit from is a
         # second body, and that check is exact now (see frames_of).
+        # Every track a person holds, not just the first — the anchor set the
+        # pass below measures against. `person_owner` (the FIRST acceptance) is
+        # still what the gain test compares to, because the gain is defined
+        # against that person's best evidence; the margin test wants the nearest
+        # of ALL of them, which is what makes it work across a shot change where
+        # the person's other tracks are the ones filmed the same way.
+        person_tracks = {g: [] for g in persons}
+        for tid, src in track_src.items():
+            if src is None:
+                continue
+            for g in persons:
+                r = self.options.selected_index if single_person else rank[g]
+                if r == src and tid not in person_tracks[g]:
+                    person_tracks[g].append(tid)
+                    break
+
+        def _nearest_track(t_emb, g):
+            """(distance, track_id) of the nearest track this person holds."""
+            best = (float('inf'), None)
+            for oid in person_tracks.get(g, ()):
+                ot = track_map.get(oid)
+                if ot is None or ot.get('emb_mean') is None:
+                    continue
+                d = compute_cosine_distance(ot['emb_mean'], t_emb)
+                if d < best[0]:
+                    best = (d, oid)
+            return best
+
         inherited = {}
         if _TRACK_INHERIT_MAX > 0:
-            for t in tracks:
-                tid = t['id']
-                if track_src.get(tid) is not None or t.get('emb_mean') is None:
-                    continue
-                t_frames = self._track_frames(t, frames_of)
-                best = None
-                for g, owner in person_owner.items():
-                    own_t = track_map.get(owner)
-                    if own_t is None or own_t.get('emb_mean') is None:
+            # Repeated to a fixed point. Identity is transitive along the clip:
+            # the wide-shot track vouches for the close-up one, which is then
+            # itself the only thing near the tracks of the shot AFTER it. On the
+            # reported clip the first round reaches 4 of the 8 refused tracks and
+            # the second reaches the rest, and stopping at one round leaves a
+            # person un-swapped for whole shots. Bounded by the track count, and
+            # each round only ever adds — no assignment is revisited.
+            for _round in range(len(tracks) + 1):
+                progress = False
+                for t in tracks:
+                    tid = t['id']
+                    if track_src.get(tid) is not None or t.get('emb_mean') is None:
                         continue
-                    d = compute_cosine_distance(own_t['emb_mean'], t['emb_mean'])
-                    if d > _TRACK_INHERIT_MAX:
+                    t_frames = self._track_frames(t, frames_of)
+                    best = None
+                    for g in persons:
+                        owner = person_owner.get(g)
+                        d, near = _nearest_track(t['emb_mean'], g)
+                        if near is None or d > _TRACK_INHERIT_MAX:
+                            continue
+                        own_t = track_map.get(owner)
+                        if own_t is None or own_t.get('emb_mean') is None:
+                            continue
+                        # ONE of two justifications, because there are two shapes
+                        # of leftover and no single test covers both.
+                        #
+                        # (a) A FRAGMENT of the owner's track: the target's own
+                        #     broken-off stretch interleaves with its main track —
+                        #     same stretch of clip, alternating frames — while a
+                        #     bystander's fragment sits in a run where the target is
+                        #     OFF SCREEN, disjoint, never inside. Judged by
+                        #     containment plus the gain over the photo: proximity
+                        #     alone cannot separate a stranger at 0.55 from the
+                        #     target on a bad stretch, but the target's turned
+                        #     stretch is far from a frontal capture and near its own
+                        #     frontal track, and a stranger is equally far from both
+                        #     because the assigned track IS the person in the photo.
+                        #
+                        # (b) A DIFFERENT SHOT of the same person: disjoint by
+                        #     construction, so (a) cannot apply, and the gain is
+                        #     small because a close-up profile is unlike the frontal
+                        #     still AND somewhat unlike the wide-shot track. What is
+                        #     decisive there is the comparison between the selected
+                        #     PEOPLE — see _TRACK_INHERIT_MARGIN for the measured
+                        #     0.11-0.68 against 0.85-1.08 gap. Only available with
+                        #     two or more people selected; with one there is nobody
+                        #     to be further from and this reduces to the bare
+                        #     absolute bar the containment rule exists to refuse.
+                        ref = photo_d.get((tid, g))
+                        contained = (int(own_t.get('first_seen', 0)) <= int(t.get('first_seen', 0))
+                                     and int(t.get('last_seen', 0)) <= int(own_t.get('last_seen', 0)))
+                        d_own_owner = compute_cosine_distance(own_t['emb_mean'], t['emb_mean'])
+                        fragment_ok = (contained and ref is not None
+                                       and d_own_owner <= ref - _TRACK_INHERIT_GAIN)
+                        margin_ok = False
+                        if _TRACK_INHERIT_MARGIN > 0 and len(persons) > 1:
+                            others = [_nearest_track(t['emb_mean'], g2)[0]
+                                      for g2 in persons if g2 != g]
+                            others = [x for x in others if x < float('inf')]
+                            margin_ok = bool(others) and min(others) - d >= _TRACK_INHERIT_MARGIN
+                        if not (fragment_ok or margin_ok):
+                            continue
+                        if t_frames is not None:
+                            t_len = max(1, len(t_frames))
+                            overlap = len(person_assigned_frames[g].intersection(t_frames))
+                        else:
+                            # No per-frame record: fall back to spans, exactly as the
+                            # first pass does. Coarse, and coarse in the safe
+                            # direction — two tracks covering the same stretch are
+                            # refused rather than guessed at.
+                            lo = int(t.get('first_seen', 0))
+                            hi = int(t.get('last_seen', lo))
+                            t_len = max(1, hi - lo + 1)
+                            overlap = sum(max(0, min(hi, b) - max(lo, a) + 1)
+                                          for a, b in person_assigned_spans[g])
+                        if overlap > _TRACK_OVERLAP_FRAC * t_len:
+                            continue
+                        if best is None or d < best[0]:
+                            best = (d, g, near)
+                    if best is None:
                         continue
-                    # ...and the track has to explain this fragment BETTER than
-                    # the captured stills do. Proximity alone cannot separate a
-                    # stranger at 0.55 from the target on a bad stretch — that is
-                    # the same ambiguity _TRACK_ASSIGN_MARGIN refuses, and
-                    # without this the guard test for that reported bug fails.
-                    # See _TRACK_INHERIT_GAIN.
-                    ref = photo_d.get((tid, g))
-                    if ref is None or d > ref - _TRACK_INHERIT_GAIN:
-                        continue
-                    # ...and it has to be a fragment OF that track, which means
-                    # lying inside its span while never sharing a frame with it.
-                    #
-                    # This is the distinction _TRACK_ASSIGN_MARGIN was built on,
-                    # and it is what tells the two shapes apart. The target's own
-                    # broken-off stretch interleaves with its main track: same
-                    # stretch of clip, alternating frames. A bystander's fragment
-                    # sits in a run where the target is OFF SCREEN — disjoint,
-                    # after or before, never inside. Without this the second pass
-                    # gives the bystander the swap all over again.
-                    if not (int(own_t.get('first_seen', 0)) <= int(t.get('first_seen', 0))
-                            and int(t.get('last_seen', 0)) <= int(own_t.get('last_seen', 0))):
-                        continue
+                    d, g, via = best
+                    track_src[tid] = self.options.selected_index if single_person else rank[g]
+                    inherited[tid] = (via, d)
+                    person_tracks.setdefault(g, []).append(tid)
+                    progress = True
                     if t_frames is not None:
-                        t_len = max(1, len(t_frames))
-                        overlap = len(person_assigned_frames[g].intersection(t_frames))
-                    else:
-                        # No per-frame record: fall back to spans, exactly as the
-                        # first pass does. Coarse, and coarse in the safe
-                        # direction — two tracks covering the same stretch are
-                        # refused rather than guessed at.
-                        lo = int(t.get('first_seen', 0))
-                        hi = int(t.get('last_seen', lo))
-                        t_len = max(1, hi - lo + 1)
-                        overlap = sum(max(0, min(hi, b) - max(lo, a) + 1)
-                                      for a, b in person_assigned_spans[g])
-                    if overlap > _TRACK_OVERLAP_FRAC * t_len:
-                        continue
-                    if best is None or d < best[0]:
-                        best = (d, g, owner)
-                if best is None:
-                    continue
-                d, g, owner = best
-                track_src[tid] = self.options.selected_index if single_person else rank[g]
-                inherited[tid] = (owner, d)
-                if t_frames is not None:
-                    person_assigned_frames[g].update(t_frames)
+                        person_assigned_frames[g].update(t_frames)
+                    person_assigned_spans[g].append(
+                        (int(t.get('first_seen', 0)), int(t.get('last_seen', 0))))
+                if not progress:
+                    break
 
         return track_src, assign_max, refused_margin, inherited
 

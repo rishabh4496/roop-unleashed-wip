@@ -13,6 +13,7 @@ import contextlib
 import os
 import sys
 import time
+import threading as _threading
 from threading import Lock
 from collections import defaultdict as _defaultdict
 
@@ -334,6 +335,34 @@ _TRACK_INHERIT_MAX = float(os.environ.get('ROOP_TRACK_INHERIT_MAX', '0.6'))
 _TRACK_INHERIT_GAIN = float(os.environ.get('ROOP_TRACK_INHERIT_GAIN', '0.15'))
 
 
+# The OTHER justification for inheriting, for the shape the gain above cannot
+# reach: a track that is disjoint from the one it would inherit from because it
+# belongs to a different SHOT.
+#
+# The gain test asks "does the track explain this better than the photo?", which
+# works when the photo is a fair description of the person. Across a cut it is
+# not: a close-up profile is far from a frontal still AND somewhat far from the
+# wide-shot track, so the gain is small even though the answer is obvious. What
+# is decisive there is the comparison BETWEEN the selected people. Measured over
+# the 15 tracks of the reported clip (two people, one frontal capture each):
+#
+#   same person, different shot     0.11 - 0.68     (track to track)
+#   different people                0.85 - 1.08
+#   the same tracks against the PHOTO   0.17 - 1.05  — straddling the 0.60 gate
+#
+# — a clean gap with nothing in it, against a photo comparison that has no gap
+# at all. The smallest correct margin (this person's nearest track versus the
+# nearest track of anyone else) was 0.32; 0.25 sits under that and far above the
+# 0.0 an ambiguous track produces.
+#
+# REQUIRES AT LEAST TWO SELECTED PEOPLE, and that is not a detail. With one
+# person there is nobody to be further from, the margin is vacuous, and what is
+# left is a bare absolute bar on a disjoint track — precisely the bystander that
+# _TRACK_ASSIGN_MARGIN and the containment rule were added to refuse. With one
+# person selected this path does not exist and nothing changes.
+_TRACK_INHERIT_MARGIN = float(os.environ.get('ROOP_TRACK_INHERIT_MARGIN', '0.25'))
+
+
 _prof_lock = Lock()
 
 
@@ -409,8 +438,39 @@ def _prof_report():
 _audit = _defaultdict(int)
 
 
+# Per-FACE trace of the same buckets, for a bench that has to attribute one
+# specific un-swapped frame rather than read a total. `None` (the default)
+# records nothing and costs one `is None` test per hit; a caller sets it to a
+# dict and gets {frame_idx: [(bbox, [bucket, ...]), ...]}.
+#
+# It hangs off _audit_hit rather than being called at each decision site on
+# purpose: there are six of those in swap_faces and a seventh will be added
+# without this, whereas a trace that rides the existing counter cannot fall out
+# of step with the totals it is explaining.
+FACE_LOG = None
+_face_ctx = _threading.local()
+
+
+def audit_face_begin(frame_idx, face):
+    """Start attributing bucket hits to this face. No-op unless FACE_LOG is set."""
+    if FACE_LOG is None or frame_idx is None:
+        _face_ctx.cur = None
+        return
+    try:
+        entry = ([float(v) for v in face.bbox], [])
+    except Exception:
+        _face_ctx.cur = None
+        return
+    FACE_LOG.setdefault(frame_idx, []).append(entry)
+    _face_ctx.cur = entry[1]
+
+
 def _audit_hit(key, n=1):
     _audit[key] += n
+    if FACE_LOG is not None:
+        cur = getattr(_face_ctx, 'cur', None)
+        if cur is not None:
+            cur.append(key)
 
 
 # The bucket below is a SUB-COUNT of the swap buckets, not a fourth one, so it
@@ -421,6 +481,22 @@ AUDIT_SWAPPED_GAPFILL = '  of those SWAPPED, gap-filled'
 # Discarded after the fact by the outcome check, so it is visible rather than
 # silently missing from the output.
 AUDIT_SWAP_MOVED = 'discarded: the swap put the face somewhere it was not'
+
+
+# Master switch for the outcome guard. ROOP_VERIFY_SWAP=0 turns it off, which
+# was previously only reachable by pushing VERIFY_MIN_OFFAXIS past any angle a
+# head can reach — a workaround, not a setting.
+#
+# Worth having as a real switch because the guard's cost is not symmetric on all
+# footage. On two people in tight profile it re-detects a face that is 120px
+# wide with the eyes six pixels apart, and its own measurements there are noisy:
+# measured over a 1194-frame two-person clip it discards 79 of 2282 swapped
+# faces (3.5%), against 0 in the 229-face contact stretch used to calibrate the
+# shape term. Turning it off on that clip takes the second person from 95.1% of
+# frames swapped to 98.1% and her on/off transitions from 39 to 15. Leave it on
+# for ordinary footage — it is the only thing standing between a head turned
+# past 90 degrees and a complete frontal face painted on its cheek.
+VERIFY_SWAP = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
 
 
 # How far off-axis a head must be before the outcome guard re-detects the

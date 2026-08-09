@@ -2238,6 +2238,71 @@ def create_blank_image(width, height):
 SWAP_MOVED_TOL = 1.0
 
 
+# Second condition, and the one that decides on profile footage: how much the
+# keypoint CONSTELLATION changed, after removing translation and normalised by
+# its own extent. Displacement alone cannot separate a wrecked swap from a good
+# one once the faces are small and turned — measured over 229 correct swaps on
+# a two-person contact clip against 148 faces of the yaw +-90 studio sweep:
+#
+#   displacement > 1.0 (the test above, alone)   discards 28.4% of the CORRECT
+#                                                swaps, and 78.4% of the sweep
+#                                                — most of which are also fine
+#
+# because a legitimate swap of a 120px profile moves the five points ~10px, and
+# ten pixels over a six-pixel interocular distance is 1.7. The shape term does
+# not have that problem: it is scale-free, and it is what physically changes
+# when a frontal face is painted onto a head pointing away — the collapsed
+# profile constellation is replaced by a spread frontal one.
+#
+# Measured, same two sets:
+#
+#   correct swaps (n=229)   max 0.730, p99 0.714, NOTHING above 0.75
+#   studio sweep  (n=148)   bimodal: 76 under 0.75 (which look correct in the
+#                           contact sheet), a second mode from 1.0 to 4.3 with
+#                           doubled mouths and ghosted features
+#
+# 0.75 therefore sits above every correct swap measured and at the point where
+# the picture starts to degrade. Both conditions must hold, so this can only
+# ever discard a SUBSET of what the displacement test discarded on its own —
+# the existing per-model tolerances (verify_tol_for) keep their meaning.
+# ROOP_SWAP_SHAPE_TOL=0 restores the displacement-only rule.
+#
+# KNOWN LIMIT, stated because it is not obvious from the numbers above. A
+# frontal face pasted onto a profile at the SAME orientation and the same
+# constellation extent measures 0.706 — below the 0.730 maximum of the correct
+# swaps. That particular failure is therefore not separable by this metric at
+# ANY threshold, and it is not separable by displacement either without
+# discarding a quarter of the correct swaps. It does not appear in the measured
+# wrecked set, whose whole mode sits at 1.0+ because the orientation changes
+# too, so this is a gap in what the guard can see rather than a regression from
+# a rule that used to catch it. ROOP_VERIFY_SWAP=0 turns the guard off entirely
+# for footage where even the residual costs more than it saves.
+try:
+    SWAP_SHAPE_TOL = float(os.environ.get('ROOP_SWAP_SHAPE_TOL', '0.75'))
+except ValueError:
+    SWAP_SHAPE_TOL = 0.75
+
+
+def keypoint_shape_change(plate_kps, result_kps):
+    """How much the 5-point constellation changed, ignoring where it sits.
+
+    Both sets are centred on their own centroid, so a face that merely moved
+    scores 0; the mean displacement that remains is divided by the plate
+    constellation's own mean radius, so the number is free of scale and of the
+    interocular distance that collapses on a profile.
+    """
+    k = np.asarray(plate_kps, dtype=np.float64)
+    k2 = np.asarray(result_kps, dtype=np.float64)
+    if k.shape != k2.shape or k.shape[0] < 5:
+        return 0.0
+    ck = k - k.mean(axis=0)
+    ck2 = k2 - k2.mean(axis=0)
+    extent = float(np.linalg.norm(ck, axis=1).mean())
+    if extent < 1e-6:
+        return 0.0
+    return float(np.linalg.norm(ck2 - ck, axis=1).mean() / extent)
+
+
 def _bbox_iou_1d(a, b):
     """IoU of two boxes, with the centre distance as the tie-break.
 
@@ -2311,7 +2376,14 @@ def swap_moved_the_face(result, plate_kps, bbox, tol=None):
         best = max(found, key=lambda f: _bbox_iou_1d(f.bbox, bbox))
         k2 = np.asarray(best.kps, dtype=np.float64)
         moved = float(np.linalg.norm(k2 - kps, axis=1).mean() / interocular)
-        return moved > float(tol)
+        if moved <= float(tol):
+            return False
+        # ...and the constellation must actually have changed shape, not just
+        # sat further from where it was than a tiny interocular distance makes
+        # it look. See SWAP_SHAPE_TOL for the two measured distributions.
+        if SWAP_SHAPE_TOL > 0:
+            return keypoint_shape_change(kps, k2) > SWAP_SHAPE_TOL
+        return True
     except Exception:
         # A check that throws must never cost a swap that would otherwise stand.
         return False
