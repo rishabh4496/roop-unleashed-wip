@@ -481,6 +481,32 @@ loop.
 
 ## Upside-down / heavily rolled faces
 
+## Swap outcome guard
+
+Past ~90° of yaw a head shows cheek and ear and no face at all, but the detector
+still returns one at 0.985 confidence, every gate passes it, and the swapper
+paints a complete frontal face onto the side of a head pointing away. No test
+built on POSE separates that from a legitimate profile — two were measured and
+discarded — but the OUTCOME does: a real swap leaves the eyes, nose and mouth
+where they were. So the result is re-detected and the swap is undone if the
+keypoints moved (`face_util.swap_moved_the_face`; the discards show up in SWAP
+AUDIT as *"the swap put the face somewhere it was not"*).
+
+That is a detection per swapped face, and as first shipped it was an unconditional
+**full** face analysis — 11.7 ms against a per-face budget of roughly 210 ms for
+swap + mask + enhance, of which 6.6 ms computed a 512-d embedding and 174
+landmark points that were discarded on the next line. It now runs the detector
+alone (**+49.6%** on the guard, bbox and keypoints bit-identical) and only where
+the failure is reachable at all. It also reports into STAGE TIMING as `verify`,
+so it can never again be a cost with nothing in the table to blame.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_VERIFY_SWAP` | **1 (on)** | The guard itself. `0` disables it — every swap stands, including the ones painted onto the back of a head. |
+| `ROOP_VERIFY_MIN_OFFAXIS` | 30 | Degrees of yaw *or* pitch below which the re-detect is skipped. A rolled face (one autorotate turned) is always checked regardless. `0` checks every face, which is the behaviour the guard shipped with. Placed off the readings, not the nominal angle: over the four yaw ±90 plates of `app/tests/angle_video.py` — where the guard refuses 119–134 of 131 faces per clip — the lowest value read here is **43.6°**, and the frontal plates read 9.6° at worst. 30 leaves 13.6° of margin on the side where being wrong costs a wrecked swap, which is what `solve_pose_5pt`'s 15–20° per-person head-shape error needs. Verified equal: same discard counts (133/123/134/119–120) with the filter on and off. |
+
+## Upside-down / heavily rolled faces
+
 Between roll ~140° and ~220° the detector does **not** lose the face: it reports
 ~0.98 confidence and returns a self-consistent set of 5 keypoints describing an
 *upright* face, with the two "mouth" points on the forehead. Worst error of each
@@ -497,11 +523,43 @@ The first two fail on the same frames *in the same direction*, so their
 agreement is not evidence, and nothing derived from the 5 keypoints separates
 the cases (the arcface fit residual, eye-to-mouth ratio, nose offset and bbox
 placement were each measured across the turn and all overlap the healthy range
-at roll 180). So the 68-point model is required, and `autorotate_faces` now
-pulls it into the analysis pipeline: **+3.9 ms/frame (+7.5%) on detection**.
+at roll 180). So the 68-point model is required, and `autorotate_faces` pulls it
+in.
+
+**It is not, however, run per face.** Keeping it in the analysis loop cost
+**2.23 ms per face — 19% of detection throughput** (230 → 187 detections/s over
+4 threads; RTX 4070, TensorRT, retinaface_r50 @640), paid on every frame of
+every clip to re-answer a question whose answer on ordinary footage never
+changes. Since the pre-pass *is* detection, that came straight off the whole
+run. So when `autorotate_faces` is the only requester the model is loaded but
+kept out of the per-face loop, and run on demand for the frames whose
+orientation is actually in doubt (the pose features — 3D recon, source bank,
+frontalization, landmark refine — read the landmarks of every face they touch,
+so when any of those is on it stays in the loop as before).
+
+"In doubt" is decided by the cheap keypoint axis, which is allowed to say *when
+to ask* but never *what the answer is*:
+
+* **the ramp** — the keypoint axis already reads ≥ `ROOP_LM68_ARM_DEG`. A head
+  reaching the blind band has to rotate through 20–140° first, where the
+  keypoints are right, so a roll is caught on the way in;
+* **the probe** — every `ROOP_LM68_PROBE`-th detection regardless, which is what
+  covers a cut *straight to* an already-rolled head: there is no ramp to see, so
+  nothing else can catch it. At the default the worst case is ~0.4 s at 30 fps;
+* either arms the model for `ROOP_LM68_HOLD` detections, so a rolled sequence is
+  measured continuously rather than rediscovered frame by frame — and a probe
+  that lands on a head the keypoints are reading wrong arms it too.
+
+Verified end to end on the full-turn clip with the shipped defaults
+(`app/tests/frontal_roll_video.py`): **90/90 frames swapped, 0 inverted**, and
+identity 0.97–0.99 against the target through the entire 140–220° band — the
+same result as running the model on every face.
 
 | Flag | Default | Effect |
 |------|---------|--------|
+| `ROOP_LM68_ARM_DEG` | 20 | Keypoint-axis tilt (degrees) that arms the 68-point model. Well inside the band where the keypoints are still accurate to 9.1°. |
+| `ROOP_LM68_PROBE` | 12 | Measure the 68-point axis every Nth detection whatever the keypoints say. `0` disables the probe, leaving only the ramp — which cannot see a cut to an already-inverted face. |
+| `ROOP_LM68_HOLD` | 90 | How many detections the model stays armed for once something asks for it (~3 s at 30 fps). |
 | `ROOP_UPRIGHT_REMEASURE` | **1 (on)** | Re-detect a heavily rolled face on an uprighted frame and adopt that reading (keypoints, landmarks **and embedding**), gated on the turn actually having stood the face up. Fixes the geometry the detector crushes when the head is inverted — interocular 177→136 px and eye→mouth 202→134 px at roll 180, which puts the recognition embedding at ~0.0 cosine against the *same person* upright, below the 0.128 two-different-people floor, so the face stops matching the selected target and is never swapped. Costs one extra detection pass **only for frames containing a rolled face** — it fired on 0/381 frames of ordinary footage. `0` restores the old behaviour for an A/B. |
 | `ROOP_DEBUG_ROLL` | 0 | Dump the track latch's per-observation estimate, resolved roll and whether it was believed. The summary coast count alone cannot tell a latch that usefully crossed an ambiguous pocket from one that rejected good readings and walked the track away from the truth. |
 

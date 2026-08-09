@@ -423,6 +423,24 @@ AUDIT_SWAPPED_GAPFILL = '  of those SWAPPED, gap-filled'
 AUDIT_SWAP_MOVED = 'discarded: the swap put the face somewhere it was not'
 
 
+# How far off-axis a head must be before the outcome guard re-detects the
+# swapped result. See ProcessMgr._verify_worth_it for why this is a pre-filter
+# rather than a decision. 0 checks every face (the shipped-first behaviour).
+#
+# Set from the readings themselves, not from the nominal angle. Over the four
+# yaw +-90 plates of tests/angle_video.py — the clips where the guard actually
+# fires, on 119-134 of 131 faces each — the LOWEST off-axis value the gate ever
+# reads is 43.6 deg, and no frame of any of them falls under 40. The frontal
+# plates read 9.6 deg at worst. 30 therefore sits 13.6 deg below the tightest
+# frame that needs checking and 20 deg above the loosest frame that does not,
+# which is the room solve_pose_5pt's 15-20 deg per-person head-shape error needs
+# on the side where being wrong costs a wrecked swap.
+try:
+    VERIFY_MIN_OFFAXIS = float(os.environ.get('ROOP_VERIFY_MIN_OFFAXIS', '30'))
+except ValueError:
+    VERIFY_MIN_OFFAXIS = 30.0
+
+
 def _audit_swapped_gapfill(face):
     """Count a swapped face whose landmarks nobody detected.
 

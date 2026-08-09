@@ -64,7 +64,11 @@ swap_model_mask_strength = 0.0
 # ~90 deg of yaw the detector claims a face on a head pointing away and the
 # swapper paints a frontal one onto its cheek; no pose test separates that from
 # a real profile, but the outcome does. See face_util.swap_moved_the_face.
-# Costs one small re-detect per swapped face; ROOP_VERIFY_SWAP=0 turns it off.
+# Costs one DETECTOR-ONLY re-detect, and only for faces turned or rolled far
+# enough for the failure to be reachable — as shipped it was a full face
+# analysis on every swapped face, which is 11.7 ms of an ~210 ms per-face budget
+# spent mostly on an embedding nothing reads. See ProcessMgr._verify_worth_it
+# and ROOP_VERIFY_MIN_OFFAXIS. ROOP_VERIFY_SWAP=0 turns the guard off entirely.
 verify_swap = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
@@ -166,6 +170,10 @@ pause = False
 
 g_current_face_analysis = None
 g_desired_face_analysis = None
+# True when landmark_3d_68 is loaded for AUTOROTATE ALONE, in which case it is
+# kept out of the per-face analysis loop and run on demand — see
+# face_util._lm68_should_measure and ProcessMgr.initialize.
+lm68_lazy = False
 
 FACE_ENHANCER = 'GPEN'
 

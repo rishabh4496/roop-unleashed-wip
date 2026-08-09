@@ -33,6 +33,7 @@ _ANALYSER_Q = None                # lease queue (only used when pooling)
 _ANALYSER_DET_SIZE = None         # det_size the pool was built with (rebuild on change)
 _ANALYSER_DET_THRESH = None       # det_thresh the pool was built with (rebuild on change)
 _ANALYSER_ENGINE = None           # detector engine the pool was built with (rebuild on change)
+_ANALYSER_LM68_LAZY = None        # lm68_lazy the pool was built with (rebuild on change)
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
@@ -93,6 +94,17 @@ def _build_face_analyser():
     # values as arguments instead, so the hole costs it nothing.
     # _ensure_face_analyser tracks the engine so switching back to SCRFD (which
     # does need fa.get()) rebuilds the pool rather than hitting the hole.
+    # Same trick, for the same reason, on the OTHER model the pipeline does not
+    # always need. When landmark_3d_68 was requested by autorotate alone
+    # (roop.globals.lm68_lazy — see ProcessMgr.initialize), it is loaded but
+    # taken out of the per-face loop, and run on demand by ensure_landmark_3d_68
+    # for the frames whose orientation is actually in question. Measured on this
+    # machine it is 2.23 ms per face, and leaving it in the loop cost 19% of
+    # detection throughput (230 -> 187 calls/s, 4 threads, RTX 4070 / TensorRT /
+    # retinaface_r50 @640) on footage where no head is rolled at all.
+    fa.lm68_model = None
+    if getattr(roop.globals, 'lm68_lazy', False):
+        fa.lm68_model = fa.models.pop('landmark_3d_68', None)
     if _hybrid_engine_active():
         fa.models.pop('detection', None)
         fa.det_model = None
@@ -113,27 +125,31 @@ def _ensure_face_analyser():
     changed, or when the detection resolution (face_detector_size) or threshold changed. Returns
     the primary instance."""
     global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q, _ANALYSER_DET_SIZE, _ANALYSER_DET_THRESH
-    global _ANALYSER_ENGINE
+    global _ANALYSER_ENGINE, _ANALYSER_LM68_LAZY
     # Fast path (no lock): pool is built once before the run and the module set,
     # det_size, det_thresh, and engine are stable during it, so the hot per-frame detect path skips the lock.
     cur_det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
     cur_engine = _current_engine()
+    cur_lm68_lazy = bool(getattr(roop.globals, 'lm68_lazy', False))
     if (FACE_ANALYSER_POOL
             and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis
             and _ANALYSER_DET_SIZE == _desired_det_size()
             and _ANALYSER_DET_THRESH == cur_det_thresh
-            and _ANALYSER_ENGINE == cur_engine):
+            and _ANALYSER_ENGINE == cur_engine
+            and _ANALYSER_LM68_LAZY == cur_lm68_lazy):
         return FACE_ANALYSER
     with THREAD_LOCK_ANALYSER:
         if (not FACE_ANALYSER_POOL
                 or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis
                 or _ANALYSER_DET_SIZE != _desired_det_size()
                 or _ANALYSER_DET_THRESH != cur_det_thresh
-                or _ANALYSER_ENGINE != cur_engine):
+                or _ANALYSER_ENGINE != cur_engine
+                or _ANALYSER_LM68_LAZY != cur_lm68_lazy):
             roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
             _ANALYSER_DET_SIZE = _desired_det_size()
             _ANALYSER_DET_THRESH = cur_det_thresh
             _ANALYSER_ENGINE = cur_engine
+            _ANALYSER_LM68_LAZY = cur_lm68_lazy
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
             n = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1
@@ -273,19 +289,17 @@ def _offset_face_coords(face, ox: float, oy: float) -> None:
             pass
 
 
-def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
-    """Detect faces within a padded crop around `bbox` (a tracked face's
-    previous/predicted location) instead of the full frame. The detector's
-    input canvas size is unchanged, so a small tracked face fills far more of
-    it — improving recall on rotated/angled faces at no extra compute versus
-    a full-frame detect. Returns faces in full-frame coordinates, or an empty
-    list if none were found in the crop (caller decides whether to fall back
-    to a full-frame detect on a miss)."""
+def _roi_window(frame, bbox, pad_ratio=1.0, min_crop=160):
+    """The padded crop window around `bbox`, clipped to the frame.
+
+    Returns (crop, x0, y0) or None when the box is degenerate or falls outside
+    the frame entirely.
+    """
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = [float(v) for v in bbox]
     bw, bh = x2 - x1, y2 - y1
     if bw <= 0 or bh <= 0:
-        return []
+        return None
     mx, my = bw * pad_ratio, bh * pad_ratio
     cx1, cy1, cx2, cy2 = x1 - mx, y1 - my, x2 + mx, y2 + my
     if cx2 - cx1 < min_crop:
@@ -299,56 +313,101 @@ def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
     cx1, cy1 = max(0, int(round(cx1))), max(0, int(round(cy1)))
     cx2, cy2 = min(w, int(round(cx2))), min(h, int(round(cy2)))
     if cx2 <= cx1 or cy2 <= cy1:
-        return []
+        return None
+    return frame[cy1:cy2, cx1:cx2], cx1, cy1
 
-    crop = frame[cy1:cy2, cx1:cx2]
+
+def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
+    """Detect faces within a padded crop around `bbox` (a tracked face's
+    previous/predicted location) instead of the full frame. The detector's
+    input canvas size is unchanged, so a small tracked face fills far more of
+    it — improving recall on rotated/angled faces at no extra compute versus
+    a full-frame detect. Returns faces in full-frame coordinates, or an empty
+    list if none were found in the crop (caller decides whether to fall back
+    to a full-frame detect on a miss)."""
+    win = _roi_window(frame, bbox, pad_ratio, min_crop)
+    if win is None:
+        return []
+    crop, cx1, cy1 = win
     faces = get_all_faces(crop) or []
     for face in faces:
         _offset_face_coords(face, cx1, cy1)
     return faces
 
 
-def _hybrid_detector_faces(frame, fa, bboxes, kpss):
+def detect_boxes_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
+    """Like `get_all_faces_in_roi`, but the DETECTOR ONLY — no aux models.
+
+    A caller that reads nothing but `bbox` and `kps` has no use for the three
+    per-face models `get_all_faces` runs after the detector, and they are not a
+    rounding error: measured on this machine (RTX 4070, TensorRT, retinaface_r50
+    at 640), the detector costs 10.50 ms and recognition / landmark_2d_106 /
+    landmark_3d_68 cost 2.11 / 2.27 / 2.23 ms per face on top — 6.6 ms, 39% of
+    the call, for output that is discarded. See `swap_moved_the_face`, which runs
+    once per SWAPPED FACE and is the reason this exists.
+
+    Returns Face objects carrying bbox/kps/det_score and nothing else, in
+    full-frame coordinates.
+    """
+    win = _roi_window(frame, bbox, pad_ratio, min_crop)
+    if win is None:
+        return []
+    crop, cx1, cy1 = win
+    try:
+        faces = _detect_faces_raw(crop, aux=False) or []
+    except Exception:
+        return []
+    for face in faces:
+        _offset_face_coords(face, cx1, cy1)
+    return faces
+
+
+def _hybrid_detector_faces(frame, fa, bboxes, kpss, aux=True):
     """Wrap raw detector output (bbox + 5 kps per face) into full Face objects
     using buffalo_l's aux models (recognition + 106/68 landmarks) — mirrors
     insightface FaceAnalysis.get but with the detector swapped out. Lets any
     alternate detector feed the exact same Face objects the pipeline expects
-    (embedding, landmark_2d_106, optional 68)."""
+    (embedding, landmark_2d_106, optional 68).
+
+    `aux=False` returns bbox/kps/det_score alone, for a caller that reads
+    nothing else — see `detect_boxes_in_roi`.
+    """
     from insightface.app.common import Face
     if bboxes.shape[0] == 0:
         return []
     ret = []
     for i in range(bboxes.shape[0]):
         face = Face(bbox=bboxes[i, 0:4], kps=kpss[i], det_score=bboxes[i, 4])
-        for taskname, model in fa.models.items():
-            if taskname == 'detection':
-                continue
-            model.get(frame, face)
+        if aux:
+            for taskname, model in fa.models.items():
+                if taskname == 'detection':
+                    continue
+                model.get(frame, face)
         ret.append(face)
     return ret
 
 
-def _hybrid_yolo_faces(frame, fa, det_size, det_thresh):
+def _hybrid_yolo_faces(frame, fa, det_size, det_thresh, aux=True):
     # Module-level detect(), not get_detector().detect(): the instance has to be
     # LEASED for the call, or concurrent workers share one ORT session again.
     from roop import yoloface
     bboxes, kpss = yoloface.detect(frame, det_size=det_size, det_thresh=det_thresh)
-    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss, aux=aux)
 
 
-def _hybrid_retinaface_faces(frame, fa, det_size, det_thresh, model_type='10g'):
+def _hybrid_retinaface_faces(frame, fa, det_size, det_thresh, model_type='10g', aux=True):
     from roop import retinaface
     bboxes, kpss = retinaface.detect(frame, det_size=det_size, det_thresh=det_thresh, model_type=model_type)
-    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss, aux=aux)
 
 
-def _hybrid_yunet_faces(frame, fa, det_size, det_thresh):
+def _hybrid_yunet_faces(frame, fa, det_size, det_thresh, aux=True):
     from roop import yunet
     bboxes, kpss = yunet.detect(frame, det_size=det_size, det_thresh=det_thresh)
-    return _hybrid_detector_faces(frame, fa, bboxes, kpss)
+    return _hybrid_detector_faces(frame, fa, bboxes, kpss, aux=aux)
 
 
-def _detect_faces_raw(frame, det_size=None, det_thresh=None):
+def _detect_faces_raw(frame, det_size=None, det_thresh=None, aux=True):
     """Run the selected detector engine and return raw Face objects (unsorted) without rescues.
 
     det_size / det_thresh override the configured detection resolution and
@@ -359,6 +418,11 @@ def _detect_faces_raw(frame, det_size=None, det_thresh=None):
     _rescue_downscaled — the close-up rescue, and the only rescue that varies
     detector PARAMETERS rather than the image — an exact re-run of the pass that
     had just returned nothing, on four of the five engines.
+
+    `aux=False` skips the per-face models (recognition, landmark_2d_106,
+    landmark_3d_68) and returns bbox/kps/det_score only — 39% of the call on the
+    measured machine, and pure waste for a caller that reads neither the
+    embedding nor the landmarks.
     """
     engine = getattr(roop.globals, 'detector_engine', 'scrfd')
     nms_thresh = getattr(roop.globals, 'face_detector_nms', 0.40)
@@ -380,13 +444,18 @@ def _detect_faces_raw(frame, det_size=None, det_thresh=None):
             
         try:
             if engine == 'yoloface':
-                faces = _hybrid_yolo_faces(frame, fa, eff_size, eff_thresh)
+                faces = _hybrid_yolo_faces(frame, fa, eff_size, eff_thresh, aux=aux)
             elif engine == 'retinaface':
-                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='10g')
+                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='10g', aux=aux)
             elif engine == 'retinaface_r50':
-                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='r50')
+                faces = _hybrid_retinaface_faces(frame, fa, eff_size, eff_thresh, model_type='r50', aux=aux)
             elif engine == 'yunet':
-                faces = _hybrid_yunet_faces(frame, fa, eff_size, eff_thresh)
+                faces = _hybrid_yunet_faces(frame, fa, eff_size, eff_thresh, aux=aux)
+            elif not aux:
+                # SCRFD's own detector, without FaceAnalysis.get()'s aux loop.
+                # Same call insightface makes internally; max_num=0 means "all".
+                bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
+                faces = _hybrid_detector_faces(frame, fa, bboxes, kpss, aux=False)
             else:
                 faces = fa.get(frame)
         finally:
@@ -542,6 +611,116 @@ def _rescue_rotated(frame: Frame):
 UPRIGHT_REMEASURE = os.environ.get('ROOP_UPRIGHT_REMEASURE', '1') != '0'
 
 
+# ── On-demand 68-point landmarks (orientation only) ──────────────────────────
+# When autorotate is the ONLY thing asking for landmark_3d_68, the model is
+# loaded but kept out of the per-face loop (see _build_face_analyser) and run
+# here instead, on the frames whose orientation is genuinely in question.
+#
+# Why not simply leave it in the loop: 2.23 ms per face, which is 19% of
+# detection throughput (230 -> 187 calls/s over 4 threads, RTX 4070 / TensorRT /
+# retinaface_r50 @640) — paid on every frame of every clip, to answer a question
+# that on ordinary footage has the same answer every time.
+#
+# Why not simply drop it: on a head rolled between ~140 and ~220 degrees the 5
+# keypoints are up to 172 degrees wrong while looking entirely healthy, and
+# nothing derivable from them separates that from an upright face (four
+# candidate discriminators were measured and all overlap — see _axis_from_68).
+# So the question cannot be answered cheaply; it can only be asked less often.
+#
+# It is asked when:
+#   * the cheap keypoint axis already reads rolled (LM68_ARM_DEG). A head
+#     reaching the blind band has to rotate THROUGH 20-140 degrees first, where
+#     the keypoints are right, so a roll is caught on the way in rather than
+#     after it has become invisible; and
+#   * every LM68_PROBE-th detection regardless, which is what covers a cut
+#     straight to an already-rolled head — no ramp to see, so the ramp test
+#     cannot catch it. At the default the worst case is 12 detections (~0.4s at
+#     30fps) before the probe lands, against a permanent 19%.
+# Either arms it for LM68_HOLD detections, so a rolled sequence is measured
+# continuously rather than re-discovered frame by frame.
+def _env_int(name, default):
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
+LM68_ARM_DEG = float(_env_int('ROOP_LM68_ARM_DEG', 20))
+LM68_PROBE = _env_int('ROOP_LM68_PROBE', 12)
+LM68_HOLD = _env_int('ROOP_LM68_HOLD', 90)
+# How far the 68-point axis may disagree with the keypoint one on a probe before
+# the keypoints are treated as compromised. Well above their 9.1 deg worst-case
+# pose error and far below the 172 deg failure.
+LM68_DISAGREE_DEG = 45.0
+
+_LM68_LOCK = threading.Lock()
+_LM68_N = 0             # detections since the run started (all pool workers)
+_LM68_UNTIL = 0         # armed while _LM68_N < this
+
+
+def reset_lm68_state():
+    """Forget the arm/probe latch. Called between runs so one clip's rolled
+    footage cannot leave the next clip paying for it (or, worse, so a probe
+    schedule cannot drift into lockstep with a periodic scene)."""
+    global _LM68_N, _LM68_UNTIL
+    with _LM68_LOCK:
+        _LM68_N = 0
+        _LM68_UNTIL = 0
+
+
+def _lm68_arm():
+    global _LM68_UNTIL
+    with _LM68_LOCK:
+        _LM68_UNTIL = max(_LM68_UNTIL, _LM68_N + LM68_HOLD)
+
+
+def ensure_landmark_3d_68(frame, faces):
+    """Fill in `landmark_3d_68` on `faces`, in place, if it is missing.
+
+    No-op unless the model was set aside as lazy — when it is in the analysis
+    pipeline the faces already carry it, and when nothing asked for it there is
+    no model to run.
+    """
+    if not faces:
+        return faces
+    todo = [f for f in faces if getattr(f, 'landmark_3d_68', None) is None]
+    if not todo:
+        return faces
+    try:
+        with lease_face_analyser() as fa:
+            model = getattr(fa, 'lm68_model', None)
+            if model is None:
+                return faces
+            for f in todo:
+                try:
+                    model.get(frame, f)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return faces
+
+
+def _lm68_should_measure(faces):
+    """Does this detection need the 68-point axis? (arm / probe / hold)"""
+    global _LM68_N
+    if not getattr(roop.globals, 'lm68_lazy', False):
+        return False            # already in the pipeline, or not wanted at all
+    with _LM68_LOCK:
+        _LM68_N += 1
+        n = _LM68_N
+        if n < _LM68_UNTIL:
+            return True
+    if LM68_PROBE and n % LM68_PROBE == 0:
+        return True
+    for f in faces:
+        tilt = _tilt_from_axis(_axis_from_kps(f))
+        if tilt is not None and abs(tilt) >= LM68_ARM_DEG:
+            _lm68_arm()
+            return True
+    return False
+
+
 def _upright_remeasure(frame, faces):
     """Re-measure heavily ROLLED faces on an uprighted frame, in place.
 
@@ -596,14 +775,24 @@ def _upright_remeasure(frame, faces):
         return faces
 
     h, w = frame.shape[:2]
+    # Whether the ORIGINAL faces got here on the 68-point axis or the keypoint
+    # one. The outcome test below compares a candidate's tilt against the
+    # original's, and a 68-point reading against a keypoint reading is not a
+    # comparison — on the very faces this exists for, the two disagree by up to
+    # 172 degrees, which would make a correct turn look like a failed one.
+    used_68 = any(_axis_from_68(faces[i]) is not None
+                  for idxs in wanted.values() for i in idxs)
     for action, idxs in wanted.items():
         angle, rotate = turns[action]
+        rframe = rotate(frame)
         try:
-            cands = _detect_faces_raw(rotate(frame))
+            cands = _detect_faces_raw(rframe)
         except Exception:
             continue
         if not cands:
             continue
+        if used_68:
+            ensure_landmark_3d_68(rframe, cands)
         # Uprightness has to be read here, in rotated space, while the turn is
         # still expressed in the coordinates.
         scored = []
@@ -657,6 +846,21 @@ def _detect_faces(frame):
         # 4. Rotated face rescue
         if not faces:
             faces = _rescue_rotated(frame)
+
+    # The orientation axis, before anything reads it — including
+    # _upright_remeasure below, whose whole gate is that axis.
+    if faces and _lm68_should_measure(faces):
+        ensure_landmark_3d_68(frame, faces)
+        # A probe that lands on a head the keypoints are reading wrong is the
+        # one observation that proves they cannot be trusted here, so it arms
+        # the latch rather than being spent on a single frame.
+        for f in faces:
+            a68 = _tilt_from_axis(_axis_from_68(f))
+            akp = _tilt_from_axis(_axis_from_kps(f))
+            if a68 is not None and akp is not None:
+                if abs((a68 - akp + 180.0) % 360.0 - 180.0) >= LM68_DISAGREE_DEG:
+                    _lm68_arm()
+                    break
 
     # Before anything downstream reads the keypoints or the embedding.
     if faces and UPRIGHT_REMEASURE:
@@ -959,6 +1163,33 @@ def _axis_from_68(face):
     return float(axis[0]), float(axis[1])
 
 
+def _axis_from_kps(face):
+    """Eye-mid -> mouth-mid from the 5 detector keypoints, or None.
+
+    Every detector engine emits these (align_crop already depends on them), so
+    this works where the landmark models do not. Accurate to 9.1 deg worst case
+    under any POSE — but see _axis_from_68 for the roll band where it is wrong
+    by up to 172 deg while still looking perfectly healthy.
+    """
+    kps = getattr(face, 'kps', None)
+    if kps is None or len(kps) < 5:
+        return None
+    kps = np.asarray(kps, dtype=np.float32)
+    eye_mid = (kps[0] + kps[1]) / 2.0
+    mouth_mid = (kps[3] + kps[4]) / 2.0
+    axis = mouth_mid - eye_mid
+    if not np.isfinite(axis).all() or float(np.hypot(axis[0], axis[1])) < 1e-3:
+        return None
+    return float(axis[0]), float(axis[1])
+
+
+def _tilt_from_axis(axis):
+    """(dx, dy) -> degrees, 0 upright, +-180 inverted. None passes through."""
+    if axis is None:
+        return None
+    return float(np.degrees(np.arctan2(axis[0], axis[1])))
+
+
 def face_down_axis(face):
     """The face's chin direction as (dx, dy) in image space, or None.
 
@@ -971,16 +1202,7 @@ def face_down_axis(face):
     axis = _axis_from_68(face)
     if axis is not None:
         return axis
-    kps = getattr(face, 'kps', None)
-    if kps is None or len(kps) < 5:
-        return None
-    kps = np.asarray(kps, dtype=np.float32)
-    eye_mid = (kps[0] + kps[1]) / 2.0
-    mouth_mid = (kps[3] + kps[4]) / 2.0
-    axis = mouth_mid - eye_mid
-    if not np.isfinite(axis).all() or float(np.hypot(axis[0], axis[1])) < 1e-3:
-        return None
-    return float(axis[0]), float(axis[1])
+    return _axis_from_kps(face)
 
 
 def face_roll_tilt(face):
@@ -1989,7 +2211,12 @@ def swap_moved_the_face(result, plate_kps, bbox, tol=None):
     where they were, and this one does not.
 
     Re-detects inside a padded box around the face rather than the whole frame,
-    so the cost is one small detection per swapped face.
+    and with the DETECTOR ALONE: the only things read below are `bbox` and
+    `kps`, so running recognition and the two landmark models on the result — as
+    this did when it shipped — spent 6.6 of its 11.7 ms per swapped face
+    computing an embedding and 174 landmark points that were thrown away
+    immediately (RTX 4070 / TensorRT / retinaface_r50 @640). See
+    `detect_boxes_in_roi`.
 
     A miss (no face found in the box) returns False — the swap stands. On the
     measured clip that is 2 frames in 317, and refusing on a miss would throw
@@ -2006,7 +2233,7 @@ def swap_moved_the_face(result, plate_kps, bbox, tol=None):
         interocular = float(np.linalg.norm(kps[0] - kps[1]))
         if not (interocular > 1e-6):
             return False
-        found = get_all_faces_in_roi(result, bbox, pad_ratio=0.6)
+        found = detect_boxes_in_roi(result, bbox, pad_ratio=0.6)
         if not found:
             return False
         best = max(found, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))

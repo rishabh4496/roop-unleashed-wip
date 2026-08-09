@@ -9,6 +9,7 @@ from roop.ProcessOptions import ProcessOptions
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import swap_moved_the_face
+from roop import face_util
 from roop.processors.FaceSwapInsightFace import verify_tol_for as _swap_verify_tol_for
 from roop import orientation
 from roop.face_util import estimate_norm, solve_pose_5pt, solve_pose_jaw_5pt
@@ -29,7 +30,7 @@ from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
-from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED
+from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED, VERIFY_MIN_OFFAXIS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock, local
 
@@ -568,13 +569,30 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # and every one of them overlaps the healthy range at roll 180.
         # Without this model autorotate declines to turn an inverted face and
         # the swapper is handed a crop with the eyes where the mouth belongs.
+        #
+        # But autorotate is a different KIND of consumer from the other four,
+        # and that difference is worth 19% of detection throughput. The pose
+        # features read the landmarks of the face they are working on, every
+        # time, so for them the model belongs in the per-face loop. Autorotate
+        # asks a yes/no question about orientation whose answer, on the
+        # overwhelming majority of footage, is the same on every frame — and the
+        # model costs 2.23 ms per face to keep re-answering it (230 -> 187
+        # detections/s over 4 threads, RTX 4070 / TensorRT / retinaface_r50
+        # @640). So when autorotate is the only requester the model is still
+        # LOADED but taken out of the loop, and face_util runs it on the frames
+        # whose orientation is actually in doubt. See face_util's
+        # _lm68_should_measure for when those are, and why the cheap axis is
+        # allowed to decide when to ask but never to answer.
+        pose_features_need_68 = (getattr(options, 'use_3d_recon', False)
+                                 or getattr(options, 'use_source_bank', False)
+                                 or getattr(options, 'use_frontalization', False)
+                                 or getattr(roop.globals, 'refine_landmarks', False))
         modules = ["landmark_2d_106", "detection", "recognition"]
-        if (getattr(options, 'use_3d_recon', False)
-                or getattr(options, 'use_source_bank', False)
-                or getattr(options, 'use_frontalization', False)
-                or getattr(roop.globals, 'refine_landmarks', False)
-                or getattr(roop.globals, 'autorotate_faces', False)):
+        if pose_features_need_68 or getattr(roop.globals, 'autorotate_faces', False):
             modules.insert(0, "landmark_3d_68")
+        roop.globals.lm68_lazy = (not pose_features_need_68
+                                  and bool(getattr(roop.globals, 'autorotate_faces', False)))
+        face_util.reset_lm68_state()
         roop.globals.g_desired_face_analysis = modules
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":
             roop.globals.g_desired_face_analysis.append("genderage")
@@ -2708,6 +2726,43 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             return None
 
     @staticmethod
+    def _verify_worth_it(rotation_action, head_angles):
+        """Is this face turned or rolled far enough for the outcome guard to
+        have anything to find?
+
+        The guard re-detects the swapped result, which is a real detection per
+        swapped face — measured 11.7 ms on an RTX 4070 under TensorRT, against a
+        per-face budget of roughly 210 ms for swap + mask + enhance. Paying it on
+        every face of ordinary footage buys nothing, because the failure it
+        exists to catch does not happen there: a whole frontal face painted onto
+        a head pointing away needs the head to be pointing away, and the earliest
+        wrecked frame in the calibration sweep sits at |yaw| 75 (the sharp onset
+        is 88).
+
+        VERIFY_MIN_OFFAXIS is therefore a PRE-FILTER, not a decision — it never
+        passes a swap the guard would have refused within its own band, it only
+        declines to look where the band cannot be reached. It is placed off the
+        measured readings rather than the nominal angle: on the yaw +-90 plates
+        of tests/angle_video.py, where the guard refuses 119-134 of 131 faces per
+        clip, the lowest value read here is 43.6 deg. See VERIFY_MIN_OFFAXIS. A
+        gate sitting AT the failure angle would be the same mistake as the pose
+        gates 81f5b2d measured and discarded, because solve_pose_5pt is 15-20 deg
+        off per person; the margin is what makes this one a filter instead.
+
+        A rolled face (rotation_action set) always gets checked regardless of
+        yaw: it went through an extra warp, and its keypoints are the ones the
+        detector reads worst.
+        """
+        try:
+            if rotation_action is not None:
+                return True
+            yaw, pitch = head_angles()
+            return (abs(float(yaw)) >= VERIFY_MIN_OFFAXIS
+                    or abs(float(pitch)) >= VERIFY_MIN_OFFAXIS)
+        except Exception:
+            return True     # unreadable pose — check, as before
+
+    @staticmethod
     def _verify_after(result, snap, tol=None):
         """Undo this face's swap if it moved the face off where the plate's was.
 
@@ -3668,9 +3723,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
 
-        if _vs is not None:
-            result = self._verify_after(
-                result, _vs, tol=_swap_verify_tol_for(swap_p))
+        if _vs is not None and self._verify_worth_it(rotation_action, _head_angles):
+            # Profiled, because it is a detection and it used to be invisible:
+            # every other model stage in this function reports into STAGE TIMING,
+            # and an unprofiled one that runs once per swapped face is exactly
+            # the kind of cost that shows up as "the GPU is at 80% now" with
+            # nothing in the table to blame.
+            # Guarded like every other detect site (see the two in
+            # process_frame). It is a detection running from a swap worker
+            # thread, so on a card small enough for the analyser pool to be
+            # disabled it would otherwise put N threads through one shared ORT
+            # session with no lock — the freeze d63982d fixed everywhere else.
+            with _prof('verify'), _gpu_guard(pooled=analysis_pooled()):
+                result = self._verify_after(
+                    result, _vs, tol=_swap_verify_tol_for(swap_p))
 
         return result
 

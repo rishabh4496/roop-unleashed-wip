@@ -90,11 +90,19 @@ class OverridesReachTheSelectedEngine(unittest.TestCase):
 
     def test_every_dispatch_forwards_the_effective_values(self):
         """Each of the five engine branches has to be handed them; one branch
-        left behind is one engine where the rescue is dead again."""
+        left behind is one engine where the rescue is dead again.
+
+        Only the four ENGINE dispatches are in scope. `_hybrid_detector_faces`
+        is also reachable from here (the detector-only SCRFD path, for callers
+        that read nothing but bbox/kps), but it is handed boxes that have
+        already been detected — there is no detector left inside it for a
+        det_size to steer, so requiring one would be requiring a dead argument.
+        """
         raw = _body('_detect_faces_raw', CODE)
         self.assertIn('eff_size', raw)
         self.assertIn('eff_thresh', raw)
-        calls = re.findall(r'_hybrid_\w+\([^)]*\)', raw)
+        calls = [c for c in re.findall(r'_hybrid_\w+\([^)]*\)', raw)
+                 if not c.startswith('_hybrid_detector_faces(')]
         self.assertEqual(len(calls), 4, f'expected 4 hybrid dispatches, got {calls}')
         for call in calls:
             with self.subTest(call=call):
