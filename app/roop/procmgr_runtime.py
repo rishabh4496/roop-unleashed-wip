@@ -533,6 +533,22 @@ def _audit_report():
               "detector losing the face, not a gate refusing it, and no threshold will "
               "bring those back. Try a lower detector threshold, another detector "
               "engine, or temporal detection.", flush=True)
+    # Detections that were never faces. Reported here rather than per frame
+    # because it is only readable as a total: the junction between two touching
+    # heads is detected on a large fraction of the frames they are in contact,
+    # and each one would otherwise have competed for a source, for pixels and
+    # for a track. A large number on footage with nobody touching would mean the
+    # rule is firing where it should not — that is what it is here to show.
+    try:
+        from roop import face_util as _fu
+        _merged = _fu.merged_detections_count()
+    except Exception:
+        _merged = 0
+    if _merged:
+        print(f"     Separately, {_merged} detections were dropped as the JUNCTION between "
+              "two touching faces rather than a face — half of each neighbour, which the "
+              "detector reports at up to 0.99 confidence. ROOP_FACE_MERGE=0 keeps them.",
+              flush=True)
     print("===================================================================\n", flush=True)
 
 

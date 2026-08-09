@@ -349,6 +349,31 @@ Shown as `-> source 0 (via track 0, d=0.35)` in the per-track block.
 | `ROOP_FACE_DEMARCATE_DUP` | `0.6` | How much of one claim must sit inside the other before the two are treated as **one face detected twice** rather than two faces. A duplicate is dropped instead of competed with — left in, it wins half of the swapped face's own pixels and carves it apart, on only the frames where the duplicate was detected, so it flickers. Measured both ways round: which of the two boxes ends up holding the source is arbitrary. |
 | `ROOP_FACE_DEMARCATE_DUP_SEP` | `0.35` | ...and how concentric they must be, as centre separation over the smaller claim's radius. Containment alone is not enough: it is also 1.0 for a genuinely separate smaller head nested in a bigger one's padded box, and dropping *that* claim is the smear this whole feature exists to remove. Duplicates measure 0.07–0.24 here, separate faces 0.52–1.08. |
 
+### Before the pixels: the detector and the recogniser (`roop/face_contact.py`)
+
+The flags above decide who owns a pixel once both faces have been swapped. Two
+things go wrong earlier than that, and they are what produce "the two people
+swap into each other / flicker / go un-swapped, but only when they are close".
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ROOP_FACE_MERGE` | 1 (on) | Drop the phantom detection the detector fires **at the junction between two touching faces** — the left person's mouth and chin plus the right person's nose and mouth, which really does look like one frontal face. On the measured clip it appears on 346 of the 1074 two-face frames, at det_score up to 0.99, so no confidence floor removes it, and NMS deliberately protects it (it is offset from both parents, which is exactly the signature `ROOP_NMS_CENTER_FRAC` exists to spare). Left in, it gets a track of its own, its embedding is a chimera of two people, it competes for a source (one source per frame, so it can take the real face's), it competes for pixels, and it comes and goes frame to frame — a flicker on **both** real faces. `0` keeps them. The run reports how many it dropped in the SWAP AUDIT. |
+| `ROOP_FACE_MERGE_COVER` | `0.80` | How much of the candidate must be covered by its two neighbours together. A junction box is *made of* them; a real face has at least the far side of its own head showing. |
+| `ROOP_FACE_MERGE_EACH` | `0.15` | Minimum overlap with **each** neighbour, as a fraction of the candidate's area. |
+| `ROOP_FACE_MERGE_SIZE` | `0.60` | Size floor against the smaller neighbour. A junction spans two faces and is never much smaller than either; a distant head framed between two nearer ones is, and this is what keeps it. |
+| `ROOP_FACE_MERGE_PAIR_SEP` | `0.35` | The two neighbours must be two different faces, not one face detected twice — same measurement and same value as `ROOP_FACE_DEMARCATE_DUP_SEP`. |
+| `ROOP_FACE_MERGE_BETWEEN` | `0.15` | How far along the a→b axis the candidate's centre must sit to count as *between* them (0.15–0.85). This is what spares three real faces in a row: their neighbours sit on the **same** side of the middle one, a junction's parents sit one on each side. |
+| `ROOP_EMB_CONTAM` | `0.35` | Fraction of a face's **recognition crop** that another face may cover before its embedding stops being used to decide identity. ArcFace fits five keypoints to a frontal template, and for a near-profile face that resolves to a crop about 1.7 box widths across, reaching well past the nose. While the faces are apart that extra area is background; once they touch, the two crops converge onto very nearly the same picture and the identities converge with them. Measured, distance from each face to its own reference against how much of its crop the other one covers: `<0.2` → own 0.05 / other 1.06, 0 % wrong; `0.2–0.3` → 0.43 / 1.02, 0 %; `0.3–0.4` → 0.40 / 0.99, 2 %; `0.4–0.6` → 0.63 / 0.92, **14 % read as the wrong person**. Past ~0.4 the mean distance to the *right* person is already over the 0.60 track-assignment gate. A flagged face keeps its place in its track on position, is left out of the track's mean embedding, is denied appearance-only Re-ID, and is not offered to the per-frame identity matcher. `0` disables the whole mechanism. |
+
+Masking the neighbour out before recognition does **not** work and was measured:
+a flat fill inside the crop destroys the embedding outright (own-distance 0.18 →
+0.74 on frames where the plain crop was still correct). The pixels cannot be
+removed because they are inside the face's own aligned crop — so the embedding
+is not repaired, it is disbelieved, and position carries those frames instead.
+
+Reproduce with `env/Scripts/python.exe tests/two_face_video.py --tag before` (add
+`ROOP_FACE_MERGE=0 ROOP_EMB_CONTAM=0` for the baseline).
+
 ### What goes wrong when two swapped faces meet
 
 Each face is pasted under a matte built from its own geometry alone — a hull

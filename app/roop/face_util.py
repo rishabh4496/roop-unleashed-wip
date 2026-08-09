@@ -16,6 +16,7 @@ from skimage import transform as trans
 from roop.capturer import get_video_frame
 from roop.utilities import resolve_relative_path, conditional_download
 from roop.nms import bind_instance_nms
+from roop import face_contact
 
 # Pool of independent insightface FaceAnalysis instances (opt-in, ROOP_DETMASK_POOL).
 #
@@ -658,6 +659,33 @@ _LM68_N = 0             # detections since the run started (all pool workers)
 _LM68_UNTIL = 0         # armed while _LM68_N < this
 
 
+_MERGED_LOCK = threading.Lock()
+_MERGED_N = 0           # junction detections dropped since the run started
+
+
+def _note_merged(n):
+    global _MERGED_N
+    with _MERGED_LOCK:
+        _MERGED_N += n
+
+
+def merged_detections_count():
+    """How many junction detections face_contact removed this run.
+
+    Reported at the end of a run rather than per frame: a phantom that appears
+    on a third of the frames would otherwise print a third of the log, and the
+    number is only interesting as a total against the clip length.
+    """
+    with _MERGED_LOCK:
+        return _MERGED_N
+
+
+def reset_merged_count():
+    global _MERGED_N
+    with _MERGED_LOCK:
+        _MERGED_N = 0
+
+
 def reset_lm68_state():
     """Forget the arm/probe latch. Called between runs so one clip's rolled
     footage cannot leave the next clip paying for it (or, worse, so a probe
@@ -846,6 +874,17 @@ def _detect_faces(frame):
         # 4. Rotated face rescue
         if not faces:
             faces = _rescue_rotated(frame)
+
+    # Two faces in contact, before anything reads the detections: drop the
+    # phantom the detector fires at the junction between them, and record how
+    # much of each survivor's recognition crop belongs to its neighbour. Both
+    # are properties of the FRAME's set of faces, so they are decided once here
+    # rather than re-derived by each consumer from whatever subset it holds.
+    # See roop/face_contact.py.
+    if faces:
+        faces, _merged = face_contact.annotate(faces)
+        if _merged:
+            _note_merged(_merged)
 
     # The orientation axis, before anything reads it — including
     # _upright_remeasure below, whose whole gate is that axis.
@@ -2199,6 +2238,27 @@ def create_blank_image(width, height):
 SWAP_MOVED_TOL = 1.0
 
 
+def _bbox_iou_1d(a, b):
+    """IoU of two boxes, with the centre distance as the tie-break.
+
+    Returned as a single sortable number so `max()` can pick the detection that
+    corresponds to a given box: IoU decides whenever the boxes overlap at all,
+    and when none of them do (a swap that really did move the face out of its
+    own box) the nearest centre still wins instead of the choice being
+    arbitrary.
+    """
+    ax0, ay0, ax1, ay1 = (float(v) for v in a)
+    bx0, by0, bx1, by1 = (float(v) for v in b)
+    iw = min(ax1, bx1) - max(ax0, bx0)
+    ih = min(ay1, by1) - max(ay0, by0)
+    inter = iw * ih if (iw > 0 and ih > 0) else 0.0
+    union = max(1e-6, (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter)
+    iou = inter / union
+    d = math.hypot((ax0 + ax1 - bx0 - bx1) * 0.5, (ay0 + ay1 - by0 - by1) * 0.5)
+    scale = max(1e-6, (bx1 - bx0))
+    return iou - 1e-3 * (d / scale)
+
+
 def swap_moved_the_face(result, plate_kps, bbox, tol=None):
     """True when the swapped result no longer has the face where the plate did.
 
@@ -2236,7 +2296,19 @@ def swap_moved_the_face(result, plate_kps, bbox, tol=None):
         found = detect_boxes_in_roi(result, bbox, pad_ratio=0.6)
         if not found:
             return False
-        best = max(found, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        # WHICH detection in the window. The padding is 0.6 of the box, so with
+        # two people in contact the window routinely holds the neighbour and the
+        # junction phantom as well, and both are commonly the biggest thing in
+        # it — the phantom spans two faces by construction. Taking the largest
+        # then measures how far the NEIGHBOUR's keypoints are from this face's,
+        # which is a large number for two different faces, so the swap is
+        # discarded. Measured over the contact stretch of the sample clip, on
+        # the untouched plate where the answer must be "nothing moved": largest
+        # fires on 13% of faces, corresponding fires on 4%.
+        found, _ = face_contact.suppress_merged(found)
+        if not found:
+            return False
+        best = max(found, key=lambda f: _bbox_iou_1d(f.bbox, bbox))
         k2 = np.asarray(best.kps, dtype=np.float64)
         moved = float(np.linalg.norm(k2 - kps, axis=1).mean() / interocular)
         return moved > float(tol)

@@ -29,6 +29,7 @@ from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MA
 import roop.globals
 from roop import session_pool
 from roop.face_util import get_all_faces, analysis_pooled
+from roop import face_contact
 from roop.utilities import compute_cosine_distance
 from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC, ChunkedProgress, bar_write, publish_eta
 
@@ -126,6 +127,10 @@ class TrackingMixin:
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
         # Detections the appearance-only fallback was not allowed to claim.
         reid_refused = 0
+        # Observations whose embedding was disbelieved because the recognition
+        # crop was mostly the neighbouring face (see roop/face_contact.py), and
+        # how many of those were also denied the appearance-only Re-ID path.
+        contam_seen = contam_reid = 0
         # EMB_MAX is shared with the swap-time re-association in ProcessMgr so the
         # two halves of the tracker cannot drift apart (see _TRACK_EMB_MAX).
         # REID_MAX is the tighter bar for association WITHOUT spatial evidence.
@@ -183,7 +188,7 @@ class TrackingMixin:
                 return _run_detect(fr, crop_bbox)
 
         def _consume(f_idx, faces):
-            nonlocal active, retired, next_id, reid_refused
+            nonlocal active, retired, next_id, reid_refused, contam_seen, contam_reid
             # Retire tracks not seen for STALE frames so matching stays O(active).
             if active:
                 fresh = []
@@ -194,6 +199,18 @@ class TrackingMixin:
             for face in faces:
                 bbox = np.asarray(face.bbox, dtype=np.float32)
                 emb = np.asarray(face.embedding, dtype=np.float32)
+                # Two faces in contact put most of each other INSIDE each
+                # other's recognition crop, so both embeddings drift toward the
+                # same picture. Believing one here is how a person's track
+                # snaps in two the moment they lean in: association is
+                # embedding-gated, the gate fails, a fresh track is born from
+                # the contaminated frame and is then judged on a mean built
+                # entirely out of contaminated frames. So a contaminated
+                # observation keeps its place in the track on POSITION and is
+                # not allowed to say who anybody is. See roop/face_contact.py.
+                dirty = face_contact.unreliable(face)
+                if dirty:
+                    contam_seen += 1
                 best, best_score = None, -1.0
                 for t in active:
                     if t['id'] in used:
@@ -204,16 +221,26 @@ class TrackingMixin:
                         continue
 
                     cos_dist = compute_cosine_distance(t['emb_mean'], emb)
-                    if cos_dist > EMB_MAX:
+                    if cos_dist > EMB_MAX and not dirty:
                         continue
 
-                    # Score: Higher IoU and lower Cosine Distance is better
-                    score = iou * (1.0 - cos_dist)
+                    # Score: Higher IoU and lower Cosine Distance is better.
+                    # A contaminated distance is not evidence either way, so it
+                    # is not allowed to rank the candidates: IoU alone decides.
+                    score = iou if dirty else iou * (1.0 - cos_dist)
                     if score > best_score:
                         best, best_score = t, score
 
                 is_reid = False
-                if best is None:
+                # Re-ID matches on appearance ALONE. A contaminated face is
+                # closer to the OTHER person than to itself often enough
+                # (measured: one in seven past 0.4 crop coverage) that letting
+                # it claim a track this way is the wrong-face bug directly. It
+                # starts its own track instead, which stitching and the source
+                # inheritance can still recover on geometry.
+                if best is None and dirty:
+                    contam_reid += 1
+                elif best is None:
                     # Re-ID lookup: search active (not yet matched this frame) and
                     # retired tracklets for returning/moved faces. Runs once
                     # spatial continuity is lost, so it cannot use IoU — but the
@@ -286,6 +313,15 @@ class TrackingMixin:
                         'emb_sum': emb.astype(np.float64).copy(),
                         'emb_n': 1,
                         'emb_mean': emb.copy(),
+                        # True while every observation this track has ever had
+                        # was contaminated. The seed still has to be SOMETHING
+                        # (association needs a mean to compare against), so it
+                        # is taken from the dirty frame and thrown away on the
+                        # first clean one — otherwise a track born during a
+                        # contact is stuck with a chimera as its identity for
+                        # the rest of the clip, which is what left a person
+                        # over the assignment gate and un-swapped.
+                        'emb_dirty': dirty,
                         'first_seen': f_idx,
                         'last_seen': f_idx
                     }
@@ -302,13 +338,29 @@ class TrackingMixin:
                     best['bbox'] = bbox
                     best['last_seen'] = f_idx
 
-                    # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
-                    dist = compute_cosine_distance(best['emb_mean'], emb)
-                    if dist <= 0.5:
-                        alpha = 0.25
-                        best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
-                        best['emb_sum'] += emb
-                        best['emb_n'] += 1
+                    # A contaminated observation contributes position and
+                    # nothing else. The existing 0.5 outlier filter does not
+                    # cover this: contamination pulls the embedding toward the
+                    # OTHER person, so for the track LOSING its identity the
+                    # reading is far away and correctly rejected — but for the
+                    # track GAINING it the reading is close, passes the filter,
+                    # and is averaged straight in.
+                    if not dirty:
+                        if best.get('emb_dirty'):
+                            # First clean look at a track seeded from a contact:
+                            # throw the chimera away rather than average with it.
+                            best['emb_sum'] = emb.astype(np.float64).copy()
+                            best['emb_n'] = 1
+                            best['emb_mean'] = emb.copy()
+                            best['emb_dirty'] = False
+                        else:
+                            # Outlier filter: only update mean embedding if clean enough (distance <= 0.5)
+                            dist = compute_cosine_distance(best['emb_mean'], emb)
+                            if dist <= 0.5:
+                                alpha = 0.25
+                                best['emb_mean'] = ((1.0 - alpha) * best['emb_mean'] + alpha * emb).astype(np.float32)
+                                best['emb_sum'] += emb
+                                best['emb_n'] += 1
 
                 used.add(best['id'])
                 if collect_obs:
@@ -646,7 +698,11 @@ class TrackingMixin:
               + (f', {refused_margin} refused as too far from their person\'s '
                  f'closest track (margin {_TRACK_ASSIGN_MARGIN})' if refused_margin else '')
               + (f'; {reid_refused} detections refused by the appearance-only '
-                 f'fallback (Re-ID gate {REID_MAX})' if reid_refused else ''))
+                 f'fallback (Re-ID gate {REID_MAX})' if reid_refused else '')
+              + (f'; {contam_seen} detections had a contaminated recognition crop '
+                 f'(over {face_contact.CONTAM_MAX:.2f} of it was the neighbouring '
+                 f'face) and were tracked on position alone, {contam_reid} of them '
+                 f'denied Re-ID' if contam_seen else ''))
         return tracks
 
     def _person_angle_indices(self):

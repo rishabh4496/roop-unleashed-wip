@@ -28,6 +28,7 @@ from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions
+from roop import face_contact
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
 from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED, VERIFY_MIN_OFFAXIS
@@ -44,6 +45,17 @@ from queue import Queue, Full as _QueueFull, Empty as _QueueEmpty
 # to hold in memory, so parallel stabilization cannot be made seam-free and the
 # scheduler stays sequential instead. Same cap the derivation saturates at.
 from roop.one_euro import _MAX_WARMUP as _MAX_STAB_WARMUP
+
+
+# frame_idx -> [(bbox, source_index), ...] for the faces actually swapped.
+# `None` (the default) records nothing at all; tests/two_face_video.py sets it
+# to a dict before a run and reads it back. Never touched by the app.
+#
+# It exists because "which faceset ended up on which person" cannot be measured
+# from the output on the frames where it matters: two faces in contact share a
+# recognition crop, so re-detecting the result reports each of them as the other
+# (see roop/face_contact.py). The decision is the only trustworthy witness.
+_SWAP_LOG = None
 
 
 # Per-frame diagnostic pose logging. Computing source yaw/pitch (estimate_pose)
@@ -593,6 +605,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         roop.globals.lm68_lazy = (not pose_features_need_68
                                   and bool(getattr(roop.globals, 'autorotate_faces', False)))
         face_util.reset_lm68_state()
+        face_util.reset_merged_count()
         roop.globals.g_desired_face_analysis = modules
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":
             roop.globals.g_desired_face_analysis.append("genderage")
@@ -2258,6 +2271,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     # a Face is a dict subclass, but the sort does not assume it.
                     if isinstance(face, dict) and face.get('_interpolated'):
                         _audit_hit('  of those, gap-filled')
+                    # Most of this face's recognition crop is the face next to
+                    # it, so every distance computed from its embedding below
+                    # is measuring the pair rather than the person. Position is
+                    # still sound, and the track it belongs to was built from
+                    # position too, so the entry match is allowed to stand and
+                    # only the identity TESTS are stood down. See
+                    # roop/face_contact.py for the measurements.
+                    dirty = face_contact.unreliable(face)
+                    if dirty:
+                        _audit_hit('  of those, crop shared with the face beside it')
                     best_j, best_cost = -1, float('inf')
                     if entries:
                         bb = face.bbox
@@ -2279,10 +2302,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             # looks, which is how a track hands its source to
                             # whoever is standing closest. Refusing the association
                             # outright is the standard tracking-by-detection rule.
-                            if _TRACK_EMB_MAX > 0 and d_cosine > _TRACK_EMB_MAX:
+                            if _TRACK_EMB_MAX > 0 and d_cosine > _TRACK_EMB_MAX and not dirty:
                                 continue
 
-                            # Combine spatial distance penalized by cosine similarity distance
+                            # Combine spatial distance penalized by cosine
+                            # similarity distance — except when the cosine is
+                            # the contaminated one, where penalising by it
+                            # would let whichever track happens to sit nearest
+                            # the JOIN outbid the person's own.
+                            if dirty:
+                                d_cosine = 0.0
                             cost = d_spatial * (1.0 + 2.5 * d_cosine)
                             if cost < best_cost:
                                 best_cost, best_j = cost, j
@@ -2346,6 +2375,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             if src_index in claimed_sources_in_frame:
                                 veto = 'source already used this frame'
                                 veto_kind = VETO_SOURCE_REUSED
+                            elif dirty:
+                                # Every remaining test below is a comparison of
+                                # THIS frame's embedding against the captured
+                                # people, and on a shared crop it reliably says
+                                # the person is whoever they are leaning into.
+                                # Left in, it vetoes both faces of a couple on
+                                # the frames they touch and un-vetoes them when
+                                # they part — which is the reported flicker.
+                                pass
                             elif (multi_person and d_own is not None
                                     and d_own > _ada.scale(_TRACK_VETO_DIST, threshold)):
                                 veto = f'face is {d_own:.2f} from its assigned person (> {_TRACK_VETO_DIST})'
@@ -2400,8 +2438,19 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         # instead of being silently skipped. Threshold-gated and
                         # 1:1 (a source already used this frame is skipped), so a
                         # face here can only ever get its OWN person's source.
+                        # ...but only for a face whose embedding means
+                        # something. Matching a shared crop against the
+                        # captured people is the single most direct route to
+                        # the wrong faceset: the face nearer the join measures
+                        # closer to its NEIGHBOUR's captured photo than to its
+                        # own (measured at 0.25 against 0.78 on the sample
+                        # clip, well inside the 0.75 threshold), so it would be
+                        # confidently swapped with the other person's source.
+                        # Leaving it un-swapped for these frames is the lesser
+                        # failure, and with a source on its track it does not
+                        # reach here at all.
                         best_g, best_d = None, id_threshold
-                        for g, tis in persons.items():
+                        for g, tis in ({} if dirty else persons).items():
                             r_src = self.options.selected_index if single_person else rank.get(g, 0)
                             if r_src in claimed_sources_in_frame:
                                 continue
@@ -2440,6 +2489,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 _audit_swapped_gapfill(face)
                             else:
                                 _audit_hit('fallback missed (no source for person)')
+                        elif dirty:
+                            _audit_hit('refused: crop shared with the face beside it')
                         else:
                             # Nothing above matched within the (tighter) match
                             # threshold. This face is now left un-swapped for this
@@ -2475,7 +2526,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # (distance, person_g, face_idx) for every pair within threshold,
                 # using each person's closest angle to that face.
                 candidates = []
+                _contaminated = set()
                 for fidx, face in enumerate(faces):
+                    # A face sharing its recognition crop with the one beside it
+                    # is not offered to anybody. There is no track to fall back
+                    # on in this mode, and the measured behaviour of matching
+                    # anyway is that the two people of a couple each match the
+                    # OTHER's captured photo on the frames they touch — a
+                    # confident, threshold-passing swap with the wrong faceset.
+                    # See roop/face_contact.py.
+                    if face_contact.unreliable(face):
+                        _contaminated.add(fidx)
+                        continue
                     for g, tis in persons.items():
                         _ds = [_ada.identity_distance(self.target_face_datas[ti], face, frame)
                                for ti in tis]
@@ -2545,7 +2607,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 for fidx in range(len(faces)):
                     if fidx in claimed_faces:
                         continue
-                    if fidx not in _paired:
+                    if fidx in _contaminated:
+                        _audit_hit('refused: crop shared with the face beside it')
+                    elif fidx not in _paired:
                         _audit_hit('refused: over the identity threshold')
                     else:
                         _audit_hit('refused: that person matched a closer face')
@@ -2580,6 +2644,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             # precisely when two people are close enough to interact.
             _matched = {id(f) for _, f in pending}
             _others = [f for f in faces if id(f) not in _matched]
+            # WHICH source went onto WHICH face, recorded once for the whole
+            # frame at the only point where that is finally settled. Off unless
+            # asked for. Re-measuring it from the output is what a bench would
+            # otherwise do, and on two faces in contact that measurement is
+            # exactly the contaminated one this file now refuses to trust —
+            # so an inter-swap is only provable from the decision itself.
+            if _SWAP_LOG is not None and frame_idx is not None:
+                _SWAP_LOG.setdefault(frame_idx, []).extend(
+                    ([float(v) for v in f.bbox], int(s)) for s, f in pending)
             temp_frame = self._composite_faces(pending, frame, temp_frame, _others)
 
             for face in faces:
