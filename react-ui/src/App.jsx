@@ -258,6 +258,47 @@ export default function App() {
   const [showHud, setShowHud] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [activeQualityProfile, setActiveQualityProfile] = useState(null);
+  const [snapshots, setSnapshots] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('roop_session_snapshots') || '[]');
+    } catch { return []; }
+  });
+  const [showSnapshotsModal, setShowSnapshotsModal] = useState(false);
+
+  const saveSessionSnapshot = useCallback(() => {
+    const name = prompt('Enter a name for this Session Snapshot:', `Session ${new Date().toLocaleTimeString()}`);
+    if (!name) return;
+    const snap = {
+      id: Date.now(),
+      name,
+      time: new Date().toISOString(),
+      tab,
+      settings: { ...(settings || {}) },
+      activeQualityProfile,
+    };
+    setSnapshots((prev) => {
+      const updated = [snap, ...prev];
+      localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
+      setToasts((t) => [...t, { id: Date.now(), msg: `Saved Workspace Snapshot: "${name}"` }]);
+      return updated;
+    });
+  }, [tab, settings, activeQualityProfile]);
+
+  const loadSessionSnapshot = useCallback((snap) => {
+    if (snap.settings) setSettings(snap.settings);
+    if (snap.tab) setTab(snap.tab);
+    if (snap.activeQualityProfile) setActiveQualityProfile(snap.activeQualityProfile);
+    setShowSnapshotsModal(false);
+    setToasts((t) => [...t, { id: Date.now(), msg: `Loaded Workspace Snapshot: "${snap.name}"` }]);
+  }, []);
+
+  const deleteSessionSnapshot = useCallback((id) => {
+    setSnapshots((prev) => {
+      const updated = prev.filter((s) => s.id !== id);
+      localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
 
   const applyQualityProfile = useCallback((profileId) => {
     setActiveQualityProfile(profileId);
@@ -842,6 +883,15 @@ export default function App() {
 
         <button
           type="button"
+          onClick={() => setShowSnapshotsModal(true)}
+          title="Manage Workspace Session Snapshots"
+          className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white transition-colors text-xs font-medium"
+        >
+          <Icon.history size={14} /> Snapshots
+        </button>
+
+        <button
+          type="button"
           onClick={() => setShowPalette(true)}
           title="Command palette (Ctrl/⌘ + K)"
           className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-xs font-medium"
@@ -953,6 +1003,46 @@ export default function App() {
                 <span className="text-white/70">Toggle Split-Screen Compare</span>
                 <kbd className="font-mono text-micro bg-white/10 px-2 py-0.5 rounded border border-white/10">C</kbd>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Workspace Snapshots Modal */}
+      {showSnapshotsModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4" onClick={() => setShowSnapshotsModal(false)}>
+          <div className="bg-[#121216] border border-white/10 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl animate-scale-in text-white" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-base font-bold flex items-center gap-2 text-[var(--accent)]">
+                <Icon.history size={18} /> Workspace Session Snapshots
+              </h3>
+              <button type="button" onClick={() => setShowSnapshotsModal(false)} className="text-white/40 hover:text-white font-bold">✕</button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-white/50">{snapshots.length} snapshot(s) saved</span>
+              <button type="button" onClick={saveSessionSnapshot} className="px-3 py-1 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent)]/90 text-white text-xs font-bold transition-all">
+                + Save Current State
+              </button>
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-2 py-1">
+              {snapshots.length === 0 ? (
+                <div className="text-center py-6 text-xs text-white/30">No saved snapshots yet</div>
+              ) : (
+                snapshots.map((s) => (
+                  <div key={s.id} className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-2 hover:border-white/20 transition-all">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-xs text-white truncate">{s.name}</div>
+                      <div className="text-nano font-mono text-white/40">{new Date(s.time).toLocaleString()}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button type="button" onClick={() => loadSessionSnapshot(s)} className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-semibold text-white">Load</button>
+                      <button type="button" onClick={() => deleteSessionSnapshot(s.id)} className="px-2 py-1 rounded bg-red-500/20 hover:bg-red-500/30 text-xs font-semibold text-red-300">✕</button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

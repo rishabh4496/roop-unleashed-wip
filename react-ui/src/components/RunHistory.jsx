@@ -138,16 +138,94 @@ export default function RunHistory({ notify, setSettings, setTab }) {
   const cmpA = entries.find((e) => e.id === compare[0]);
   const cmpB = entries.find((e) => e.id === compare[1]);
 
+  const exportTelemetryCSV = () => {
+    try {
+      const headers = ['ID', 'Date', 'Output Name', 'Duration (s)', 'Frames', 'FPS', 'Enhancer', 'Swap Model'];
+      const rows = entries.map((e) => [
+        e.id,
+        new Date(e.time * 1000).toISOString(),
+        `"${e.outputs?.[0] || ''}"`,
+        e.duration_s || 0,
+        e.frames || 0,
+        e.fps || 0,
+        `"${e.settings?.selected_enhancer || 'None'}"`,
+        `"${e.settings?.swap_model || 'inswapper'}"`,
+      ]);
+
+      const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `roop_telemetry_history_${Date.now()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      notify?.('Exported Telemetry History (.csv)', 'success');
+    } catch (err) {
+      notify?.('Failed to export CSV: ' + err.message, 'error');
+    }
+  };
+
+  const recentRunsForGraph = useMemo(() => {
+    return entries.slice(0, 12).reverse();
+  }, [entries]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-white/90">Run History</h2>
-          <p className="text-sm text-white/50">Every completed swap, with the settings and speed it ran at. Pick two to compare.</p>
+          <h2 className="text-xl font-bold tracking-tight text-white/90">Run History & Performance Telemetry</h2>
+          <p className="text-sm text-white/50">Every completed swap, with the settings and throughput it ran at. Pick two to compare.</p>
         </div>
-        <Button variant="secondary" onClick={load} disabled={loading}>Refresh</Button>
+        <div className="flex items-center gap-2">
+          {entries.length > 0 && (
+            <Button variant="secondary" size="sm" onClick={exportTelemetryCSV}>
+              <Icon.download size={14} className="mr-1" /> Export CSV
+            </Button>
+          )}
+          <Button variant="secondary" size="sm" onClick={load} disabled={loading}>Refresh</Button>
+        </div>
       </div>
+
+      {/* Visual Performance Telemetry Graph */}
+      {recentRunsForGraph.length > 0 && (
+        <Card className="p-4 space-y-2 bg-black/40 border border-white/10">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-white/80 flex items-center gap-1.5">
+              <Icon.meter size={14} className="text-emerald-400" /> Recent Runs Throughput (FPS)
+            </span>
+            <span className="text-micro text-white/40 font-mono">Last 12 Runs</span>
+          </div>
+
+          <div className="flex items-end gap-2 h-24 pt-2">
+            {recentRunsForGraph.map((r, idx) => {
+              const maxFps = Math.max(...recentRunsForGraph.map((x) => x.fps || 1), 60);
+              const hPct = Math.min(100, Math.max(12, ((r.fps || 1) / maxFps) * 100));
+              return (
+                <div key={idx} className="flex-1 flex flex-col items-center gap-1 group relative">
+                  {/* Tooltip */}
+                  <div className="absolute bottom-full mb-1 hidden group-hover:flex flex-col items-center bg-black/90 p-1.5 rounded-lg border border-white/10 text-nano text-white z-20 whitespace-nowrap shadow-xl">
+                    <span className="font-bold">{r.outputs?.[0] || `Run #${idx + 1}`}</span>
+                    <span className="text-emerald-400 font-mono">{r.fps ? r.fps.toFixed(1) : 0} FPS</span>
+                    <span className="text-white/50">{r.frames || 1} frames</span>
+                  </div>
+
+                  <div
+                    className="w-full bg-emerald-500/30 hover:bg-emerald-400 border border-emerald-500/50 rounded-t transition-all"
+                    style={{ height: `${hPct}%` }}
+                  />
+                  <span className="text-nano font-mono text-white/40 truncate max-w-full">
+                    {r.fps ? Math.round(r.fps) : '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Summary strip */}
       {entries.length > 0 && (

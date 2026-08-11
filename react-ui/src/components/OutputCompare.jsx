@@ -68,6 +68,7 @@ const MODES = [
   { id: 'side', label: '⬍ Side by side', hint: 'Both in full' },
   { id: 'blend', label: 'Blend', hint: 'Cross-fade' },
   { id: 'diff', label: 'Difference', hint: 'Where they differ at all' },
+  { id: 'heatmap', label: '🔥 Heatmap', hint: 'High contrast pixel change heatmap' },
 ];
 
 export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, onClose, onSwap }) {
@@ -174,6 +175,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
   const overlayStyle =
     mode === 'blend' ? { opacity: pos / 100 }
     : mode === 'diff' ? { mixBlendMode: 'difference' }
+    : mode === 'heatmap' ? { mixBlendMode: 'difference', filter: 'contrast(500%) saturate(400%) hue-rotate(180deg)' }
     : { clipPath: `polygon(${pos}% 0, 100% 0, 100% 100%, ${pos}% 100%)` };
 
   return (

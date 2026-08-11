@@ -143,6 +143,25 @@ export default function FaceSwap({
   } = useWorkspaceLayout();
 
   const [showPresetStudio, setShowPresetStudio] = useState(false);
+  const [pinnedIdentities, setPinnedIdentities] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('roop_pinned_identities') || '[]');
+    } catch { return []; }
+  });
+
+  const togglePinCurrentSource = () => {
+    if (selSource < 0 || !sourceFaces[selSource]) return;
+    const faceData = sourceFaces[selSource];
+    setPinnedIdentities((prev) => {
+      const exists = prev.some((p) => p.data === faceData);
+      const updated = exists
+        ? prev.filter((p) => p.data !== faceData)
+        : [{ id: Date.now(), data: faceData, label: `Identity ${prev.length + 1}` }, ...prev];
+      localStorage.setItem('roop_pinned_identities', JSON.stringify(updated));
+      notify?.(exists ? 'Unpinned identity' : 'Pinned identity to Quick Pin Bar!', 'info');
+      return updated;
+    });
+  };
 
   // The run-complete chime and notification live in App, which is the only
   // component always mounted — a run that ends while you are on another tab
@@ -2402,11 +2421,39 @@ export default function FaceSwap({
             canSave={sourceFaces.length > 0}
             onLoaded={(r) => { setSourceFaces(r.source_faces || []); if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info); }}
             notify={notify} />
+          {pinnedIdentities.length > 0 && (
+            <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5 animate-slide-up">
+              <div className="flex items-center justify-between text-micro font-bold uppercase tracking-wider text-white/50">
+                <span>⭐ Pinned Quick Identities ({pinnedIdentities.length})</span>
+                <button type="button" onClick={() => { setPinnedIdentities([]); localStorage.removeItem('roop_pinned_identities'); }} className="text-white/30 hover:text-white">Clear</button>
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto py-1">
+                {pinnedIdentities.map((pin, i) => (
+                  <button
+                    key={pin.id || i}
+                    type="button"
+                    onClick={() => {
+                      const idx = sourceFaces.findIndex((f) => f === pin.data);
+                      if (idx >= 0) selectSource(idx);
+                      else notify?.('Face not in current source gallery', 'warning');
+                    }}
+                    className="relative group h-12 w-12 rounded-lg border border-white/20 overflow-hidden shrink-0 hover:border-[var(--accent)] transition-all"
+                    title={pin.label}
+                  >
+                    <img src={pin.data} alt="Pin" className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <FaceGallery title="Input faces" faces={sourceFaces} selected={selSource} onSelect={selectSource} draggable={true} large={true}
             onRemove={(i) => removeSource(i)} empty="Upload a face image" info={sourceFacesInfo} />
           {sourceFaces.length > 0 && (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={togglePinCurrentSource} title="Pin selected identity to Quick Bar">
+                  ⭐ Pin Identity
+                </Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>Remove</Button>
