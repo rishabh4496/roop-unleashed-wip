@@ -32,6 +32,7 @@ export default function QueuePanel({
   const [dropId, setDropId] = useState(null);
 
   const { jobs, running, paused, current, pending, finished, retryable } = q;
+  const currentJob = jobs.find((j) => j.id === current);
 
   const move = (fromId, toId, after) => {
     if (!fromId || fromId === toId) return;
@@ -61,6 +62,33 @@ export default function QueuePanel({
 
   return (
     <Section title="Batch Swapping Queue">
+      {/* Live Active Job Render Peak & Progress Monitor */}
+      {running && currentJob && (
+        <div className="p-4 mb-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 text-white space-y-2 animate-fade-in shadow-[0_0_20px_rgba(234,179,8,0.15)]">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-xs text-yellow-400 flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-yellow-400 animate-ping" />
+              Active Render Job: {currentJob.label || currentJob.target_name}
+            </span>
+            <span className="text-micro font-mono text-white/70">
+              Source: {currentJob.source_name || `Faceset #${(currentJob.source_index || 0) + 1}`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 text-micro text-white/80">
+            <span className="px-2 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-emerald-400 font-bold">
+              ⚡ Live Processing Active
+            </span>
+            <span>Target: <strong className="text-white">{currentJob.target_name}</strong></span>
+            {currentJob.payload?.enhancer && (
+              <span className="px-2 py-0.5 rounded bg-white/10 text-white/70 font-mono">
+                Enhancer: {currentJob.payload.enhancer}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
         <div className="text-xs text-white/50">
           {summary}

@@ -328,10 +328,17 @@ def _run_one(job):
 
     _progress.update({"processing": True, "paused": False, "progress": 0.0,
                       "desc": "Starting queued job…", "error": ""})
-    # Which files THIS job produces — recorded so a set of segment jobs can be
-    # joined back into one clip afterwards without guessing from filenames.
     before = _snapshot_outputs() if _snapshot_outputs else None
     _run_swap(payload)          # blocking; clears processing in its own finally
+
+    # Auto-Fallback Enhancer Retry on Error
+    if _progress.get("error") and (payload.get("auto_fallback") or job.get("auto_fallback")):
+        err_msg = str(_progress["error"])
+        if payload.get("enhancer") != "None":
+            _progress.update({"error": "", "desc": f"Auto-retrying with enhancer=None due to error: {err_msg}"})
+            payload["enhancer"] = "None"
+            _run_swap(payload)
+
     if before is not None and _outputs_since:
         try:
             job["outputs"] = list(_outputs_since(before))

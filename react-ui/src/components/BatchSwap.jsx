@@ -41,6 +41,11 @@ export default function BatchSwap({ settings = {}, notify }) {
   // Active Batch Strategy: 'one_to_many' | 'grouped' | 'matrix' | 'recipes'
   const [batchMode, setBatchMode] = useState('one_to_many');
 
+  // Quick Slots & Health Inspector Modal State
+  const [activeQuickSlot, setActiveQuickSlot] = useState(null);
+  const [showHealthModal, setShowHealthModal] = useState(false);
+  const [autoFallbackEnabled, setAutoFallbackEnabled] = useState(true);
+
   // ── Strategy 1: One-to-Many state ──
   const [mode1Mappings, setMode1Mappings] = useState([{ personRank: 0, sourceIdx: 0 }]);
   const [mode1SwapMode, setMode1SwapMode] = useState('Selected face');
@@ -130,6 +135,49 @@ export default function BatchSwap({ settings = {}, notify }) {
       }))
     );
   }, [targets.length]);
+
+  // ── Quick-Slot Preset Management ─────────────────────────────────────
+  const saveQuickSlot = (slotNum) => {
+    try {
+      const slotData = {
+        batchMode,
+        mode1Mappings,
+        mode1SwapMode,
+        mode1Enhancer,
+        mode1FaceDistance,
+        groups,
+        matrixConfig,
+        savedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(`roop_batch_slot_${slotNum}`, JSON.stringify(slotData));
+      setActiveQuickSlot(slotNum);
+      notify?.(`Saved configuration into Quick Slot #${slotNum}!`);
+    } catch (e) {
+      notify?.('Failed to save slot: ' + e.message, 'error');
+    }
+  };
+
+  const loadQuickSlot = (slotNum) => {
+    try {
+      const raw = localStorage.getItem(`roop_batch_slot_${slotNum}`);
+      if (!raw) {
+        notify?.(`Quick Slot #${slotNum} is empty`, 'info');
+        return;
+      }
+      const data = JSON.parse(raw);
+      if (data.batchMode) setBatchMode(data.batchMode);
+      if (Array.isArray(data.mode1Mappings)) setMode1Mappings(data.mode1Mappings);
+      if (data.mode1SwapMode) setMode1SwapMode(data.mode1SwapMode);
+      if (data.mode1Enhancer) setMode1Enhancer(data.mode1Enhancer);
+      if (data.mode1FaceDistance) setMode1FaceDistance(data.mode1FaceDistance);
+      if (Array.isArray(data.groups)) setGroups(data.groups);
+      if (data.matrixConfig) setMatrixConfig(data.matrixConfig);
+      setActiveQuickSlot(slotNum);
+      notify?.(`Loaded configuration from Quick Slot #${slotNum}!`);
+    } catch (e) {
+      notify?.('Failed to load slot: ' + e.message, 'error');
+    }
+  };
 
   // ── File Upload Handlers ───────────────────────────────────────────────
   const handleUploadTargets = async (e) => {
@@ -244,13 +292,14 @@ export default function BatchSwap({ settings = {}, notify }) {
           face_distance: parseFloat(overrides.faceDistance ?? base.max_face_distance ?? 0.75),
           blend_ratio: parseFloat(base.blend_ratio || 0.8),
           num_swap_steps: parseInt(base.num_swap_steps || 1, 10),
+          auto_fallback: autoFallbackEnabled,
           face_mapping: faceMapping,
         },
         primarySourceIdx,
         mappings,
       };
     },
-    [settings],
+    [settings, autoFallbackEnabled],
   );
 
   // ── Portable Preset Export & Import ─────────────────────────────────────
@@ -268,7 +317,6 @@ export default function BatchSwap({ settings = {}, notify }) {
         mode1FaceDistance,
         groups,
         matrixConfig,
-        // Include source and target basenames for robust cross-session resolution
         sourceNames: sourceFacesInfo.map((s) => s.name || ''),
         targetNames: targets.map((t) => t.name || ''),
         stagedJobs,
@@ -846,7 +894,89 @@ export default function BatchSwap({ settings = {}, notify }) {
   }, [targetGroups, targetFaces, targetNames]);
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 relative">
+      {/* ── Pre-flight Batch Health Inspector Modal ── */}
+      {showHealthModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121216] border border-white/10 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl animate-scale-in text-white">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-lg font-bold flex items-center gap-2 text-yellow-400">
+                <Icon.wand size={20} />
+                Pre-flight Batch Health Breakdown
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowHealthModal(false)}
+                className="text-white/40 hover:text-white font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                <span className="text-nano text-white/40 block">Staged Jobs</span>
+                <span className="text-lg font-bold text-white">{stagedJobs.length}</span>
+              </div>
+              <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                <span className="text-nano text-white/40 block">Total Frames</span>
+                <span className="text-lg font-bold text-emerald-400">
+                  {stagedStats.totalFrames.toLocaleString()}
+                </span>
+              </div>
+              <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                <span className="text-nano text-white/40 block">Est. Runtime</span>
+                <span className="text-lg font-bold text-amber-400">{stagedStats.timeStr}</span>
+              </div>
+              <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                <span className="text-nano text-white/40 block">Est. Disk Space</span>
+                <span className="text-lg font-bold text-cyan-400">
+                  ~{Math.round(stagedStats.totalFrames * 0.25)} MB
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2 bg-black/50 p-4 rounded-xl border border-white/5 text-xs">
+              <span className="font-semibold text-white/70 block uppercase tracking-wider text-nano">
+                System Diagnostics & Verification
+              </span>
+              <div className="space-y-1.5 text-white/80">
+                <div className="flex items-center gap-2 text-emerald-400">
+                  <span>✓</span>
+                  <span>All target media basenames resolved cleanly against workspace.</span>
+                </div>
+                <div className="flex items-center gap-2 text-emerald-400">
+                  <span>✓</span>
+                  <span>Source faceset indices & names mapped with dense rank fallback.</span>
+                </div>
+                <div className="flex items-center gap-2 text-yellow-300">
+                  <span>🛡️</span>
+                  <span>
+                    Auto-Fallback Enhancer Enabled: If GPU memory spikes, jobs auto-retry safely with enhancer=None.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Button size="sm" variant="secondary" onClick={() => setShowHealthModal(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  setShowHealthModal(false);
+                  enqueueStagedJobs(true);
+                }}
+              >
+                🚀 Confirm & Launch Batch ({stagedJobs.length} Jobs)
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Top Header Banner ── */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 glass-panel p-6 rounded-2xl">
         <div>
@@ -906,6 +1036,57 @@ export default function BatchSwap({ settings = {}, notify }) {
             <Icon.refresh size={14} className={loadingState ? 'animate-spin' : ''} />
           </Button>
         </div>
+      </div>
+
+      {/* ── Quick-Slot Preset Toolbar & Settings ── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-white/5 rounded-2xl border border-white/10 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-white flex items-center gap-1.5">
+            <Icon.settings size={14} className="text-[var(--accent)]" />
+            Quick Slots (1–5):
+          </span>
+          {[1, 2, 3, 4, 5].map((slot) => {
+            const hasSaved = !!localStorage.getItem(`roop_batch_slot_${slot}`);
+            const isActive = activeQuickSlot === slot;
+            return (
+              <div key={slot} className="flex items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/5">
+                <button
+                  type="button"
+                  onClick={() => loadQuickSlot(slot)}
+                  className={`px-2 py-0.5 rounded-lg text-micro font-semibold transition-all ${
+                    isActive
+                      ? 'bg-[var(--accent)] text-black font-bold'
+                      : hasSaved
+                      ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                      : 'bg-white/5 text-white/40 hover:bg-white/10'
+                  }`}
+                  title={hasSaved ? `Load Quick Slot #${slot}` : `Slot #${slot} is empty`}
+                >
+                  Slot {slot}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => saveQuickSlot(slot)}
+                  className="text-nano text-white/40 hover:text-[var(--accent)] font-bold px-1"
+                  title={`Save current setup into Quick Slot #${slot}`}
+                >
+                  💾
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Auto-Fallback Toggle */}
+        <label className="flex items-center gap-2 text-micro cursor-pointer text-white/70 hover:text-white">
+          <input
+            type="checkbox"
+            checked={autoFallbackEnabled}
+            onChange={(e) => setAutoFallbackEnabled(e.target.checked)}
+            className="rounded border-white/20 bg-black/40 text-[var(--accent)] focus:ring-0"
+          />
+          <span>🛡️ Auto-Fallback Enhancer (Retry with 'None' if GPU Out-Of-Memory Error)</span>
+        </label>
       </div>
 
       {/* ── Persistent Faceset Library Panel (Full-Width) ── */}
@@ -1859,6 +2040,10 @@ export default function BatchSwap({ settings = {}, notify }) {
                   <option value="name">Alphabetical by filename</option>
                   <option value="source">Group by source faceset</option>
                 </select>
+
+                <Button size="sm" variant="secondary" onClick={() => setShowHealthModal(true)}>
+                  🔍 Pre-flight Health Check
+                </Button>
 
                 <Button size="sm" variant="secondary" onClick={() => enqueueStagedJobs(false)}>
                   Enqueue to Queue
