@@ -198,6 +198,12 @@ export default function Gallery({ notify, setSettings, setTab }) {
     }
   };
 
+  const copySelectedPaths = () => {
+    const paths = selectedVisible.map((name) => `${outputPath}/${name}`).join('\n');
+    navigator.clipboard.writeText(paths);
+    notify(`Copied ${selectedVisible.length} output path(s) to clipboard!`);
+  };
+
   // Filter & Search files
   const filteredFiles = files.filter((f) => {
     const matchesSearch = f.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -346,6 +352,16 @@ export default function Gallery({ notify, setSettings, setTab }) {
                 title="Compare these two renders side by side"
               >
                 <span>Compare A/B</span>
+              </button>
+            )}
+            {selectedVisible.length > 0 && (
+              <button
+                type="button"
+                onClick={copySelectedPaths}
+                className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/10 text-white text-micro font-bold transition-all flex items-center gap-1"
+                title="Copy output paths to clipboard"
+              >
+                <span>Copy Paths ({selectedVisible.length})</span>
               </button>
             )}
             {selectedVisible.length > 0 && (
