@@ -632,6 +632,9 @@ class FaceSwapInsightFace():
         except Exception:
             if not self._rebuild_without_trt():
                 raise
+            if self.pool is not None:
+                with self.pool.lease() as sess:
+                    return sess.run(None, feed)
             return self.model_swap_insightface.run(None, feed)
 
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
@@ -669,10 +672,19 @@ class FaceSwapInsightFace():
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
         latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512] or [B,3,Hs,Ws]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
-        ort_outs = self._infer(feed)
-        out = ort_outs[0]   # [B,3,H,W]
-        self._stash_masks(ort_outs, out.shape[0])
-        return [out[i] for i in range(out.shape[0])]
+        try:
+            ort_outs = self._infer(feed)
+            out = ort_outs[0]   # [B,3,H,W]
+            self._stash_masks(ort_outs, out.shape[0])
+            return [out[i] for i in range(out.shape[0])]
+        except Exception as e:
+            # If batch inference fails (e.g. TRT shape restriction or static-batch model),
+            # fall back gracefully to running single face swaps sequentially.
+            results = []
+            for t in temp_frames:
+                res = self.Run(source_face, target_face, t)
+                results.append(res)
+            return results
 
     def RunBatchMulti(self, requests: list) -> list:
         """Like RunBatch but each crop carries its OWN source identity (for
@@ -686,10 +698,18 @@ class FaceSwapInsightFace():
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}
-        ort_outs = self._infer(feed)
-        out = ort_outs[0]
-        self._stash_masks(ort_outs, out.shape[0])
-        return [out[i] for i in range(out.shape[0])]
+        try:
+            ort_outs = self._infer(feed)
+            out = ort_outs[0]
+            self._stash_masks(ort_outs, out.shape[0])
+            return [out[i] for i in range(out.shape[0])]
+        except Exception as e:
+            # Fall back to single-face swaps if multi-batch inference fails
+            results = []
+            for src, tgt, blob in requests:
+                res = self.Run(src, tgt, blob)
+                results.append(res)
+            return results
 
     def Release(self):
         if self.pool is not None:
