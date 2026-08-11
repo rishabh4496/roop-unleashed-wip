@@ -38,19 +38,17 @@ export default function BatchSwap({ settings = {}, notify }) {
   // Staged jobs (ready to be sent to queue)
   const [stagedJobs, setStagedJobs] = useState([]);
 
-  // Active Batch Mode: 'one_to_many' | 'grouped' | 'matrix'
+  // Active Batch Strategy: 'one_to_many' | 'grouped' | 'matrix' | 'recipes'
   const [batchMode, setBatchMode] = useState('one_to_many');
 
-  // ── Mode 1: One-to-Many state ──
-  // Multi-Face mappings: array of { personRank, sourceIdx }
+  // ── Strategy 1: One-to-Many state ──
   const [mode1Mappings, setMode1Mappings] = useState([{ personRank: 0, sourceIdx: 0 }]);
   const [mode1SwapMode, setMode1SwapMode] = useState('Selected face');
   const [mode1SelectedTargets, setMode1SelectedTargets] = useState([]); // indices
   const [mode1Enhancer, setMode1Enhancer] = useState('Restoreformer++');
   const [mode1FaceDistance, setMode1FaceDistance] = useState(0.75);
 
-  // ── Mode 2: Grouped Batch state ──
-  // Array of groups: { id, label, targetIndices: [], mappings: [{ personRank, sourceIdx }], swapMode, enhancer, faceDistance }
+  // ── Strategy 2: Grouped Batch state ──
   const [groups, setGroups] = useState([
     {
       id: 1,
@@ -63,21 +61,30 @@ export default function BatchSwap({ settings = {}, notify }) {
     },
   ]);
 
-  // ── Mode 3: Per-File Matrix state ──
-  // Map of file target index -> { mappings: [{ personRank, sourceIdx }], swapMode, enabled, enhancer, faceDistance, frameStart, frameEnd }
+  // ── Strategy 3: Per-File Matrix state ──
   const [matrixConfig, setMatrixConfig] = useState({});
+
+  // Matrix Filter / Search Query
+  const [matrixSearch, setMatrixSearch] = useState('');
+  const [matrixFilterStatus, setMatrixFilterStatus] = useState('all'); // 'all' | 'enabled' | 'disabled'
+
+  // Segment Splitter State
+  const [splitTargetIdx, setSplitTargetIdx] = useState(0);
+  const [splitSegmentCount, setSplitSegmentCount] = useState(4);
 
   // ── Rehydrate State from Backend ────────────────────────────────────────
   const refreshBackendState = useCallback(async () => {
     try {
       setLoadingState(true);
       const st = await getJSON('/api/state');
-      setSourceFaces(st.source_faces || []);
-      setSourceFacesInfo(st.source_faces_info || []);
+      const sFaces = st.source_faces || [];
+      const sInfo = st.source_faces_info || [];
+      const tg = st.targets || [];
+      setSourceFaces(sFaces);
+      setSourceFacesInfo(sInfo);
       setTargetFaces(st.target_faces || []);
       setTargetGroups(st.target_groups || []);
       setTargetNames(st.target_names || []);
-      const tg = st.targets || [];
       setTargets(tg);
 
       // Initialize default selected targets for Mode 1 if empty
@@ -111,6 +118,18 @@ export default function BatchSwap({ settings = {}, notify }) {
   useEffect(() => {
     refreshBackendState();
   }, [refreshBackendState]);
+
+  // Prune Stale Selected Target / Source Indices on list change
+  useEffect(() => {
+    if (targets.length === 0) return;
+    setMode1SelectedTargets((prev) => prev.filter((i) => i < targets.length));
+    setGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        targetIndices: g.targetIndices.filter((i) => i < targets.length),
+      }))
+    );
+  }, [targets.length]);
 
   // ── File Upload Handlers ───────────────────────────────────────────────
   const handleUploadTargets = async (e) => {
@@ -187,19 +206,25 @@ export default function BatchSwap({ settings = {}, notify }) {
     }
   };
 
-  // ── Multi-Face Payload Builder ────────────────────────────────────────
+  // ── Multi-Face Payload Builder (Dense & Robust) ────────────────────────
   const createJobPayload = useCallback(
     (mappings = [], swapMode = 'Selected face', overrides = {}) => {
       const base = { ...FACESWAP_DEFAULTS, ...settings };
-      // Build face_mapping array supporting multi-face targets!
-      const faceMapping = [];
+      
+      // Build dense face_mapping array (fill gaps with 0 to prevent nulls)
+      let maxRank = 0;
+      mappings.forEach((m) => {
+        const r = Math.max(0, parseInt(m.personRank, 10) || 0);
+        if (r > maxRank) maxRank = r;
+      });
+
+      const faceMapping = new Array(maxRank + 1).fill(0);
       mappings.forEach((m) => {
         const rank = Math.max(0, parseInt(m.personRank, 10) || 0);
         const srcIdx = Math.max(0, parseInt(m.sourceIdx, 10) || 0);
         faceMapping[rank] = srcIdx;
       });
 
-      // Primary source index for display/fallback
       const primarySourceIdx = mappings[0]?.sourceIdx || 0;
 
       return {
@@ -228,12 +253,12 @@ export default function BatchSwap({ settings = {}, notify }) {
     [settings],
   );
 
-  // ── Preset Export & Import ─────────────────────────────────────────────
+  // ── Portable Preset Export & Import ─────────────────────────────────────
   const exportBatchPreset = () => {
     try {
       const preset = {
         type: 'roop-batch-preset',
-        version: 2,
+        version: 3,
         exported_at: new Date().toISOString(),
         batchMode,
         mode1Mappings,
@@ -243,6 +268,9 @@ export default function BatchSwap({ settings = {}, notify }) {
         mode1FaceDistance,
         groups,
         matrixConfig,
+        // Include source and target basenames for robust cross-session resolution
+        sourceNames: sourceFacesInfo.map((s) => s.name || ''),
+        targetNames: targets.map((t) => t.name || ''),
         stagedJobs,
       };
       const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
@@ -254,7 +282,7 @@ export default function BatchSwap({ settings = {}, notify }) {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      notify?.('Exported Batch Matrix Preset .json file');
+      notify?.('Exported Pro Batch Matrix Preset .json');
     } catch (e) {
       notify?.('Failed to export preset: ' + e.message, 'error');
     }
@@ -279,7 +307,7 @@ export default function BatchSwap({ settings = {}, notify }) {
         if (Array.isArray(p.groups)) setGroups(p.groups);
         if (p.matrixConfig) setMatrixConfig(p.matrixConfig);
         if (Array.isArray(p.stagedJobs)) setStagedJobs(p.stagedJobs);
-        notify?.('Successfully imported Batch Matrix Preset!');
+        notify?.('Successfully imported Pro Batch Matrix Preset!');
       } catch (err) {
         notify?.('Failed to import preset: ' + err.message, 'error');
       }
@@ -329,7 +357,117 @@ export default function BatchSwap({ settings = {}, notify }) {
     }
   };
 
-  // ── Mode 1 Generation (Multi-Face Supported) ──────────────────────────
+  // ── Pro Recipe Generators ─────────────────────────────────────────────
+  const recipeCartesianProduct = () => {
+    if (targets.length === 0 || sourceFaces.length === 0) {
+      notify?.('Requires target files and source facesets', 'error');
+      return;
+    }
+    const newJobs = [];
+    targets.forEach((target, tIdx) => {
+      sourceFaces.forEach((_, sIdx) => {
+        const { payload, primarySourceIdx, mappings } = createJobPayload(
+          [{ personRank: 0, sourceIdx: sIdx }],
+          'Selected face'
+        );
+        const sName = sourceFacesInfo[sIdx]?.name || `Faceset #${sIdx + 1}`;
+        newJobs.push({
+          id: `staged_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+          target_name: target.name,
+          target_index: tIdx,
+          source_index: primarySourceIdx,
+          source_name: sName,
+          mappings,
+          frame_start: target.start_frame || 1,
+          frame_end: target.end_frame || target.frames || 1,
+          total_frames: target.frames || 1,
+          label: `NxM Combinatorial | ${target.name} ➔ ${sName}`,
+          payload,
+        });
+      });
+    });
+    setStagedJobs((prev) => [...prev, ...newJobs]);
+    notify?.(`Generated ${newJobs.length} Cartesian Combination Job(s) (${targets.length} targets × ${sourceFaces.length} sources)`);
+  };
+
+  const recipeSequentialMatch = () => {
+    if (targets.length === 0 || sourceFaces.length === 0) {
+      notify?.('Requires target files and source facesets', 'error');
+      return;
+    }
+    const newJobs = [];
+    targets.forEach((target, tIdx) => {
+      const sIdx = tIdx % sourceFaces.length;
+      const sName = sourceFacesInfo[sIdx]?.name || `Faceset #${sIdx + 1}`;
+      const { payload, primarySourceIdx, mappings } = createJobPayload(
+        [{ personRank: 0, sourceIdx: sIdx }],
+        'Selected face'
+      );
+      newJobs.push({
+        id: `staged_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        target_name: target.name,
+        target_index: tIdx,
+        source_index: primarySourceIdx,
+        source_name: sName,
+        mappings,
+        frame_start: target.start_frame || 1,
+        frame_end: target.end_frame || target.frames || 1,
+        total_frames: target.frames || 1,
+        label: `Sequential | ${target.name} ➔ ${sName}`,
+        payload,
+      });
+    });
+    setStagedJobs((prev) => [...prev, ...newJobs]);
+    notify?.(`Generated ${newJobs.length} Sequential Match Job(s)`);
+  };
+
+  // ── Segment Splitter ────────────────────────────────────────────────
+  const splitTargetIntoSegments = () => {
+    const target = targets[splitTargetIdx];
+    if (!target) {
+      notify?.('Selected target file does not exist', 'error');
+      return;
+    }
+    const totalFrames = target.frames || 1;
+    if (totalFrames <= 1) {
+      notify?.('Target file is a single image or has no frames to split', 'error');
+      return;
+    }
+    const segs = Math.max(2, Math.min(splitSegmentCount, 32));
+    const step = Math.ceil(totalFrames / segs);
+    const newJobs = [];
+
+    for (let i = 0; i < segs; i++) {
+      const fs = i * step + 1;
+      const fe = Math.min((i + 1) * step, totalFrames);
+      if (fs > totalFrames) break;
+      const span = fe - fs + 1;
+
+      const { payload, primarySourceIdx, mappings } = createJobPayload(
+        [{ personRank: 0, sourceIdx: 0 }],
+        'Selected face'
+      );
+
+      newJobs.push({
+        id: `staged_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        target_name: target.name,
+        target_index: splitTargetIdx,
+        source_index: primarySourceIdx,
+        source_name: sourceFacesInfo[primarySourceIdx]?.name || `Faceset #${primarySourceIdx + 1}`,
+        mappings,
+        frame_start: fs,
+        frame_end: fe,
+        total_frames: span,
+        label: `Segment ${i + 1}/${segs} (${fs}-${fe}) | ${target.name}`,
+        payload,
+      });
+    }
+
+    setStagedJobs((prev) => [...prev, ...newJobs]);
+    notify?.(`Split "${target.name}" into ${newJobs.length} segment jobs for parallel rendering`);
+  };
+
+  // ── Strategy 1 Handlers ────────────────────────────────────────────────
   const addMode1Mapping = () => {
     setMode1Mappings((prev) => [...prev, { personRank: prev.length, sourceIdx: 0 }]);
   };
@@ -379,7 +517,7 @@ export default function BatchSwap({ settings = {}, notify }) {
     notify?.(`Generated ${newJobs.length} multi-face batch job(s) for review`);
   };
 
-  // ── Mode 2 Generation ────────────────────────────────────────────────
+  // ── Strategy 2 Handlers ────────────────────────────────────────────────
   const addGroup = () => {
     const nextId = groups.length + 1;
     setGroups((prev) => [
@@ -476,7 +614,7 @@ export default function BatchSwap({ settings = {}, notify }) {
     notify?.(`Generated ${totalGen} group batch job(s)`);
   };
 
-  // ── Mode 3 Generation ────────────────────────────────────────────────
+  // ── Strategy 3 Handlers ────────────────────────────────────────────────
   const addMatrixMapping = (tIdx) => {
     setMatrixConfig((prev) => {
       const cfg = prev[tIdx] || { mappings: [] };
@@ -561,7 +699,29 @@ export default function BatchSwap({ settings = {}, notify }) {
       });
       return copy;
     });
-    notify?.(`Set all target files to Faceset ${srcIdx + 1}`);
+    notify?.(`Set all target files to Faceset #${srcIdx + 1}`);
+  };
+
+  const bulkSetMatrixEnhancer = (enhancerName) => {
+    setMatrixConfig((prev) => {
+      const copy = { ...prev };
+      Object.keys(copy).forEach((k) => {
+        copy[k] = { ...copy[k], enhancer: enhancerName };
+      });
+      return copy;
+    });
+    notify?.(`Set all matrix items enhancer to ${enhancerName}`);
+  };
+
+  const bulkToggleMatrixEnable = (enableState) => {
+    setMatrixConfig((prev) => {
+      const copy = { ...prev };
+      Object.keys(copy).forEach((k) => {
+        copy[k] = { ...copy[k], enabled: enableState };
+      });
+      return copy;
+    });
+    notify?.(enableState ? 'Enabled all matrix target files' : 'Disabled all matrix target files');
   };
 
   const bulkAutoIncrementTargetPersons = () => {
@@ -575,7 +735,21 @@ export default function BatchSwap({ settings = {}, notify }) {
     notify?.('Auto-incremented target person ranks (P#1, P#2, P#3...) across files');
   };
 
-  // ── Feature 3: Smart Queue Reordering / Sorting ───────────────────────
+  // Filtered Matrix targets
+  const filteredMatrixTargets = useMemo(() => {
+    return targets
+      .map((target, originalIndex) => ({ target, originalIndex }))
+      .filter(({ target, originalIndex }) => {
+        const cfg = matrixConfig[originalIndex] || {};
+        if (matrixFilterStatus === 'enabled' && !cfg.enabled) return false;
+        if (matrixFilterStatus === 'disabled' && cfg.enabled) return false;
+        if (!matrixSearch.trim()) return true;
+        const q = matrixSearch.toLowerCase();
+        return target.name.toLowerCase().includes(q);
+      });
+  }, [targets, matrixConfig, matrixFilterStatus, matrixSearch]);
+
+  // ── Smart Queue Reordering / Sorting ─────────────────────────────────────
   const sortStagedJobs = (criteria) => {
     setStagedJobs((prev) => {
       const copy = [...prev];
@@ -596,7 +770,7 @@ export default function BatchSwap({ settings = {}, notify }) {
     });
   };
 
-  // ── Batch Time & Frame Estimator ─────────────────────────────────────
+  // ── Batch Time & Frame Estimator ─────────────────────────────────────────
   const stagedStats = useMemo(() => {
     let totalFrames = 0;
     let estSeconds = 0;
@@ -604,8 +778,6 @@ export default function BatchSwap({ settings = {}, notify }) {
     stagedJobs.forEach((job) => {
       const frames = job.total_frames || job.payload?.end_frame || 1;
       totalFrames += frames;
-
-      // Base swap cost ~35ms per frame; enhancer adds ~80ms per frame
       const enhancer = job.payload?.enhancer || 'None';
       const perFrameMs = enhancer !== 'None' ? 115 : 35;
       estSeconds += (frames * perFrameMs) / 1000;
@@ -618,7 +790,7 @@ export default function BatchSwap({ settings = {}, notify }) {
     return { totalFrames, timeStr };
   }, [stagedJobs]);
 
-  // ── Staged Jobs Commit Handlers ───────────────────────────────────────
+  // ── Staged Jobs Commit Handlers (Atomic Batch Add) ──────────────────────
   const enqueueStagedJobs = async (autoStart = false) => {
     if (stagedJobs.length === 0) {
       notify?.('No staged jobs to enqueue', 'error');
@@ -636,6 +808,7 @@ export default function BatchSwap({ settings = {}, notify }) {
         label: j.label,
       }));
 
+      // Uses atomic /api/queue/add_batch via useQueue hook
       await queue.addMany(jobsToAdd);
       notify?.(`Enqueued ${jobsToAdd.length} job(s) to server queue`);
       setStagedJobs([]);
@@ -664,7 +837,7 @@ export default function BatchSwap({ settings = {}, notify }) {
       targetGroups.length,
       targetFaces.length,
       targetNames.length,
-      5 // Default allow up to 5 target persons
+      5
     );
     return Array.from({ length: count }, (_, i) => ({
       rank: i,
@@ -679,11 +852,11 @@ export default function BatchSwap({ settings = {}, notify }) {
         <div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <Icon.batch className="text-[var(--accent)]" size={24} />
-            Batch Processing Workbench
+            Batch Matrix & Multi-File Workbench
           </h2>
           <p className="text-xs text-white/50 mt-1 max-w-2xl">
             Configure multi-file batch swaps with flexible combinations: single faceset across multiple files,
-            custom file-group rules, or distinct facesets & target faces per individual file.
+            custom file-group rules, distinct facesets per target file, or automated Pro Recipes.
           </p>
         </div>
 
@@ -889,9 +1062,9 @@ export default function BatchSwap({ settings = {}, notify }) {
         </Card>
       </div>
 
-      {/* ── Mode Selection Tabs ── */}
-      <Section title="Select Batch Strategy">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      {/* ── Strategy Selection Tabs ── */}
+      <Section title="Select Batch Strategy & Pro Generators">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <button
             type="button"
             onClick={() => setBatchMode('one_to_many')}
@@ -904,12 +1077,12 @@ export default function BatchSwap({ settings = {}, notify }) {
             <div className="flex items-center justify-between mb-1.5">
               <span className="font-bold text-sm text-white flex items-center gap-2">
                 <Icon.compare size={16} className="text-[var(--accent)]" />
-                1 Faceset + 1 Target Face
+                1 Faceset ➔ Multi Files
               </span>
               {batchMode === 'one_to_many' && <Icon.done size={14} className="text-[var(--accent)]" />}
             </div>
             <p className="text-xs text-white/50 leading-relaxed">
-              Apply 1 selected source faceset and 1 target face mapping across multiple selected target files.
+              Apply selected source faceset and target mappings across multiple selected target files.
             </p>
           </button>
 
@@ -951,7 +1124,28 @@ export default function BatchSwap({ settings = {}, notify }) {
               {batchMode === 'matrix' && <Icon.done size={14} className="text-[var(--accent)]" />}
             </div>
             <p className="text-xs text-white/50 leading-relaxed">
-              Full matrix grid: explicitly map distinct facesets and target faces for each file individually.
+              Full matrix grid: explicitly map distinct facesets and target faces per file individually.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setBatchMode('recipes')}
+            className={`p-4 rounded-xl text-left border transition-all ${
+              batchMode === 'recipes'
+                ? 'bg-[var(--accent)]/15 border-[var(--accent)] shadow-[0_0_15px_rgba(234,179,8,0.15)]'
+                : 'bg-white/5 border-white/5 hover:bg-white/10'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-bold text-sm text-white flex items-center gap-2">
+                <Icon.wand size={16} className="text-[var(--accent)]" />
+                Pro Recipes & Splitter
+              </span>
+              {batchMode === 'recipes' && <Icon.done size={14} className="text-[var(--accent)]" />}
+            </div>
+            <p className="text-xs text-white/50 leading-relaxed">
+              1-Click Combinatorial Matrix, Sequential Pairs & Multi-Segment Video Splitter.
             </p>
           </button>
         </div>
@@ -959,7 +1153,7 @@ export default function BatchSwap({ settings = {}, notify }) {
 
       {/* ── Mode 1 Panel: 1 Faceset + 1 Target Face -> Multi Files ── */}
       {batchMode === 'one_to_many' && (
-        <Section title="Strategy 1: Single Faceset + Single Target Face ➔ Multi Files">
+        <Section title="Strategy 1: Single Faceset + Target Mapping ➔ Multi Files">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Controls */}
             <div className="space-y-4 md:col-span-1">
@@ -1302,43 +1496,101 @@ export default function BatchSwap({ settings = {}, notify }) {
       {/* ── Mode 3 Panel: Per-File Matrix Grid ── */}
       {batchMode === 'matrix' && (
         <Section title="Strategy 3: Per-File Custom Mapping Matrix">
-          {/* Bulk Controls Toolbar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white/5 rounded-xl border border-white/10 mb-4">
-            <div className="flex items-center gap-2 text-xs text-white/70">
-              <span className="font-semibold text-white">Smart Tools & Toolbar:</span>
+          {/* Toolbar: Search, Filter, Bulk Operations */}
+          <div className="p-3.5 bg-white/5 rounded-2xl border border-white/10 space-y-3 mb-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              {/* Search & Filter */}
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                <input
+                  type="text"
+                  placeholder="🔍 Search target files..."
+                  value={matrixSearch}
+                  onChange={(e) => setMatrixSearch(e.target.value)}
+                  className="bg-black/60 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white placeholder-white/40 focus:border-[var(--accent)] outline-none min-w-[200px]"
+                />
+                <select
+                  value={matrixFilterStatus}
+                  onChange={(e) => setMatrixFilterStatus(e.target.value)}
+                  className="bg-black/60 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white"
+                >
+                  <option value="all">All Targets ({targets.length})</option>
+                  <option value="enabled">Enabled Only</option>
+                  <option value="disabled">Disabled Only</option>
+                </select>
+              </div>
+
+              {/* Smart Bulk Tools */}
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <Button size="sm" variant="primary" onClick={autoMatchFacesetsToTargets}>
+                  <Icon.wand className="mr-1" size={13} />
+                  Smart Auto-Match Names
+                </Button>
+                {sourceFaces.length > 0 && (
+                  <Button size="sm" variant="secondary" onClick={() => bulkSetMatrixSource(0)}>
+                    Set All ➔ Faceset #1
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={bulkAutoIncrementTargetPersons}>
+                  Auto-Inc Person Ranks
+                </Button>
+              </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="primary" onClick={autoMatchFacesetsToTargets}>
-                <Icon.wand className="mr-1" size={13} />
-                Smart Auto-Match Names
-              </Button>
-              {sourceFaces.length > 0 && (
-                <Button size="sm" variant="secondary" onClick={() => bulkSetMatrixSource(0)}>
-                  Set All to Faceset #1
-                </Button>
-              )}
-              <Button size="sm" variant="secondary" onClick={bulkAutoIncrementTargetPersons}>
-                Auto-increment Target Person Ranks
-              </Button>
+            {/* Quick Bulk Toggles */}
+            <div className="flex items-center justify-between border-t border-white/10 pt-2 text-micro">
+              <div className="flex items-center gap-2">
+                <span className="text-white/40 font-semibold">Bulk Select:</span>
+                <button
+                  type="button"
+                  onClick={() => bulkToggleMatrixEnable(true)}
+                  className="text-[var(--accent)] hover:underline font-medium"
+                >
+                  Enable All
+                </button>
+                <span className="text-white/20">|</span>
+                <button
+                  type="button"
+                  onClick={() => bulkToggleMatrixEnable(false)}
+                  className="text-white/40 hover:text-white"
+                >
+                  Disable All
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-white/40 font-semibold">Bulk Enhancer:</span>
+                {ENHANCER_OPTIONS.slice(0, 4).map((enh) => (
+                  <button
+                    key={enh}
+                    type="button"
+                    onClick={() => bulkSetMatrixEnhancer(enh)}
+                    className="text-white/60 hover:text-[var(--accent)] hover:underline"
+                  >
+                    {enh}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
           {/* Matrix Table */}
-          {targets.length === 0 ? (
+          {filteredMatrixTargets.length === 0 ? (
             <div className="p-8 text-center border border-dashed border-white/10 rounded-xl text-xs text-white/40">
-              No target files loaded. Upload target files to configure matrix mappings.
+              No target files match the current search or filter criteria.
             </div>
           ) : (
             <div className="space-y-3 max-h-[550px] overflow-y-auto pr-1">
-              {targets.map((target, tIdx) => {
+              {filteredMatrixTargets.map(({ target, originalIndex: tIdx }) => {
                 const cfg = matrixConfig[tIdx] || {
                   mappings: [{ personRank: 0, sourceIdx: 0 }],
                   swapMode: 'Selected face',
                   enabled: true,
                   enhancer: 'Restoreformer++',
                   faceDistance: 0.75,
+                  frameStart: target.start_frame || 1,
+                  frameEnd: target.end_frame || target.frames || 1,
                 };
+
                 return (
                   <div
                     key={tIdx}
@@ -1348,7 +1600,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                         : 'bg-white/5 border-white/5 opacity-50 text-white/40'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3 border-b border-white/5 pb-2">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-2">
                       <div className="flex items-center gap-3 min-w-0">
                         <input
                           type="checkbox"
@@ -1373,17 +1625,53 @@ export default function BatchSwap({ settings = {}, notify }) {
                           <span className="text-xs font-semibold block truncate" title={target.name}>
                             {tIdx + 1}. {target.name}
                           </span>
-                          <span className="text-micro text-white/40 block">{target.frames || 1} frames</span>
+                          <span className="text-micro text-white/40 block">
+                            {target.frames || 1} frames · {target.fps ? `${Math.round(target.fps)} fps` : 'image'}
+                          </span>
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => addMatrixMapping(tIdx)}
-                        className="text-micro text-[var(--accent)] hover:underline font-medium shrink-0"
-                      >
-                        + Add Target Face Pair
-                      </button>
+                      {/* Trim Segment Range Controls */}
+                      <div className="flex items-center gap-2 text-micro shrink-0">
+                        <span className="text-white/40 font-medium">Trim:</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max={target.frames || 999999}
+                          value={cfg.frameStart ?? 1}
+                          disabled={!cfg.enabled}
+                          onChange={(e) =>
+                            setMatrixConfig((prev) => ({
+                              ...prev,
+                              [tIdx]: { ...cfg, frameStart: parseInt(e.target.value, 10) || 1 },
+                            }))
+                          }
+                          className="w-16 bg-black/60 border border-white/10 rounded px-1.5 py-0.5 text-center text-white"
+                        />
+                        <span className="text-white/30">to</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max={target.frames || 999999}
+                          value={cfg.frameEnd ?? target.frames ?? 1}
+                          disabled={!cfg.enabled}
+                          onChange={(e) =>
+                            setMatrixConfig((prev) => ({
+                              ...prev,
+                              [tIdx]: { ...cfg, frameEnd: parseInt(e.target.value, 10) || 1 },
+                            }))
+                          }
+                          className="w-16 bg-black/60 border border-white/10 rounded px-1.5 py-0.5 text-center text-white"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => addMatrixMapping(tIdx)}
+                          className="text-micro text-[var(--accent)] hover:underline font-medium ml-2"
+                        >
+                          + Add Target Person Pair
+                        </button>
+                      </div>
                     </div>
 
                     {/* Mappings Grid */}
@@ -1448,7 +1736,93 @@ export default function BatchSwap({ settings = {}, notify }) {
         </Section>
       )}
 
-      {/* ── Feature 2 & 3: Visual Pair Cards & Smart Queue Reordering ── */}
+      {/* ── Mode 4 Panel: Pro Recipes & Video Segment Splitter ── */}
+      {batchMode === 'recipes' && (
+        <Section title="Strategy 4: Automated Pro Recipes & Video Segment Splitter">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Cartesian Generator */}
+            <Card className="p-4 space-y-3 bg-black/40 flex flex-col justify-between">
+              <div>
+                <h3 className="font-bold text-sm text-white flex items-center gap-2 mb-1">
+                  <Icon.batch size={18} className="text-[var(--accent)]" />
+                  Cartesian Combinatorial Matrix
+                </h3>
+                <p className="text-xs text-white/50">
+                  Generate every combination of loaded target files and source facesets ({targets.length} targets × {sourceFaces.length} sources = {targets.length * sourceFaces.length} jobs).
+                </p>
+              </div>
+
+              <Button variant="primary" className="w-full justify-center py-2 text-xs" onClick={recipeCartesianProduct} disabled={targets.length === 0 || sourceFaces.length === 0}>
+                ⚡ Generate All Combinations ({targets.length * sourceFaces.length} Jobs)
+              </Button>
+            </Card>
+
+            {/* Sequential Match Generator */}
+            <Card className="p-4 space-y-3 bg-black/40 flex flex-col justify-between">
+              <div>
+                <h3 className="font-bold text-sm text-white flex items-center gap-2 mb-1">
+                  <Icon.split size={18} className="text-[var(--accent)]" />
+                  1-to-1 Sequential Pairer
+                </h3>
+                <p className="text-xs text-white/50">
+                  Match Target #1 to Source #1, Target #2 to Source #2... sequentially down the file list.
+                </p>
+              </div>
+
+              <Button variant="secondary" className="w-full justify-center py-2 text-xs" onClick={recipeSequentialMatch} disabled={targets.length === 0 || sourceFaces.length === 0}>
+                🔗 Generate Sequential Pairs ({Math.min(targets.length, sourceFaces.length)} Jobs)
+              </Button>
+            </Card>
+
+            {/* Multi-Segment Video Splitter */}
+            <Card className="p-4 space-y-3 bg-black/40 flex flex-col justify-between">
+              <div className="space-y-2">
+                <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                  <Icon.scissors size={18} className="text-[var(--accent)]" />
+                  Multi-Segment Video Splitter
+                </h3>
+                <p className="text-xs text-white/50">
+                  Split long video renders into N chunk jobs for parallel processing, then auto-join with 1 click.
+                </p>
+
+                <div className="space-y-1.5 pt-1">
+                  <div>
+                    <span className="text-micro text-white/60 block">Target Video</span>
+                    <select
+                      value={splitTargetIdx}
+                      onChange={(e) => setSplitTargetIdx(parseInt(e.target.value, 10))}
+                      className="w-full bg-black/60 border border-white/10 rounded-lg px-2 py-1 text-micro text-white"
+                    >
+                      {targets.map((t, i) => (
+                        <option key={i} value={i}>
+                          {t.name} ({t.frames || 1} frames)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <span className="text-micro text-white/60 block">Number of Equal Segments</span>
+                    <input
+                      type="number"
+                      min="2"
+                      max="32"
+                      value={splitSegmentCount}
+                      onChange={(e) => setSplitSegmentCount(parseInt(e.target.value, 10) || 2)}
+                      className="w-full bg-black/60 border border-white/10 rounded-lg px-2 py-1 text-micro text-white text-center"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <Button variant="primary" className="w-full justify-center py-2 text-xs" onClick={splitTargetIntoSegments} disabled={targets.length === 0}>
+                ✂ Split Video into {splitSegmentCount} Segments
+              </Button>
+            </Card>
+          </div>
+        </Section>
+      )}
+
+      {/* ── Staged Jobs Workbench ── */}
       {stagedJobs.length > 0 && (
         <Section
           title={`Staged Jobs Workbench (${stagedJobs.length} Ready)`}
@@ -1470,7 +1844,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                 </span>
               </div>
 
-              {/* Sort Dropdown */}
+              {/* Sort Dropdown & Enqueue Buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 <select
                   onChange={(e) => sortStagedJobs(e.target.value)}
@@ -1495,7 +1869,7 @@ export default function BatchSwap({ settings = {}, notify }) {
               </div>
             </div>
 
-            {/* Feature 2: Visual Pair Cards List */}
+            {/* Visual Pair Cards List */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
               {stagedJobs.map((job, idx) => (
                 <div
@@ -1554,6 +1928,11 @@ export default function BatchSwap({ settings = {}, notify }) {
                           {job.payload.enhancer}
                         </span>
                       )}
+                      {(job.frame_start > 1 || job.frame_end < job.total_frames) && (
+                        <span className="text-nano px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">
+                          f:{job.frame_start}-{job.frame_end}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1573,7 +1952,7 @@ export default function BatchSwap({ settings = {}, notify }) {
         </Section>
       )}
 
-      {/* ── Integrated Server Batch Queue ── */}
+      {/* ── Integrated Server Batch Queue Panel ── */}
       <QueuePanel
         q={queue}
         canAdd={false}

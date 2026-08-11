@@ -98,10 +98,11 @@ export default function useQueue({ notify } = {}) {
     refresh,
     add: (job) => act('/api/queue/add', job),
     addMany: async (list) => {
-      let snap = null;
-      for (const job of list) snap = await act('/api/queue/add', job);
-      return snap;
+      if (!list || list.length === 0) return null;
+      return act('/api/queue/add_batch', { jobs: list });
     },
+    addBatch: (jobs) => act('/api/queue/add_batch', { jobs }),
+    join: (ids, name) => act('/api/queue/join', { ids, name }),
     remove: (id) => act('/api/queue/remove', { id }),
     clear: () => act('/api/queue/clear', {}),
     reorder: (ids) => act('/api/queue/reorder', { ids }),

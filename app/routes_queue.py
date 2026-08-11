@@ -132,17 +132,13 @@ def queue_list():
     return _snapshot()
 
 
-@router.post("/api/queue/add")
-def queue_add(payload: dict = Body(...)):
-    """Append a job. `payload.payload` is the /api/swap body to replay."""
-    job = {
+def _normalize_job(payload: dict) -> dict:
+    return {
         "id": uuid.uuid4().hex[:12],
         "target_name": str(payload.get("target_name") or ""),
         "source_index": int(payload.get("source_index") or 0),
         "source_name": str(payload.get("source_name") or ""),
         "payload": payload.get("payload") or {},
-        # Optional segment. None means "whatever range the target already has",
-        # which is what a plain queued job has always meant.
         "frame_start": payload.get("frame_start"),
         "frame_end": payload.get("frame_end"),
         "label": str(payload.get("label") or ""),
@@ -152,8 +148,25 @@ def queue_add(payload: dict = Body(...)):
         "started": 0.0,
         "finished": 0.0,
     }
+
+
+@router.post("/api/queue/add")
+def queue_add(payload: dict = Body(...)):
+    """Append a job. `payload.payload` is the /api/swap body to replay."""
+    job = _normalize_job(payload)
     with _lock:
         _queue["jobs"].append(job)
+        _save()
+    return _snapshot()
+
+
+@router.post("/api/queue/add_batch")
+def queue_add_batch(payload: dict = Body(...)):
+    """Append multiple jobs in one atomic transaction."""
+    raw_jobs = payload.get("jobs") or []
+    new_jobs = [_normalize_job(j) for j in raw_jobs]
+    with _lock:
+        _queue["jobs"].extend(new_jobs)
         _save()
     return _snapshot()
 
@@ -291,11 +304,28 @@ def _run_one(job):
         return "failed", f'target "{job["target_name"]}" is no longer loaded'
 
     state.selected_target_index = idx
-    state.selected_input_face_index = int(job.get("source_index") or 0)
+
+    # Dynamically re-resolve source_index by source_name if faceset list shifted
+    src_idx = int(job.get("source_index") or 0)
+    target_src_name = str(job.get("source_name") or "").strip()
+    if target_src_name and getattr(state, "source_faces_info", None):
+        for i, info in enumerate(state.source_faces_info):
+            info_name = str(info.get("name") or "").strip()
+            if info_name and info_name.lower() == target_src_name.lower():
+                src_idx = i
+                break
+    state.selected_input_face_index = src_idx
+
     _apply_segment(list_files_process[idx], job)
 
     payload = dict(job.get("payload") or {})
     payload["target_index"] = idx
+
+    # Sanitize face_mapping payload so null/None entries don't crash ProcessMgr
+    fm = payload.get("face_mapping")
+    if isinstance(fm, list):
+        payload["face_mapping"] = [0 if (x is None or x == "") else int(x) for x in fm]
+
     _progress.update({"processing": True, "paused": False, "progress": 0.0,
                       "desc": "Starting queued job…", "error": ""})
     # Which files THIS job produces — recorded so a set of segment jobs can be

@@ -93,6 +93,12 @@ def encode_execution_providers(execution_providers: List[str]) -> List[str]:
 
 def decode_execution_providers(execution_providers: List[str]) -> List[str]:
     import onnxruntime
+    try:
+        import cv2 as _cv2
+        _cv2.setNumThreads(1)
+    except Exception:
+        pass
+
     list_providers = [provider for provider, encoded_execution_provider in zip(onnxruntime.get_available_providers(), encode_execution_providers(onnxruntime.get_available_providers()))
             if any(execution_provider in encoded_execution_provider for execution_provider in execution_providers)]
     
@@ -103,19 +109,13 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     'device_id': roop.globals.cuda_device_id,
                     'cudnn_conv_algo_search': 'HEURISTIC',
                     'do_copy_in_default_stream': True,
-                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                    'arena_extend_strategy': os.environ.get('ROOP_CUDA_ARENA_STRATEGY', 'kSameAsRequested'),
                 }
                 list_providers[i] = ('CUDAExecutionProvider', cuda_opts)
                 torch.cuda.set_device(roop.globals.cuda_device_id)
             elif list_providers[i] == 'TensorrtExecutionProvider':
                 trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
                 os.makedirs(trt_cache, exist_ok=True)
-                # Precision mode: 'fp32' = full precision (baseline accuracy),
-                # 'fp16'/'mixed' = enable FP16 kernels (faster). TensorRT keeps
-                # numerically-sensitive layers in FP32 automatically, so 'mixed'
-                # and 'fp16' share the same flag but 'mixed' is the recommended
-                # balanced default. Separate engine caches per precision avoid
-                # rebuilds when switching modes.
                 trt_precision = getattr(roop.globals.CFG, 'trt_precision', 'mixed') if roop.globals.CFG else 'mixed'
                 fp16_enable = trt_precision in ('fp16', 'mixed')
                 precision_cache = os.path.join(trt_cache, trt_precision)
@@ -127,22 +127,35 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                 except Exception:
                     total_vram = 0
                 total_gb = total_vram / (1024 ** 3) if total_vram else 0
-                env_frac = os.environ.get('ROOP_TRT_WORKSPACE_FRACTION')
-                if env_frac is not None:
+                
+                env_mb = os.environ.get('ROOP_TRT_WORKSPACE_MB')
+                if env_mb:
                     try:
-                        ws_frac = float(env_frac)
+                        workspace_size = int(float(env_mb) * 1024 * 1024)
                     except ValueError:
-                        ws_frac = 0.4
+                        workspace_size = 0
                 else:
-                    if total_gb >= 15:
-                        ws_frac = 0.5
-                    elif total_gb >= 10:
-                        ws_frac = 0.4
+                    env_frac = os.environ.get('ROOP_TRT_WORKSPACE_FRACTION')
+                    if env_frac is not None:
+                        try:
+                            ws_frac = float(env_frac)
+                        except ValueError:
+                            ws_frac = 0.4
                     else:
-                        ws_frac = 0.3
-                ws_frac = max(0.1, min(0.95, ws_frac))
-                workspace_size = int(total_vram * ws_frac) if total_vram else 0
-                print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace fraction {ws_frac} "
+                        if total_gb >= 15:
+                            ws_frac = 0.5
+                        elif total_gb >= 10:
+                            ws_frac = 0.4
+                        else:
+                            ws_frac = 0.3
+                    ws_frac = max(0.1, min(0.95, ws_frac))
+                    calc_size = int(total_vram * ws_frac) if total_vram else 0
+                    # Cap per-session workspace at 2GB max so pooled TRT sessions
+                    # do not overcommit VRAM and trigger PCIe shared memory paging
+                    max_cap = int(os.environ.get('ROOP_TRT_MAX_WORKSPACE_BYTES', str(2 * 1024 * 1024 * 1024)))
+                    workspace_size = min(calc_size, max_cap) if calc_size > 0 else calc_size
+
+                print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace limit "
                       f"({workspace_size / (1024**3):.1f}GB), partition_iters from env/default")
                 try:
                     partition_iters = int(os.environ.get('ROOP_TRT_PARTITION_ITERATIONS', '2000'))
@@ -155,6 +168,9 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     'trt_engine_cache_enable': True,
                     'trt_engine_cache_path': precision_cache,
                     'trt_max_partition_iterations': partition_iters,
+                    'trt_context_memory_sharing_enable': True,
+                    'trt_timing_cache_enable': True,
+                    'trt_timing_cache_path': precision_cache,
                 }
                 if workspace_size > 0:
                     trt_opts['trt_max_workspace_size'] = workspace_size

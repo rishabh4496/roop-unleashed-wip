@@ -1,5 +1,9 @@
 import os
 import cv2
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    pass
 import time
 import numpy as np
 import psutil
@@ -1453,10 +1457,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         except ValueError:
             max_b = threads
         max_b = max(2, min(max_b, threads))
+        try:
+            wait_ms = float(os.environ.get('ROOP_BATCH_SWAP_WAIT_MS', '2.0'))
+        except ValueError:
+            wait_ms = 2.0
         b = swap_batcher.SwapBatcher(
             swap_p.RunBatchMulti, lambda: _gpu_guard(pooled=pooled),
-            max_batch=max_b, max_wait_ms=6.0)
-        print(f"[BatchSwap] cross-frame batching ON (max_batch={max_b}, threads={threads}).")
+            max_batch=max_b, max_wait_ms=wait_ms)
+        print(f"[BatchSwap] cross-frame batching ON (max_batch={max_b}, threads={threads}, wait={wait_ms}ms).")
         return b
 
 

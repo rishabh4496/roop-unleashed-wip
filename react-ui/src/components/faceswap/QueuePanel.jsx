@@ -93,6 +93,22 @@ export default function QueuePanel({
                   ↺ Retry {retryable.length} failed
                 </Button>
               )}
+              {finished.length >= 2 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={async () => {
+                    const finishedIds = finished.map((j) => j.id);
+                    const res = await q.join(finishedIds);
+                    if (res && res.path) {
+                      notify?.(`Successfully joined ${res.segments} segments into ${res.name}`, 'success');
+                    }
+                  }}
+                  title="Concatenate finished segment clips into a single video"
+                >
+                  🎬 Join {finished.length} Clips
+                </Button>
+              )}
               <Button size="sm" variant="ghost" className="text-red-400" onClick={confirmClear}>Clear</Button>
             </>
           )}
