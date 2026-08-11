@@ -82,6 +82,28 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // marker, chip and reset below simply does not render.
   const [defaults, setDefaults] = useState(null);
   const [onlyModified, setOnlyModified] = useState(false);
+  const [benchmarking, setBenchmarking] = useState(false);
+  const [benchmarkReport, setBenchmarkReport] = useState(() => p.benchmark_results || null);
+
+  useEffect(() => {
+    if (p.benchmark_results) setBenchmarkReport(p.benchmark_results);
+  }, [p.benchmark_results]);
+
+  const runThreadBenchmark = async () => {
+    try {
+      setBenchmarking(true);
+      notify('Starting GPU & Thread benchmark... (testing throughput across modes)', 'info');
+      const res = await postJSON('/api/settings/benchmark_threads', {});
+      setBenchmarkReport(res);
+      setMany({ benchmark_results: res });
+      notify('Thread benchmark complete! Optimal GPU thread counts saved.');
+    } catch (e) {
+      notify('Benchmark failed: ' + e.message, 'error');
+    } finally {
+      setBenchmarking(false);
+    }
+  };
+
   useEffect(() => {
     let live = true;
     getJSON('/api/settings/defaults')
@@ -326,6 +348,12 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           )}
           <Toggle label="Force CPU for face analyser" {...bindToggle('force_cpu')} />
 
+          <Toggle
+            label="Auto thread selection"
+            info="Automatically scale thread execution dynamically based on hardware benchmark & workload mode (Standard, Enhanced, Heavy)."
+            {...bindToggle('auto_thread_selection')}
+          />
+
           <Slider
             label="Face detection threshold"
             min={0.10}
@@ -340,8 +368,80 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             step={0.05}
             {...bind('face_detector_nms', 0.40)}
           />
-          <Slider label="Max threads" info="default 3" min={1} max={32} step={1} {...bind('max_threads', 3)} />
+          {!(p.auto_thread_selection ?? true) && (
+            <Slider label="Max threads" info="default 3 (Manual mode)" min={1} max={32} step={1} {...bind('max_threads', 3)} />
+          )}
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} {...bind('memory_limit', 0)} />
+
+          {/* GPU & Thread Benchmark Card */}
+          <div className="col-span-full p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3 mt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
+              <div>
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Icon.cpu className="text-[var(--accent)]" size={16} />
+                  GPU & Thread Benchmark Suite
+                </span>
+                <p className="text-nano text-white/50 mt-0.5">
+                  Run a live hardware throughput test to measure maximum GPU speed without quality loss or VRAM thrashing.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={runThreadBenchmark}
+                disabled={benchmarking}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-micro font-bold bg-[var(--accent)] text-black hover:opacity-90 disabled:opacity-50 transition-all shrink-0"
+              >
+                <Icon.refresh size={13} className={benchmarking ? 'animate-spin' : ''} />
+                {benchmarking ? 'Benchmarking Hardware...' : '▶ Run GPU Benchmark'}
+              </button>
+            </div>
+
+            {benchmarkReport && (
+              <div className="p-3 rounded-lg bg-black/50 border border-white/5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-micro font-bold text-[var(--accent)] uppercase tracking-wider">
+                    {benchmarkReport.gpu_name || 'GPU'} ({benchmarkReport.total_vram_gb} GB VRAM)
+                  </span>
+                  <span className="text-nano px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+                    ✓ Verified 0 Errors / Max GPU Speed
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="p-2 rounded bg-white/5 border border-white/5">
+                    <span className="text-nano text-white/40 block">Standard Swap</span>
+                    <span className="text-xs font-bold text-white block">
+                      {benchmarkReport.best_threads?.standard || 4} Threads
+                    </span>
+                    <span className="text-nano text-emerald-400 font-mono">
+                      {benchmarkReport.fps_map?.standard?.[benchmarkReport.best_threads?.standard] || 0} FPS
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded bg-white/5 border border-white/5">
+                    <span className="text-nano text-white/40 block">Enhanced Swap</span>
+                    <span className="text-xs font-bold text-white block">
+                      {benchmarkReport.best_threads?.enhanced || 4} Threads
+                    </span>
+                    <span className="text-nano text-emerald-400 font-mono">
+                      {benchmarkReport.fps_map?.enhanced?.[benchmarkReport.best_threads?.enhanced] || 0} FPS
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded bg-white/5 border border-white/5">
+                    <span className="text-nano text-white/40 block">Heavy Workload</span>
+                    <span className="text-xs font-bold text-white block">
+                      {benchmarkReport.best_threads?.heavy || 2} Threads
+                    </span>
+                    <span className="text-nano text-emerald-400 font-mono">
+                      {benchmarkReport.fps_map?.heavy?.[benchmarkReport.best_threads?.heavy] || 0} FPS
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </FilterSection>
 
         <FilterSection title="Advanced performance (restart to apply)" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>

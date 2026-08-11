@@ -26,6 +26,7 @@ export const SETTINGS_CATALOG = [
   { key: 'provider', label: 'Provider', section: 'Performance' },
   { key: 'trt_precision', label: 'Precision mode (TensorRT)', section: 'Performance' },
   { key: 'force_cpu', label: 'Force CPU for face analyser', section: 'Performance' },
+  { key: 'auto_thread_selection', label: 'Auto thread selection', section: 'Performance' },
   { key: 'face_detector_threshold', label: 'Face detection threshold', section: 'Performance' },
   { key: 'face_detector_nms', label: 'Overlap NMS threshold', section: 'Performance' },
   { key: 'max_threads', label: 'Max threads', section: 'Performance' },

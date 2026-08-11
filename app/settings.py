@@ -104,6 +104,9 @@ class Settings:
                 self.max_threads = logical_cores
         except Exception:
             pass
+
+        self.auto_thread_selection = self.default_get(data, 'auto_thread_selection', True)
+        self.benchmark_results = self.default_get(data, 'benchmark_results', {})
         
         self.memory_limit = self.default_get(data, 'memory_limit', 0)
         self.provider = self.default_get(data, 'provider', 'cuda')
@@ -379,6 +382,8 @@ class Settings:
             'perf_encoder_preset': self.perf_encoder_preset,
             'perf_profile': self.perf_profile,
             'perf_batch_swap': self.perf_batch_swap,
+            'auto_thread_selection': getattr(self, 'auto_thread_selection', True),
+            'benchmark_results': getattr(self, 'benchmark_results', {}),
         }
         # Atomic write: dump to a temp file and replace. Writing config.yaml in
         # place means a crash mid-write truncates it, and load()'s fallback then
@@ -387,6 +392,32 @@ class Settings:
         with open(tmp_file, 'w') as f:
             yaml.dump(data, f)
         os.replace(tmp_file, self.config_file)
+
+    def resolve_threads(self, mode='standard') -> int:
+        if not getattr(self, 'auto_thread_selection', True):
+            return getattr(self, 'max_threads', 4)
+
+        results = getattr(self, 'benchmark_results', {}) or {}
+        if isinstance(results, dict) and results.get('best_threads'):
+            mode_threads = results.get('best_threads', {}).get(mode)
+            if mode_threads:
+                return int(mode_threads)
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                import psutil
+                cores = psutil.cpu_count(logical=False) or 4
+                if mode == 'heavy':
+                    return int(min(max(2, cores - 1), max(2, vram_gb / 3.0)))
+                elif mode == 'enhanced':
+                    return int(min(max(2, cores - 1), max(2, vram_gb / 2.0)))
+                else:
+                    return int(min(max(2, cores - 1), max(2, vram_gb / 1.2)))
+        except Exception:
+            pass
+        return getattr(self, 'max_threads', 4)
 
 
 
