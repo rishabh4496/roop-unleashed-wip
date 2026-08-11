@@ -87,6 +87,26 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [error, setError] = useState('');
 
+  // ── Toasts ───────────────────────────────────────────────────────────────
+  // Declared HERE, at the very top of the component, and that is not cosmetic.
+  // `const` is not hoisted, so every callback below that names `notify` — in its
+  // body OR in its dependency array, which React evaluates on each render —
+  // throws "Cannot access 'notify' before initialization" on the FIRST render if
+  // it sits above this line. That takes the whole app down to the crash screen.
+  // Keeping the declaration above every consumer is what makes that impossible,
+  // rather than stripping `notify` out of dep arrays one at a time and leaving
+  // the next caller to rediscover the trap.
+  const [liveMsg, setLiveMsg] = useState('');
+  const dismissToast = useCallback((id) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
+  const notify = useCallback((message, type = 'success') => {
+    const id = Date.now() + Math.random();
+    // Stack toasts (newest wins visually) instead of clobbering — each dismisses
+    // on its own timer, and the whole set is capped so a burst can't pile up.
+    setToasts((ts) => [...ts, { id, message, type }].slice(-4));
+    setLiveMsg(`${type}: ${message}`);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
+  }, []);
+
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [startTime, setStartTime] = useState(null);
   const [confetti, setConfetti] = useState(false);
@@ -577,18 +597,6 @@ export default function App() {
     };
   }, []);
 
-  // Latest message mirrored into an aria-live region for screen readers.
-  const [liveMsg, setLiveMsg] = useState('');
-  const dismissToast = useCallback((id) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
-  const notify = useCallback((message, type = 'success') => {
-    const id = Date.now() + Math.random();
-    // Stack toasts (newest wins visually) instead of clobbering — each dismisses
-    // on its own timer, and the whole set is capped so a burst can't pile up.
-    setToasts((ts) => [...ts, { id, message, type }].slice(-4));
-    setLiveMsg(`${type}: ${message}`);
-    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
-  }, []);
-
   // ── "Your render finished", once ─────────────────────────────────────────
   // Here rather than in a tab because the shell is the only thing mounted for
   // the whole session: a run that ends while you are on Settings or Outputs
@@ -602,11 +610,8 @@ export default function App() {
   // correct on its own. The hook is the better of the two (it tells a failed run
   // from a finished one and plays a different tone), so it won.
   //
-  // BELOW `notify`, and that is not cosmetic. `const` is not hoisted, so calling
-  // this above the declaration throws "Cannot access 'notify' before
-  // initialization" on the FIRST render — which takes the whole app down to a
-  // blank page, since there is no ErrorBoundary above the shell. It built
-  // cleanly and every test passed; only opening it showed anything wrong.
+  // Reads `notify`, which is declared at the top of the component — see the TDZ
+  // note there before moving either one.
   const { desktopAlerts, toggleDesktopAlerts } = useRunCompleteAlert({
     processing: progress.processing, error: progress.error, notify,
   });

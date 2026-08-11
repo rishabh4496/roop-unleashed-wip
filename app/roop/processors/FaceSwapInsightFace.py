@@ -620,6 +620,19 @@ class FaceSwapInsightFace():
         self._mask_tls.masks = None
         return masks
 
+    def _republish_masks(self, masks):
+        """Publish a batch's worth of masks that were collected one call at a
+        time, so a sequential fallback keeps the batched path's contract: the
+        caller does ONE take_masks() and expects one mask per crop.
+
+        A partial set is published as None rather than as a short list — the
+        caller pairs masks to crops by position, so a gap would misattribute
+        every mask after it to the wrong face.
+        """
+        self._mask_tls.masks = (
+            masks if masks and all(m is not None for m in masks) else None
+        )
+
     def _infer(self, feed):
         """Run the swap net, transparently falling back off a broken TensorRT
         engine to CUDA/CPU the first time it fails (see _rebuild_without_trt).
@@ -683,9 +696,18 @@ class FaceSwapInsightFace():
             print(f"[swap] RunBatch: batch inference failed ({batch_err!r}); "
                   f"falling back to sequential single-frame swaps.")
             results = []
+            masks = []
             for t in temp_frames:
-                res = self.Run(source_face, target_face, t)
-                results.append(res)
+                results.append(self.Run(source_face, target_face, t))
+                # Each Run stashes its OWN mask into the same single-slot
+                # thread-local, so it has to be drained here — otherwise only
+                # the last crop's mask survives the loop and the caller, which
+                # expects one mask per crop, silently loses the swap model's
+                # face mask (or fails to reassemble it) on exactly the path
+                # this fallback exists to rescue.
+                m = self.take_masks()
+                masks.append(m[0] if m else None)
+            self._republish_masks(masks)
             return results
 
     def RunBatchMulti(self, requests: list) -> list:
@@ -710,9 +732,12 @@ class FaceSwapInsightFace():
             print(f"[swap] RunBatchMulti: batch inference failed ({batch_err!r}); "
                   f"falling back to sequential single-frame swaps.")
             results = []
+            masks = []
             for src, tgt, blob in requests:
-                res = self.Run(src, tgt, blob)
-                results.append(res)
+                results.append(self.Run(src, tgt, blob))
+                m = self.take_masks()
+                masks.append(m[0] if m else None)
+            self._republish_masks(masks)
             return results
 
     def Release(self):

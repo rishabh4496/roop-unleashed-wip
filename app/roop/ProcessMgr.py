@@ -1451,6 +1451,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         swap_p = next((p for p in self.processors if getattr(p, 'type', None) == 'swap'), None)
         if swap_p is None or not hasattr(swap_p, 'RunBatchMulti'):
             return None
+        # The cross-frame batcher coalesces tiles from several worker threads
+        # into one inference, so a mask cannot be attributed back to the request
+        # that produced it — this path drops the swap net's own face mask (see
+        # where _swap_masks stays None below). That is a fine trade while the
+        # mask is unused, but it is NOT one to make silently on behalf of a user
+        # who has explicitly asked for the mask: they would raise the slider,
+        # see no change, and have nothing to tell them why. Batching is the
+        # optional half here, so batching is what yields.
+        if (float(getattr(roop.globals, 'swap_model_mask_strength', 0.0) or 0.0) > 0
+                and getattr(swap_p, 'model_has_mask', False)):
+            print("[BatchSwap] cross-frame batching OFF — it cannot attribute the "
+                  "swap model's face mask back to a frame, and that mask is on "
+                  "(swap_model_mask_strength > 0).")
+            return None
         pooled = getattr(swap_p, 'pool', None) is not None
         try:
             max_b = int(os.environ.get('ROOP_BATCH_SWAP_MAX', str(threads)))

@@ -3007,17 +3007,29 @@ def get_file(path: str, request: Request):
     so the finished video can be moved out of the output folder while it's still
     showing in the player.
     """
+    # Each root is a DIRECTORY OF MEDIA this endpoint is meant to hand out. It
+    # is deliberately not "the app folder" and emphatically not its parent:
+    # /api/file takes an arbitrary path from the query string, so every entry
+    # here is readable over HTTP by anything that can reach the port — which
+    # includes the network whenever the "public server (share)" setting is on.
+    # Rooting it at the working directory's parent would publish the whole
+    # project (config.yaml, .git, logs, models) and, depending on where the
+    # process was launched from, neighbouring apps as well.
+    #
+    # `.pinokio-temp` is what needs reaching outside `app/`; it sits at the
+    # project root. That one directory is named directly, resolved from this
+    # file rather than from the working directory so it lands in the same place
+    # no matter where the process was started.
+    _app_dir = os.path.dirname(os.path.abspath(__file__))
+    _project_dir = os.path.dirname(_app_dir)
     roots = [
         API_TEMP,
         os.path.join(os.getcwd(), "temp"),
         os.path.join(os.getcwd(), ".pinokio-temp"),
-        os.path.abspath(".pinokio-temp"),
-        os.path.abspath(os.getcwd()),
+        os.path.join(_app_dir, ".pinokio-temp"),
+        os.path.join(_project_dir, ".pinokio-temp"),
         _faceset_library_dir(),
     ]
-    parent_dir = os.path.abspath(os.path.join(os.getcwd(), ".."))
-    if os.path.exists(parent_dir):
-        roots.append(parent_dir)
     out_dir = getattr(roop_globals, "output_path", "") or ""
     if out_dir:
         roots.append(out_dir)

@@ -35,6 +35,33 @@ from roop.utilities import compute_cosine_distance
 from roop.procmgr_runtime import _prof, _gpu_guard, wait_while_paused, PROGRESS_BAR_FORMAT, _TRACK_OVERLAP_FRAC, ChunkedProgress, bar_write, publish_eta
 
 
+def _readahead_depth(cap, budget_mb=256.0, lo=4, hi=16):
+    """How many decoded frames of lead fit inside a memory budget.
+
+    The read-ahead queue holds FULL-RESOLUTION frames, so a fixed depth means a
+    completely different memory bill per format: 16 frames is ~0.1GB at 1080p
+    but ~0.4GB at 4K, and the deep end buys nothing once the detector is the
+    slower half. Sizing by bytes keeps the measured 1080p lead intact (the
+    budget is far above what 16 frames cost there, so it clamps to `hi`) while
+    stopping large formats from ballooning.
+
+    Falls back to `hi` if the dimensions can't be read — the previous behaviour,
+    and this is a performance hint, not a correctness input.
+    """
+    try:
+        budget_mb = float(os.environ.get('ROOP_TRACK_READAHEAD_MB', budget_mb))
+    except (TypeError, ValueError):
+        pass
+    try:
+        per_frame = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                     * int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) * 3)
+    except Exception:
+        per_frame = 0
+    if per_frame <= 0:
+        return hi
+    return max(lo, min(hi, int((budget_mb * 1024 * 1024) // per_frame)))
+
+
 class TrackingMixin:
     def _precompute_sam2(self, sam2_p, source_video, frame_start, frame_end, frame_count):
         """SAM2 pre-pass: dump the trimmed frames to a temp JPEG dir (0-based,
@@ -435,8 +462,9 @@ class TrackingMixin:
                 # Only a handful of frames of lead is needed to cover the jitter
                 # between decode and detect, and these are full-resolution: a
                 # deep queue would cost hundreds of MB on 4K material for no
-                # extra throughput.
-                frame_q = Queue(maxsize=16)
+                # extra throughput. So the depth is a memory budget rather than
+                # a constant — see _readahead_depth.
+                frame_q = Queue(maxsize=_readahead_depth(cap))
                 _t = Thread(target=_read_loop, daemon=True)
                 _t.start()
                 # Only publish the handle once the thread is actually running:

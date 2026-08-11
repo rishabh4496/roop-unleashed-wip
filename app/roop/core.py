@@ -151,8 +151,15 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     ws_frac = max(0.1, min(0.95, ws_frac))
                     calc_size = int(total_vram * ws_frac) if total_vram else 0
                     # Cap per-session workspace at 2GB max so pooled TRT sessions
-                    # do not overcommit VRAM and trigger PCIe shared memory paging
-                    max_cap = int(os.environ.get('ROOP_TRT_MAX_WORKSPACE_BYTES', str(2 * 1024 * 1024 * 1024)))
+                    # do not overcommit VRAM and trigger PCIe shared memory paging.
+                    # Guarded like every other env read here: an unparseable
+                    # value is a tuning typo, and letting it raise would take
+                    # provider setup — and so the whole app — down at startup.
+                    _default_cap = 2 * 1024 * 1024 * 1024
+                    try:
+                        max_cap = int(os.environ.get('ROOP_TRT_MAX_WORKSPACE_BYTES', _default_cap))
+                    except (TypeError, ValueError):
+                        max_cap = _default_cap
                     workspace_size = min(calc_size, max_cap) if calc_size > 0 else calc_size
 
                 print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace limit "
