@@ -169,7 +169,7 @@ export default function BatchSwap({ settings = {}, notify }) {
       if (Array.isArray(data.mode1Mappings)) setMode1Mappings(data.mode1Mappings);
       if (data.mode1SwapMode) setMode1SwapMode(data.mode1SwapMode);
       if (data.mode1Enhancer) setMode1Enhancer(data.mode1Enhancer);
-      if (data.mode1FaceDistance) setMode1FaceDistance(data.mode1FaceDistance);
+      if (data.mode1FaceDistance != null) setMode1FaceDistance(data.mode1FaceDistance);
       if (Array.isArray(data.groups)) setGroups(data.groups);
       if (data.matrixConfig) setMatrixConfig(data.matrixConfig);
       setActiveQuickSlot(slotNum);
@@ -354,7 +354,7 @@ export default function BatchSwap({ settings = {}, notify }) {
         if (p.mode1SwapMode) setMode1SwapMode(p.mode1SwapMode);
         if (Array.isArray(p.mode1SelectedTargets)) setMode1SelectedTargets(p.mode1SelectedTargets);
         if (p.mode1Enhancer) setMode1Enhancer(p.mode1Enhancer);
-        if (p.mode1FaceDistance) setMode1FaceDistance(p.mode1FaceDistance);
+        if (p.mode1FaceDistance != null) setMode1FaceDistance(p.mode1FaceDistance);
         if (Array.isArray(p.groups)) setGroups(p.groups);
         if (p.matrixConfig) setMatrixConfig(p.matrixConfig);
         if (Array.isArray(p.stagedJobs)) setStagedJobs(p.stagedJobs);
@@ -910,6 +910,7 @@ export default function BatchSwap({ settings = {}, notify }) {
               <button
                 type="button"
                 onClick={() => setShowHealthModal(false)}
+                aria-label="Close health breakdown modal"
                 className="text-white/40 hover:text-white font-bold"
               >
                 ✕
@@ -995,7 +996,7 @@ export default function BatchSwap({ settings = {}, notify }) {
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <label className="cursor-pointer">
-            <input type="file" multiple accept="video/*,image/*" onChange={handleUploadTargets} className="hidden" />
+            <input type="file" multiple accept="video/*,image/*" onChange={handleUploadTargets} className="sr-only" />
             <Button size="sm" variant="secondary" className="pointer-events-none" disabled={uploading}>
               <Icon.upload size={14} className="mr-1.5" />
               + Add Targets
@@ -1003,7 +1004,7 @@ export default function BatchSwap({ settings = {}, notify }) {
           </label>
 
           <label className="cursor-pointer">
-            <input type="file" multiple accept="image/*,.fsz" onChange={handleUploadSources} className="hidden" />
+            <input type="file" multiple accept="image/*,.fsz" onChange={handleUploadSources} className="sr-only" />
             <Button size="sm" variant="secondary" className="pointer-events-none" disabled={uploading}>
               <Icon.upload size={14} className="mr-1.5" />
               + Add Sources
@@ -1028,7 +1029,7 @@ export default function BatchSwap({ settings = {}, notify }) {
           </Button>
 
           <label className="cursor-pointer">
-            <input type="file" accept=".json" onChange={importBatchPreset} className="hidden" />
+            <input type="file" accept=".json" onChange={importBatchPreset} className="sr-only" />
             <Button size="sm" variant="secondary" className="pointer-events-none" title="Import Batch Preset JSON">
               <Icon.upload size={14} className="mr-1" />
               Import Preset
@@ -1072,6 +1073,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                   onClick={() => saveQuickSlot(slot)}
                   className="text-nano text-white/40 hover:text-[var(--accent)] font-bold px-1"
                   title={`Save current setup into Quick Slot #${slot}`}
+                  aria-label={`Save Quick Slot #${slot}`}
                 >
                   💾
                 </button>
@@ -1178,6 +1180,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                     onClick={(e) => removeSourceFaceset(e, idx)}
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500/90 text-white/50 hover:text-white flex items-center justify-center text-nano font-bold opacity-0 group-hover/src:opacity-100 transition-all"
                     title={`Remove Faceset #${idx + 1}`}
+                    aria-label={`Remove Faceset #${idx + 1}`}
                   >
                     ✕
                   </button>
@@ -1236,6 +1239,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                     onClick={(e) => removeTargetFile(e, idx)}
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500/90 text-white/50 hover:text-white flex items-center justify-center text-nano font-bold opacity-0 group-hover/tgt:opacity-100 transition-all"
                     title={`Remove ${target.name}`}
+                    aria-label={`Remove ${target.name}`}
                   >
                     ✕
                   </button>
@@ -1366,6 +1370,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                           type="button"
                           onClick={() => removeMode1Mapping(mapIdx)}
                           className="hover:text-red-400 font-bold"
+                          aria-label={`Remove mapping ${mapIdx + 1}`}
                         >
                           ✕
                         </button>
@@ -1600,6 +1605,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                               onClick={() => removeGroupMapping(grp.id, mapIdx)}
                               className="text-micro text-white/40 hover:text-red-400 font-bold"
                               title="Remove mapping"
+                              aria-label={`Remove mapping ${mapIdx + 1}`}
                             >
                               ✕
                             </button>
@@ -1871,6 +1877,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                                   onClick={() => removeMatrixMapping(tIdx, mapIdx)}
                                   className="text-micro text-white/40 hover:text-red-400 font-bold"
                                   title="Remove mapping"
+                                  aria-label={`Remove mapping ${mapIdx + 1}`}
                                 >
                                   ✕
                                 </button>
@@ -2130,6 +2137,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                     onClick={() => removeStagedJob(job.id)}
                     className="text-white/30 hover:text-red-400 p-1 font-bold shrink-0 self-start"
                     title="Remove job"
+                    aria-label={`Remove job ${job.label || job.id}`}
                   >
                     ✕
                   </button>

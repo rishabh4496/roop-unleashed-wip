@@ -279,13 +279,13 @@ export default function App() {
       settings: { ...(settings || {}) },
       activeQualityProfile,
     };
-      setSnapshots((prev) => {
-        const updated = [snap, ...prev];
-        localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
-        return updated;
-      });
-      notify(`Saved Workspace Snapshot: "${name}"`, 'success');
-  }, [tab, settings, activeQualityProfile]);
+    setSnapshots((prev) => {
+      const updated = [snap, ...prev];
+      localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
+      return updated;
+    });
+    notify(`Saved Workspace Snapshot: "${name}"`, 'success');
+  }, [tab, settings, activeQualityProfile, notify]);
 
   const loadSessionSnapshot = useCallback((snap) => {
     if (snap.settings) setSettings(snap.settings);
@@ -293,7 +293,7 @@ export default function App() {
     if (snap.activeQualityProfile) setActiveQualityProfile(snap.activeQualityProfile);
     setShowSnapshotsModal(false);
     notify(`Loaded Workspace Snapshot: "${snap.name}"`, 'success');
-  }, []);
+  }, [notify]);
 
   const deleteSessionSnapshot = useCallback((id) => {
     setSnapshots((prev) => {
@@ -324,7 +324,7 @@ export default function App() {
       postJSON('/api/settings', patch).catch(() => {});
       notify(`Loaded Profile: ${label || profileId}`, 'success');
     }
-  }, []);
+  }, [notify]);
 
   // Global keyboard shortcuts: ⌘/Ctrl-K palette, ?, and ⌘/Ctrl +/-/0 zoom.
   useEffect(() => {
@@ -955,7 +955,7 @@ export default function App() {
               <h3 className="text-base font-bold flex items-center gap-2 text-[var(--accent)]">
                 <Icon.shortcuts size={18} /> Global Keyboard Shortcuts Cheat Sheet
               </h3>
-              <button type="button" onClick={() => setShowShortcutsModal(false)} className="text-white/40 hover:text-white font-bold">✕</button>
+              <button type="button" onClick={() => setShowShortcutsModal(false)} aria-label="Close shortcuts cheat sheet modal" className="text-white/40 hover:text-white font-bold">✕</button>
             </div>
 
             <div className="space-y-2 text-xs">
@@ -996,7 +996,7 @@ export default function App() {
               <h3 className="text-base font-bold flex items-center gap-2 text-[var(--accent)]">
                 <Icon.history size={18} /> Workspace Session Snapshots
               </h3>
-              <button type="button" onClick={() => setShowSnapshotsModal(false)} className="text-white/40 hover:text-white font-bold">✕</button>
+              <button type="button" onClick={() => setShowSnapshotsModal(false)} aria-label="Close workspace snapshots modal" className="text-white/40 hover:text-white font-bold">✕</button>
             </div>
 
             <div className="flex items-center justify-between">
@@ -1018,7 +1018,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button type="button" onClick={() => loadSessionSnapshot(s)} className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-semibold text-white">Load</button>
-                      <button type="button" onClick={() => deleteSessionSnapshot(s.id)} className="px-2 py-1 rounded bg-red-500/20 hover:bg-red-500/30 text-xs font-semibold text-red-300">✕</button>
+                      <button type="button" onClick={() => deleteSessionSnapshot(s.id)} aria-label={`Delete snapshot ${s.name}`} className="px-2 py-1 rounded bg-red-500/20 hover:bg-red-500/30 text-xs font-semibold text-red-300">✕</button>
                     </div>
                   </div>
                 ))

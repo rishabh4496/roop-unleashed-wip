@@ -677,9 +677,11 @@ class FaceSwapInsightFace():
             out = ort_outs[0]   # [B,3,H,W]
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
-        except Exception as e:
+        except Exception as batch_err:
             # If batch inference fails (e.g. TRT shape restriction or static-batch model),
             # fall back gracefully to running single face swaps sequentially.
+            print(f"[swap] RunBatch: batch inference failed ({batch_err!r}); "
+                  f"falling back to sequential single-frame swaps.")
             results = []
             for t in temp_frames:
                 res = self.Run(source_face, target_face, t)
@@ -703,8 +705,10 @@ class FaceSwapInsightFace():
             out = ort_outs[0]
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
-        except Exception as e:
+        except Exception as batch_err:
             # Fall back to single-face swaps if multi-batch inference fails
+            print(f"[swap] RunBatchMulti: batch inference failed ({batch_err!r}); "
+                  f"falling back to sequential single-frame swaps.")
             results = []
             for src, tgt, blob in requests:
                 res = self.Run(src, tgt, blob)

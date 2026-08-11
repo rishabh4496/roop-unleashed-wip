@@ -278,6 +278,7 @@ export default function QualityProfilesModal({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close quality profiles modal"
               className="h-8 w-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white flex items-center justify-center transition-colors"
             >
               ✕
@@ -529,6 +530,7 @@ export default function QualityProfilesModal({
                               type="button"
                               onClick={() => handleDeleteCustomProfile(prof)}
                               title="Delete custom profile"
+                              aria-label={`Delete custom profile ${prof.name}`}
                               className="p-1.5 rounded text-red-400 hover:bg-red-500/20 transition-colors"
                             >
                               <Icon.trash size={13} />
