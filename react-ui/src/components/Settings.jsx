@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { getJSON, postJSON } from '../api';
-import { Section, Select, Slider, Toggle, TextInput } from './ui';
+import { Section, Select, Slider, Toggle, TextInput, MotionIcon } from './ui';
 import ThemeGallery from './ThemeGallery';
 import ThemeStudio from './ThemeStudio';
 import { allThemes } from '../themes';
@@ -18,7 +18,7 @@ import { Icon } from '../icons';
 // the section is the natural unit for "put this group back how it was", and
 // deriving the key list from the children means it cannot fall out of step with
 // the controls actually rendered.
-function FilterSection({ title, query, onlyModified, onResetKeys, children, ...rest }) {
+function FilterSection({ title, icon, query, onlyModified, onResetKeys, children, ...rest }) {
   const q = (query || '').trim().toLowerCase();
   const titleMatch = !!q && title.toLowerCase().includes(q);
   const all = React.Children.toArray(children);
@@ -51,7 +51,7 @@ function FilterSection({ title, query, onlyModified, onResetKeys, children, ...r
     </button>
   ) : null;
 
-  return <Section title={title} action={action} {...rest}>{kids}</Section>;
+  return <Section title={title} icon={icon} action={action} {...rest}>{kids}</Section>;
 }
 
 export default function Settings({ meta, settings, setSettings, notify }) {
@@ -314,7 +314,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         )}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
-        <FilterSection title="Server" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+        <FilterSection title="Server" icon={Icon.settings} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <Toggle label="Public server (share)" {...bindToggle('server_share')} />
           <Toggle label="Clear output folder before each run" {...bindToggle('clear_output')} />
           <TextInput label="Server name" info="blank = local" {...bind('server_name', '')} placeholder="127.0.0.1" />
@@ -327,7 +327,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             or info, and this section's children are a bare heading and the
             gallery — neither carries one, so under the old title searching for
             the most obvious word for this control hid it. */}
-        <FilterSection title="Appearance & Theme" query={query}>
+        <FilterSection title="Appearance & Theme" icon={Icon.theme} query={query}>
           {/* Light/dark pairing. With this on, `selected_theme` is ignored and
               the OS decides which half of the pair is live — so the gallery
               below switches to picking that half rather than the theme. */}
@@ -371,7 +371,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           />
         </FilterSection>
 
-        <FilterSection title="Performance" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+        <FilterSection title="Performance" icon={Icon.cpu} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <Select label="Provider" info="Inference sessions are built at startup — provider and precision changes take effect after restarting the app." {...bind('provider')} options={meta.providers} />
           {p.provider === 'tensorrt' && (
             <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." {...bind('trt_precision', 'mixed')} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
@@ -406,14 +406,16 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           {/* GPU & Thread Benchmark Card */}
           <div className="col-span-full p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3 mt-2">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
-              <div>
-                <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Icon.cpu className="text-[var(--accent)]" size={16} />
-                  GPU & Thread Benchmark Suite
-                </span>
-                <p className="text-nano text-white/50 mt-0.5">
-                  Run a live hardware throughput test to measure maximum GPU speed without quality loss or VRAM thrashing.
-                </p>
+              <div className="flex items-center gap-3">
+                <MotionIcon icon={Icon.cpu} size="md" variant="accent" animate={benchmarking ? 'spin' : false} />
+                <div>
+                  <span className="text-xs font-bold text-white block">
+                    GPU & Thread Benchmark Suite
+                  </span>
+                  <p className="text-nano text-white/50 mt-0.5">
+                    Run a live hardware throughput test to measure maximum GPU speed without quality loss or VRAM thrashing.
+                  </p>
+                </div>
               </div>
 
               <button
@@ -474,7 +476,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           </div>
         </FilterSection>
 
-        <FilterSection title="Advanced performance (restart to apply)" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+        <FilterSection title="Advanced performance (restart to apply)" icon={Icon.meter} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <p className="text-xs text-white/40 -mt-2">These override the launcher env and the VRAM auto-tuner. Leave on "auto" unless you know what you're tuning. Changes take effect after restarting the app.</p>
           <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — TensorRT contexts for the SWAPPER only; it does not affect face detection. 'auto' selects by VRAM: <7GB = 0 (disabled), 7-11.5GB = 2, 11.5-15.5GB = 4, 15.5GB+ = 8. Lower this first if you need to free VRAM for another pool." {...bind('perf_trt_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking, and the width of 'Analyzing faces'. LOWERING it slows that stage close to proportionally. DO NOT just raise it to match Max threads. Each instance carries its own model set plus a copy of the detector (retinaface_r50 is ~104MB), and on a 12GB card 8 does not fit alongside the swapper pool: measured, it ran out of VRAM and thrashed from 11.8 fps down to 0.5 and still falling, at 95% VRAM. The auto tier (12GB = 4) is chosen to leave that headroom. If you raise it, go one step at a time and watch VRAM — 5 or 6 may fit, 8 does not. Raising it only helps when the stage is DETECTION-bound. Check STAGE TIMING (ROOP_PROFILE=1): if track_decode per frame exceeds track_detect divided by this pool size, the stage is waiting on the video decoder instead and more instances buy nothing but VRAM." {...bind('perf_detmask_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
@@ -485,7 +487,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed performance execution breakdown in the terminal window. 'auto' defaults to 'on'." {...bind('perf_profile', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
         </FilterSection>
 
-        <FilterSection title="Output" query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
+        <FilterSection title="Output" icon={Icon.outputs} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <Select label="Image format" {...bind('output_image_format')} options={meta.image_formats} />
           <Select label="Video format" {...bind('output_video_format')} options={meta.video_formats} />
           <Select label="Video codec" {...bind('output_video_codec')} options={meta.video_codecs} />
@@ -543,9 +545,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-white/10 pb-4">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-[var(--accent)]/15 border border-[var(--accent)]/30 text-[var(--accent)]">
-                  <Icon.cpu size={22} className="animate-spin" />
-                </div>
+                <MotionIcon icon={Icon.cpu} size="lg" variant="accent" animate="spin" />
                 <div>
                   <h3 className="text-base font-bold text-white flex items-center gap-2">
                     In-Depth GPU Hardware Benchmark

@@ -50,8 +50,8 @@ const Stat = ({ icon: Ico, label, value, sub, tone, onClick, title }) => {
           : 'bg-white/[0.03] border-white/[0.08]'
       } ${onClick ? 'hover:border-white/25 cursor-pointer' : ''}`}
     >
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <Ico size={12} className={tone === 'accent' ? 'text-[var(--accent)]' : 'text-white/35'} />
+      <div className="flex items-center gap-2 mb-2">
+        <MotionIcon icon={Ico} size="sm" variant={tone === 'accent' ? 'accent' : 'subtle'} />
         <span className="text-nano font-semibold uppercase tracking-[0.12em] text-white/45">{label}</span>
       </div>
       <div className={`text-title font-bold tabular-nums leading-none ${tone === 'accent' ? 'text-[var(--accent)]' : 'text-white/90'}`}>
@@ -210,6 +210,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
         <Reveal>
           <Section
             title="Recent runs"
+            icon={Icon.history}
             action={history?.length ? (
               <button type="button" onClick={() => setTab('history')}
                       className="text-nano font-semibold text-white/45 hover:text-white apple-transition flex items-center gap-1">
@@ -267,6 +268,7 @@ export default function Home({ progress, setTab, setSettings, notify }) {
         <Reveal>
           <Section
             title="Latest outputs"
+            icon={Icon.outputs}
             action={outputs?.files?.length ? (
               <button type="button" onClick={() => setTab('gallery')}
                       className="text-nano font-semibold text-white/45 hover:text-white apple-transition flex items-center gap-1">

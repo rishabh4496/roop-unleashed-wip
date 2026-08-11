@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { getJSON, postJSON } from './api';
-import { Toasts, Confetti } from './components/ui';
+import { Toasts, Confetti, MotionIcon } from './components/ui';
 import CommandPalette from './components/CommandPalette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
@@ -757,9 +757,7 @@ export default function App() {
       {/* Floating Header Capsule */}
       <header className="sticky top-4 z-40 mx-auto max-w-none w-[98%] rounded-2xl glass-panel px-5 py-3 flex flex-col md:flex-row items-center justify-between gap-4 border-white/10">
         <div className="flex items-center gap-3">
-          <span className="grid place-items-center h-9 w-9 rounded-xl bg-[var(--accent)]/12 border border-[var(--accent)]/25 text-[var(--accent)]">
-            <Icon.brand size={18} />
-          </span>
+          <MotionIcon icon={Icon.brand} size="md" variant="accent" animate="pulse" />
           <div>
             <h1 className="text-lead font-bold tracking-tight text-white/95 flex items-center gap-1.5">
               Roop Unleashed <span className="text-white/35 font-medium">Studio</span>
@@ -874,29 +872,29 @@ export default function App() {
           type="button"
           onClick={() => setShowHud((v) => !v)}
           title="Toggle Hardware Telemetry HUD"
-          className={`hidden md:flex items-center gap-1.5 px-3 py-2 rounded-xl border transition-colors text-xs font-medium ${
-            showHud ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-white' : 'bg-white/[0.03] border-white/10 text-white/45 hover:text-white'
+          className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all text-xs font-medium ${
+            showHud ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-white' : 'bg-white/[0.03] border-white/10 text-white/60 hover:text-white'
           }`}
         >
-          <Icon.settings size={14} /> HUD
+          <MotionIcon icon={Icon.settings} size="sm" variant={showHud ? 'accent' : 'subtle'} /> HUD
         </button>
 
         <button
           type="button"
           onClick={() => setShowSnapshotsModal(true)}
           title="Manage Workspace Session Snapshots"
-          className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white transition-colors text-xs font-medium"
+          className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/60 hover:text-white transition-all text-xs font-medium"
         >
-          <Icon.history size={14} /> Snapshots
+          <MotionIcon icon={Icon.history} size="sm" variant="subtle" /> Snapshots
         </button>
 
         <button
           type="button"
           onClick={() => setShowPalette(true)}
           title="Command palette (Ctrl/⌘ + K)"
-          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-white/45 hover:text-white hover:border-white/20 hover:bg-white/[0.06] transition-colors text-xs font-medium"
+          className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/60 hover:text-white hover:border-white/20 transition-all text-xs font-medium"
         >
-          <Icon.search size={14} /> Search
+          <MotionIcon icon={Icon.search} size="sm" variant="subtle" /> Search
           <kbd className="text-nano font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/10">Ctrl K</kbd>
         </button>
         <div className="hidden md:flex items-center gap-0.5 px-1 py-1 rounded-xl bg-white/[0.03] border border-white/10" title="UI zoom (Ctrl + / − / 0)">

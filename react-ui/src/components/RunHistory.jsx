@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getJSON, postJSON, fileUrl } from '../api';
-import { Button, Card } from './ui';
+import { Button, Card, MotionIcon } from './ui';
 import { confirmDialog } from './confirm';
 import { LABELS, CHIP_KEYS, fmtDur, fmtVal, primitives, diffSettings } from './settingsDiff';
 import { Icon } from '../icons';
@@ -194,8 +194,8 @@ export default function RunHistory({ notify, setSettings, setTab }) {
       {recentRunsForGraph.length > 0 && (
         <Card className="p-4 space-y-2 bg-black/40 border border-white/10">
           <div className="flex items-center justify-between text-xs">
-            <span className="font-bold text-white/80 flex items-center gap-1.5">
-              <Icon.meter size={14} className="text-emerald-400" /> Recent Runs Throughput (FPS)
+            <span className="font-bold text-white/90 flex items-center gap-2">
+              <MotionIcon icon={Icon.meter} size="sm" variant="emerald" /> Recent Runs Throughput (FPS)
             </span>
             <span className="text-micro text-white/40 font-mono">Last 12 Runs</span>
           </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
-import { Card, Section, Button, InfoBadge } from './ui';
+import { Card, Section, Button, InfoBadge, MotionIcon } from './ui';
 import { Icon } from '../icons';
 import useQueue from './faceswap/useQueue';
 import QueuePanel from './faceswap/QueuePanel';
@@ -900,8 +900,8 @@ export default function BatchSwap({ settings = {}, notify }) {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#121216] border border-white/10 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl animate-scale-in text-white">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-lg font-bold flex items-center gap-2 text-yellow-400">
-                <Icon.wand size={20} />
+              <h3 className="text-lg font-bold flex items-center gap-2.5 text-yellow-400">
+                <MotionIcon icon={Icon.wand} size="md" variant="amber" animate="pulse" />
                 Pre-flight Batch Health Breakdown
               </h3>
               <button

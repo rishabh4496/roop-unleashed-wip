@@ -105,7 +105,7 @@ export default function Extras({ notify, registerFileListener }) {
       </Section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
-        <Section title="Input & transform">
+        <Section title="Input & transform" icon={Icon.editor}>
           <label className="block cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
             <div className="px-4 py-5 rounded-lg border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 text-center text-sm text-white/60 mb-4">
               {fileName || 'Pick an image or video'}
@@ -138,7 +138,7 @@ export default function Extras({ notify, registerFileListener }) {
           <Slider label="Output FPS (video)" min={1} max={120} step={1} value={opts.fps} onChange={(v) => set('fps', v)} />
         </Section>
 
-        <Section title="Crop (%)">
+        <Section title="Crop (%)" icon={Icon.split}>
           <Slider label="Left" min={0} max={49} step={1} value={opts.crop_left} onChange={(v) => set('crop_left', v)} />
           <Slider label="Right" min={0} max={49} step={1} value={opts.crop_right} onChange={(v) => set('crop_right', v)} />
           <Slider label="Top" min={0} max={49} step={1} value={opts.crop_top} onChange={(v) => set('crop_top', v)} />
@@ -149,7 +149,7 @@ export default function Extras({ notify, registerFileListener }) {
           </div>
         </Section>
 
-        <Section title="AI frame post-processing">
+        <Section title="AI frame post-processing" icon={Icon.wand}>
           <p className="text-xs text-white/40 -mt-2">Runs on the file picked above. Works on images and videos (video is processed frame-by-frame — can be slow).</p>
           <Select label="Operation" value={operation} onChange={setOperation}
             options={frameOps ? Object.keys(frameOps) : ['upscale', 'colorize', 'filter']} />

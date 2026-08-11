@@ -68,10 +68,58 @@ export const Card = ({
   );
 };
 
-export const Section = ({ title, action, children, className = '', collapsible = false, defaultOpen = true, tilt, glare, hover, elevation }) => {
+const MOTION_ICON_SIZES = {
+  sm: { container: 'h-6 w-6 rounded-lg', iconSize: 12 },
+  md: { container: 'h-8 w-8 rounded-xl', iconSize: 16 },
+  lg: { container: 'h-10 w-10 rounded-xl', iconSize: 20 },
+  xl: { container: 'h-12 w-12 rounded-2xl', iconSize: 24 },
+};
+
+const MOTION_ICON_VARIANTS = {
+  accent: 'bg-[var(--accent)]/15 border-[var(--accent)]/30 text-[var(--accent)] shadow-[0_0_12px_rgba(233,69,96,0.25)]',
+  emerald: 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.25)]',
+  amber: 'bg-amber-500/15 border-amber-500/30 text-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.25)]',
+  purple: 'bg-purple-500/15 border-purple-500/30 text-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.25)]',
+  cyan: 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.25)]',
+  subtle: 'bg-white/[0.05] border-white/10 text-white/70 hover:text-white hover:bg-white/10',
+};
+
+export const MotionIcon = ({
+  icon: IconComp,
+  size = 'md',
+  variant = 'accent',
+  animate = false,
+  spin = false,
+  className = '',
+  iconClassName = '',
+}) => {
+  if (!IconComp) return null;
+  const sz = MOTION_ICON_SIZES[size] || MOTION_ICON_SIZES.md;
+  const varStyle = MOTION_ICON_VARIANTS[variant] || MOTION_ICON_VARIANTS.accent;
+
+  return (
+    <motion.span
+      whileHover={{ scale: 1.1, rotate: [0, -4, 4, 0] }}
+      whileTap={{ scale: 0.92 }}
+      transition={spring.snappy}
+      className={`inline-grid place-items-center border backdrop-blur-md transition-all shrink-0 ${sz.container} ${varStyle} ${className}`}
+    >
+      <IconComp
+        size={sz.iconSize}
+        className={`${spin || animate === 'spin' ? 'animate-spin' : animate === 'pulse' ? 'animate-pulse' : ''} ${iconClassName}`}
+      />
+    </motion.span>
+  );
+};
+
+export const Section = ({ title, icon, iconVariant = 'accent', action, children, className = '', collapsible = false, defaultOpen = true, tilt, glare, hover, elevation }) => {
   const [open, setOpen] = useState(defaultOpen);
   const showBody = !collapsible || open;
-  const marker = <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />;
+  const marker = icon ? (
+    <MotionIcon icon={icon} size="sm" variant={iconVariant} />
+  ) : (
+    <span className="h-3.5 w-[3px] rounded-full bg-[var(--accent)]/80 shrink-0" />
+  );
   const label = 'text-mini font-semibold uppercase tracking-[0.14em] text-white/45';
   return (
     <Card className={`p-5 ${className}`} tilt={tilt} glare={glare} hover={hover} elevation={elevation}>

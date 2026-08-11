@@ -2224,7 +2224,7 @@ export default function FaceSwap({
             as with column 1: the sources and targets a running job baked in are
             already its own, so editing these is setting up the NEXT job. */}
         <div className={`w-full 2xl:w-[360px] 3xl:w-[440px] 4xl:w-[500px] shrink-0 space-y-6 select-none ${!showRightPanel ? 'hidden' : ''}`}>
-          <Section title="Target faces">
+          <Section title="Target media" icon={Icon.faceswap}>
             <PersonGroups
               targetFaces={targetFaces}
               targetGroups={targetGroups}
@@ -2414,7 +2414,7 @@ export default function FaceSwap({
             )}
           </Section>
           
-          <Section title="Source images / facesets">
+          <Section title="Source images / facesets" icon={Icon.faces}>
           <FileDrop accept="image/*,.fsz" multiple label="Add source faces" onFiles={onAddSource} busy={uploadingSrc} hint="drop images or .fsz here"
                     progress={srcProgress} onCancel={() => srcAbortRef.current?.abort()} />
           <FacesetLibrary
