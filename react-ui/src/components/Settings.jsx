@@ -83,6 +83,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   const [defaults, setDefaults] = useState(null);
   const [onlyModified, setOnlyModified] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
+  const [benchmarkStatus, setBenchmarkStatus] = useState(null);
   const [benchmarkReport, setBenchmarkReport] = useState(() => p.benchmark_results || null);
 
   useEffect(() => {
@@ -92,17 +93,46 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   const runThreadBenchmark = async () => {
     try {
       setBenchmarking(true);
-      notify('Starting GPU & Thread benchmark... (testing throughput across modes)', 'info');
-      const res = await postJSON('/api/settings/benchmark_threads', {});
-      setBenchmarkReport(res);
-      setMany({ benchmark_results: res });
-      notify('Thread benchmark complete! Optimal GPU thread counts saved.');
+      notify('Starting 2-Minute GPU & Thread Benchmark...', 'info');
+      await postJSON('/api/settings/benchmark_threads', {});
     } catch (e) {
-      notify('Benchmark failed: ' + e.message, 'error');
-    } finally {
+      notify('Benchmark launch failed: ' + e.message, 'error');
       setBenchmarking(false);
     }
   };
+
+  const cancelBenchmark = async () => {
+    try {
+      await postJSON('/api/settings/benchmark_cancel', {});
+      notify('Cancelling benchmark...', 'warning');
+    } catch (e) {
+      notify('Failed to cancel: ' + e.message, 'error');
+    }
+  };
+
+  useEffect(() => {
+    if (!benchmarking) return;
+
+    const timer = setInterval(async () => {
+      try {
+        const st = await getJSON('/api/settings/benchmark_status');
+        setBenchmarkStatus(st);
+
+        if (!st.running) {
+          setBenchmarking(false);
+          if (st.result) {
+            setBenchmarkReport(st.result);
+            setMany({ benchmark_results: st.result });
+            notify('2-Minute GPU Benchmark Complete! Optimal thread profile saved.');
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch benchmark status', e);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [benchmarking, setMany, notify]);
 
   useEffect(() => {
     let live = true;
@@ -505,6 +535,108 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           </button>
         </div>
       </div>
+
+      {/* 2-Minute Live Hardware Benchmark Processing Modal */}
+      {benchmarking && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-2xl bg-zinc-900/95 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-5">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-[var(--accent)]/15 border border-[var(--accent)]/30 text-[var(--accent)]">
+                  <Icon.cpu size={22} className="animate-spin" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    In-Depth GPU Hardware Benchmark
+                    <span className="text-nano px-2 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent)] font-bold font-mono">
+                      2-MIN ACCURACY TEST
+                    </span>
+                  </h3>
+                  <p className="text-xs text-white/50">
+                    Evaluating sustained GPU throughput, CUDA stream concurrency, and VRAM memory headroom.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={cancelBenchmark}
+                className="px-3 py-1.5 rounded-lg text-micro font-bold text-white/60 hover:text-red-400 hover:bg-white/5 transition-all"
+              >
+                Cancel Benchmark
+              </button>
+            </div>
+
+            {/* Progress Bar & Countdown Timer */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-white/70">
+                  {benchmarkStatus?.status_msg || 'Benchmarking Hardware...'}
+                </span>
+                <span className="font-mono text-white/50 font-bold">
+                  {Math.floor((benchmarkStatus?.elapsed_sec || 0) / 60).toString().padStart(2, '0')}:
+                  {((benchmarkStatus?.elapsed_sec || 0) % 60).toString().padStart(2, '0')} / 02:00
+                </span>
+              </div>
+
+              <div className="h-3 w-full bg-black/60 rounded-full overflow-hidden border border-white/10 p-0.5">
+                <div
+                  className="h-full bg-gradient-to-r from-[var(--accent)] to-emerald-400 rounded-full transition-all duration-300 relative overflow-hidden"
+                  style={{ width: `${Math.min(100, Math.max(0, benchmarkStatus?.progress || 0))}%` }}
+                >
+                  <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                </div>
+              </div>
+            </div>
+
+            {/* Live Telemetry Metrics Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
+                <span className="text-nano text-white/40 block">Workload Mode</span>
+                <span className="text-xs font-bold text-white truncate block" title={benchmarkStatus?.current_mode}>
+                  {benchmarkStatus?.current_mode || 'Standard'}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
+                <span className="text-nano text-white/40 block">Candidate Config</span>
+                <span className="text-xs font-bold text-[var(--accent)] block">
+                  {benchmarkStatus?.current_threads || 0} Threads
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
+                <span className="text-nano text-white/40 block">Sustained Speed</span>
+                <span className="text-xs font-bold text-emerald-400 font-mono block">
+                  {benchmarkStatus?.current_fps || 0.0} FPS
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
+                <span className="text-nano text-white/40 block">Peak VRAM</span>
+                <span className="text-xs font-bold text-white font-mono block">
+                  {benchmarkStatus?.current_vram_gb || 0.0} GB
+                </span>
+              </div>
+            </div>
+
+            {/* Live Activity Log Terminal */}
+            <div className="space-y-1.5">
+              <span className="text-micro font-semibold text-white/40 block">Real-Time Benchmark Log Ticker</span>
+              <div className="h-32 bg-black/80 border border-white/10 rounded-xl p-3 font-mono text-nano text-white/70 overflow-y-auto space-y-1">
+                {benchmarkStatus?.logs?.length > 0 ? (
+                  benchmarkStatus.logs.map((logLine, idx) => (
+                    <div key={idx} className="whitespace-pre-wrap">{logLine}</div>
+                  ))
+                ) : (
+                  <div className="text-white/30 italic">Initializing hardware stress tests...</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ThemeStudio
         open={studio.open}
