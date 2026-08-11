@@ -143,7 +143,10 @@ export default function Extras({ notify, registerFileListener }) {
           <Slider label="Right" min={0} max={49} step={1} value={opts.crop_right} onChange={(v) => set('crop_right', v)} />
           <Slider label="Top" min={0} max={49} step={1} value={opts.crop_top} onChange={(v) => set('crop_top', v)} />
           <Slider label="Bottom" min={0} max={49} step={1} value={opts.crop_bottom} onChange={(v) => set('crop_bottom', v)} />
-          <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'Processing…' : 'Apply'}</Button>
+          <div className="flex items-center gap-2">
+            <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'Processing…' : 'Apply'}</Button>
+            <Button variant="secondary" onClick={() => setOpts({ resolution: 'Original', rotation: 'None', fps: 30, crop_left: 0, crop_right: 0, crop_top: 0, crop_bottom: 0 })}>Reset</Button>
+          </div>
         </Section>
 
         <Section title="AI frame post-processing">

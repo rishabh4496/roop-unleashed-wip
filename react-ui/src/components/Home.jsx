@@ -293,14 +293,14 @@ export default function Home({ progress, setTab, setSettings, notify }) {
                     className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 hover:border-[var(--accent)]/50 apple-transition group/out"
                   >
                     {f.kind === 'video' ? (
-                      <span className="absolute inset-0 grid place-items-center text-white/30">
-                        <Icon.film size={20} />
-                      </span>
+                      <video
+                        src={fileUrl(`${outputs.path}/${f.name}`)}
+                        muted
+                        preload="metadata"
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
                     ) : (
                       <img
-                        // /api/file resolves an ABSOLUTE path, so the listing's
-                        // output_path has to be rejoined with the basename —
-                        // the name alone silently 404s into a broken tile.
                         src={fileUrl(`${outputs.path}/${f.name}`)}
                         alt={f.name}
                         loading="lazy"
