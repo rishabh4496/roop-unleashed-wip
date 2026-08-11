@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getJSON, fileUrl } from '../api';
-import { Card, Section, Skeleton, AnimatedNumber } from './ui';
+import { Card, Section, Skeleton, AnimatedNumber, MotionIcon } from './ui';
 import { Stagger, Reveal, motion, spring } from '../motion';
 import { CHIP_KEYS, LABELS, fmtVal, fmtDur } from './settingsDiff';
 import { Icon } from '../icons';

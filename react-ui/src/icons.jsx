@@ -24,7 +24,7 @@ import {
   Drama, Users, WandSparkles, FolderOpen, History, Settings2, Layers,
   Zap, Search, Play, Pause, Square, Plus, RefreshCw, Keyboard, Palette,
   Download, Upload, Trash2, X, Check, TriangleAlert, Sparkles, Feather,
-  Columns2, SquareSplitVertical, Inbox, Clock, Gauge, Cpu,
+  Columns2, SquareSplitVertical, Inbox, Clock, Gauge, Cpu, Star,
   CircleCheck, CircleX, CircleAlert, Info, Unplug, Bell, Radio, Image,
   Pencil, Film, PanelLeft, PanelRight, PanelBottom, LayoutGrid, FolderOpen as Folder,
   Eye, ExternalLink, ChevronRight,
@@ -80,10 +80,9 @@ export const Icon = {
 
   // Actions.
   queue: make(Plus, 'queue'),
-  // Same glyph as `queue`, different ROLE — "create a new thing" is not
-  // "append to the batch", and keeping them separate means either can be
-  // redrawn without disturbing the other.
   add: make(Plus, 'add'),
+  plus: make(Plus, 'plus'),
+  star: make(Star, 'star'),
   // Revert a control to its default. Deliberately counter-clockwise, so it
   // never reads as `refresh` (which re-fetches rather than undoes).
   reset: make(RotateCcw, 'reset'),
