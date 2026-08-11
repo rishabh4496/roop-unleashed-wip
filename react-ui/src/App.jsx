@@ -285,7 +285,7 @@ export default function App() {
         return updated;
       });
       notify(`Saved Workspace Snapshot: "${name}"`, 'success');
-  }, [tab, settings, activeQualityProfile, notify]);
+  }, [tab, settings, activeQualityProfile]);
 
   const loadSessionSnapshot = useCallback((snap) => {
     if (snap.settings) setSettings(snap.settings);
@@ -293,7 +293,7 @@ export default function App() {
     if (snap.activeQualityProfile) setActiveQualityProfile(snap.activeQualityProfile);
     setShowSnapshotsModal(false);
     notify(`Loaded Workspace Snapshot: "${snap.name}"`, 'success');
-  }, [notify]);
+  }, []);
 
   const deleteSessionSnapshot = useCallback((id) => {
     setSnapshots((prev) => {
