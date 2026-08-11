@@ -30,6 +30,7 @@ export default function BatchSwap({ settings = {}, notify }) {
   const [targetNames, setTargetNames] = useState([]);
   const [loadingState, setLoadingState] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [showFacesetLib, setShowFacesetLib] = useState(false);
 
   // Queue handle
   const queue = useQueue({ notify });
@@ -663,16 +664,16 @@ export default function BatchSwap({ settings = {}, notify }) {
             </Button>
           </label>
 
-          {/* Persistent Faceset Library Browser */}
-          <FacesetLibrary
-            canSave={sourceFaces.length > 0}
-            onLoaded={(r) => {
-              setSourceFaces(r.source_faces || []);
-              if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info);
-              refreshBackendState();
-            }}
-            notify={notify}
-          />
+          {/* Persistent Faceset Library Toggle Button */}
+          <Button
+            size="sm"
+            variant={showFacesetLib ? 'primary' : 'secondary'}
+            onClick={() => setShowFacesetLib((v) => !v)}
+            title="Open persistent Faceset Library"
+          >
+            <Icon.faces size={14} className="mr-1" />
+            {showFacesetLib ? 'Hide Library' : 'Faceset Library'}
+          </Button>
 
           {/* Preset Export / Import */}
           <Button size="sm" variant="secondary" onClick={exportBatchPreset} title="Export Batch Preset JSON">
@@ -694,6 +695,21 @@ export default function BatchSwap({ settings = {}, notify }) {
         </div>
       </div>
 
+      {/* ── Persistent Faceset Library Panel (Full-Width) ── */}
+      {showFacesetLib && (
+        <div className="animate-fade-in mb-3">
+          <FacesetLibrary
+            canSave={sourceFaces.length > 0}
+            onLoaded={(r) => {
+              setSourceFaces(r.source_faces || []);
+              if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info);
+              refreshBackendState();
+            }}
+            notify={notify}
+          />
+        </div>
+      )}
+
       {/* ── Summary Library Strip ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Source Facesets Summary */}
@@ -704,19 +720,25 @@ export default function BatchSwap({ settings = {}, notify }) {
               Loaded Source Facesets ({sourceFaces.length})
             </span>
 
-            <FacesetLibrary
-              canSave={sourceFaces.length > 0}
-              onLoaded={(r) => {
-                setSourceFaces(r.source_faces || []);
-                if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info);
-                refreshBackendState();
-              }}
-              notify={notify}
-            />
+            <button
+              type="button"
+              onClick={() => setShowFacesetLib((v) => !v)}
+              className="text-micro font-semibold text-[var(--accent)] hover:underline flex items-center gap-1"
+            >
+              <Icon.faces size={12} />
+              {showFacesetLib ? 'Hide Library' : 'Browse Library'}
+            </button>
           </div>
           {sourceFaces.length === 0 ? (
-            <div className="text-xs text-white/40 italic p-3 text-center border border-dashed border-white/10 rounded-xl">
-              No source facesets loaded. Click "+ Add Sources" above to upload images or .fsz files.
+            <div className="text-xs text-white/40 italic p-3 text-center border border-dashed border-white/10 rounded-xl space-y-1.5">
+              <p>No source facesets loaded in active workspace.</p>
+              <button
+                type="button"
+                onClick={() => setShowFacesetLib(true)}
+                className="text-micro text-[var(--accent)] font-semibold hover:underline block mx-auto"
+              >
+                + Browse & Load from Faceset Library
+              </button>
             </div>
           ) : (
             <div className="flex flex-wrap gap-2.5 max-h-36 overflow-y-auto pr-1">
