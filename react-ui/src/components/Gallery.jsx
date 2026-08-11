@@ -614,25 +614,45 @@ function VideoHoverCard({ file, srcUrl, dateStr, sizeStr, onDelete, onReveal, on
         )}
         {isVideo ? (
           inView ? (
-          <video
-            ref={videoRef}
-            src={srcUrl}
-            muted
-            loop
-            playsInline
-            preload="metadata"
-            className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-102"
-          />
+            <>
+              <video
+                ref={videoRef}
+                src={srcUrl}
+                muted
+                loop
+                playsInline
+                preload="metadata"
+                className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-102"
+                onError={(e) => {
+                  e.target.style.display = 'none';
+                  if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'flex';
+                }}
+              />
+              <div className="hidden w-full h-full flex-col items-center justify-center text-white/30 text-nano p-2 text-center bg-black/50">
+                <Icon.film size={24} className="mb-1 opacity-50" />
+                <span className="truncate w-full">{file.name}</span>
+              </div>
+            </>
           ) : (
             <div className="w-full h-full flex items-center justify-center text-white/15"><Icon.film size={30} /></div>
           )
         ) : (
-          <img
-            src={srcUrl}
-            alt={file.name}
-            loading="lazy"
-            className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-105"
-          />
+          <>
+            <img
+              src={srcUrl}
+              alt={file.name}
+              loading="lazy"
+              className="w-full h-full object-contain pointer-events-none transition-transform duration-500 group-hover/card:scale-105"
+              onError={(e) => {
+                e.target.style.display = 'none';
+                if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'flex';
+              }}
+            />
+            <div className="hidden w-full h-full flex-col items-center justify-center text-white/30 text-nano p-2 text-center bg-black/50">
+              <Icon.still size={24} className="mb-1 opacity-50" />
+              <span className="truncate w-full">{file.name}</span>
+            </div>
+          </>
         )}
 
         {/* Video badge */}

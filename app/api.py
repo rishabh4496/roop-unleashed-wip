@@ -3007,7 +3007,17 @@ def get_file(path: str, request: Request):
     so the finished video can be moved out of the output folder while it's still
     showing in the player.
     """
-    roots = [API_TEMP, os.path.join(os.getcwd(), "temp"), _faceset_library_dir()]
+    roots = [
+        API_TEMP,
+        os.path.join(os.getcwd(), "temp"),
+        os.path.join(os.getcwd(), ".pinokio-temp"),
+        os.path.abspath(".pinokio-temp"),
+        os.path.abspath(os.getcwd()),
+        _faceset_library_dir(),
+    ]
+    parent_dir = os.path.abspath(os.path.join(os.getcwd(), ".."))
+    if os.path.exists(parent_dir):
+        roots.append(parent_dir)
     out_dir = getattr(roop_globals, "output_path", "") or ""
     if out_dir:
         roots.append(out_dir)

@@ -284,36 +284,52 @@ export default function Home({ progress, setTab, setSettings, notify }) {
               </p>
             ) : (
               <div className="grid grid-cols-3 gap-2">
-                {outputs.files.slice(0, 6).map((f) => (
-                  <motion.button
-                    key={f.name}
-                    type="button"
-                    onClick={() => setTab('gallery')}
-                    whileHover={{ y: -3 }}
-                    transition={spring.snappy}
-                    title={f.name}
-                    className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 hover:border-[var(--accent)]/50 apple-transition group/out"
-                  >
-                    {f.kind === 'video' ? (
-                      <video
-                        src={fileUrl(`${outputs.path}/${f.name}`)}
-                        muted
-                        preload="metadata"
-                        className="w-full h-full object-cover pointer-events-none"
-                      />
-                    ) : (
-                      <img
-                        src={fileUrl(`${outputs.path}/${f.name}`)}
-                        alt={f.name}
-                        loading="lazy"
-                        className="w-full h-full object-cover"
-                      />
-                    )}
-                    <span className="absolute inset-x-0 bottom-0 px-1.5 py-1 bg-black/70 backdrop-blur-sm text-nano text-white/70 truncate text-left">
-                      {f.name}
-                    </span>
-                  </motion.button>
-                ))}
+                {outputs.files.slice(0, 6).map((f) => {
+                  const targetPath = f.name.includes('/') || f.name.includes('\\') ? f.name : `${outputs.path}/${f.name}`;
+                  const src = fileUrl(targetPath);
+                  return (
+                    <motion.button
+                      key={f.name}
+                      type="button"
+                      onClick={() => setTab('gallery')}
+                      whileHover={{ y: -3 }}
+                      transition={spring.snappy}
+                      title={f.name}
+                      className="relative aspect-video rounded-lg overflow-hidden bg-black/40 border border-white/10 hover:border-[var(--accent)]/50 apple-transition group/out"
+                    >
+                      {f.kind === 'video' ? (
+                        <video
+                          src={src}
+                          muted
+                          preload="metadata"
+                          className="w-full h-full object-cover pointer-events-none"
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'flex';
+                          }}
+                        />
+                      ) : (
+                        <img
+                          src={src}
+                          alt={f.name}
+                          loading="lazy"
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            if (e.target.nextElementSibling) e.target.nextElementSibling.style.display = 'flex';
+                          }}
+                        />
+                      )}
+                      <div className="hidden absolute inset-0 bg-white/5 flex-col items-center justify-center text-white/30 text-nano pointer-events-none p-2 text-center">
+                        <Icon.still size={18} className="mb-1 opacity-50" />
+                        <span className="truncate w-full">{f.name}</span>
+                      </div>
+                      <span className="absolute inset-x-0 bottom-0 px-1.5 py-1 bg-black/70 backdrop-blur-sm text-nano text-white/70 truncate text-left z-10">
+                        {f.name}
+                      </span>
+                    </motion.button>
+                  );
+                })}
               </div>
             )}
           </Section>
