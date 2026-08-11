@@ -4,6 +4,7 @@ import { Card, Section, Button, InfoBadge } from './ui';
 import { Icon } from '../icons';
 import useQueue from './faceswap/useQueue';
 import QueuePanel from './faceswap/QueuePanel';
+import FacesetLibrary from './faceswap/FacesetLibrary';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 
 // Helper to convert index to target preview URL
@@ -662,6 +663,17 @@ export default function BatchSwap({ settings = {}, notify }) {
             </Button>
           </label>
 
+          {/* Persistent Faceset Library Browser */}
+          <FacesetLibrary
+            canSave={sourceFaces.length > 0}
+            onLoaded={(r) => {
+              setSourceFaces(r.source_faces || []);
+              if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info);
+              refreshBackendState();
+            }}
+            notify={notify}
+          />
+
           {/* Preset Export / Import */}
           <Button size="sm" variant="secondary" onClick={exportBatchPreset} title="Export Batch Preset JSON">
             <Icon.download size={14} className="mr-1" />
@@ -691,6 +703,16 @@ export default function BatchSwap({ settings = {}, notify }) {
               <Icon.faces size={14} className="text-[var(--accent)]" />
               Loaded Source Facesets ({sourceFaces.length})
             </span>
+
+            <FacesetLibrary
+              canSave={sourceFaces.length > 0}
+              onLoaded={(r) => {
+                setSourceFaces(r.source_faces || []);
+                if (r.source_faces_info) setSourceFacesInfo(r.source_faces_info);
+                refreshBackendState();
+              }}
+              notify={notify}
+            />
           </div>
           {sourceFaces.length === 0 ? (
             <div className="text-xs text-white/40 italic p-3 text-center border border-dashed border-white/10 rounded-xl">

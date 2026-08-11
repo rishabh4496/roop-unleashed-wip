@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { getJSON, postJSON } from '../api';
 import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
@@ -63,10 +63,10 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // would drop the first. They also post immediately rather than waiting for
   // the 500ms autosave, because a theme change is the kind of thing a user
   // verifies by reloading.
-  const setMany = (patch) => {
+  const setMany = useCallback((patch) => {
     setSettings((s) => ({ ...s, ...patch }));
     postJSON('/api/settings', patch).catch(() => {});
-  };
+  }, [setSettings]);
   const [query, setQuery] = useState('');
   const [studio, setStudio] = useState({ open: false, initial: null });
 
