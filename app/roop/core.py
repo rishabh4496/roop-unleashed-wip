@@ -101,7 +101,7 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
             if list_providers[i] == 'CUDAExecutionProvider':
                 cuda_opts = {
                     'device_id': roop.globals.cuda_device_id,
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                    'cudnn_conv_algo_search': 'HEURISTIC',
                     'do_copy_in_default_stream': True,
                     'arena_extend_strategy': 'kNextPowerOfTwo',
                 }
@@ -122,18 +122,6 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                 os.makedirs(precision_cache, exist_ok=True)
 
                 # ── Engine-build tuning, scaled to the GPU ──────────────────
-                # trt_max_workspace_size: scratch-memory CEILING TensorRT may use
-                #   while exploring kernel tactics (TRT only allocates what it
-                #   needs, up to this). In onnxruntime 1.19 the default 0 already
-                #   means "use all available VRAM", so we set an explicit fraction
-                #   of TOTAL VRAM instead: it makes engine builds reproducible
-                #   (independent of momentary free memory) and leaves headroom for
-                #   the multi-context pool + FP32 swapper so a build can't grab the
-                #   whole card. Override the fraction with ROOP_TRT_WORKSPACE_FRACTION.
-                # trt_max_partition_iterations: how hard the EP tries to fold graph
-                #   nodes into TensorRT subgraphs (vs CUDA fallback). Higher = more
-                #   of the model on TRT; only costs extra build time. Override with
-                #   ROOP_TRT_PARTITION_ITERATIONS.
                 try:
                     total_vram = torch.cuda.get_device_properties(roop.globals.cuda_device_id).total_memory
                 except Exception:
@@ -144,17 +132,14 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     try:
                         ws_frac = float(env_frac)
                     except ValueError:
-                        ws_frac = 0.8
+                        ws_frac = 0.4
                 else:
-                    # VRAM-aware default: leave MORE headroom on smaller GPUs so the
-                    # FP32 swapper + multi-context pool can't exhaust the card during
-                    # engine builds. Big cards keep the larger workspace.
-                    if total_gb >= 10:
-                        ws_frac = 0.8
-                    elif total_gb >= 7:
-                        ws_frac = 0.6
-                    else:
+                    if total_gb >= 15:
                         ws_frac = 0.5
+                    elif total_gb >= 10:
+                        ws_frac = 0.4
+                    else:
+                        ws_frac = 0.3
                 ws_frac = max(0.1, min(0.95, ws_frac))
                 workspace_size = int(total_vram * ws_frac) if total_vram else 0
                 print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace fraction {ws_frac} "

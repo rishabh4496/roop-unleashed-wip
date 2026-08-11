@@ -65,7 +65,7 @@ def _auto_pool_defaults():
     if gb < 11.5:
         return 2, 2
     if gb < 15.5:
-        return 6, 6          # 12GB cards (e.g. RTX 4070): 6 swapper, 6 detmask
+        return 4, 4          # 12GB cards (e.g. RTX 4070): 4 swapper, 4 detmask
     return 8, 8              # 16GB+ cards (e.g. RTX 3090/4080/4090): 8 swapper, 8 detmask
 
 

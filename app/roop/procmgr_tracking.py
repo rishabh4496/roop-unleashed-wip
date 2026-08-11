@@ -496,7 +496,7 @@ class TrackingMixin:
 
                 if det_executor is not None:
                     in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox)))
-                    max_in_flight = max(8, pool_workers * 2)
+                    max_in_flight = pool_workers + 2
                     if len(in_flight) >= max_in_flight:
                         done_idx, done_fut = in_flight.popleft()
                         # If this blocks waiting on done_fut, all pool_workers are busy
