@@ -21,7 +21,7 @@
 // glass surfaces.
 import React from 'react';
 import {
-  Drama, Users, WandSparkles, FolderOpen, History, Settings2,
+  Drama, Users, WandSparkles, FolderOpen, History, Settings2, Layers,
   Zap, Search, Play, Pause, Square, Plus, RefreshCw, Keyboard, Palette,
   Download, Upload, Trash2, X, Check, TriangleAlert, Sparkles, Feather,
   Columns2, SquareSplitVertical, Inbox, Clock, Gauge,
@@ -57,8 +57,10 @@ export const Icon = {
   // Navigation — one per tab.
   home: make(House, 'home'),
   faceswap: make(Drama, 'faceswap'),
+  batch: make(Layers, 'batch'),
   faces: make(Users, 'faces'),
   editor: make(WandSparkles, 'editor'),
+  wand: make(WandSparkles, 'wand'),
   outputs: make(FolderOpen, 'outputs'),
   history: make(History, 'history'),
   settings: make(Settings2, 'settings'),

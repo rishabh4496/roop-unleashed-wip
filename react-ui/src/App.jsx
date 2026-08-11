@@ -24,6 +24,7 @@ import { Icon } from './icons';
 // ErrorBoundary below owns the failure case.
 const loadHome = () => import('./components/Home');
 const loadFaceSwap = () => import('./components/FaceSwap');
+const loadBatchSwap = () => import('./components/BatchSwap');
 const loadProcessing = () => import('./components/Processing');
 const loadSettings = () => import('./components/Settings');
 const loadFaceManager = () => import('./components/FaceManager');
@@ -33,6 +34,7 @@ const loadRunHistory = () => import('./components/RunHistory');
 
 const Home = lazy(loadHome);
 const FaceSwap = lazy(loadFaceSwap);
+const BatchSwap = lazy(loadBatchSwap);
 const Processing = lazy(loadProcessing);
 const Settings = lazy(loadSettings);
 const FaceManager = lazy(loadFaceManager);
@@ -59,6 +61,7 @@ function TabFallback() {
 const ALL_TABS = [
   { id: 'home', label: 'Home', icon: Icon.home, preload: loadHome },
   { id: 'faceswap', label: 'Face Swap', icon: Icon.faceswap, preload: loadFaceSwap },
+  { id: 'batch', label: 'Batch Matrix', icon: Icon.batch, preload: loadBatchSwap },
   { id: 'processing', label: 'Processing', icon: Icon.meter, preload: loadProcessing, transient: true },
   { id: 'facemgr', label: 'Face Manager', icon: Icon.faces, preload: loadFaceManager },
   { id: 'extras', label: 'Editor', icon: Icon.editor, preload: loadExtras },
@@ -873,6 +876,14 @@ export default function App() {
                     startTime={startTime}
                     setStartTime={setStartTime}
                     onOpenProcessing={() => { warmTab('processing'); setTab('processing'); }}
+                  />
+                )}
+                {tab === 'batch' && (
+                  <BatchSwap
+                    settings={settings}
+                    notify={notify}
+                    progress={progress}
+                    setTab={setTab}
                   />
                 )}
                 {tab === 'processing' && (
