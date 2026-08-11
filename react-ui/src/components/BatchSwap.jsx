@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getJSON, postFiles, API } from '../api';
+import { getJSON, postJSON, postFiles, API } from '../api';
 import { Card, Section, Button, InfoBadge } from './ui';
 import { Icon } from '../icons';
 import useQueue from './faceswap/useQueue';
@@ -141,9 +141,49 @@ export default function BatchSwap({ settings = {}, notify }) {
       await refreshBackendState();
     } catch (err) {
       notify?.('Failed to upload source faces: ' + err.message, 'error');
-    } finally {
-      setUploading(false);
-      e.target.value = '';
+    }
+  };
+
+  // ── Source & Target Removal Handlers ─────────────────────────
+  const removeSourceFaceset = async (e, idx) => {
+    e?.stopPropagation();
+    try {
+      await postJSON('/api/source/remove', { index: idx });
+      notify?.(`Removed source faceset #${idx + 1}`);
+      await refreshBackendState();
+    } catch (err) {
+      notify?.('Failed to remove faceset: ' + err.message, 'error');
+    }
+  };
+
+  const clearAllSourceFacesets = async () => {
+    try {
+      await postJSON('/api/source/clear', {});
+      notify?.('Cleared all source facesets');
+      await refreshBackendState();
+    } catch (err) {
+      notify?.('Failed to clear sources: ' + err.message, 'error');
+    }
+  };
+
+  const removeTargetFile = async (e, idx) => {
+    e?.stopPropagation();
+    try {
+      await postJSON('/api/target/remove', { index: idx });
+      notify?.(`Removed target file #${idx + 1}`);
+      await refreshBackendState();
+    } catch (err) {
+      notify?.('Failed to remove target: ' + err.message, 'error');
+    }
+  };
+
+  const clearAllTargetFiles = async () => {
+    try {
+      await postJSON('/api/target/clear', {});
+      notify?.('Cleared all target media');
+      await refreshBackendState();
+    } catch (err) {
+      notify?.('Failed to clear targets: ' + err.message, 'error');
     }
   };
 
@@ -720,14 +760,26 @@ export default function BatchSwap({ settings = {}, notify }) {
               Loaded Source Facesets ({sourceFaces.length})
             </span>
 
-            <button
-              type="button"
-              onClick={() => setShowFacesetLib((v) => !v)}
-              className="text-micro font-semibold text-[var(--accent)] hover:underline flex items-center gap-1"
-            >
-              <Icon.faces size={12} />
-              {showFacesetLib ? 'Hide Library' : 'Browse Library'}
-            </button>
+            <div className="flex items-center gap-2.5">
+              {sourceFaces.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearAllSourceFacesets}
+                  className="text-micro font-medium text-red-400/80 hover:text-red-400 hover:underline"
+                  title="Clear all loaded source facesets"
+                >
+                  Clear All
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowFacesetLib((v) => !v)}
+                className="text-micro font-semibold text-[var(--accent)] hover:underline flex items-center gap-1"
+              >
+                <Icon.faces size={12} />
+                {showFacesetLib ? 'Hide Library' : 'Browse Library'}
+              </button>
+            </div>
           </div>
           {sourceFaces.length === 0 ? (
             <div className="text-xs text-white/40 italic p-3 text-center border border-dashed border-white/10 rounded-xl space-y-1.5">
@@ -745,7 +797,7 @@ export default function BatchSwap({ settings = {}, notify }) {
               {sourceFaces.map((thumb, idx) => (
                 <div
                   key={idx}
-                  className={`flex items-center gap-2 p-1.5 pr-3 rounded-xl border transition-all ${
+                  className={`relative group/src flex items-center gap-2 p-1.5 pr-7 rounded-xl border transition-all ${
                     mode1Mappings[0]?.sourceIdx === idx
                       ? 'bg-[var(--accent)]/15 border-[var(--accent)] text-white'
                       : 'bg-white/5 border-white/5 text-white/70 hover:bg-white/10'
@@ -757,11 +809,21 @@ export default function BatchSwap({ settings = {}, notify }) {
                     className="w-8 h-8 rounded-lg object-cover bg-black/40"
                   />
                   <div className="text-micro">
-                    <span className="font-semibold block truncate max-w-[100px]">
+                    <span className="font-semibold block truncate max-w-[90px]">
                       {sourceFacesInfo[idx]?.name || `Faceset #${idx + 1}`}
                     </span>
                     <span className="text-white/40 block">Idx {idx}</span>
                   </div>
+
+                  {/* Remove Individual Faceset Button */}
+                  <button
+                    type="button"
+                    onClick={(e) => removeSourceFaceset(e, idx)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500/90 text-white/50 hover:text-white flex items-center justify-center text-nano font-bold opacity-0 group-hover/src:opacity-100 transition-all"
+                    title={`Remove Faceset #${idx + 1}`}
+                  >
+                    ✕
+                  </button>
                 </div>
               ))}
             </div>
@@ -775,6 +837,17 @@ export default function BatchSwap({ settings = {}, notify }) {
               <Icon.outputs size={14} className="text-[var(--accent)]" />
               Loaded Target Media ({targets.length})
             </span>
+
+            {targets.length > 0 && (
+              <button
+                type="button"
+                onClick={clearAllTargetFiles}
+                className="text-micro font-medium text-red-400/80 hover:text-red-400 hover:underline"
+                title="Clear all loaded target media"
+              >
+                Clear All
+              </button>
+            )}
           </div>
           {targets.length === 0 ? (
             <div className="text-xs text-white/40 italic p-3 text-center border border-dashed border-white/10 rounded-xl">
@@ -785,7 +858,7 @@ export default function BatchSwap({ settings = {}, notify }) {
               {targets.map((target, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center gap-2 p-1.5 pr-2.5 rounded-xl bg-white/5 border border-white/5 text-white/80 text-micro"
+                  className="relative group/tgt flex items-center gap-2 p-1.5 pr-7 rounded-xl bg-white/5 border border-white/5 text-white/80 text-micro"
                 >
                   <img
                     src={targetPreviewUrl(idx)}
@@ -795,10 +868,20 @@ export default function BatchSwap({ settings = {}, notify }) {
                       e.target.style.display = 'none';
                     }}
                   />
-                  <span className="truncate max-w-[120px] font-medium" title={target.name}>
+                  <span className="truncate max-w-[110px] font-medium" title={target.name}>
                     {idx + 1}. {target.name}
                   </span>
                   <span className="text-white/30 text-nano">({target.frames || 1}f)</span>
+
+                  {/* Remove Individual Target File Button */}
+                  <button
+                    type="button"
+                    onClick={(e) => removeTargetFile(e, idx)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500/90 text-white/50 hover:text-white flex items-center justify-center text-nano font-bold opacity-0 group-hover/tgt:opacity-100 transition-all"
+                    title={`Remove ${target.name}`}
+                  >
+                    ✕
+                  </button>
                 </div>
               ))}
             </div>
