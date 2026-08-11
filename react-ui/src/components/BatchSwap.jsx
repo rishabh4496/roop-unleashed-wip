@@ -208,6 +208,9 @@ export default function BatchSwap({ settings = {}, notify }) {
       await refreshBackendState();
     } catch (err) {
       notify?.('Failed to upload source faces: ' + err.message, 'error');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -1959,7 +1962,7 @@ export default function BatchSwap({ settings = {}, notify }) {
             <Card className="p-4 space-y-3 bg-black/40 flex flex-col justify-between">
               <div className="space-y-2">
                 <h3 className="font-bold text-sm text-white flex items-center gap-2">
-                  <Icon.scissors size={18} className="text-[var(--accent)]" />
+                  <Icon.split size={18} className="text-[var(--accent)]" />
                   Multi-Segment Video Splitter
                 </h3>
                 <p className="text-xs text-white/50">

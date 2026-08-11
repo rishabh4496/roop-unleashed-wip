@@ -279,21 +279,21 @@ export default function App() {
       settings: { ...(settings || {}) },
       activeQualityProfile,
     };
-    setSnapshots((prev) => {
-      const updated = [snap, ...prev];
-      localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
-      setToasts((t) => [...t, { id: Date.now(), msg: `Saved Workspace Snapshot: "${name}"` }]);
-      return updated;
-    });
-  }, [tab, settings, activeQualityProfile]);
+      setSnapshots((prev) => {
+        const updated = [snap, ...prev];
+        localStorage.setItem('roop_session_snapshots', JSON.stringify(updated));
+        return updated;
+      });
+      notify(`Saved Workspace Snapshot: "${name}"`, 'success');
+  }, [tab, settings, activeQualityProfile, notify]);
 
   const loadSessionSnapshot = useCallback((snap) => {
     if (snap.settings) setSettings(snap.settings);
     if (snap.tab) setTab(snap.tab);
     if (snap.activeQualityProfile) setActiveQualityProfile(snap.activeQualityProfile);
     setShowSnapshotsModal(false);
-    setToasts((t) => [...t, { id: Date.now(), msg: `Loaded Workspace Snapshot: "${snap.name}"` }]);
-  }, []);
+    notify(`Loaded Workspace Snapshot: "${snap.name}"`, 'success');
+  }, [notify]);
 
   const deleteSessionSnapshot = useCallback((id) => {
     setSnapshots((prev) => {
@@ -322,7 +322,7 @@ export default function App() {
         ...patch,
       }));
       postJSON('/api/settings', patch).catch(() => {});
-      setToasts((prev) => [...prev, { id: Date.now(), msg: `Loaded Profile: ${label || profileId}` }]);
+      notify(`Loaded Profile: ${label || profileId}`, 'success');
     }
   }, []);
 
@@ -492,7 +492,7 @@ export default function App() {
     }));
 
     return cmds;
-  }, [applyTheme, runFaceswap, customThemes, presets, visibleTabs]);
+  }, [applyTheme, applyQualityProfile, runFaceswap, customThemes, presets, visibleTabs]);
 
   const registerFileListener = useCallback((cb) => {
     fileListenersRef.current.push(cb);

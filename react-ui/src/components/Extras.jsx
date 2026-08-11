@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { postFile, fileUrl, getJSON } from '../api';
 import { Section, Select, Slider, Button } from './ui';
+import { Icon } from '../icons';
 
 const RESOLUTIONS = ['Original', '3840x', '2560x', '1920x', '1280x', '1024x', '640x'];
 const ROTATIONS = ['None', '90° Clockwise', '90° Counter-Clockwise', '180°'];

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence, spring } from '../motion';
 import { Card, Button, MotionIcon } from './ui';
 import { Icon } from '../icons';
@@ -127,8 +127,8 @@ export function evaluateCustomProfileMetrics(settings = {}) {
     { label: 'Enhancer Pass', value: enhancer, active: hasEnhancer },
     { label: 'Subsample Upscale', value: res, active: res !== 'Original' },
     { label: 'Masking Engine', value: mask, active: mask !== 'Auto' },
-    { label: 'NVDEC Decode', value: nvdec.toUpperCase(), active: nvdec !== 'off' },
-    { label: 'Batched Swap', value: batch.toUpperCase(), active: batch !== 'off' },
+    { label: 'NVDEC Decode', value: String(nvdec).toUpperCase(), active: nvdec !== 'off' && nvdec !== false },
+    { label: 'Batched Swap', value: String(batch).toUpperCase(), active: batch !== 'off' && batch !== false },
   ];
 
   return { fps, msPerFrame: baseMs, timePer1000f, summary };
@@ -163,7 +163,11 @@ export default function QualityProfilesModal({
 
   const saveCustomProfiles = (list) => {
     setCustomProfiles(list);
-    localStorage.setItem('roop_custom_quality_profiles', JSON.stringify(list));
+    try {
+      localStorage.setItem('roop_custom_quality_profiles', JSON.stringify(list));
+    } catch {
+      // localStorage full or blocked — state is still updated in memory
+    }
     window.dispatchEvent(new CustomEvent('roop:custom-profiles-changed'));
   };
 
@@ -182,7 +186,7 @@ export default function QualityProfilesModal({
       isCustom: true,
       badge: 'CUSTOM PROFILE',
       variant: 'purple',
-      icon: Icon.star,
+      iconKey: 'star',   // store key string, not React fn — survives JSON.stringify
       fps,
       msPerFrame,
       timePer1000f,
@@ -386,7 +390,7 @@ export default function QualityProfilesModal({
                       {/* Card Header */}
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5">
-                          <MotionIcon icon={prof.icon} size="md" variant={prof.variant} />
+                          <MotionIcon icon={Icon[prof.iconKey] || prof.icon || Icon.brand} size="md" variant={prof.variant} />
                           <div>
                             <h4 className="text-sm font-bold text-white flex items-center gap-2">
                               {prof.name}
@@ -450,7 +454,7 @@ export default function QualityProfilesModal({
                           size="sm"
                           variant={isActive ? 'secondary' : 'primary'}
                           onClick={() => {
-                            onApplyProfile(prof.id, prof.settingsPatch);
+                            onApplyProfile(prof.id, prof.settingsPatch, prof.name);
                             onClose();
                           }}
                         >
