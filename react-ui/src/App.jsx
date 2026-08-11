@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { getJSON, postJSON } from './api';
 import { Toasts, Confetti, MotionIcon } from './components/ui';
+import QualityProfilesModal, { BUILTIN_PROFILES } from './components/QualityProfilesModal';
 import CommandPalette from './components/CommandPalette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
@@ -257,13 +258,15 @@ export default function App() {
 
   const [showHud, setShowHud] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
-  const [activeQualityProfile, setActiveQualityProfile] = useState(null);
+  const [showProfilesModal, setShowProfilesModal] = useState(false);
+  const [showSnapshotsModal, setShowSnapshotsModal] = useState(false);
+  const [activeQualityProfile, setActiveQualityProfile] = useState('');
   const [snapshots, setSnapshots] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('roop_session_snapshots') || '[]');
+      const v = JSON.parse(localStorage.getItem('roop_session_snapshots') || '[]');
+      return Array.isArray(v) ? v : [];
     } catch { return []; }
   });
-  const [showSnapshotsModal, setShowSnapshotsModal] = useState(false);
 
   const saveSessionSnapshot = useCallback(() => {
     const name = prompt('Enter a name for this Session Snapshot:', `Session ${new Date().toLocaleTimeString()}`);
@@ -300,42 +303,26 @@ export default function App() {
     });
   }, []);
 
-  const applyQualityProfile = useCallback((profileId) => {
+  const applyQualityProfile = useCallback((profileId, customPatch, profileName) => {
     setActiveQualityProfile(profileId);
-    if (profileId === 'fast') {
+    let patch = customPatch;
+    let label = profileName;
+
+    if (!patch) {
+      const builtin = BUILTIN_PROFILES.find((p) => p.id === profileId);
+      if (builtin) {
+        patch = builtin.settingsPatch;
+        label = builtin.name;
+      }
+    }
+
+    if (patch) {
       setSettings((prev) => ({
         ...(prev || {}),
-        selected_enhancer: 'None',
-        subsample_upscale: '128px',
-        max_face_distance: '0.85',
-        num_swap_steps: '1',
+        ...patch,
       }));
-      setToasts((prev) => [...prev, { id: Date.now(), msg: 'Loaded Profile: ⚡ Ultra Fast (Live Swapper)' }]);
-    } else if (profileId === 'cinematic') {
-      setSettings((prev) => ({
-        ...(prev || {}),
-        selected_enhancer: 'Restoreformer++',
-        subsample_upscale: '512px',
-        max_face_distance: '0.75',
-        num_swap_steps: '2',
-        mask_engine: 'DFL XSeg',
-      }));
-      setToasts((prev) => [...prev, { id: Date.now(), msg: 'Loaded Profile: 🎨 Cinematic Master (High Quality)' }]);
-    } else if (profileId === 'ensemble') {
-      setSettings((prev) => ({
-        ...(prev || {}),
-        selected_enhancer: 'CodeFormer',
-        max_face_distance: '0.75',
-        track_identities: true,
-      }));
-      setToasts((prev) => [...prev, { id: Date.now(), msg: 'Loaded Profile: 👤 Multi-Person Ensemble (Identity Tracked)' }]);
-    } else if (profileId === 'vram') {
-      setSettings((prev) => ({
-        ...(prev || {}),
-        selected_enhancer: 'Restoreformer++',
-        video_swapping_method: 'In-Memory processing',
-      }));
-      setToasts((prev) => [...prev, { id: Date.now(), msg: 'Loaded Profile: 🚀 VRAM Efficient (Optimized Arena)' }]);
+      postJSON('/api/settings', patch).catch(() => {});
+      setToasts((prev) => [...prev, { id: Date.now(), msg: `Loaded Profile: ${label || profileId}` }]);
     }
   }, []);
 
@@ -853,20 +840,15 @@ export default function App() {
           )}
         </div>
         <div className="flex items-center gap-2 w-full md:w-auto">
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs">
-          <span className="text-white/40 font-semibold text-micro">Profile:</span>
-          <select
-            value={activeQualityProfile || ''}
-            onChange={(e) => applyQualityProfile(e.target.value)}
-            className="bg-black/60 border border-white/10 rounded-lg px-2 py-0.5 text-micro text-white outline-none cursor-pointer"
-          >
-            <option value="" disabled>Select Profile...</option>
-            <option value="fast">⚡ Ultra Fast</option>
-            <option value="cinematic">🎨 Cinematic Master</option>
-            <option value="ensemble">👤 Multi-Person</option>
-            <option value="vram">🚀 VRAM Efficient</option>
-          </select>
-        </div>
+        <button
+          type="button"
+          onClick={() => setShowProfilesModal(true)}
+          title="Open Quality Profiles & Custom Presets Manager"
+          className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/10 hover:border-white/20 text-white/70 hover:text-white transition-all text-xs font-medium"
+        >
+          <MotionIcon icon={Icon.brand} size="sm" variant="accent" />
+          <span>Profile: <strong className="text-white font-bold">{activeQualityProfile ? (BUILTIN_PROFILES.find(p => p.id === activeQualityProfile)?.name.split(' ')[1] || 'Custom') : 'Standard'}</strong></span>
+        </button>
 
         <button
           type="button"
@@ -1176,6 +1158,15 @@ export default function App() {
           style={{ width: `${Math.round((progress.progress || 0) * 100)}%` }}
         />
       )}
+
+      <QualityProfilesModal
+        open={showProfilesModal}
+        onClose={() => setShowProfilesModal(false)}
+        activeProfileId={activeQualityProfile}
+        onApplyProfile={applyQualityProfile}
+        currentSettings={settings}
+        notify={notify}
+      />
 
       <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} commands={commands} />
 
