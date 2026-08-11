@@ -436,7 +436,7 @@ class TrackingMixin:
                 # between decode and detect, and these are full-resolution: a
                 # deep queue would cost hundreds of MB on 4K material for no
                 # extra throughput.
-                frame_q = Queue(maxsize=6)
+                frame_q = Queue(maxsize=16)
                 _t = Thread(target=_read_loop, daemon=True)
                 _t.start()
                 # Only publish the handle once the thread is actually running:
@@ -496,7 +496,8 @@ class TrackingMixin:
 
                 if det_executor is not None:
                     in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox)))
-                    if len(in_flight) >= pool_workers:
+                    max_in_flight = max(8, pool_workers * 2)
+                    if len(in_flight) >= max_in_flight:
                         done_idx, done_fut = in_flight.popleft()
                         # If this blocks waiting on done_fut, all pool_workers are busy
                         # and the reader/consumer has caught up to the dispatch cap --

@@ -49,10 +49,14 @@ def _apply_perf_env():
     for var, key in (('ROOP_PROFILE', 'perf_profile'), ('ROOP_BATCH_SWAP', 'perf_batch_swap'),
                      ('ROOP_NVDEC', 'perf_nvdec')):
         v = str(cfg.get(key, 'auto')).strip().lower()
-        if v == 'on':
+        if v == 'on' or (v == 'auto' and var == 'ROOP_BATCH_SWAP'):
             os.environ[var] = '1'
+            if var == 'ROOP_BATCH_SWAP':
+                os.environ['ROOP_BATCH_SWAP_XFRAME'] = '1'
         elif v == 'off':
             os.environ[var] = '0'
+            if var == 'ROOP_BATCH_SWAP':
+                os.environ['ROOP_BATCH_SWAP_XFRAME'] = '0'
 
 _apply_perf_env()
 

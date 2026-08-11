@@ -99,7 +99,13 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
     try:
         for i in range(len(list_providers)):
             if list_providers[i] == 'CUDAExecutionProvider':
-                list_providers[i] = ('CUDAExecutionProvider', {'device_id': roop.globals.cuda_device_id})
+                cuda_opts = {
+                    'device_id': roop.globals.cuda_device_id,
+                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                    'do_copy_in_default_stream': True,
+                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                }
+                list_providers[i] = ('CUDAExecutionProvider', cuda_opts)
                 torch.cuda.set_device(roop.globals.cuda_device_id)
             elif list_providers[i] == 'TensorrtExecutionProvider':
                 trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
