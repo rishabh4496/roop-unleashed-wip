@@ -24,7 +24,7 @@ import {
   Drama, Users, WandSparkles, FolderOpen, History, Settings2, Layers,
   Zap, Search, Play, Pause, Square, Plus, RefreshCw, Keyboard, Palette,
   Download, Upload, Trash2, X, Check, TriangleAlert, Sparkles, Feather,
-  Columns2, SquareSplitVertical, Inbox, Clock, Gauge,
+  Columns2, SquareSplitVertical, Inbox, Clock, Gauge, Cpu,
   CircleCheck, CircleX, CircleAlert, Info, Unplug, Bell, Radio, Image,
   Pencil, Film, PanelLeft, PanelRight, PanelBottom, LayoutGrid, FolderOpen as Folder,
   Eye, ExternalLink, ChevronRight,
@@ -105,6 +105,7 @@ export const Icon = {
   full: make(Sparkles, 'full'),
   lite: make(Feather, 'lite'),
   meter: make(Gauge, 'meter'),
+  cpu: make(Cpu, 'cpu'),
   bell: make(Bell, 'bell'),
 
   // Toast / dialog severity. These read as a SET — same family, same optical
