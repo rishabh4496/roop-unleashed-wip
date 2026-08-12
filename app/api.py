@@ -487,7 +487,11 @@ def save_settings(settings: dict = Body(...)):
     return {"status": "success"}
 
 
-# ── 2-Minute In-Depth Thread & GPU Hardware Benchmark System ─────────────────
+# ── Hardware benchmark ───────────────────────────────────────────────────────
+# The measuring is all in roop/bench.py; this is transport. See that module's
+# docstring for what is measured and for what the previous version of this
+# endpoint was actually measuring (a batched matmul, reported as "FPS", wired
+# into Settings.resolve_threads).
 import threading
 
 _benchmark_lock = threading.Lock()
@@ -496,7 +500,9 @@ _benchmark_state = {
     "running": False,
     "progress": 0,
     "elapsed_sec": 0,
-    "total_sec": 120,
+    "total_sec": 330,
+    "profile": "full",
+    "phase": "idle",
     "current_mode": "Idle",
     "current_threads": 0,
     "current_fps": 0.0,
@@ -504,203 +510,132 @@ _benchmark_state = {
     "status_msg": "Idle",
     "logs": [],
     "result": None,
+    "error": "",
 }
 
 
-def _run_2min_benchmark_worker():
-    global _benchmark_state, _benchmark_cancel_requested
-    import torch
-    import psutil
-    import time
+def _bench_report(**kw):
+    """Progress callback handed to roop.bench — the only thing this layer does.
 
-    if not torch.cuda.is_available():
-        with _benchmark_lock:
-            _benchmark_state["running"] = False
-            _benchmark_state["status_msg"] = "Error: CUDA GPU not available"
-            _benchmark_state["logs"].append("Error: CUDA GPU not available for hardware benchmarking.")
-        return
-
-    start_time = time.time()
-    total_target_sec = 120.0
-
-    gpu_name = torch.cuda.get_device_properties(0).name
-    vram_bytes = torch.cuda.get_device_properties(0).total_memory
-    vram_gb = round(vram_bytes / (1024**3), 2)
-    logical_cores = psutil.cpu_count(logical=True) or 8
-
-    candidates = [1, 2, 4, 6, 8, 12, 16, 24]
-    candidates = [t for t in candidates if t <= logical_cores and t <= max(2, int(vram_gb * 2))]
-
-    modes = ['standard', 'enhanced', 'heavy']
-    mode_labels = {
-        'standard': 'Standard Swap Mode',
-        'enhanced': 'Enhanced Swap Mode (CodeFormer / GFPGAN)',
-        'heavy': 'Heavy Workload (SAM2 / LivePortrait / Multi-Pass)'
-    }
-
-    fps_map = {m: {} for m in modes}
-    best_threads = {}
-
-    def add_log(msg):
-        with _benchmark_lock:
-            _benchmark_state["logs"].append(f"[{time.strftime('%H:%M:%S')}] {msg}")
-            if len(_benchmark_state["logs"]) > 50:
-                _benchmark_state["logs"].pop(0)
-
-    add_log(f"Starting 2-Minute In-Depth GPU Hardware Benchmark on {gpu_name} ({vram_gb} GB VRAM)...")
-    add_log(f"Candidate Thread Configurations: {candidates}")
-
-    # Phase 0: Warmup (5 seconds)
-    add_log("Phase 0/3: Warming up GPU CUDA streams and initializing ONNX Runtime execution contexts...")
-    warmup_end = time.time() + 5.0
-    while time.time() < warmup_end:
-        if _benchmark_cancel_requested:
-            break
-        t_dummy = torch.randn((4, 3, 512, 512), device='cuda', dtype=torch.float16)
-        _ = torch.matmul(t_dummy, t_dummy.transpose(-1, -2))
-        torch.cuda.synchronize()
-        time.sleep(0.1)
-
-        elapsed = time.time() - start_time
-        with _benchmark_lock:
-            _benchmark_state["elapsed_sec"] = int(elapsed)
-            _benchmark_state["progress"] = int((elapsed / total_target_sec) * 100)
-            _benchmark_state["status_msg"] = "GPU Warmup & CUDA Stream Allocation..."
-
-    if _benchmark_cancel_requested:
-        add_log("Benchmark cancelled by user.")
-        with _benchmark_lock:
-            _benchmark_state["running"] = False
-            _benchmark_state["status_msg"] = "Cancelled"
-        return
-
-    time_per_mode = 38.0
-
-    for mode_idx, mode in enumerate(modes):
-        if _benchmark_cancel_requested:
-            break
-
-        mode_name = mode_labels[mode]
-        add_log(f"Phase {mode_idx + 1}/3: Benchmarking {mode_name}...")
-
-        best_fps = 0.0
-        best_t = candidates[0]
-        work_factor = 1.0 if mode == 'standard' else (2.5 if mode == 'enhanced' else 4.5)
-        time_per_cand = max(3.0, time_per_mode / len(candidates))
-
-        for t in candidates:
-            if _benchmark_cancel_requested:
-                break
-
-            with _benchmark_lock:
-                _benchmark_state["current_mode"] = mode_name
-                _benchmark_state["current_threads"] = t
-                _benchmark_state["status_msg"] = f"Testing {mode_name} — {t} Threads"
-
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-
-            cand_start = time.time()
-            frames_processed = 0
-
-            cand_end = cand_start + time_per_cand
-            while time.time() < cand_end and not _benchmark_cancel_requested:
-                tensor_a = torch.randn((t, 3, 512, 512), device='cuda', dtype=torch.float16)
-                tensor_b = torch.randn((t, 3, 512, 512), device='cuda', dtype=torch.float16)
-                _res = torch.matmul(tensor_a, tensor_b.transpose(-1, -2))
-                for _k in range(int(work_factor * 2)):
-                    _res = torch.relu(_res)
-
-                torch.cuda.synchronize()
-                frames_processed += t
-
-                elapsed_curr = max(0.001, time.time() - cand_start)
-                curr_fps = round(frames_processed / elapsed_curr, 1)
-                peak_vram = round(torch.cuda.max_memory_allocated() / (1024**3), 2)
-
-                total_elapsed = time.time() - start_time
-                with _benchmark_lock:
-                    _benchmark_state["current_fps"] = curr_fps
-                    _benchmark_state["current_vram_gb"] = peak_vram
-                    _benchmark_state["elapsed_sec"] = int(total_elapsed)
-                    _benchmark_state["progress"] = min(99, int((total_elapsed / total_target_sec) * 100))
-
-            peak_vram = round(torch.cuda.max_memory_allocated() / (1024**3), 2)
-            vram_safety = peak_vram / vram_gb
-            final_fps = round(frames_processed / max(0.001, time.time() - cand_start), 1)
-
-            fps_map[mode][str(t)] = final_fps
-            add_log(f"  └─ Candidate {t} Threads ➔ Sustained Speed: {final_fps} FPS | Peak VRAM: {peak_vram} GB / {vram_gb} GB")
-
-            if final_fps > best_fps and vram_safety < 0.85:
-                best_fps = final_fps
-                best_t = t
-
-        best_threads[mode] = best_t
-        add_log(f"✓ Optimal Selection for {mode_name}: {best_t} Threads ({best_fps} FPS)")
-
-    if _benchmark_cancel_requested:
-        add_log("Benchmark cancelled.")
-        with _benchmark_lock:
-            _benchmark_state["running"] = False
-            _benchmark_state["status_msg"] = "Cancelled"
-        return
-
-    report = {
-        "status": "success",
-        "gpu_name": gpu_name,
-        "total_vram_gb": vram_gb,
-        "best_threads": best_threads,
-        "fps_map": fps_map,
-        "summary": f"Benchmarked {gpu_name} ({vram_gb} GB VRAM): Standard = {best_threads['standard']} Threads ({fps_map['standard'].get(str(best_threads['standard']), 0)} FPS), Enhanced = {best_threads['enhanced']} Threads ({fps_map['enhanced'].get(str(best_threads['enhanced']), 0)} FPS), Heavy = {best_threads['heavy']} Threads ({fps_map['heavy'].get(str(best_threads['heavy']), 0)} FPS)",
-    }
-
-    if roop_globals.CFG:
-        roop_globals.CFG.benchmark_results = report
-        roop_globals.CFG.save()
-
-    add_log("2-Minute In-Depth Benchmark Complete! All thread parameters optimized.")
-
+    Keeps the state dict the polling endpoint returns, including a bounded log
+    ring so a long full-profile run cannot grow the response without limit.
+    """
     with _benchmark_lock:
-        _benchmark_state["running"] = False
-        _benchmark_state["progress"] = 100
-        _benchmark_state["elapsed_sec"] = int(time.time() - start_time)
-        _benchmark_state["status_msg"] = "Benchmark Complete"
-        _benchmark_state["result"] = report
+        if kw.get("status"):
+            _benchmark_state["status_msg"] = kw["status"]
+        if kw.get("phase"):
+            _benchmark_state["phase"] = kw["phase"]
+        if kw.get("pct") is not None:
+            _benchmark_state["progress"] = max(0, min(99, int(kw["pct"])))
+        if kw.get("stage"):
+            _benchmark_state["current_mode"] = kw["stage"]
+        if kw.get("threads") is not None:
+            _benchmark_state["current_threads"] = int(kw["threads"])
+        if kw.get("fps") is not None:
+            _benchmark_state["current_fps"] = float(kw["fps"])
+        if kw.get("vram") is not None:
+            _benchmark_state["current_vram_gb"] = float(kw["vram"])
+        if kw.get("log"):
+            _benchmark_state["logs"].append(
+                f"[{time.strftime('%H:%M:%S')}] {kw['log']}")
+            if len(_benchmark_state["logs"]) > 400:
+                del _benchmark_state["logs"][:-400]
+        _benchmark_state["elapsed_sec"] = int(time.time() - _benchmark_started_at[0])
+
+
+_benchmark_started_at = [0.0]
+
+
+def _run_benchmark_worker(profile: str, faces: float):
+    from roop import bench
+    try:
+        result = bench.run_benchmark(
+            profile=profile,
+            faces_per_frame=faces,
+            report=_bench_report,
+            cancelled=lambda: _benchmark_cancel_requested,
+            apply_to_config=True,
+        )
+        with _benchmark_lock:
+            _benchmark_state["result"] = result
+            _benchmark_state["progress"] = 100
+            _benchmark_state["status_msg"] = "Benchmark complete"
+    except bench.Cancelled:
+        with _benchmark_lock:
+            _benchmark_state["status_msg"] = "Cancelled"
+            _benchmark_state["logs"].append("Cancelled by user.")
+    except Exception as e:                                  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        with _benchmark_lock:
+            _benchmark_state["error"] = f"{type(e).__name__}: {e}"
+            _benchmark_state["status_msg"] = f"Failed: {type(e).__name__}"
+            _benchmark_state["logs"].append(f"ERROR {type(e).__name__}: {e}")
+    finally:
+        with _benchmark_lock:
+            _benchmark_state["running"] = False
+            _benchmark_state["elapsed_sec"] = int(time.time() - _benchmark_started_at[0])
 
 
 @app.get("/api/settings/benchmark_status")
 def get_benchmark_status():
     with _benchmark_lock:
-        return dict(_benchmark_state)
+        state = dict(_benchmark_state)
+        # `logs` has to be COPIED, not aliased. FastAPI serialises the return
+        # value after this function has released the lock, and the worker thread
+        # appends to that same list roughly once a second — a shallow dict()
+        # hands the serialiser a list that is still being mutated, which raises
+        # mid-response and shows up as the poll silently failing.
+        # Only the tail is sent: the ring holds 400 lines, the panel shows the
+        # recent ones, and shipping all of them once a second is pure weight.
+        state["logs"] = list(_benchmark_state["logs"][-80:])
+        return state
 
 
 @app.post("/api/settings/benchmark_threads")
-def benchmark_threads():
-    global _benchmark_state, _benchmark_cancel_requested
-    import torch
+def benchmark_threads(payload: dict = Body(default=None)):
+    global _benchmark_cancel_requested
+    payload = payload or {}
+    profile = str(payload.get("profile", "full")).lower()
 
+    from roop import bench
+    if profile not in bench.PROFILES:
+        profile = "full"
+
+    # Refuse to share the GPU with a render. Both would be wrong: the render
+    # slows down, and the benchmark measures a card that is already busy and
+    # recommends thread counts for a machine nobody has.
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={
+            "message": "A render is in progress — benchmarking now would measure "
+                       "a busy GPU and slow the render down."})
+
+    import torch
     if not torch.cuda.is_available():
-        return JSONResponse(status_code=400, content={"message": "CUDA GPU not detected. Benchmark requires an active GPU."})
+        return JSONResponse(status_code=400, content={
+            "message": "No CUDA device. The benchmark measures GPU stage cost, "
+                       "pool scaling and VRAM headroom, none of which exist on CPU."})
 
     with _benchmark_lock:
         if _benchmark_state["running"]:
             return {"status": "running", "message": "Benchmark already in progress."}
-
         _benchmark_cancel_requested = False
-        _benchmark_state["running"] = True
-        _benchmark_state["progress"] = 0
-        _benchmark_state["elapsed_sec"] = 0
-        _benchmark_state["current_mode"] = "Initializing..."
-        _benchmark_state["current_threads"] = 0
-        _benchmark_state["current_fps"] = 0.0
-        _benchmark_state["current_vram_gb"] = 0.0
-        _benchmark_state["status_msg"] = "Starting 2-Minute Benchmark..."
-        _benchmark_state["logs"] = []
-        _benchmark_state["result"] = None
+        _benchmark_started_at[0] = time.time()
+        _benchmark_state.update({
+            "running": True, "progress": 0, "elapsed_sec": 0,
+            "total_sec": bench.PROFILES[profile]["est_sec"],
+            "profile": profile, "phase": "probe",
+            "current_mode": "Initializing", "current_threads": 0,
+            "current_fps": 0.0, "current_vram_gb": 0.0,
+            "status_msg": "Loading models…", "logs": [], "result": None,
+            "error": "",
+        })
 
-    threading.Thread(target=_run_2min_benchmark_worker, daemon=True).start()
-    return {"status": "started", "message": "2-Minute Hardware Benchmark Started"}
+    faces = float(payload.get("faces_per_frame", 1.0) or 1.0)
+    threading.Thread(target=_run_benchmark_worker, args=(profile, faces),
+                     daemon=True).start()
+    return {"status": "started", "profile": profile,
+            "est_sec": bench.PROFILES[profile]["est_sec"]}
 
 
 @app.post("/api/settings/benchmark_cancel")
@@ -2485,6 +2420,14 @@ def preview_upscale(payload: dict = Body(...)):
 def trigger_swap(payload: dict = Body(...)):
     if _progress["processing"]:
         return JSONResponse(status_code=409, content={"message": "already processing"})
+    # The benchmark holds several pools of TensorRT contexts and is timing them.
+    # Starting a render on top of that gives the render a card that is already
+    # busy AND makes the benchmark recommend settings for a machine nobody has —
+    # the refusal is mutual (see /api/settings/benchmark_threads).
+    if _benchmark_state["running"]:
+        return JSONResponse(status_code=409, content={
+            "message": "The hardware benchmark is running — cancel it first, or "
+                       "wait for it to finish."})
     if len(list_files_process) < 1:
         return JSONResponse(status_code=400, content={"message": "no target media"})
     if len(roop_globals.INPUT_FACESETS) < 1:
@@ -3223,6 +3166,7 @@ _routes_queue._run_swap = _run_swap
 _routes_queue._stop_current = stop_swap
 _routes_queue._snapshot_outputs = _snapshot_output_mtimes
 _routes_queue._outputs_since = _outputs_since
+_routes_queue._benchmark_running = lambda: bool(_benchmark_state["running"])
 _routes_queue.load()
 
 # Helpers that left with their route groups but are still called by code that

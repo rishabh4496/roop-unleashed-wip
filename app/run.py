@@ -44,6 +44,7 @@ def _apply_perf_env():
 
     _set('ROOP_TRT_POOL', cfg.get('perf_trt_pool'))
     _set('ROOP_DETMASK_POOL', cfg.get('perf_detmask_pool'))
+    _set('ROOP_DETECTOR_POOL', cfg.get('perf_detector_pool'))
     _set('ROOP_EXPR_POOL', cfg.get('perf_expr_pool'))
     _set('ROOP_ENCODER_PRESET', cfg.get('perf_encoder_preset'))
     for var, key in (('ROOP_PROFILE', 'perf_profile'), ('ROOP_BATCH_SWAP', 'perf_batch_swap'),

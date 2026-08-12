@@ -55,6 +55,14 @@ _run_swap = None            # api.py's blocking single-run entry point
 _stop_current = None        # api.py's stop_swap(), to abort the in-flight job
 _snapshot_outputs = None    # post_swap._snapshot_output_mtimes
 _outputs_since = None       # post_swap._outputs_since
+# True while the hardware benchmark holds the GPU. /api/swap refuses to start a
+# render then and the benchmark refuses to start during one, but the queue is a
+# THIRD way into `_run_swap` that neither guard covers: it calls it directly, so
+# a batch dispatching its next job would run alongside a benchmark that is
+# holding several pools of TensorRT contexts — an OOM on a 12GB card, and a
+# benchmark measuring a card that is busy rendering. Injected as a predicate
+# rather than imported to keep the one-way api.py -> routes_queue dependency.
+_benchmark_running = lambda: False           # noqa: E731
 
 QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.json")
 
@@ -386,7 +394,12 @@ def _loop(gen):
         with _lock:
             if not _queue["running"] or gen != _generation:
                 break
-            if _queue["paused"]:
+            if _queue["paused"] or _benchmark_running():
+                # Held, not failed. The benchmark refuses to start while a
+                # render is processing, but BETWEEN two jobs nothing is
+                # processing, so it can legitimately start there and this thread
+                # would otherwise dispatch the next job straight into it. The
+                # batch resumes on its own when the benchmark finishes.
                 job = None
             else:
                 job = _next_pending()
@@ -442,6 +455,10 @@ def queue_start():
         if _progress["processing"]:
             return JSONResponse(status_code=409,
                                 content={"message": "a single run is already processing"})
+        if _benchmark_running():
+            return JSONResponse(status_code=409,
+                                content={"message": "the hardware benchmark is running — "
+                                                    "cancel it first, or wait for it to finish"})
         _queue["running"] = True
         _queue["paused"] = False
         _generation += 1

@@ -58,6 +58,9 @@ class QueueTestBase(unittest.TestCase):
         # fake rather than the module's real default.
         q._snapshot_outputs = None
         q._outputs_since = None
+        # Same reasoning: a test that pretends the benchmark is running must not
+        # leave every later test dispatching into a fake benchmark.
+        q._benchmark_running = lambda: False
 
     def tearDown(self):
         q._queue["running"] = False
@@ -329,6 +332,73 @@ class ConsoleOutput(QueueTestBase):
         self.assertNotIn("\n    print(", after,
                          "everything after _say() must report through it, or a "
                          "non-ASCII path/filename can kill the runner again")
+
+
+class BenchmarkAndTheQueueDoNotShareTheGpu(QueueTestBase):
+    """The queue is the third door into `_run_swap`, and it was unguarded.
+
+    /api/swap refuses to start while the benchmark runs, and the benchmark
+    refuses to start while `_progress['processing']` is set. Both guards live in
+    api.py, and the queue calls `_run_swap` directly — so a batch could dispatch
+    straight into a benchmark that is holding several pools of TensorRT contexts.
+    On a 12GB card that is an OOM, not merely two wrong measurements.
+    """
+
+    def test_start_is_refused_while_the_benchmark_holds_the_gpu(self):
+        self.entries.append(_Entry("a.mp4"))
+        self._add("a.mp4")
+        q._benchmark_running = lambda: True
+        resp = q.queue_start()
+        self.assertEqual(getattr(resp, "status_code", 200), 409)
+        self.assertFalse(q._queue["running"])
+        self.assertEqual(self.ran, [])
+
+    def test_the_runner_holds_between_jobs_instead_of_dispatching(self):
+        """The window the start guard cannot cover.
+
+        Between two jobs nothing is processing, so the benchmark may legitimately
+        start there. The runner has to notice on its next pass — and HOLD, not
+        fail the batch: the jobs are still valid, the GPU is merely busy.
+        """
+        self.entries.extend([_Entry("a.mp4"), _Entry("b.mp4")])
+        self._add("a.mp4")
+        self._add("b.mp4")
+
+        busy = {"on": False}
+        q._benchmark_running = lambda: busy["on"]
+        real_run = self._fake_run
+
+        def run_then_start_a_benchmark(payload):
+            real_run(payload)
+            busy["on"] = True               # starts in the gap after job 1
+        q._run_swap = run_then_start_a_benchmark
+
+        import roop.globals as g
+        g.processing = True
+        q.queue_start()
+        deadline = time.time() + 3.0
+        while len(self.ran) < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.4)                     # long enough for several loop passes
+        self.assertEqual(len(self.ran), 1,
+                         "the second job was dispatched into a running benchmark")
+        self.assertTrue(q._queue["running"], "the batch was abandoned, not held")
+        self.assertEqual(q._snapshot()["jobs"][1]["status"], "pending")
+
+        busy["on"] = False                  # benchmark finishes
+        deadline = time.time() + 3.0
+        while q._queue["running"] and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(self.ran), 2, "the batch did not resume by itself")
+
+    def test_api_injects_the_predicate(self):
+        # The module default is `lambda: False`, so a missing injection disables
+        # both guards above while every test in this file still passes.
+        with open(os.path.join(APP, "api.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("_routes_queue._benchmark_running", src,
+                      "api.py never injects the benchmark predicate — the queue "
+                      "guards are wired to a constant False")
 
 
 if __name__ == "__main__":

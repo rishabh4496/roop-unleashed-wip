@@ -35,6 +35,7 @@ export const SETTINGS_CATALOG = [
   // Advanced performance
   { key: 'perf_trt_pool', label: 'Swapper TRT pool', section: 'Advanced performance' },
   { key: 'perf_detmask_pool', label: 'Detect/Mask pool', section: 'Advanced performance' },
+  { key: 'perf_detector_pool', label: 'Detector pool', section: 'Advanced performance' },
   { key: 'perf_expr_pool', label: 'Expression pool', section: 'Advanced performance' },
   { key: 'perf_encoder_preset', label: 'Encoder preset', section: 'Advanced performance' },
   { key: 'perf_nvdec', label: 'GPU video decode (NVDEC)', section: 'Advanced performance' },

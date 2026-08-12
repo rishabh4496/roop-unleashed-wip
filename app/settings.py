@@ -241,6 +241,18 @@ class Settings:
         # behind a per-file probe with automatic cv2 fallback; off disables.
         self.perf_nvdec = self.default_get(data, 'perf_nvdec', 'auto')
         self.perf_detmask_pool = self.default_get(data, 'perf_detmask_pool', 'auto')
+        # Instances of the standalone detector, separate from the detect/mask
+        # pool because a hybrid engine (retinaface/yoloface/yunet) brings its own
+        # detector and only borrows buffalo_l's aux models — widening the detmask
+        # pool alone parallelises the aux models and leaves the detector
+        # single-file. 'auto' = follow the detmask pool, which is what
+        # session_pool.detector_pool_size() already does.
+        #
+        # It got a setting of its own because the benchmark can now measure the
+        # two separately and they do not agree: on an RTX 4070 the detector
+        # scaled to 4 instances while the recognition/landmark models plateaued
+        # at 2, and without this knob the only way to act on that was an env var.
+        self.perf_detector_pool = self.default_get(data, 'perf_detector_pool', 'auto')
         # Expression restorer contexts. 'auto' is VRAM-tiered (0 below 11.5GB,
         # else 2). Worth raising to 3 only when the STAGE TIMING breakdown shows
         # 'expression' needing more concurrent threads than the pool has slots.
@@ -378,6 +390,7 @@ class Settings:
             'perf_trt_pool': self.perf_trt_pool,
             'perf_nvdec': self.perf_nvdec,
             'perf_detmask_pool': self.perf_detmask_pool,
+            'perf_detector_pool': self.perf_detector_pool,
             'perf_expr_pool': self.perf_expr_pool,
             'perf_encoder_preset': self.perf_encoder_preset,
             'perf_profile': self.perf_profile,

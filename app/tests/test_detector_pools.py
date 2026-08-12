@@ -109,5 +109,59 @@ class DetectorsAreNotSerialised(unittest.TestCase):
                                  f'instance, bypassing the pool')
 
 
+class TheDetectorPoolSettingReachesTheEnvVar(unittest.TestCase):
+    """The knob is only real if the chain settings.py -> run.py -> env is whole.
+
+    `detector_pool_size()` reads ROOP_DETECTOR_POOL and nothing else, so a
+    setting that is saved to config.yaml but never exported is a UI control that
+    does nothing — the failure mode a whole class of these has hit before. Four
+    links: Settings reads it, Settings SAVES it, run.py exports it, and the
+    export happens before roop is imported.
+    """
+
+    def test_settings_round_trips_the_key(self):
+        # Saved AND read back. A key that load() knows and save() omits is the
+        # quiet half of this failure: the control works for one session and is
+        # back to 'auto' after a restart.
+        import tempfile
+        from settings import Settings
+        cfg = Settings(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'no-such-config.yaml'))
+        self.assertEqual(cfg.perf_detector_pool, 'auto')
+        cfg.perf_detector_pool = '4'
+        with tempfile.TemporaryDirectory() as d:
+            cfg.config_file = os.path.join(d, 'config.yaml')
+            cfg.save()
+            self.assertEqual(Settings(cfg.config_file).perf_detector_pool, '4',
+                             'the setting is read but never written back — it '
+                             'resets to auto on the next launch')
+
+    def test_run_py_exports_it_from_the_config(self):
+        src = Path(APP, 'run.py').read_text(encoding='utf-8')
+        self.assertIn("_set('ROOP_DETECTOR_POOL', cfg.get('perf_detector_pool'))",
+                      src, 'the setting never reaches the environment')
+        # Before any roop import, like its neighbours: the pools are sized at
+        # first use, but ProcessMgr reads other perf vars at IMPORT time and the
+        # call has to stay on the correct side of that line.
+        self.assertLess(src.index('_apply_perf_env()'), src.index('from roop import core'),
+                        'perf env is applied after roop is imported')
+
+    def test_auto_leaves_the_variable_unset(self):
+        # 'auto' must not be exported as the literal string: detector_pool_size
+        # would then take the int() path, fail, and fall back — same answer by
+        # accident today, but it also stops the launcher's own env from being
+        # overridable, which is what 'auto' is for.
+        src = Path(APP, 'run.py').read_text(encoding='utf-8')
+        m = re.search(r'def _set\(var, val\):.*?\n\n', src, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("!= 'auto'", m.group(0))
+
+    def test_the_ui_control_binds_the_same_key(self):
+        jsx = Path(APP, '..', 'react-ui', 'src', 'components',
+                   'Settings.jsx').read_text(encoding='utf-8')
+        self.assertIn("bind('perf_detector_pool'", jsx,
+                      'no Settings control writes this key')
+
+
 if __name__ == '__main__':
     unittest.main()

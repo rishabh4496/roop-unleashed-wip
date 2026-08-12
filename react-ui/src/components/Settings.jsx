@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { getJSON, postJSON } from '../api';
-import { Section, Select, Slider, Toggle, TextInput, MotionIcon } from './ui';
+import { Section, Select, Slider, Toggle, TextInput } from './ui';
 import ThemeGallery from './ThemeGallery';
 import ThemeStudio from './ThemeStudio';
+import BenchmarkPanel from './BenchmarkPanel';
 import { allThemes } from '../themes';
 import { fmtVal } from './settingsDiff';
 import { FOCUS_SETTING_EVENT } from './settingsCatalog';
@@ -82,57 +83,22 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // marker, chip and reset below simply does not render.
   const [defaults, setDefaults] = useState(null);
   const [onlyModified, setOnlyModified] = useState(false);
-  const [benchmarking, setBenchmarking] = useState(false);
-  const [benchmarkStatus, setBenchmarkStatus] = useState(null);
-  const [benchmarkReport, setBenchmarkReport] = useState(() => p.benchmark_results || null);
 
-  useEffect(() => {
-    if (p.benchmark_results) setBenchmarkReport(p.benchmark_results);
-  }, [p.benchmark_results]);
-
-  const runThreadBenchmark = async () => {
-    try {
-      setBenchmarking(true);
-      notify('Starting 2-Minute GPU & Thread Benchmark...', 'info');
-      await postJSON('/api/settings/benchmark_threads', {});
-    } catch (e) {
-      notify('Benchmark launch failed: ' + e.message, 'error');
-      setBenchmarking(false);
-    }
-  };
-
-  const cancelBenchmark = async () => {
-    try {
-      await postJSON('/api/settings/benchmark_cancel', {});
-      notify('Cancelling benchmark...', 'warning');
-    } catch (e) {
-      notify('Failed to cancel: ' + e.message, 'error');
-    }
-  };
-
-  useEffect(() => {
-    if (!benchmarking) return;
-
-    const timer = setInterval(async () => {
-      try {
-        const st = await getJSON('/api/settings/benchmark_status');
-        setBenchmarkStatus(st);
-
-        if (!st.running) {
-          setBenchmarking(false);
-          if (st.result) {
-            setBenchmarkReport(st.result);
-            setMany({ benchmark_results: st.result });
-            notify('2-Minute GPU Benchmark Complete! Optimal thread profile saved.');
-          }
-        }
-      } catch (e) {
-        console.error('Failed to fetch benchmark status', e);
-      }
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [benchmarking, setMany, notify]);
+  // The benchmark writes config.yaml itself (thread counts have to reach
+  // `Settings.resolve_threads`, and the pool knobs are read at startup), so this
+  // only mirrors the result into the in-memory settings the page is showing —
+  // posting it back would race the backend's own save with a stale copy.
+  //
+  // The pool values it wrote have to be mirrored too, and that half is not
+  // cosmetic. `POST /api/settings` assigns every key it receives, so a page
+  // still holding the PRE-benchmark perf_* values silently reverts them the
+  // next time anything on this page is saved — the benchmark's whole output,
+  // undone by an unrelated toggle. `pending_restart` is exactly the set of keys
+  // the backend changed underneath us.
+  const onBenchmarkResult = useCallback((result) => {
+    const applied = result?.applied?.pending_restart || {};
+    setSettings((s) => ({ ...s, ...applied, benchmark_results: result }));
+  }, [setSettings]);
 
   useEffect(() => {
     let live = true;
@@ -403,83 +369,14 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           )}
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} {...bind('memory_limit', 0)} />
 
-          {/* GPU & Thread Benchmark Card */}
-          <div className="col-span-full p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3 mt-2">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
-              <div className="flex items-center gap-3">
-                <MotionIcon icon={Icon.cpu} size="md" variant="accent" animate={benchmarking ? 'spin' : false} />
-                <div>
-                  <span className="text-xs font-bold text-white block">
-                    GPU & Thread Benchmark Suite
-                  </span>
-                  <p className="text-nano text-white/50 mt-0.5">
-                    Run a live hardware throughput test to measure maximum GPU speed without quality loss or VRAM thrashing.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={runThreadBenchmark}
-                disabled={benchmarking}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-micro font-bold bg-[var(--accent)] text-black hover:opacity-90 disabled:opacity-50 transition-all shrink-0"
-              >
-                <Icon.refresh size={13} className={benchmarking ? 'animate-spin' : ''} />
-                {benchmarking ? 'Benchmarking Hardware...' : '▶ Run GPU Benchmark'}
-              </button>
-            </div>
-
-            {benchmarkReport && (
-              <div className="p-3 rounded-lg bg-black/50 border border-white/5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-micro font-bold text-[var(--accent)] uppercase tracking-wider">
-                    {benchmarkReport.gpu_name || 'GPU'} ({benchmarkReport.total_vram_gb} GB VRAM)
-                  </span>
-                  <span className="text-nano px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
-                    ✓ Verified 0 Errors / Max GPU Speed
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <div className="p-2 rounded bg-white/5 border border-white/5">
-                    <span className="text-nano text-white/40 block">Standard Swap</span>
-                    <span className="text-xs font-bold text-white block">
-                      {benchmarkReport.best_threads?.standard || 4} Threads
-                    </span>
-                    <span className="text-nano text-emerald-400 font-mono">
-                      {benchmarkReport.fps_map?.standard?.[benchmarkReport.best_threads?.standard] || 0} FPS
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-white/5 border border-white/5">
-                    <span className="text-nano text-white/40 block">Enhanced Swap</span>
-                    <span className="text-xs font-bold text-white block">
-                      {benchmarkReport.best_threads?.enhanced || 4} Threads
-                    </span>
-                    <span className="text-nano text-emerald-400 font-mono">
-                      {benchmarkReport.fps_map?.enhanced?.[benchmarkReport.best_threads?.enhanced] || 0} FPS
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-white/5 border border-white/5">
-                    <span className="text-nano text-white/40 block">Heavy Workload</span>
-                    <span className="text-xs font-bold text-white block">
-                      {benchmarkReport.best_threads?.heavy || 2} Threads
-                    </span>
-                    <span className="text-nano text-emerald-400 font-mono">
-                      {benchmarkReport.fps_map?.heavy?.[benchmarkReport.best_threads?.heavy] || 0} FPS
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <BenchmarkPanel saved={p.benchmark_results} onResult={onBenchmarkResult} notify={notify} />
         </FilterSection>
 
         <FilterSection title="Advanced performance (restart to apply)" icon={Icon.meter} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <p className="text-xs text-white/40 -mt-2">These override the launcher env and the VRAM auto-tuner. Leave on "auto" unless you know what you're tuning. Changes take effect after restarting the app.</p>
           <Select label="Swapper TRT pool" info="ROOP_TRT_POOL — TensorRT contexts for the SWAPPER only; it does not affect face detection. 'auto' selects by VRAM: <7GB = 0 (disabled), 7-11.5GB = 2, 11.5-15.5GB = 4, 15.5GB+ = 8. Lower this first if you need to free VRAM for another pool." {...bind('perf_trt_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking, and the width of 'Analyzing faces'. LOWERING it slows that stage close to proportionally. DO NOT just raise it to match Max threads. Each instance carries its own model set plus a copy of the detector (retinaface_r50 is ~104MB), and on a 12GB card 8 does not fit alongside the swapper pool: measured, it ran out of VRAM and thrashed from 11.8 fps down to 0.5 and still falling, at 95% VRAM. The auto tier (12GB = 4) is chosen to leave that headroom. If you raise it, go one step at a time and watch VRAM — 5 or 6 may fit, 8 does not. Raising it only helps when the stage is DETECTION-bound. Check STAGE TIMING (ROOP_PROFILE=1): if track_decode per frame exceeds track_detect divided by this pool size, the stage is waiting on the video decoder instead and more instances buy nothing but VRAM." {...bind('perf_detmask_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
+          <Select label="Detector pool" info="ROOP_DETECTOR_POOL — Independent instances of the standalone DETECTOR, as distinct from the detect/mask pool above. The hybrid engines (retinaface, yoloface, yunet) bring their own detector and only borrow buffalo_l's aux models, so widening the detect/mask pool alone parallelises recognition and landmarks while the detector itself stays single-file. 'auto' follows the detect/mask pool. The two do not necessarily want the same width: on an RTX 4070 the benchmark measured the detector still scaling at 4 instances while recognition plateaued at 2. Turn this DOWN before the detect/mask pool when VRAM is tight — retinaface_r50 is ~104MB per instance (yoloface_8n ~9MB, yunet ~350KB, so those are nearly free)." {...bind('perf_detector_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Expression pool" info="ROOP_EXPR_POOL — TensorRT contexts for the LivePortrait expression restorer, the most expensive per-face stage there is (a full re-render: 5 models, one of them a 421MB generator). Only allocated when expression restore is actually on. 'auto' is VRAM-tiered: below 11.5GB = 0 (single context), above = 2, which was measured +28% on the stage. Raise to 3 only if STAGE TIMING shows 'expression' total/wall-clock exceeding the slot count — i.e. threads queueing for a slot. Each slot is ~537MB of weights, the largest of any pool here." {...bind('perf_expr_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Encoder preset" info="ROOP_ENCODER_PRESET — Encoding speed preset. 'auto' selects: 'faster' for CPU encoders (libx264/libx265), and 'p5' (VBR HQ) for NVENC GPU encoders." {...bind('perf_encoder_preset', 'auto')} options={meta.encoder_presets || ['auto', 'faster', 'fast', 'medium']} />
           <Select label="GPU video decode (NVDEC)" info="ROOP_NVDEC — Decode the source video on the GPU's dedicated NVDEC engine (ffmpeg -hwaccel cuda) instead of CPU cv2, speeding up the analysis pre-pass and the swap pass decode. 'auto'/'on' = enabled behind a per-file probe with automatic CPU fallback; 'off' = always CPU." {...bind('perf_nvdec', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
@@ -537,106 +434,6 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           </button>
         </div>
       </div>
-
-      {/* 2-Minute Live Hardware Benchmark Processing Modal */}
-      {benchmarking && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-2xl bg-zinc-900/95 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-5">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
-              <div className="flex items-center gap-3">
-                <MotionIcon icon={Icon.cpu} size="lg" variant="accent" animate="spin" />
-                <div>
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    In-Depth GPU Hardware Benchmark
-                    <span className="text-nano px-2 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent)] font-bold font-mono">
-                      2-MIN ACCURACY TEST
-                    </span>
-                  </h3>
-                  <p className="text-xs text-white/50">
-                    Evaluating sustained GPU throughput, CUDA stream concurrency, and VRAM memory headroom.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={cancelBenchmark}
-                className="px-3 py-1.5 rounded-lg text-micro font-bold text-white/60 hover:text-red-400 hover:bg-white/5 transition-all"
-              >
-                Cancel Benchmark
-              </button>
-            </div>
-
-            {/* Progress Bar & Countdown Timer */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-white/70">
-                  {benchmarkStatus?.status_msg || 'Benchmarking Hardware...'}
-                </span>
-                <span className="font-mono text-white/50 font-bold">
-                  {Math.floor((benchmarkStatus?.elapsed_sec || 0) / 60).toString().padStart(2, '0')}:
-                  {((benchmarkStatus?.elapsed_sec || 0) % 60).toString().padStart(2, '0')} / 02:00
-                </span>
-              </div>
-
-              <div className="h-3 w-full bg-black/60 rounded-full overflow-hidden border border-white/10 p-0.5">
-                <div
-                  className="h-full bg-gradient-to-r from-[var(--accent)] to-emerald-400 rounded-full transition-all duration-300 relative overflow-hidden"
-                  style={{ width: `${Math.min(100, Math.max(0, benchmarkStatus?.progress || 0))}%` }}
-                >
-                  <div className="absolute inset-0 bg-white/20 animate-pulse" />
-                </div>
-              </div>
-            </div>
-
-            {/* Live Telemetry Metrics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
-                <span className="text-nano text-white/40 block">Workload Mode</span>
-                <span className="text-xs font-bold text-white truncate block" title={benchmarkStatus?.current_mode}>
-                  {benchmarkStatus?.current_mode || 'Standard'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
-                <span className="text-nano text-white/40 block">Candidate Config</span>
-                <span className="text-xs font-bold text-[var(--accent)] block">
-                  {benchmarkStatus?.current_threads || 0} Threads
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
-                <span className="text-nano text-white/40 block">Sustained Speed</span>
-                <span className="text-xs font-bold text-emerald-400 font-mono block">
-                  {benchmarkStatus?.current_fps || 0.0} FPS
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-black/40 border border-white/5">
-                <span className="text-nano text-white/40 block">Peak VRAM</span>
-                <span className="text-xs font-bold text-white font-mono block">
-                  {benchmarkStatus?.current_vram_gb || 0.0} GB
-                </span>
-              </div>
-            </div>
-
-            {/* Live Activity Log Terminal */}
-            <div className="space-y-1.5">
-              <span className="text-micro font-semibold text-white/40 block">Real-Time Benchmark Log Ticker</span>
-              <div className="h-32 bg-black/80 border border-white/10 rounded-xl p-3 font-mono text-nano text-white/70 overflow-y-auto space-y-1">
-                {benchmarkStatus?.logs?.length > 0 ? (
-                  benchmarkStatus.logs.map((logLine, idx) => (
-                    <div key={idx} className="whitespace-pre-wrap">{logLine}</div>
-                  ))
-                ) : (
-                  <div className="text-white/30 italic">Initializing hardware stress tests...</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       <ThemeStudio
         open={studio.open}

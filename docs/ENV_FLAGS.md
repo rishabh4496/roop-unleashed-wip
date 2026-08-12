@@ -13,13 +13,58 @@ Defaults below are what the code falls back to when the variable is unset.
 
 ---
 
+## Measuring instead of guessing: the hardware benchmark
+
+Most of the throughput flags below ship with a **VRAM-tiered default** — a table
+in `roop/session_pool.py` that maps card size to pool size. That table was
+measured on a handful of cards, and a tier is a guess about every card that is
+not one of them. **Settings → Performance → Hardware benchmark** replaces the
+guess with a measurement of the machine in front of you.
+
+It times the models your *current settings* select — the selected swapper at its
+real tile count, the selected enhancer, the selected mask engine, the selected
+detector plus the per-face aux models, the expression restorer — built through
+the app's own provider rules (including the two places TensorRT is forced to
+FP32, and the models the TensorRT EP is removed from). Then it:
+
+* sweeps each stage's pool width and finds the knee, with per-instance VRAM cost
+  read from `torch.cuda.mem_get_info` (whole-device, so it sees onnxruntime and
+  TensorRT allocations);
+* runs a **composite frame** — detect + swap×tiles + enhance + mask, plus the
+  real `align_crop`/paste CPU work — over worker-thread counts, with pooled
+  stages leasing and un-pooled stages taking the same global lock `_gpu_guard`
+  imposes, and picks the thread count per workload mode;
+* re-runs that frame with the **costliest** stage's pool one step wider, because
+  a stage that plateaus *alone* can still pay off in a frame by staying off the
+  global lock — measured on an RTX 4070, the swapper flattened at 4 contexts in
+  isolation but a 5th took the heavy frame from 9.58 to 10.12 fps. One knob, not
+  all four: widening everything at once took the same card to 11961 MiB of 12282
+  and it started paging;
+* compares TensorRT against CUDA per stage, checks batched swap, and times
+  libx265/libx264/NVENC encode and cv2/NVDEC decode.
+
+Results land in `config.yaml` as `benchmark_results`. The thread counts are read
+per run by `Settings.resolve_threads` and take effect immediately; the pool sizes
+are written to the `perf_*` settings below and, like everything else in this
+file, need a **restart**.
+
+`env/Scripts/python.exe -m roop.bench --profile full --no-apply` runs the same
+thing from a terminal and prints the tables without touching the config.
+
+> Note for anyone reading old screenshots: the previous "GPU & Thread Benchmark"
+> reported figures like *18,698 FPS* and *12 threads*. It ran a batched
+> `torch.matmul` on one thread, used the batch size as the "thread count", and
+> touched no model, no pool and no execution provider — so it always picked
+> roughly the largest batch that still fit. Those numbers meant nothing and the
+> thread counts derived from them were arbitrary. See `roop/bench.py`'s docstring.
+
 ## Throughput / GPU concurrency
 
 | Flag | Default | Effect |
 |------|---------|--------|
 | `ROOP_TRT_POOL` | unset (1) | Pool of N independent TensorRT **swapper** contexts (N≥2) to break single-context serialization. Validated ~+46% video throughput at 2. |
 | `ROOP_DETMASK_POOL` | unset (auto) | Pool of N independent detect/mask sessions (FaceAnalysis + mask engines). Set explicitly (e.g. 2–8) to parallelize detection/masking. |
-| `ROOP_DETECTOR_POOL` | = detmask pool | Independent instances of the standalone detector. Each hybrid engine brings its own detector and only borrows buffalo_l's aux models, so without this the detector stays single-file however wide `ROOP_DETMASK_POOL` is set, and widening that pool only adds queue time. Now honoured by **all three** hybrid engines (retinaface, yoloface, yunet) — before, only retinaface was pooled and the other two still held a detect-time mutex. Defaults to the detmask pool size so a worker never waits. `retinaface_r50.onnx` is ~104 MB per instance (yoloface_8n ~9 MB, yunet ~350 KB) — turn this down before the detmask pool when VRAM is tight. |
+| `ROOP_DETECTOR_POOL` | = detmask pool | Independent instances of the standalone detector. Each hybrid engine brings its own detector and only borrows buffalo_l's aux models, so without this the detector stays single-file however wide `ROOP_DETMASK_POOL` is set, and widening that pool only adds queue time. Now honoured by **all three** hybrid engines (retinaface, yoloface, yunet) — before, only retinaface was pooled and the other two still held a detect-time mutex. Defaults to the detmask pool size so a worker never waits. `retinaface_r50.onnx` is ~104 MB per instance (yoloface_8n ~9 MB, yunet ~350 KB) — turn this down before the detmask pool when VRAM is tight. Now also has a UI setting (*Advanced performance → Detector pool*, `perf_detector_pool`), because the benchmark measures it separately from the detect/mask pool and the two disagree — on an RTX 4070 the detector was still scaling at 4 instances while recognition plateaued at 2. |
 | `ROOP_TRT_WORKSPACE_FRACTION` | ~auto | Fraction of VRAM TensorRT may use as build workspace. Lower if a build OOMs. |
 | `ROOP_TRT_PARTITION_ITERATIONS` | 2000 | TensorRT partition search iterations during engine build. |
 | `ROOP_BATCH_SWAP` | 0 | Batch multiple face crops through one swap inference call (bit-identical). Phase-1 pixel-boost batching. |
