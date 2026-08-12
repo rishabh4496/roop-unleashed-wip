@@ -1442,6 +1442,92 @@ def measure_io(report, cancelled, seconds_of_video=2.0, width=1920, height=1080,
 
 # ── recommendation ───────────────────────────────────────────────────────────
 
+# The encoder has to keep up with the pipeline, not win a drag race, and it is
+# asked to do so with the CPU that the worker threads are already using. The
+# measured figure comes from a lone ffmpeg with the whole machine and a 1080p
+# synthetic clip; a real render gives it a fraction of the cores and possibly 4x
+# the pixels. So a candidate has to beat the frame rate by this much before it
+# counts as keeping up. Set from the two knowns rather than tuned: ~2x for the
+# CPU it will not get, and the resolution unknown on top.
+ENCODER_HEADROOM = 2.0
+
+# Codecs the app will actually offer. Mirrors `_VIDEO_CODECS` in api.py, which is
+# the authority — a recommendation outside that list would set a value the
+# dropdown cannot display. Pinned by a test rather than imported, because
+# importing api.py from here would boot the whole FastAPI app in the CLI.
+APP_CODECS = ('libx264', 'libx265', 'libvpx-vp9', 'h264_nvenc', 'hevc_nvenc')
+
+
+def _recommend_encoder(rows, threads, curves, current_codec=''):
+    """The cheapest encoder that can keep up — not the fastest one measured.
+
+    Encoding is NOT a separate pass: `ProcessMgr.write_frames_thread` streams
+    frames into a live `FFMPEG_VideoWriter` while the swap is running. So an
+    encoder that is already faster than the pipeline produces frames buys
+    nothing in wall clock, and the fastest encoder measured here is the one that
+    costs the most per frame stored — on the reference machine `hevc_nvenc p5`
+    ran 170 f/s against libx265 medium's 42.5, for a file **15x larger** on the
+    same 60 frames (1.5 MB against 0.10 MB).
+
+    Ranking by fps alone therefore recommends a large quality-and-size cost for
+    a speedup the render cannot use. What the report is really being asked is
+    "can the writer keep up, and if not, what is the cheapest thing that can".
+
+    So the PRESET moves first and the codec only if it has to. A faster
+    libx264/libx265 preset at a fixed CRF is quality-neutral by construction —
+    rate control holds perceptual quality constant, so the preset trades encoder
+    search time for a slightly larger file and nothing else — which makes the
+    output size an honest cost within one codec. Across codecs it is not: CRF 18
+    does not mean the same thing to x264 and to x265, so "libx264 medium is
+    0.20 MB against libx265 faster's 0.40" compares two different qualities and
+    must not decide anything. The configured codec is therefore kept whenever
+    any of its presets clears the bar.
+
+    Only when no preset of the configured codec can keep up does the codec move,
+    and then to the fastest thing measured — usually NVENC, which is also the
+    right answer there for a second reason: it runs on the GPU's dedicated
+    encode engine, off the cores the worker threads are competing for.
+    """
+    ok = [r for r in rows if r.get('fps')]
+    if not ok:
+        return {}
+    fastest = max(ok, key=lambda r: r['fps'])
+    # The rate the writer has to absorb: the highest sustained frame rate any
+    # mode achieves at its recommended thread count. The heavy mode is slower
+    # and cannot be the binding constraint.
+    need = 0.0
+    for mode, n in (threads or {}).items():
+        try:
+            need = max(need, float((curves.get(mode) or {}).get(str(n), 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    if need <= 0:
+        return {'encoder': fastest['name'], 'encoder_fastest': fastest['name'],
+                'encoder_reason': 'no thread curve to size the encoder against'}
+
+    bar = need * ENCODER_HEADROOM
+    same = [r for r in ok if r['name'].split()[0] == current_codec and r['fps'] >= bar]
+    if same:
+        # Cheapest preset of the codec already configured. `mb` missing means the
+        # size could not be read; treating it as infinite keeps it from winning
+        # on absent data.
+        choice = min(same, key=lambda r: (r.get('mb') if r.get('mb') else float('inf')))
+        reason = (f'{choice["name"]} keeps up with {need:.1f} f/s '
+                  f'({choice["fps"]:.0f} f/s, {ENCODER_HEADROOM:g}x headroom) at the '
+                  f'smallest output for this codec')
+        if choice['name'] != fastest['name']:
+            reason += (f'; {fastest["name"]} is faster but the render cannot use '
+                       f'it — encoding overlaps the swap')
+    else:
+        choice = fastest
+        reason = (f'no {current_codec or "configured"} preset clears {bar:.0f} f/s '
+                  f'({ENCODER_HEADROOM:g}x the {need:.1f} f/s the pipeline produces), '
+                  f'so the encoder would hold the render back')
+    return {'encoder': choice['name'],
+            'encoder_fastest': fastest['name'],
+            'encoder_reason': reason}
+
+
 def recommend(stages, device, pools, curves, provider_rows, io_res, batch_res):
     """Turn the measurements into the settings the app reads.
 
@@ -1496,8 +1582,10 @@ def recommend(stages, device, pools, curves, provider_rows, io_res, batch_res):
         }
 
     if io_res and io_res.get('encode'):
-        enc = sorted(io_res['encode'], key=lambda r: -r['fps'])
-        rec['encoder'] = enc[0]['name']
+        rec.update(_recommend_encoder(
+            io_res['encode'], threads, curves,
+            current_codec=str(getattr(roop.globals.CFG, 'output_video_codec', '')
+                              or '') if roop.globals.CFG else ''))
     if io_res and len(io_res.get('decode', [])) == 2:
         cpu = next((d['fps'] for d in io_res['decode'] if 'cv2' in d['name']), 0)
         gpu = next((d['fps'] for d in io_res['decode'] if 'NVDEC' in d['name']), 0)
@@ -1852,6 +1940,31 @@ def apply_recommendation(result):
             continue
         setattr(cfg, key, value)
         pending[key] = value
+
+    # The encoder, which until now was measured and then only printed — the one
+    # number in the report that nothing acted on. Two different lifetimes here,
+    # and conflating them would misreport one of them:
+    #
+    #   * the CODEC is re-read from config on every run (`_run_swap` assigns
+    #     roop.globals.video_encoder from CFG), so it is live immediately;
+    #   * the PRESET goes out as ROOP_ENCODER_PRESET, which run.py exports once
+    #     at startup, so it needs a restart like the pools.
+    enc = str(rec.get('encoder') or '').split()
+    if enc:
+        codec, preset = enc[0], (enc[1] if len(enc) > 1 else '')
+        if codec in APP_CODECS and str(getattr(cfg, 'output_video_codec', '')) != codec:
+            cfg.output_video_codec = codec
+            applied['output_video_codec'] = codec
+        # ROOP_ENCODER_PRESET is x264-style and `ffmpeg_writer` consults it for
+        # libx264/libx265 only — NVENC's preset is a separate knob
+        # (ROOP_NVENC_PRESET, p1-p7) whose p5 default is the only value measured
+        # here, so there is nothing to write for it. Writing 'p5' into
+        # perf_encoder_preset would fail that validator and silently become
+        # 'faster'.
+        if preset and codec in ('libx264', 'libx265') and \
+                str(getattr(cfg, 'perf_encoder_preset', 'auto')) != preset:
+            cfg.perf_encoder_preset = preset
+            pending['perf_encoder_preset'] = preset
 
     applied['best_threads'] = rec.get('threads')
     try:

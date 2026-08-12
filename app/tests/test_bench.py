@@ -388,6 +388,165 @@ class TheResultReachesResolveThreads(unittest.TestCase):
         self.assertEqual(rec['threads']['standard'], 4)
 
 
+class TheEncoderIsChosenToKeepUpNotToWin(unittest.TestCase):
+    """Encoding streams alongside the swap, so "fastest" is the wrong question.
+
+    `ProcessMgr.write_frames_thread` feeds a live FFMPEG_VideoWriter while the
+    pipeline runs. An encoder already ahead of the pipeline therefore buys no
+    wall clock at all, and the fastest row measured is the one that costs the
+    most per frame stored — on the reference machine hevc_nvenc p5 ran 170 f/s
+    against libx265 medium's 42.5 for a file 15x larger.
+    """
+
+    ROWS = [
+        {'name': 'libx265 medium', 'fps': 42.5, 'mb': 0.10},
+        {'name': 'libx265 faster', 'fps': 94.8, 'mb': 0.40},
+        {'name': 'libx264 medium', 'fps': 91.9, 'mb': 0.20},
+        {'name': 'libx264 faster', 'fps': 150.4, 'mb': 0.60},
+        {'name': 'h264_nvenc p5', 'fps': 121.5, 'mb': 2.90},
+        {'name': 'hevc_nvenc p5', 'fps': 170.0, 'mb': 1.50},
+    ]
+    THREADS = {'standard': 8, 'enhanced': 12, 'heavy': 4}
+    CURVES = {'standard': {'8': 28.4}, 'enhanced': {'12': 13.4}, 'heavy': {'4': 9.9}}
+
+    def _rec(self, rows=None, current='libx265'):
+        return bench._recommend_encoder(rows or self.ROWS, self.THREADS,
+                                        self.CURVES, current)
+
+    def test_the_fastest_encoder_is_not_the_recommendation(self):
+        out = self._rec()
+        self.assertEqual(out['encoder_fastest'], 'hevc_nvenc p5')
+        self.assertNotEqual(out['encoder'], 'hevc_nvenc p5')
+
+    def test_it_moves_the_preset_and_keeps_the_codec(self):
+        # libx265 medium (42.5) does not clear 2x28.4; libx265 faster does. The
+        # preset is the quality-neutral lever — same CRF, same perceptual
+        # quality, slightly larger file — so it is the one that should move.
+        self.assertEqual(self._rec()['encoder'], 'libx265 faster')
+
+    def test_size_never_decides_ACROSS_codecs(self):
+        """The bug this rule was rewritten to avoid.
+
+        Ranking every fast-enough row by megabytes picks libx264 medium (0.20 MB)
+        over libx265 faster (0.40 MB) and silently changes the codec. CRF 18 does
+        not mean the same quality to x264 and x265, so that comparison is between
+        two different qualities and cannot justify anything.
+        """
+        self.assertEqual(self._rec(current='libx265')['encoder'].split()[0], 'libx265')
+        self.assertEqual(self._rec(current='libx264')['encoder'].split()[0], 'libx264')
+
+    def test_a_codec_that_cannot_keep_up_does_move(self):
+        # 4K, or a CPU busy enough that no software preset clears the bar. NVENC
+        # is right there for a second reason: it runs on the dedicated encode
+        # engine, off the cores the workers are competing for.
+        slow = [dict(r, fps=r['fps'] / 6.0) for r in self.ROWS]
+        out = self._rec(slow)
+        self.assertEqual(out['encoder'], 'hevc_nvenc p5')
+        self.assertIn('clears', out['encoder_reason'])
+
+    def test_an_encoder_already_fast_enough_is_left_completely_alone(self):
+        self.assertEqual(self._rec(current='libx264')['encoder'], 'libx264 medium')
+        self.assertEqual(self._rec(current='hevc_nvenc')['encoder'], 'hevc_nvenc p5')
+
+    def test_the_reason_does_not_compare_the_winner_to_itself(self):
+        # Already on the fastest encoder, the sentence read "hevc_nvenc p5 is
+        # faster but the render cannot use it" — about hevc_nvenc p5.
+        out = self._rec(current='hevc_nvenc')
+        self.assertEqual(out['encoder'], out['encoder_fastest'])
+        self.assertNotIn('is faster but', out['encoder_reason'])
+
+    def test_no_thread_curve_falls_back_to_the_fastest(self):
+        out = bench._recommend_encoder(self.ROWS, {}, {}, 'libx265')
+        self.assertEqual(out['encoder'], 'hevc_nvenc p5')
+
+    def test_a_missing_size_cannot_win_on_absent_data(self):
+        rows = [{'name': 'libx265 medium', 'fps': 99.0},          # no 'mb'
+                {'name': 'libx265 faster', 'fps': 99.0, 'mb': 0.40}]
+        self.assertEqual(self._rec(rows)['encoder'], 'libx265 faster')
+
+    def test_recommend_actually_routes_through_the_rule(self):
+        """The wiring, not the rule.
+
+        Every assertion above calls `_recommend_encoder` directly, so restoring
+        the old one-liner in `recommend()` — sort by fps, take the first — left
+        all of them green while the report went back to recommending the fastest
+        encoder. The seam has to be tested from the caller's side.
+        """
+        from settings import Settings
+        saved = g.CFG
+        try:
+            g.CFG = Settings(os.path.join(HERE, 'no-such-config.yaml'))
+            g.CFG.output_video_codec = 'libx265'
+            rec = bench.recommend([], {'cpu_logical': 32}, {}, self.CURVES, [],
+                                  {'encode': self.ROWS}, {})
+        finally:
+            g.CFG = saved
+        self.assertEqual(rec['encoder'], 'libx265 faster')
+        self.assertEqual(rec['encoder_fastest'], 'hevc_nvenc p5')
+        self.assertIn('encoder_reason', rec)
+
+
+class TheEncoderRecommendationIsApplied(unittest.TestCase):
+    """It was measured, printed, and then acted on by nobody.
+
+    The codec and the preset have different lifetimes and the report has to say
+    so: `_run_swap` re-reads output_video_codec from config on every run, while
+    perf_encoder_preset leaves as ROOP_ENCODER_PRESET, which run.py exports once
+    at startup.
+    """
+
+    def setUp(self):
+        from settings import Settings
+        self._saved = g.CFG
+        g.CFG = Settings(os.path.join(HERE, 'no-such-config.yaml'))
+        g.CFG.save = lambda: None               # never touch a real config.yaml
+
+    def tearDown(self):
+        g.CFG = self._saved
+
+    def _apply(self, encoder):
+        return bench.apply_recommendation({'recommend': {'encoder': encoder}})
+
+    def test_a_preset_change_is_reported_as_needing_a_restart(self):
+        g.CFG.output_video_codec = 'libx265'
+        g.CFG.perf_encoder_preset = 'auto'
+        out = self._apply('libx265 faster')
+        self.assertEqual(out['pending_restart'].get('perf_encoder_preset'), 'faster')
+        self.assertEqual(g.CFG.perf_encoder_preset, 'faster')
+        self.assertNotIn('output_video_codec', out['applied_now'])
+
+    def test_a_codec_change_is_reported_as_live(self):
+        g.CFG.output_video_codec = 'libx265'
+        out = self._apply('hevc_nvenc p5')
+        self.assertEqual(out['applied_now'].get('output_video_codec'), 'hevc_nvenc')
+        self.assertEqual(g.CFG.output_video_codec, 'hevc_nvenc')
+        self.assertNotIn('output_video_codec', out['pending_restart'])
+
+    def test_an_nvenc_preset_is_not_written_into_the_x264_style_knob(self):
+        # ffmpeg_writer consults ROOP_ENCODER_PRESET for libx264/libx265 only and
+        # validates against x264 preset names; 'p5' would fail that check and
+        # silently become 'faster'. NVENC's preset is ROOP_NVENC_PRESET.
+        g.CFG.output_video_codec = 'libx265'
+        g.CFG.perf_encoder_preset = 'auto'
+        self._apply('hevc_nvenc p5')
+        self.assertEqual(g.CFG.perf_encoder_preset, 'auto')
+
+    def test_a_codec_outside_the_apps_own_list_is_refused(self):
+        g.CFG.output_video_codec = 'libx265'
+        self._apply('av1_qsv fast')
+        self.assertEqual(g.CFG.output_video_codec, 'libx265')
+
+    def test_the_codec_list_matches_the_one_the_ui_offers(self):
+        # bench keeps its own copy so the CLI does not have to import api.py and
+        # boot FastAPI. Copies drift; this is what stops it.
+        import re
+        with open(os.path.join(APP, 'api.py'), encoding='utf-8') as fh:
+            m = re.search(r'^_VIDEO_CODECS\s*=\s*\[(.*?)\]', fh.read(), re.M | re.S)
+        self.assertIsNotNone(m, '_VIDEO_CODECS not found in api.py')
+        self.assertEqual(sorted(re.findall(r'"([^"]+)"', m.group(1))),
+                         sorted(bench.APP_CODECS))
+
+
 class PerInstanceVramIsMarginal(unittest.TestCase):
     """The first session also pays for the CUDA context, the engine
     deserialisation and the arena; charging that to instance two overstates a

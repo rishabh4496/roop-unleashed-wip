@@ -43,10 +43,35 @@ FP32, and the models the TensorRT EP is removed from). Then it:
 * compares TensorRT against CUDA per stage, checks batched swap, and times
   libx265/libx264/NVENC encode and cv2/NVDEC decode.
 
-Results land in `config.yaml` as `benchmark_results`. The thread counts are read
-per run by `Settings.resolve_threads` and take effect immediately; the pool sizes
-are written to the `perf_*` settings below and, like everything else in this
-file, need a **restart**.
+### What it writes, and when it takes effect
+
+| What | Where it lands | When it applies |
+|------|----------------|-----------------|
+| thread counts | `benchmark_results` | **immediately** — `Settings.resolve_threads` reads them per run |
+| pool sizes | `perf_trt_pool`, `perf_detmask_pool`, `perf_detector_pool`, `perf_expr_pool` | **restart** — exported to env by `run.py` at startup |
+| `perf_batch_swap`, `perf_nvdec` | same | **restart** |
+| video codec | `output_video_codec` | **immediately** — `_run_swap` re-reads it from config every run |
+| encoder preset | `perf_encoder_preset` | **restart** |
+
+The provider recommendation is reported but **not** applied: switching it
+rebuilds TensorRT engines, which is a multi-minute cost the user should choose.
+
+**The encoder is not chosen by speed**, and this is deliberate. Encoding is not a
+separate pass — `ProcessMgr.write_frames_thread` streams frames into a live
+`FFMPEG_VideoWriter` while the swap runs — so an encoder already faster than the
+pipeline produces frames buys nothing in wall clock. On the reference machine
+`hevc_nvenc p5` measured 170 fps against libx265 medium's 42.5, for a file **15x
+larger** on the same frames. So the benchmark keeps your configured codec and
+moves only the PRESET, picking the cheapest one that clears the fastest mode's
+frame rate with 2x headroom (for the cores it will not get during a real render,
+and for a target that may be larger than the 1080p test clip). At a fixed CRF a
+faster x264/x265 preset is perceptually equivalent, so that move costs nothing
+but a slightly larger file. The codec itself changes only when NO preset of it
+can keep up — a 4K target, or a CPU busy enough that the software encoders fall
+behind — and then it goes to the fastest measured, usually NVENC, which also
+moves the work onto the GPU's dedicated encode engine and off the worker cores.
+Size never decides across codecs: CRF 18 does not mean the same quality to x264
+and x265, so comparing their file sizes compares two different qualities.
 
 `env/Scripts/python.exe -m roop.bench --profile full --no-apply` runs the same
 thing from a terminal and prints the tables without touching the config.

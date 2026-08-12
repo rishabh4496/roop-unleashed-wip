@@ -95,9 +95,16 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // next time anything on this page is saved — the benchmark's whole output,
   // undone by an unrelated toggle. `pending_restart` is exactly the set of keys
   // the backend changed underneath us.
+  // `applied_now` matters here for the same reason and is easy to miss: the
+  // codec is applied LIVE (re-read from config per run) rather than pending a
+  // restart, so it lands in the other bucket — and a page still holding the old
+  // codec would revert it on the next save exactly like the pool sizes.
+  // best_threads is in there too and is a nested object, not a settings key;
+  // it is filtered out rather than assigned over `benchmark_results`.
   const onBenchmarkResult = useCallback((result) => {
-    const applied = result?.applied?.pending_restart || {};
-    setSettings((s) => ({ ...s, ...applied, benchmark_results: result }));
+    const { best_threads, ...live } = result?.applied?.applied_now || {};
+    const pending = result?.applied?.pending_restart || {};
+    setSettings((s) => ({ ...s, ...pending, ...live, benchmark_results: result }));
   }, [setSettings]);
 
   useEffect(() => {

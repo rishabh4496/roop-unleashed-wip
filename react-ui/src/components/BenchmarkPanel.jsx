@@ -30,9 +30,10 @@ function Chip({ tone = 'info', children, title }) {
   );
 }
 
-function Tile({ label, value, sub, tone }) {
+function Tile({ label, value, sub, tone, title }) {
   return (
-    <div className="p-2.5 rounded-lg bg-white/[0.04] border border-white/8 min-w-0">
+    <div className="p-2.5 rounded-lg bg-white/[0.04] border border-white/8 min-w-0"
+      title={title}>
       <span className="text-nano text-white/40 block truncate">{label}</span>
       <span className={`text-sm font-bold block tabular-nums ${tone ? `ink-${tone}` : 'text-white'}`}>
         {value}
@@ -163,6 +164,7 @@ export default function BenchmarkPanel({ saved, onResult, notify }) {
   const dev = report?.device || {};
   const pending = report?.applied?.pending_restart || {};
   const pendingKeys = Object.keys(pending);
+  const codecChange = report?.applied?.applied_now?.output_video_codec;
 
   return (
     <div className="col-span-full p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3 mt-2">
@@ -230,7 +232,7 @@ export default function BenchmarkPanel({ saved, onResult, notify }) {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2">
             <Tile label="Threads · standard" value={rec.threads?.standard ?? '—'}
               sub={`${num(report.thread_curve?.standard?.[String(rec.threads?.standard)], 1)} f/s`} tone="accent" />
             <Tile label="Threads · enhanced" value={rec.threads?.enhanced ?? '—'}
@@ -250,7 +252,40 @@ export default function BenchmarkPanel({ saved, onResult, notify }) {
                   : `${num(rec.provider.margin_pct, 0)}% over CUDA`
                     + (rec.provider.stages_cuda_refused
                       ? ` · ${rec.provider.stages_cuda_refused} refused` : '')} />
+            {/* The encoder used to be measured and then never shown, so the one
+                table with a 4x spread in it had no recommendation attached. It
+                is deliberately NOT the fastest row: encoding streams alongside
+                the swap, so anything already ahead of the pipeline is free
+                speed nobody collects, paid for in file size. */}
+            <Tile label="Encoder" value={rec.encoder || '—'}
+              title={rec.encoder_reason}
+              sub={rec.encoder_fastest && rec.encoder_fastest !== rec.encoder
+                ? `${rec.encoder_fastest} is faster, not needed`
+                : 'fastest measured'} />
           </div>
+
+          {rec.encoder_reason && (
+            <p className="text-nano text-white/40 leading-relaxed">
+              <b className="text-white/60">Encoder:</b> {rec.encoder_reason}.
+            </p>
+          )}
+
+          {/* The codec is the one applied setting that changes the OUTPUT FILE
+              rather than the speed it is produced at, so it is called out by
+              name and separately from the restart list — a change of container
+              codec discovered later, in a finished render, is not a good way to
+              find out. It is live immediately: `_run_swap` re-reads it from
+              config on every run, unlike the env-backed knobs below. */}
+          {codecChange && (
+            <div className="state-info rounded-lg px-3 py-2 text-nano font-medium flex items-start gap-2">
+              <Icon.info size={12} className="mt-0.5 shrink-0" />
+              <span>
+                Video codec switched to <b>{codecChange}</b> — live from your next
+                render, no restart. Change it back in Settings → Output if you
+                would rather keep the previous one.
+              </span>
+            </div>
+          )}
 
           {pendingKeys.length > 0 && (
             <div className="state-warn rounded-lg px-3 py-2 text-nano font-medium flex items-start gap-2">
