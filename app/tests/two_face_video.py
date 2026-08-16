@@ -46,6 +46,51 @@ if APP not in sys.path:
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# run.py applies these perf knobs (config.yaml -> os.environ) before any roop
+# module is imported, since ProcessMgr reads ROOP_PROFILE/ROOP_BATCH_SWAP at
+# import time — but this harness never goes through run.py, so pooling
+# (ROOP_TRT_POOL etc.), batched swap, and NVDEC were silently OFF for every
+# run of this specific bench tool, unlike the real app AND unlike
+# sample_bench.py (which already carries this same fix, with the same
+# reasoning documented there). Duplicated rather than imported: importing
+# sample_bench here would be circular (it imports FROM this module), and
+# importing all of api.py/run.py has heavy import-time side effects. Must run
+# before the angle_bench import just below.
+def _apply_perf_env():
+    try:
+        import yaml
+        with open(os.path.join(APP, 'config.yaml'), 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return
+
+    def _set(var, val):
+        if val is None:
+            return
+        s = str(val).strip()
+        if s and s.lower() != 'auto':
+            os.environ[var] = s
+
+    _set('ROOP_TRT_POOL', cfg.get('perf_trt_pool'))
+    _set('ROOP_DETMASK_POOL', cfg.get('perf_detmask_pool'))
+    _set('ROOP_DETECTOR_POOL', cfg.get('perf_detector_pool'))
+    _set('ROOP_EXPR_POOL', cfg.get('perf_expr_pool'))
+    _set('ROOP_ENCODER_PRESET', cfg.get('perf_encoder_preset'))
+    for var, key in (('ROOP_PROFILE', 'perf_profile'), ('ROOP_BATCH_SWAP', 'perf_batch_swap'),
+                     ('ROOP_NVDEC', 'perf_nvdec')):
+        v = str(cfg.get(key, 'auto')).strip().lower()
+        if v == 'on' or (v == 'auto' and var == 'ROOP_BATCH_SWAP'):
+            os.environ[var] = '1'
+            if var == 'ROOP_BATCH_SWAP':
+                os.environ['ROOP_BATCH_SWAP_XFRAME'] = '1'
+        elif v == 'off':
+            os.environ[var] = '0'
+            if var == 'ROOP_BATCH_SWAP':
+                os.environ['ROOP_BATCH_SWAP_XFRAME'] = '0'
+
+
+_apply_perf_env()
+
 import angle_bench as ab                     # noqa: E402
 from angle_video import ensure_ffmpeg, read_frames    # noqa: E402
 
@@ -673,7 +718,9 @@ def main():
     ap.add_argument("--enhancer", default="None")
     ap.add_argument("--mask-engine", default="None")
     ap.add_argument("--tracking", default="1")
-    ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--threads", type=int, default=None,
+                    help="defaults to config.yaml's live 'max_threads' setting if not "
+                         "given, matching what the real app actually runs with")
     ap.add_argument("--out", default=os.path.join(APP, "output", "bench_two_face"))
     args = ap.parse_args()
 
@@ -682,7 +729,7 @@ def main():
                          args.mask_engine)
     g.video_encoder = "libx264"
     g.video_quality = 12
-    g.execution_threads = args.threads
+    g.execution_threads = args.threads if args.threads is not None else g.CFG.max_threads
     g.face_swap_mode = "selected"
     track = args.tracking != "0"
     # BOTH names. `_track_mode` (ProcessMgr) reads roop.globals.track_identities,
