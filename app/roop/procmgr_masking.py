@@ -70,6 +70,105 @@ _MASK_BOX_MARGIN = float(os.environ.get('ROOP_MASK_BOX_MARGIN', '0.15') or 0.15)
 OCCLUDER_EDGE_PX = float(os.environ.get('ROOP_OCCLUDER_EDGE_PX', '5') or 5)
 
 
+# ── Undersized-mask recovery ─────────────────────────────────────────────────
+# A learned mask model (XSeg etc.) can under-segment at a pose it saw little of
+# in training. Measured on a real clip: at ~-42deg pitch (head tilted sharply
+# back), XSeg predicted a "keep original" region covering the entire forehead
+# and hairline, leaving only a small eyebrows-to-mouth island actually swapped
+# — the un-swapped forehead then shows through, which reads as "the swapped
+# face is small". This is a mask-model generalisation gap, not an alignment
+# bug: the aligned crop itself is geometrically correct (a similarity
+# transform cannot distort it — see the anisotropy note above), only the
+# LEARNED segmentation is unreliable at this pose.
+#
+# Fix is a sanity check against known-good geometry, not a different mask
+# model: the 5 keypoints, warped through the SAME M that built this crop, are
+# exactly where the face's core features actually landed for this face this
+# frame — accounting for whatever residual the alignment fit itself has, which
+# matters most exactly on the degenerate poses this targets. A face-oval
+# built from them is a hard floor of "this is definitely face" that any
+# correct mask should already cover. Only widens the swap region — where the
+# floor says face but the model disagreed — never narrows it, so a mask that
+# already covers the floor (the overwhelmingly common case) is untouched,
+# bit-identical. ROOP_MASK_RECOVER=0 disables it.
+_MASK_RECOVER = os.environ.get('ROOP_MASK_RECOVER', '1').strip().lower() not in ('0', 'off', 'false')
+
+# Trigger only when the model's own swap region is well below the floor's
+# area — a small gap is normal (eyes/mouth cutouts, minor under-coverage);
+# this is for the gross failure the measurement above describes (XSeg covered
+# roughly the middle third of the floor, not a modest shortfall).
+_MASK_RECOVER_TRIGGER = float(os.environ.get('ROOP_MASK_RECOVER_TRIGGER', '0.5') or 0.5)
+
+
+def _face_floor_ellipse(kps, M, shape):
+    """Soft-edged 'definitely face' ellipse in crop space, from this face's own
+    keypoints warped through the crop's own alignment matrix. Pose-specific by
+    construction (unlike a static template), so it stays a valid floor even
+    when the alignment fit has residual error — which is exactly when this
+    matters."""
+    try:
+        pts = np.asarray(kps, dtype=np.float64).reshape(-1, 2)
+        if pts.shape[0] != 5:
+            return None
+        warped = cv2.transform(pts.reshape(1, -1, 2), np.asarray(M, dtype=np.float64))[0]
+        eyes = warped[0:2]
+        mouth = warped[3:5]
+        eye_mid = eyes.mean(axis=0)
+        mouth_mid = mouth.mean(axis=0)
+        eye_dist = float(np.hypot(*(eyes[1] - eyes[0])))
+        face_h = float(np.hypot(*(mouth_mid - eye_mid)))
+        if eye_dist <= 1.0 or face_h <= 1.0:
+            return None
+        center = ((eye_mid + mouth_mid) / 2.0)
+        # Generous on purpose — this only has to sit INSIDE a correct mask's
+        # true boundary, not trace it. Wide enough for cheeks/jaw, tall enough
+        # to reach the brow and chin from eye/mouth landmarks alone.
+        axis_x = eye_dist * 1.3
+        axis_y = face_h * 2.0
+        h, w = shape[:2]
+        ref = np.zeros((h, w), dtype=np.float32)
+        cv2.ellipse(ref, (int(round(center[0])), int(round(center[1]))),
+                   (int(round(axis_x)), int(round(axis_y))), 0, 0, 360, 1.0, -1)
+        k = max(3, (min(h, w) // 16) | 1)
+        return cv2.GaussianBlur(ref, (k, k), 0)
+    except Exception:
+        return None
+
+
+def _recover_undersized_mask(img_mask, kps, M):
+    """Widen `img_mask` (1.0 = restore original, 0.0 = swap) toward a
+    geometric floor when the model's predicted swap region falls well short of
+    it. See the module note above for the measured failure this targets.
+
+    Some mask engines (XSeg's raw ONNX output, seen in practice) return a
+    trailing singleton channel — (256, 256, 1) rather than (256, 256). Squash
+    to 2D for the comparison and restore the original shape on the way out;
+    without this, `np.minimum` against a bare (h, w) reference broadcasts the
+    mismatched ranks into an (h, w, h) monster instead of raising, since both
+    (h, w, 1) and (h, w) are individually valid broadcast shapes."""
+    if not _MASK_RECOVER:
+        return img_mask
+    orig_shape = img_mask.shape
+    flat = img_mask
+    if flat.ndim == 3 and flat.shape[-1] == 1:
+        flat = flat[..., 0]
+    if flat.ndim != 2:
+        return img_mask
+    ref = _face_floor_ellipse(kps, M, flat.shape)
+    if ref is None:
+        return img_mask
+    floor_area = float((ref > 0.5).sum())
+    if floor_area <= 0:
+        return img_mask
+    swap_area = float((flat < 0.5).sum())
+    if swap_area >= _MASK_RECOVER_TRIGGER * floor_area:
+        return img_mask
+    # Only ever pulls toward "swap" (lower), and only where the floor says
+    # face — never raises img_mask above what the model itself predicted.
+    recovered = np.minimum(flat, 1.0 - ref)
+    return recovered.reshape(orig_shape) if recovered.shape != orig_shape else recovered
+
+
 def _edge_blur_kernel(M, crop_shape, mask_shape, target_px=None):
     """Odd GaussianBlur kernel, in MASK pixels, that puts an occluder's edge at
     roughly `target_px` frame pixels wide. 1 means "do not blur".
@@ -619,7 +718,7 @@ class MaskingMixin:
             if len(target_face.kps) == 5:
                 kps = target_face.kps
 
-        dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg']
+        dense_maskers = ['mask_occluder', 'mask_xseg3', 'mask_faceparser', 'mask_xseg', 'mask_clip2seg', 'mask_realityux']
 
         # ── Should this face be masked on an UNWARPED crop instead? ───────────
         # Default: no. This used to route by pose, and the reason it gave was
@@ -791,6 +890,9 @@ class MaskingMixin:
             k = _edge_blur_kernel(M, frame.shape, img_mask.shape)
             img_mask = (cv2.GaussianBlur(binary_mask, (k, k), 0) if k > 1
                         else binary_mask)
+
+        if p_name in dense_maskers and kps is not None and M is not None:
+            img_mask = _recover_undersized_mask(img_mask, kps, M)
 
         return self._composite_mask(img_mask, frame, target), img_mask
 

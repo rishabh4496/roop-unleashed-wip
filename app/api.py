@@ -383,6 +383,8 @@ def map_mask_engine(selected_mask_engine, clip_text):
         return "mask_xseg"
     if selected_mask_engine == "Face Parser (BiSeNet)":
         return "mask_faceparser"
+    if selected_mask_engine == "RealityUX":
+        return "mask_realityux"
     if selected_mask_engine == "Face Occluder":
         return "mask_occluder"
     if selected_mask_engine == "Face Occluder v3 (XSeg-3)":

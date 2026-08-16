@@ -82,6 +82,20 @@ def roll_from_face(face):
     to 172 degrees wrong, while the 68-point midline stays within 5.4 degrees
     over a full turn. Duplicated rather than imported so this module stays free
     of face_util, which is the module it exists to correct.
+
+    Within the 68-point landmarks, the nose-bridge-to-chin midline (27->8) is
+    preferred over the eye-to-mouth axis (36:48/48/54) when both eyes are
+    available to compare them: the eye axis needs BOTH eyes located reliably,
+    and the far eye is exactly what a yaw turn starts occluding/mislocating —
+    the nose bridge and chin are midline points, visible from either side, so
+    they keep tracking the head's true vertical axis well past where the eye
+    pair starts drifting. Measured on a real profile+inverted clip (roop-recode,
+    2026-08-15): the eye-mouth axis was already 11 degrees off true roll by the
+    time the nose-chin axis was still within 1 degree, extending reliable
+    tracking by roughly 10 more frames before yaw got extreme enough to corrupt
+    both together. Falls back to the eye-mouth axis when the nose/chin points
+    are degenerate (e.g. a synthetic fixture that never set them) or the model
+    didn't place them usefully.
     """
     lm = face.get("landmark_3d_68") if isinstance(face, dict) \
         else getattr(face, "landmark_3d_68", None)
@@ -89,6 +103,10 @@ def roll_from_face(face):
         try:
             pts = np.asarray(lm, dtype=np.float64)[:, :2]
             if pts.shape[0] >= 68 and np.isfinite(pts).all():
+                nasion, chin = pts[27], pts[8]
+                nc = chin - nasion
+                if float(np.hypot(nc[0], nc[1])) >= 1e-3:
+                    return float(np.degrees(np.arctan2(nc[0], nc[1])))
                 eye = (pts[36:42].mean(axis=0) + pts[42:48].mean(axis=0)) / 2.0
                 mouth = (pts[48] + pts[54]) / 2.0
                 ax = mouth - eye

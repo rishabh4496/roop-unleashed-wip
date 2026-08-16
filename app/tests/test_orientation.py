@@ -15,7 +15,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from roop.orientation import (  # noqa: E402
-    RollTrack, action_for_roll, angdiff, residual_roll, roll_from_kps, wrap180)
+    RollTrack, action_for_roll, angdiff, residual_roll, roll_from_face,
+    roll_from_kps, wrap180)
 
 
 def kps_at(roll_deg, yaw_scale=1.0):
@@ -31,6 +32,39 @@ def kps_at(roll_deg, yaw_scale=1.0):
     # +roll swings the chin toward image +x, matching roll_from_kps.
     rot = np.array([[np.cos(t), np.sin(t)], [-np.sin(t), np.cos(t)]])
     return (base @ rot.T) + np.array([256.0, 256.0])
+
+
+def lm68_at(roll_deg, yaw_scale=1.0, nose_chin=True):
+    """68 landmarks with eye clusters, mouth corners, and (unless disabled)
+    a nose-bridge (27) / chin (8) midline pair, all rolled by `roll_deg`.
+
+    `yaw_scale` squashes the eye separation only — matching `kps_at` — so the
+    midline pair stays full-length under yaw, the exact property
+    `roll_from_face` relies on to prefer it. `nose_chin=False` leaves 27/8 at
+    the untouched face-centre default `lm68_at` in test_upright_recovery.py
+    uses, to exercise the eye-mouth fallback explicitly.
+    """
+    eye_dx = 30.0 * yaw_scale
+    flat = np.full((68, 2), 256.0)
+    for i in range(36, 42):
+        flat[i] = (-eye_dx, -25.0)
+    for i in range(42, 48):
+        flat[i] = (eye_dx, -25.0)
+    flat[48] = (-18.0, 30.0)
+    flat[54] = (18.0, 30.0)
+    if nose_chin:
+        flat[27] = (0.0, -45.0)   # nasion: above the eyes
+        flat[8] = (0.0, 60.0)     # chin: below the mouth
+    t = np.radians(roll_deg)
+    rot = np.array([[np.cos(t), np.sin(t)], [-np.sin(t), np.cos(t)]])
+    xy = ((flat - np.array([0.0, 0.0])) @ rot.T) + np.array([256.0, 256.0])
+    # Points never explicitly placed (still at the raw 256.0 default) must
+    # stay exactly there, not get dragged through the rotation.
+    untouched = np.all(flat == 256.0, axis=1)
+    xy[untouched] = 256.0
+    pts = np.full((68, 3), 256.0)
+    pts[:, :2] = xy
+    return pts
 
 
 class RollFromKps(unittest.TestCase):
@@ -50,6 +84,59 @@ class RollFromKps(unittest.TestCase):
         self.assertIsNone(roll_from_kps(None))
         self.assertIsNone(roll_from_kps(np.zeros((5, 2))))
         self.assertIsNone(roll_from_kps(np.full((5, 2), np.nan)))
+
+
+class RollFromFaceMidline(unittest.TestCase):
+    """`roll_from_face` prefers the nose-chin midline over the eye-mouth axis
+    when both eyes are needed to build the latter and yaw has started
+    unbalancing them — see roll_from_face's own docstring for the measured
+    real-clip motivation (roop-recode, 2026-08-15)."""
+
+    def test_nose_chin_axis_recovers_the_roll_it_was_built_with(self):
+        for roll in range(-180, 180, 15):
+            face = {"landmark_3d_68": lm68_at(roll)}
+            got = roll_from_face(face)
+            self.assertLess(abs(angdiff(got, roll)), 1e-6, f"roll {roll}")
+
+    def test_nose_chin_survives_the_yaw_squash_that_corrupts_eye_mouth(self):
+        # At yaw_scale=0.05 the two eye clusters sit almost on top of each
+        # other, which barely moves the eye-mouth axis's OWN 2D geometry
+        # (it's still a clean midline in this synthetic rig) — the real
+        # failure this preference guards against is a REAL detector
+        # mislocating the occluded far eye, which no synthetic squash of an
+        # otherwise-perfect point reproduces (this is exactly the gap
+        # `test_profile_squash_does_not_change_the_roll` proved for the
+        # 5-point axis). What IS directly testable here: the midline choice
+        # does not regress accuracy as yaw increases, for any degree of
+        # squash, since it never reads the eye points at all.
+        for roll in (-150.0, -40.0, 0.0, 70.0, 160.0):
+            for yaw in (1.0, 0.35, 0.02):
+                face = {"landmark_3d_68": lm68_at(roll, yaw_scale=yaw)}
+                got = roll_from_face(face)
+                self.assertLess(abs(angdiff(got, roll)), 1e-6, f"roll {roll} yaw {yaw}")
+
+    def test_falls_back_to_eye_mouth_when_nose_chin_is_degenerate(self):
+        # Landmarks that never placed 27/8 usefully (e.g. an older model
+        # export, or a synthetic fixture built before this preference
+        # existed) must still resolve via the eye-mouth axis, not error out
+        # or silently return a wrong value.
+        for roll in (-170.0, -30.0, 0.0, 45.0, 130.0):
+            face = {"landmark_3d_68": lm68_at(roll, nose_chin=False)}
+            got = roll_from_face(face)
+            self.assertLess(abs(angdiff(got, roll)), 1e-6, f"roll {roll}")
+
+    def test_prefers_nose_chin_when_the_two_axes_disagree(self):
+        # Build a face where the eye-mouth axis reads a DIFFERENT roll than
+        # the nose-chin one — the direct case for "prefers", not just "both
+        # happen to agree". A real mislocated-far-eye failure looks like
+        # this: the midline is right, the eye pair is not.
+        face = lm68_at(20.0)
+        eye_mouth_wrong = lm68_at(80.0)
+        face[36:48] = eye_mouth_wrong[36:48]
+        face[48], face[54] = eye_mouth_wrong[48], eye_mouth_wrong[54]
+        got = roll_from_face({"landmark_3d_68": face})
+        self.assertLess(abs(angdiff(got, 20.0)), 1e-6,
+                        "the corrupted eye-mouth axis was trusted over the midline")
 
 
 class ActionForRoll(unittest.TestCase):

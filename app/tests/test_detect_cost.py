@@ -178,8 +178,13 @@ class Lm68IsLazyWhenOnlyAutorotateWantsIt(unittest.TestCase):
 
     def test_detect_measures_before_anything_reads_the_axis(self):
         """_upright_remeasure's entire gate is the orientation axis, so filling
-        it in afterwards would be filling it in too late."""
-        body = _code('_detect_faces', _source(FACE_UTIL))
+        it in afterwards would be filling it in too late.
+
+        Lives in _enrich_detected_faces, not _detect_faces itself: that
+        ordering-critical block was factored out so a caller that ran its own
+        raw detector pass (e.g. get_all_faces_hires's higher-resolution retry)
+        gets the identical enrichment pipeline instead of a divergent copy."""
+        body = _code('_enrich_detected_faces', _source(FACE_UTIL))
         self.assertLess(body.index('_lm68_should_measure'),
                         body.index('_upright_remeasure('),
                         'the 68-point axis is resolved after the thing that '
@@ -208,7 +213,9 @@ class Lm68IsLazyWhenOnlyAutorotateWantsIt(unittest.TestCase):
         self.assertNotIn('_axis_from_68', body)
 
     def test_probe_arms_the_latch_on_disagreement(self):
-        body = _func('_detect_faces', _source(FACE_UTIL))
+        """See test_detect_measures_before_anything_reads_the_axis: this logic
+        now lives in _enrich_detected_faces, shared with get_all_faces_hires."""
+        body = _func('_enrich_detected_faces', _source(FACE_UTIL))
         self.assertIn('LM68_DISAGREE_DEG', body)
         self.assertIn('_lm68_arm', body)
 

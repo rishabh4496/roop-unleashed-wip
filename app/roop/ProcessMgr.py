@@ -31,7 +31,7 @@ from roop.procmgr_color import ColorTransferMixin
 from roop.procmgr_merger import MergerMixin
 from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
-from roop.face_overlap import build_regions as build_face_regions
+from roop.face_overlap import build_regions as build_face_regions, FaceRegion
 from roop import face_contact
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
@@ -83,6 +83,15 @@ _DEBUG_POSE_LOG = False
 # is printed once per video at the end of run_batch_inmem.
 # Opt-in batched swap: run the pixel-boost tiles through one inference call.
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
+
+# On by default: when the full-frame detect pass in the multi-face branch
+# below finds SOME faces but fewer than last frame had (one person went
+# small/lateral/occluded while their partner still detected cleanly — the
+# side-by-side / interacting-faces flicker case), ROI-redetect just the
+# unmatched last-known box(es) instead of accepting the miss. Kill switch kept
+# for clean A/B benchmarking and as an escape hatch, same pattern as
+# ROOP_TEST_NO_AUTOANGLES.
+_PARTIAL_MISS_RESCUE = os.environ.get('ROOP_NO_PARTIAL_MISS_RESCUE', '0') != '1'
 
 
 
@@ -405,6 +414,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         'mask_xseg3'        : 'Mask_XSeg3',
         'mask_occluder'     : 'Mask_Occluder',
         'mask_faceparser'   : 'Mask_FaceParser',
+        'mask_realityux'    : 'Mask_RealityUX',
         'mask_mobilesam'    : 'Mask_MobileSAM',
         'mask_fastsam'      : 'Mask_FastSAM',
         'mask_sam2'         : 'Mask_SAM2',
@@ -2159,6 +2169,28 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 recovered.append(f)
                         if recovered:
                             faces = recovered
+                    elif (_PARTIAL_MISS_RESCUE and faces and self.last_found_bboxes is not None
+                          and len(faces) < len(self.last_found_bboxes)):
+                        # Full-frame pass found SOME faces but fewer than last frame
+                        # had — one person is small/lateral/partly occluded (by
+                        # another tracked face or a moving object), exactly the
+                        # case a global "if not faces" gate can never see because
+                        # something WAS found. ROI-redetect only the unmatched
+                        # last-known box(es) instead of re-detecting everything —
+                        # same cost as the single-face rescue above, paid only on
+                        # frames that are already a miss.
+                        for bbox in self.last_found_bboxes:
+                            if max((self._bbox_iou(bbox, f.bbox) for f in faces), default=0.0) >= 0.2:
+                                continue
+                            f = _detect_face_in_roi(frame, bbox)
+                            if f is None:
+                                continue
+                            # Guard against the redetect re-finding a face already
+                            # in `faces` under a slightly different box.
+                            if max((self._bbox_iou(f.bbox, other.bbox) for other in faces), default=0.0) >= 0.2:
+                                continue
+                            faces.append(f)
+                            _audit_hit('recovered via ROI redetect (partial miss)')
             if not faces:
                 # Counted, because a frame where the detector found NOTHING is
                 # the other half of the flicker and is invisible from the
@@ -2168,6 +2200,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 _audit_hit('frames with no face detected at all')
                 return num_faces_found, frame
             self.last_found_bboxes = np.array([f.bbox for f in faces])   # cache for next frame
+            if os.environ.get('ROOP_DEBUG_FACELIST') == '1' and frame_idx is not None:
+                bar_write(f"[FaceList] f={frame_idx} n={len(faces)} " +
+                          str([(round(float(f.bbox[0]),0), round(float(f.bbox[1]),0),
+                                round(float(f.bbox[2]),0), round(float(f.bbox[3]),0),
+                                bool(f.get('_interpolated')) if isinstance(f, dict) else False)
+                               for f in faces]))
             if precomp:
                 for f in faces:
                     f.kps = self._lookup_precomputed_kps(frame_idx, f)
@@ -2208,6 +2246,25 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # the pre-pass (matched by combination of spatial distance and embedding cosine similarity),
                 # so the source can't flip frame-to-frame as it can with per-frame embedding matching.
                 # Falls through to per-frame matching if untracked.
+                #
+                # A globally-sorted two-phase rework of this block (score every
+                # face's candidate independently, claim in cost order rather
+                # than face-processing order) was tried and measured WORSE on
+                # d9 (interacting faces) in three variants, even after finding
+                # and fixing a real bug along the way (dropped entry-level
+                # exclusivity): 9.0% -> 15.8% not-swapped, because phase 1's
+                # coarser spatial+cosine cost function started winning MORE
+                # contested slots outright (fewer collisions to lose), at the
+                # expense of phase 2's more careful multi-angle identity check,
+                # which the sequential version routed more faces through.
+                # "Resolve contention globally" was the right instinct but the
+                # two phases' costs are not on a comparable scale, so a global
+                # sort systematically over-trusts phase 1. Reverted; see
+                # memory `interacting-faces-recall-fixes-rejected` /
+                # RECODE_STATUS.md for the full measurement history before
+                # attempting this again — it would need phase 1's cost function
+                # to be as identity-discriminating as phase 2's, not just a
+                # different claim order.
                 entries = self._track_assignments.get(frame_idx)
                 if not entries:
                     # Fallback lookup to nearest tracked frame within a 5-frame window
@@ -2221,7 +2278,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 entries = entries or []
                 claimed = set()
                 claimed_sources_in_frame = set()
-                
+
                 groups = self.target_face_groups
                 uniq = sorted(set(groups)) if groups else []
                 rank = {g: r for r, g in enumerate(uniq)}
@@ -2338,9 +2395,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             cost = d_spatial * (1.0 + 2.5 * d_cosine)
                             if cost < best_cost:
                                 best_cost, best_j = cost, j
-                                
+
                     src_index = None
                     veto = None
+                    vetoed_track_src = None
                     if best_j >= 0:
                         cand = entries[best_j][1]
                         if cand is not None and cand < len(self.input_face_datas):
@@ -2440,6 +2498,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 veto = f'another person fits better ({d_other:.2f} vs {d_own:.2f})'
                                 veto_kind = VETO_OTHER_FITS
                             if veto:
+                                # Remember which person the track pointed to
+                                # BEFORE clearing src_index, so the per-frame
+                                # fallback below can be confined to them — see
+                                # vetoed_track_src for why.
+                                if veto_kind != VETO_OTHER_FITS:
+                                    vetoed_track_src = src_index
                                 src_index = None
                                 _audit_hit(veto_kind)
                         # Claim the entry even when its source is unresolved, so a
@@ -2488,8 +2552,32 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         # Leaving it un-swapped for these frames is the lesser
                         # failure, and with a source on its track it does not
                         # reach here at all.
+                        #
+                        # A face arriving here from an ABSOLUTE veto (its track
+                        # said person X, but this one frame reads too far from
+                        # X to trust) is confined to searching for X ONLY, not
+                        # every selected person fresh — searching fresh is what
+                        # the comment above already claims doesn't happen, but
+                        # on footage where per-frame embeddings are noisy for
+                        # everyone (sustained close contact — see the
+                        # shared-recognition-crop notes), an unconstrained
+                        # search can hand a momentarily-noisy frame of X to
+                        # PERSON Y instead, which is worse than leaving it
+                        # unswapped: it looks like the wrong face was pasted
+                        # on, not just a flicker. Not applied when the veto
+                        # itself was "another person fits better" — that IS
+                        # positive evidence for someone else, so the free
+                        # search stays free there.
+                        candidate_persons = persons
+                        if dirty:
+                            candidate_persons = {}
+                        elif vetoed_track_src is not None:
+                            candidate_persons = {
+                                g: tis for g, tis in persons.items()
+                                if (self.options.selected_index if single_person
+                                    else rank.get(g, 0)) == vetoed_track_src}
                         best_g, best_d = None, id_threshold
-                        for g, tis in ({} if dirty else persons).items():
+                        for g, tis in candidate_persons.items():
                             r_src = self.options.selected_index if single_person else rank.get(g, 0)
                             if r_src in claimed_sources_in_frame:
                                 continue
@@ -2784,6 +2872,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # `pending`; the bystanders sit past the end and are claimants only.
         claimants = [f for _, f in pending] + list(bystanders or ())
         regions = build_face_regions(claimants, plate.shape, order)
+        if os.environ.get('ROOP_DEBUG_REGIONS') == '1':
+            bar_write(f"[Regions] n_pending={len(pending)} n_bystanders={len(bystanders or ())} "
+                      f"order={list(order)} regions={'None' if regions is None else sorted(regions.keys())} "
+                      f"bboxes={[[round(float(v),0) for v in f.bbox] for f in claimants]}")
         for k in order:
             src_index, face = pending[k]
             temp_frame = self.process_face(
@@ -3028,9 +3120,24 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     plate = rotcutplate
                     target_face = rotface
                     # Ownership is expressed in FULL-frame coordinates; inside a
-                    # rotated cut it would land somewhere else entirely. Autorotate
-                    # therefore keeps the untrimmed matte.
-                    region = None
+                    # rotated cut it lands somewhere else entirely, so it has to
+                    # be RE-EXPRESSED in the cut's own coordinate space, not
+                    # discarded. Discarding it (the previous behaviour) left this
+                    # face free to paint over a bystander or the other selected
+                    # person whenever autorotate engaged for it — measured: a
+                    # swapped face's eye/eyebrow bleeding onto an adjacent
+                    # untouched face specifically on the frames where autorotate
+                    # turned it, and only those, since autorotate does not engage
+                    # on every frame of a moving head. Crop the same box `cutout`
+                    # used, rotate it exactly as frame/plate were rotated above,
+                    # and rebuild it as a region over the (now full-extent)
+                    # rotated cut — startX/startY/endX/endY are the CLAMPED box
+                    # cutout returned, not the pre-clamp request.
+                    if region is not None:
+                        own = region.crop(startX, startY, endX, endY)
+                        region = (FaceRegion(0, 0, own.shape[1], own.shape[0],
+                                             self.apply_rotation(own, rotation_action))
+                                 if own is not None else None)
 
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
@@ -3737,6 +3844,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
         else:
             result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
+        _dbg_rng = os.environ.get('ROOP_DEBUG_DUMP_RANGE')
+        if _dbg_rng:
+            try:
+                _lo, _hi = (int(x) for x in _dbg_rng.split('-'))
+                _fi = getattr(self._tls, 'frame_idx', None)
+                if _fi is not None and _lo <= int(_fi) <= _hi and result is not None and result.size:
+                    _crop = result[280:600, 350:650]
+                    if _crop.size:
+                        cv2.imwrite(f'debug_seq_{int(_fi):04d}_x{int(target_face.bbox[0])}.png', _crop)
+            except Exception as _e:
+                print(f'[debugdump] {_e!r}')
 
         # Lip-sync and restore_original_mouth write the same bounding box, so at
         # most one of them may run. Decided once, here, ahead of both: the UI

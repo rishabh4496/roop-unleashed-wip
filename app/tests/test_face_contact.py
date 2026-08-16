@@ -118,6 +118,17 @@ class MergedDetections(unittest.TestCase):
                                          box(420, 100, 220, 300),
                                          box(260, 100, 60, 90)]), [])
 
+    def test_junction_bridging_a_small_real_gap_is_dropped(self):
+        """A profile-view kiss where the two real face boxes come close but
+        do not quite overlap (measured on baseline_double/d2.mp4, frame 1214:
+        a 17.8px gap on ~54px-radius boxes). The phantom still bridges the
+        gap and is still a junction; only the coverage math needed help
+        seeing it, not the between/each/size checks."""
+        woman = (478.8, 162.0, 550.8, 269.1)
+        phantom = (518.9, 152.0, 582.7, 264.7)
+        man = (568.6, 139.2, 632.5, 247.1)
+        self.assertEqual(merged_indices([woman, phantom, man]), [1])
+
     def test_a_duplicate_box_is_not_treated_as_a_junction(self):
         """Two boxes on one face plus a second face. The duplicate pair is
         concentric, so it cannot play the role of the two parents."""
@@ -257,8 +268,10 @@ class Wiring(unittest.TestCase):
         return ''
 
     def test_detection_annotates_every_frame(self):
+        # Lives in _enrich_detected_faces, shared by _detect_faces AND
+        # get_all_faces_hires (the higher-resolution retry), not duplicated.
         body = self._function_body(self._source('roop/face_util.py'),
-                                   '_detect_faces')
+                                   '_enrich_detected_faces')
         self.assertIn('face_contact.annotate', body)
 
     def test_the_tracking_scan_disbelieves_a_shared_crop(self):

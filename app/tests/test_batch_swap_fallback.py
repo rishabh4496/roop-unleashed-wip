@@ -43,10 +43,13 @@ class _Swapper(FaceSwapInsightFace):
         self._mask_tls = threading.local()
         self.image_input_name = 'target'
         self.embed_input_name = 'source'
+        self.loaded_model_key = 'stub'
+        self._batch_unsupported = False
         self._batch_works = batch_works
         self._emits_mask = emits_mask
         self._size = size
         self.single_calls = 0
+        self.batch_attempts = 0
 
     def _compute_source_input(self, source_face):
         return np.zeros((1, 512), dtype=np.float32)
@@ -54,7 +57,7 @@ class _Swapper(FaceSwapInsightFace):
     def _infer(self, feed):
         n = feed[self.image_input_name].shape[0]
         if n > 1:
-            self.single_calls += 0
+            self.batch_attempts += 1
             if not self._batch_works:
                 raise RuntimeError('static batch: expected 1, got %d' % n)
         else:
@@ -70,6 +73,42 @@ class _Swapper(FaceSwapInsightFace):
 
 def _crops(n, size=8):
     return [np.full((1, 3, size, size), i, dtype=np.float32) for i in range(n)]
+
+
+class _AlwaysFailsSession:
+    def run(self, _out, _feed):
+        raise RuntimeError('trt broken')
+
+
+class _WorksSession:
+    def __init__(self, image_input_name):
+        self.image_input_name = image_input_name
+
+    def run(self, _out, feed):
+        n = feed[self.image_input_name].shape[0]
+        return [np.zeros((n, 3, 8, 8), dtype=np.float32)]
+
+
+class _TrtGateSwapper(FaceSwapInsightFace):
+    """Exercises the REAL _infer(), unlike _Swapper above (which stubs _infer
+    entirely and so never touches _rebuild_without_trt/_trt_disabled at all).
+    `_rebuild_without_trt` itself is stubbed here — its own internals are
+    untouched by this fix and are not what's under test — only whether
+    _infer() is willing to CALL it, gated by batch size."""
+
+    def __init__(self):
+        self.pool = None
+        self.image_input_name = 'target'
+        self.embed_input_name = 'source'
+        self._trt_disabled = False
+        self.rebuild_calls = 0
+        self.model_swap_insightface = _AlwaysFailsSession()
+
+    def _rebuild_without_trt(self):
+        self.rebuild_calls += 1
+        self._trt_disabled = True
+        self.model_swap_insightface = _WorksSession(self.image_input_name)
+        return True
 
 
 class FallbackKeepsTheMaskContract(unittest.TestCase):
@@ -146,6 +185,82 @@ class FallbackKeepsTheMaskContract(unittest.TestCase):
             object(), object(), _crops(3))
         self.assertEqual([np.asarray(o).shape for o in batched],
                          [np.asarray(o).shape for o in fell_back])
+
+    def test_a_permanently_broken_model_stops_retrying_the_batch_path(self):
+        """A static-batch export fails the SAME way on every call — once
+        RunBatch has seen that, later calls must go straight to the sequential
+        fallback instead of paying for another doomed inference + exception on
+        every remaining frame of the run."""
+        sw = _Swapper(batch_works=False, emits_mask=True)
+        sw.RunBatch(object(), object(), _crops(4))
+        self.assertEqual(sw.batch_attempts, 1, 'the first call is allowed to try')
+        self.assertTrue(sw._batch_unsupported)
+
+        outs = sw.RunBatch(object(), object(), _crops(3))
+        self.assertEqual(sw.batch_attempts, 1, 'a known-broken model must not retry')
+        self.assertEqual(len(outs), 3)
+        masks = sw.take_masks()
+        self.assertEqual(len(masks), 3, 'the fallback mask contract still applies')
+
+    def test_run_batch_multi_also_stops_retrying_after_one_failure(self):
+        sw = _Swapper(batch_works=False, emits_mask=True)
+        sw.RunBatchMulti([(object(), object(), c) for c in _crops(3)])
+        self.assertEqual(sw.batch_attempts, 1)
+
+        outs = sw.RunBatchMulti([(object(), object(), c) for c in _crops(2)])
+        self.assertEqual(sw.batch_attempts, 1, 'a known-broken model must not retry')
+        self.assertEqual(len(outs), 2)
+
+
+class BatchFailureMustNotDisableTrtForSingleFrames(unittest.TestCase):
+    """A model whose export only breaks at batch>1 (e.g. hyperswap's internal
+    reshape baked to batch=1) must not lose TensorRT for every later
+    single-frame call just because ONE batch>1 attempt failed — measured at a
+    25x latency regression (23.8ms -> 602.9ms/call) before this fix, because
+    _infer() used to call _rebuild_without_trt() for ANY failure regardless
+    of batch size."""
+
+    def test_a_batch_gt1_failure_never_calls_the_trt_disabling_rebuild(self):
+        sw = _TrtGateSwapper()
+        feed = {'target': np.zeros((2, 3, 8, 8), np.float32),
+                'source': np.zeros((2, 512), np.float32)}
+        with self.assertRaises(RuntimeError):
+            sw._infer(feed)
+        self.assertEqual(sw.rebuild_calls, 0,
+                         'a batch>1 failure must re-raise immediately, never '
+                         'attempting the TRT-disabling rebuild')
+        self.assertFalse(sw._trt_disabled)
+
+    def test_a_genuine_batch1_failure_still_gets_the_trt_fallback(self):
+        """The rebuild-and-retry behaviour itself must still work for what it
+        was designed for: a real single-frame TRT failure (e.g. GHOST)."""
+        sw = _TrtGateSwapper()
+        feed = {'target': np.zeros((1, 3, 8, 8), np.float32),
+                'source': np.zeros((1, 512), np.float32)}
+        out = sw._infer(feed)
+        self.assertEqual(sw.rebuild_calls, 1)
+        self.assertTrue(sw._trt_disabled)
+        self.assertEqual(out[0].shape[0], 1)
+
+    def test_a_batch_gt1_failure_does_not_poison_a_later_batch1_call(self):
+        """The regression case: a prior batch>1 failure must not leave the
+        NEXT (unrelated) batch=1 call already condemned to a disabled-TRT
+        session it never got a fair shot at."""
+        sw = _TrtGateSwapper()
+        batch_feed = {'target': np.zeros((2, 3, 8, 8), np.float32),
+                     'source': np.zeros((2, 512), np.float32)}
+        with self.assertRaises(RuntimeError):
+            sw._infer(batch_feed)
+        self.assertFalse(sw._trt_disabled,
+                         'TRT must still be enabled after only a batch>1 failure')
+
+        single_feed = {'target': np.zeros((1, 3, 8, 8), np.float32),
+                      'source': np.zeros((1, 512), np.float32)}
+        sw._infer(single_feed)
+        self.assertEqual(sw.rebuild_calls, 1,
+                         'the single-frame call gets its OWN fair attempt — '
+                         'exactly one rebuild, triggered by ITS OWN failure, '
+                         'not inherited from the earlier batch failure')
 
 
 if __name__ == '__main__':

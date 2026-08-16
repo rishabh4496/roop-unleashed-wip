@@ -181,6 +181,29 @@ _INTERP_MAX_SCALE = float(os.environ.get('ROOP_INTERP_MAX_SCALE', '2.0'))
 # identity locking. 0 restores the old behaviour (gate == max_face_distance).
 _TRACK_ASSIGN_MAX = float(os.environ.get('ROOP_TRACK_ASSIGN_MAX', '0.6'))
 
+# A track's MEAN can fail the gate above even when the track really is the
+# selected person, if the track itself spans a long stretch of pose movement
+# (a continuous turn, a stretch/exercise motion): the mean is an average over
+# every pose the track saw, so it sits "between" all of them and close to
+# none. Measured on a 15s single-continuous-shot yoga clip: the track's own
+# individual per-frame observations matched the captured photo at 0.003-0.015
+# on its first two frames, then the SAME physical track (confirmed by spatial
+# continuity — see _TRACK_EMB_MAX at track-build time) sat at 0.85-1.05 for
+# the rest, because the person kept moving through the stretch. The mean
+# blurred those two strong hits away entirely and the whole track (masking
+# ~70 frames until the pose happened to return near-frontal) got refused.
+#
+# Fix: if enough of a track's OWN individual observations independently
+# match a captured angle within the assignment gate, that is strong direct
+# evidence the WHOLE track is that person — track membership already proved
+# every frame in it is one continuous physical entity, so a handful of
+# confirmed matches anchors the rest even where the blurred mean does not.
+# This only ever ADDS candidates the mean-only gate would refuse; it never
+# removes one, and it needs `obs` (only populated when the pre-pass is asked
+# to collect_obs=True — the temporal-detection path). 0 disables it, falling
+# back to mean-only exactly as before.
+_TRACK_ASSIGN_MIN_OBS = int(os.environ.get('ROOP_TRACK_ASSIGN_MIN_OBS', '3') or '3')
+
 
 # ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
 # source is applied wherever the spatial association points).
@@ -361,6 +384,31 @@ _TRACK_INHERIT_GAIN = float(os.environ.get('ROOP_TRACK_INHERIT_GAIN', '0.15'))
 # _TRACK_ASSIGN_MARGIN and the containment rule were added to refuse. With one
 # person selected this path does not exist and nothing changes.
 _TRACK_INHERIT_MARGIN = float(os.environ.get('ROOP_TRACK_INHERIT_MARGIN', '0.25'))
+
+
+# ── Assign-by-elimination for exactly two selected people ───────────────────
+# Sustained close contact (measured on d2.mp4, roop-recode session 3 — two
+# people kissing for most of a 155s clip) can make appearance matching
+# unreliable for BOTH people at once, not just the contaminated frames: the
+# clip's single biggest track (46% of it) sat 0.63/0.89 from the two captured
+# photos — over the gate for both, and not close enough to trust the smaller
+# one either, even though it is unmistakably one of the two people on a
+# straight watch of the footage.
+#
+# What IS still reliable there is who else is on screen. With exactly two
+# people selected, a track that runs CONCURRENTLY with an already-bound
+# track for a real share of its own length cannot be that same person (one
+# body, one place) — and with only one other selected person to be, it must
+# be them, independent of how noisy its own embedding reads. This is
+# deliberately NOT available with one selected person or three+: "the only
+# other option" stops being a safe inference the moment there could be a
+# bystander instead of the other selected person, which is exactly the
+# reasoning _TRACK_INHERIT_MARGIN's two-or-more requirement already uses.
+#
+# Runs LAST, after the mean gate and inheritance have both had their normal
+# chance — it only ever picks up tracks neither of those bound, never
+# overrides one. ROOP_TRACK_ELIM_FRAC=0 disables it.
+_TRACK_ELIM_FRAC = float(os.environ.get('ROOP_TRACK_ELIM_FRAC', '0.15'))
 
 
 _prof_lock = Lock()

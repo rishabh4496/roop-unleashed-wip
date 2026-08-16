@@ -19,12 +19,12 @@ import numpy as np
 
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
                                   _TRACK_ASSIGN_MARGIN, _TRACK_ASSIGN_FLOOR,
-                                  _TRACK_REID_MAX,
+                                  _TRACK_ASSIGN_MIN_OBS, _TRACK_REID_MAX,
                                   _TRACK_STITCH, _TRACK_STITCH_GAP,
                                   _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
                                   _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
                                   _TRACK_INHERIT_MAX, _TRACK_INHERIT_GAIN,
-                                  _TRACK_INHERIT_MARGIN,
+                                  _TRACK_INHERIT_MARGIN, _TRACK_ELIM_FRAC,
                                   _INTERP_MAX_TRAVEL, _INTERP_MAX_SCALE)
 
 import roop.globals
@@ -131,7 +131,7 @@ class TrackingMixin:
         feeds pre-decoded animated-WebP frames instead of a VideoCapture.
         Returns the full track list (active + retired)."""
         import os
-        from roop.face_util import get_all_faces, get_all_faces_in_roi
+        from roop.face_util import get_all_faces, get_all_faces_in_roi, get_all_faces_hires
 
         # Skip-frames step (N=3 runs detection on 33% of frames; N=1 scans all)
         TRACK_STEP = max(1, int(step))
@@ -144,7 +144,64 @@ class TrackingMixin:
         # never loses a face the old full-frame path would have found. Skipped
         # entirely with 0 or >1 active tracks to avoid extra detector calls in
         # multi-face scenes (kept identical to today's full-frame behaviour there).
+        #
+        # A >1-track version (ROI-redetect only the track(s) the full-frame
+        # pass came back short of) was tried and MEASURED to regress: on d9's
+        # touching-faces stress test it turned 9.0% not-swapped into 13.0% and
+        # stripped a 90%-of-clip track of its source entirely. Root cause:
+        # get_all_faces_in_roi's crop around the MISSING track's predicted box
+        # is wide enough that for two people standing close/touching it can
+        # also re-see the ALREADY-found person, at a slightly different
+        # scale/offset than the full-frame pass gave it — the IoU dedup check
+        # doesn't recognise it as the same face, so a phantom duplicate gets
+        # appended and corrupts track association. Reverted; see the swap-time
+        # partial-miss rescue in ProcessMgr.py for the version of this fix that
+        # held up (it recovers a missing face for THIS frame's swap without
+        # feeding a duplicate observation back into track-building).
         ROI_CROP = os.environ.get('ROOP_TRACK_ROI_CROP', '0') == '1'
+
+        # Second and third attempts at the >1-track miss case, after the
+        # crop-based one above regressed (d9: 9.0% -> 13.0% not-swapped).
+        # BOTH ALSO MEASURED WORSE. Kept OFF by default (opt-in only, for
+        # anyone who wants to pick this investigation back up) — do not
+        # default this on without a new mechanism, not just a new variant of
+        # "detect the missing face again and feed it back into track-building":
+        #
+        #   v2 (REPLACE): when the base pass at the configured resolution
+        #   comes back short of the active-track count, redo the WHOLE frame
+        #   at a higher resolution and use that result outright. d9: 11.0%
+        #   not-swapped. Better than the crop version (a full-frame pass lets
+        #   the detector's own NMS separate two close faces properly, instead
+        #   of guessing from a truncated crop window), but still worse than
+        #   baseline: "no track entry matched" genuinely improved (8.7% ->
+        #   5.1%, more real recoveries), but "veto: source used twice in
+        #   frame" got worse (6.3% -> 9.3%) because EVERY face in the frame —
+        #   including the one already found correctly — got re-embedded at
+        #   the different canvas size, shifting its similarity to its own
+        #   track's established (configured-resolution) mean for no reason
+        #   tied to the actual miss.
+        #
+        #   v3 (MERGE): fixed v2's re-embedding bug — keep the base pass's
+        #   faces untouched, only APPEND the genuinely new face the hi-res
+        #   pass found beyond what the base pass already had. Measured WORSE
+        #   STILL: d9 15.1% not-swapped, and track stitching itself degraded
+        #   (fragments refused chaining: 1 -> 5). So the re-embedding theory
+        #   was real but not the dominant effect — introducing ANY observation
+        #   from a different detector resolution, however carefully merged,
+        #   destabilises the tracker's embedding-consistency assumptions
+        #   enough to cost more than the miss it recovers.
+        #
+        # Read together, three attempts got progressively WORSE, not closer:
+        # this is evidence against "add another detection pass" as a family
+        # of fixes for this problem, not just against any one implementation
+        # of it. A future attempt should look at whether the EXISTING
+        # gap-fill/interpolation mechanism (see the "INTERPOLATED landmarks"
+        # line in the SWAP AUDIT report — faces filled in from neighbours
+        # rather than detected) can be leaned on harder for a track that is
+        # still active and briefly missing, instead of trying to detect the
+        # miss away with a second pass.
+        HIRES_MISS = os.environ.get('ROOP_TRACK_HIRES_MISS', '0') == '1'
+        HIRES_DET_SIZE = int(os.environ.get('ROOP_TRACK_HIRES_DETSIZE', '960'))
 
         # active = tracks seen within STALE frames (candidates for matching);
         # retired = older tracks, kept only for the final source assignment. This
@@ -199,21 +256,38 @@ class TrackingMixin:
         det_executor = (ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix='track_det')
                         if pool_workers > 1 else None)
 
-        def _run_detect(fr, crop_bbox):
+        def _run_detect(fr, crop_bbox, expected_count=None):
             if crop_bbox is not None:
                 faces = get_all_faces_in_roi(fr, crop_bbox)
                 if faces:
                     return faces
-            return get_all_faces(fr) or []
+            faces = get_all_faces(fr) or []
+            if HIRES_MISS and expected_count and len(faces) < expected_count:
+                hi_faces = get_all_faces_hires(fr, HIRES_DET_SIZE)
+                # MERGE, do not replace: the already-found face(s) keep the
+                # embedding the base (configured-resolution) pass gave them,
+                # consistent with whatever built up their track's running
+                # mean. Swapping the whole frame's faces for the hi-res set
+                # (the first version of this fix) re-embedded people who were
+                # ALREADY correctly found at a different detector canvas size
+                # too — a measured cause of the "source used twice in frame"
+                # collisions: their similarity to their own track mean
+                # shifted for no reason tied to the actual miss. Only the
+                # genuinely NEW face(s) the hi-res pass adds get appended.
+                for hf in hi_faces:
+                    if any(self._bbox_iou(hf.bbox, f.bbox) >= 0.3 for f in faces):
+                        continue
+                    faces.append(hf)
+            return faces
 
-        def _detect_one(fr, crop_bbox=None):
+        def _detect_one(fr, crop_bbox=None, expected_count=None):
             # Runs inside a pool worker, one at a time per worker (ThreadPoolExecutor
             # caps concurrency at pool_workers == the analyser pool size), so this is
             # real GPU/model time, not queue-wait — lease_face_analyser() should never
             # actually block here. Tagged 'track_detect' (not 'detect') so it shows up
             # as its own STAGE TIMING line, separate from the swap phase's detect stage.
             with _prof('track_detect'), _gpu_guard(pooled=True):
-                return _run_detect(fr, crop_bbox)
+                return _run_detect(fr, crop_bbox, expected_count)
 
         def _consume(f_idx, faces):
             nonlocal active, retired, next_id, reid_refused, contam_seen, contam_reid
@@ -521,9 +595,10 @@ class TrackingMixin:
                     continue
 
                 crop_bbox = _predict_bbox(active[0], idx) if ROI_CROP and len(active) == 1 else None
+                expected_count = len(active) if HIRES_MISS and len(active) > 1 else None
 
                 if det_executor is not None:
-                    in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox)))
+                    in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox, expected_count)))
                     max_in_flight = pool_workers + 2
                     if len(in_flight) >= max_in_flight:
                         done_idx, done_fut = in_flight.popleft()
@@ -537,7 +612,7 @@ class TrackingMixin:
                             _consume(done_idx, result)
                 else:
                     with _prof('track_detect'), _gpu_guard(pooled=analysis_pooled()):
-                        faces = _run_detect(frame, crop_bbox)
+                        faces = _run_detect(frame, crop_bbox, expected_count)
                     with _prof('track_consume'):
                         _consume(idx, faces)
 
@@ -706,7 +781,8 @@ class TrackingMixin:
                 ds = ' '.join(f'p{g}={d:.2f}' for g, d in sorted(dd.items()))
                 if src is not None and t['id'] in inherited:
                     via, vd = inherited[t['id']]
-                    verdict = f'-> source {src} (via track {via}, d={vd:.2f})'
+                    verdict = (f'-> source {src} (elimination: co-occurs with person {via})' if vd < 0
+                               else f'-> source {src} (via track {via}, d={vd:.2f})')
                 elif src is not None:
                     verdict = f'-> source {src}'
                 elif near > assign_max:
@@ -714,8 +790,9 @@ class TrackingMixin:
                 else:
                     verdict = '-> NO SOURCE (refused by margin/concurrency)'
                 note = '' if src is not None else _overlap_note(t['id'])
+                span_note = f"  [{int(t.get('first_seen', 0))}..{int(t.get('last_seen', 0))}]"
                 print(f"    track {t['id']:>3}  frames {n_frames:>5} ({100.0 * n_frames / span:4.1f}% of clip)"
-                      f"  {ds:<24} {verdict}{note}", flush=True)
+                      f"  {ds:<24} {verdict}{span_note}{note}", flush=True)
         if _DEBUG_MATCH:
             for t in tracks:
                 bar_write(f"[TRACKASSIGN] track {t['id']}: frames={len(t.get('obs', {}))} "
@@ -931,7 +1008,38 @@ class TrackingMixin:
                     continue
                 d = min(compute_cosine_distance(e, t_emb) for e in embs)
                 photo_d[(t['id'], g)] = d
-                if d <= assign_max:
+                strong = d <= assign_max
+                if not strong and _TRACK_ASSIGN_MIN_OBS > 0:
+                    # The mean failed, but check whether enough of this
+                    # track's OWN individual frames independently pass the
+                    # same gate — see _TRACK_ASSIGN_MIN_OBS for why that is
+                    # trustworthy evidence even where the blurred mean is not.
+                    hits = 0
+                    hit_frames = []
+                    for f_idx, face in (t.get('obs') or {}).items():
+                        oe = getattr(face, 'embedding', None)
+                        if oe is None:
+                            continue
+                        # A contaminated observation's embedding is measuring
+                        # the pair, not the person (see emb_sum/emb_n above,
+                        # which already excludes these from the track mean for
+                        # the same reason) — counting it as evidence here lets
+                        # a handful of dirty frames rescue a track whose own
+                        # clean mean decisively says it is somebody else.
+                        if face_contact.unreliable(face):
+                            continue
+                        if min(compute_cosine_distance(e, oe) for e in embs) <= assign_max:
+                            hits += 1
+                            hit_frames.append(f_idx)
+                            if hits >= _TRACK_ASSIGN_MIN_OBS:
+                                strong = True
+                                if not _DEBUG_MATCH:
+                                    break
+                    if strong and _DEBUG_MATCH:
+                        print(f"[MINOBS] track {t['id']} rescued for group {g} "
+                              f"(mean d={d:.2f} > gate {assign_max:.2f}) by "
+                              f"{hits} clean frame(s): {hit_frames}", flush=True)
+                if strong:
                     candidates.append((d, g, t['id']))
 
         candidates.sort(key=lambda c: c[0])
@@ -1159,6 +1267,91 @@ class TrackingMixin:
                 if not progress:
                     break
 
+        # ── Third pass: assign by elimination (exactly two people only) ─────
+        # See _TRACK_ELIM_FRAC. A track still without a source that runs
+        # concurrently with an already-bound track for a real share of its
+        # own length cannot be that track's person; with only one other
+        # selected person to be, it must be them.
+        #
+        # "Concurrent" by FRAME NUMBER alone is not enough to conclude that —
+        # the two tracks could be the SAME physical face, detected as two
+        # separate fragments in the same frames (a detector glitch, or a
+        # split during fast motion), the exact case _overlap_note's debug
+        # print already calls out as "THE SAME FACE, detected twice". Reusing
+        # temporal overlap without also checking they are SPATIALLY apart
+        # would confidently bind a duplicate fragment to the OTHER person's
+        # source — pasting the wrong face onto someone's own head. Require
+        # the same spatial-separation evidence that print uses (centroid
+        # distance over their shared frames, normalised by face width) before
+        # trusting the elimination.
+        if len(persons) == 2 and _TRACK_ELIM_FRAC > 0:
+            uniq_groups = sorted(persons.keys())
+            seen_at = {}
+            for f, entries in (per_frame or {}).items():
+                for c, tid2 in entries:
+                    seen_at.setdefault(tid2, {})[f] = np.asarray(c, np.float64)
+
+            def _min_separation(tid, other_tids):
+                """Smallest centroid separation (in face widths) between track
+                `tid` and any track in `other_tids`, over frames they share.
+                None when there is nothing to compare (no positional record,
+                or no shared frame with any of them)."""
+                mine = seen_at.get(tid) or {}
+                if not mine:
+                    return None
+                best = None
+                for otid in other_tids:
+                    theirs = seen_at.get(otid) or {}
+                    shared = set(mine).intersection(theirs)
+                    if not shared:
+                        continue
+                    ob = track_map.get(otid)
+                    if ob is None:
+                        continue
+                    w = max(1.0, float(np.asarray(ob['bbox'], np.float64)[2]
+                                       - np.asarray(ob['bbox'], np.float64)[0]))
+                    sep = float(np.mean([np.linalg.norm(mine[f] - theirs[f])
+                                         for f in shared])) / w
+                    if best is None or sep < best:
+                        best = sep
+                return best
+
+            for t in tracks:
+                tid = t['id']
+                if track_src.get(tid) is not None:
+                    continue
+                t_frames = self._track_frames(t, frames_of)
+                if not t_frames:
+                    continue
+                t_len = max(1, len(t_frames))
+                overlap = {g: len(person_assigned_frames[g].intersection(t_frames))
+                           for g in uniq_groups}
+                claimant = max(overlap, key=overlap.get)
+                if overlap[claimant] < _TRACK_ELIM_FRAC * t_len:
+                    continue
+                target_g = next((g for g in uniq_groups if g != claimant), None)
+                if target_g is None:
+                    continue
+                # Refuse if this track ALSO overlaps substantially with a
+                # track already assigned to target_g — that means a body is
+                # already on screen there too, so this track cannot BE that
+                # person either (two bodies, not one).
+                if overlap.get(target_g, 0) >= _TRACK_ELIM_FRAC * t_len:
+                    continue
+                # Spatial confirmation: must sit clearly apart from the
+                # claimant's bound track(s) on the frames they share — the
+                # same 0.35-widths bar the debug print uses to call something
+                # "the same face, detected twice" rather than a real second
+                # body. Below it (or nothing to measure), refuse rather than
+                # risk swapping the wrong faceset onto one person's own face.
+                sep = _min_separation(tid, person_tracks.get(claimant, []))
+                if sep is None or sep < 0.35:
+                    continue
+                track_src[tid] = rank[target_g]
+                inherited[tid] = (claimant, -1.0)  # negative distance = elimination, not a distance
+                person_tracks.setdefault(target_g, []).append(tid)
+                person_assigned_frames[target_g].update(t_frames)
+
         return track_src, assign_max, refused_margin, inherited
 
     @staticmethod
@@ -1338,6 +1531,19 @@ class TrackingMixin:
                     for g in range(prev + 1, i):
                         merged[g] = self._interp_face(a, b, (g - prev) / span, emb_mean)
                 prev = i
+
+            if os.environ.get('ROOP_DEBUG_GAPS') == '1':
+                # One-off diagnostic (2026-08-16, interacting-faces investigation):
+                # gaps BEYOND gap_max are never even attempted (no _bridgeable call,
+                # no _interp_refused count) — this is the only way to see them.
+                too_big = [idxs[k + 1] - idxs[k] - 1 for k in range(len(idxs) - 1)
+                           if idxs[k + 1] - idxs[k] - 1 > gap_max]
+                span = idxs[-1] - idxs[0] + 1 if idxs else 0
+                bar_write(f"[GapDebug] track {t['id']}: {len(idxs)} obs / {span} frame span "
+                          f"({100.0*len(idxs)/span:.1f}% observed), "
+                          f"{len(too_big)} gap(s) over the {gap_max}-frame limit "
+                          f"(missed frames: {sum(too_big)}, worst: {sorted(too_big, reverse=True)[:5]})")
+
             if stab_on:
                 # Per-track sequential smoothing. The default-arg captures keep
                 # each track's filter state independent of the loop variable.

@@ -546,6 +546,35 @@ def _rescue_padded(frame: Frame):
     return None
 
 
+# Reused across calls: cv2.createCLAHE is cheap to build but this rescue is
+# common enough on dark/backlit footage that a fresh one per call is wasted work.
+_CLAHE = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+
+
+def _rescue_clahe(frame: Frame):
+    """Retry detection after CLAHE contrast normalization, when the upright pass
+    at native exposure finds nothing.
+
+    Underexposed (dark room / night exterior) or blown-out (backlit / bright
+    room) footage can put a face's geometry intact but its edge/gradient signal
+    under the detector's confidence floor — none of the size/rotation rescues
+    above address this, since the face is neither too small, too close, nor
+    misoriented. CLAHE redistributes local contrast in the L channel only
+    (color untouched) without changing resolution or coordinates, so unlike
+    the upscale/downscale/rotate rescues, the returned boxes/kps need no
+    remapping — they already sit in the input frame's coordinate space."""
+    try:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        eq = cv2.cvtColor(cv2.merge((_CLAHE.apply(l), a, b)), cv2.COLOR_LAB2BGR)
+        faces = _detect_faces_raw(eq)
+        if faces:
+            return faces
+    except Exception:
+        pass
+    return None
+
+
 def _unrotate_face_coords(face, orig_w, orig_h, angle):
     """Map face bbox, kps, and landmarks back from a rotated canvas to original frame space."""
     def unrot_pts(pts):
@@ -857,24 +886,13 @@ def _upright_remeasure(frame, faces):
     return faces
 
 
-def _detect_faces(frame):
-    """Run the selected detector engine and return raw Face objects (unsorted).
-    Applies small-face (upscale), close-up scale (downscale), clipped boundary (padded), and rotated face rescues."""
-    faces = _detect_faces_raw(frame)
-    if not faces:
-        # 1. Small-face rescue
-        if getattr(roop.globals, 'rescue_small_faces', False):
-            faces = _rescue_upscaled(frame)
-        # 2. Close-up rescue
-        if not faces:
-            faces = _rescue_downscaled(frame)
-        # 3. Boundary padding rescue
-        if not faces:
-            faces = _rescue_padded(frame)
-        # 4. Rotated face rescue
-        if not faces:
-            faces = _rescue_rotated(frame)
-
+def _enrich_detected_faces(frame, faces):
+    """Shared post-detection pipeline: junction/contact annotation, on-demand
+    68-point orientation measurement, upright re-measurement, and keypoint
+    refinement. Factored out of _detect_faces so a caller that ran its OWN raw
+    detector pass (e.g. get_all_faces_hires's higher-resolution retry) gets the
+    exact same enrichment a normal detect would have applied, rather than a
+    partial/divergent pipeline."""
     # Two faces in contact, before anything reads the detections: drop the
     # phantom the detector fires at the junction between them, and record how
     # much of each survivor's recognition crop belongs to its neighbour. Both
@@ -911,6 +929,31 @@ def _detect_faces(frame):
     return faces or []
 
 
+def _detect_faces(frame):
+    """Run the selected detector engine and return raw Face objects (unsorted).
+    Applies small-face (upscale), close-up scale (downscale), clipped boundary
+    (padded), rotated face, and dark/backlit lighting (CLAHE) rescues."""
+    faces = _detect_faces_raw(frame)
+    if not faces:
+        # 1. Small-face rescue
+        if getattr(roop.globals, 'rescue_small_faces', False):
+            faces = _rescue_upscaled(frame)
+        # 2. Close-up rescue
+        if not faces:
+            faces = _rescue_downscaled(frame)
+        # 3. Boundary padding rescue
+        if not faces:
+            faces = _rescue_padded(frame)
+        # 4. Rotated face rescue
+        if not faces:
+            faces = _rescue_rotated(frame)
+        # 5. Lighting rescue (dark/backlit footage; CLAHE contrast normalization)
+        if not faces:
+            faces = _rescue_clahe(frame)
+
+    return _enrich_detected_faces(frame, faces)
+
+
 def get_first_face(frame: Frame) -> Any:
     try:
         faces = get_all_faces(frame)
@@ -924,6 +967,34 @@ def get_first_face(frame: Frame) -> Any:
 def get_all_faces(frame: Frame) -> Any:
     try:
         faces = _detect_faces(frame)
+        if not faces:
+            return []
+        return sorted(faces, key=lambda x: x.bbox[0])
+    except Exception:
+        return []
+
+
+def get_all_faces_hires(frame: Frame, det_size: int) -> Any:
+    """Like get_all_faces, but at an explicit (typically higher) detector
+    resolution instead of the configured one, for a full-frame RETRY when the
+    configured resolution already came back short of the number of faces
+    expected. Deliberately skips the size/rotation/lighting rescue chain (a
+    caller reaching for this already has a first-pass result and just wants
+    more resolution to separate faces the configured pass under-resolved —
+    not a general substitute for get_all_faces).
+
+    A higher-resolution FULL-FRAME retry, not a crop around whichever face is
+    missing: for two people standing close together or touching, a crop
+    around just the missing one is ambiguous — it can also re-see the
+    ALREADY-found person, at a different scale than the first pass gave it,
+    producing a near-duplicate detection that corrupts anything (e.g. track
+    association) built on top of the result. A full-frame pass keeps the
+    detector's own NMS working across the whole image, telling two close
+    faces apart the same way it already does at the configured resolution,
+    just with more pixels to do it with."""
+    try:
+        faces = _detect_faces_raw(frame, det_size=det_size)
+        faces = _enrich_detected_faces(frame, faces)
         if not faces:
             return []
         return sorted(faces, key=lambda x: x.bbox[0])

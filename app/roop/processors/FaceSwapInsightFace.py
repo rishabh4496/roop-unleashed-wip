@@ -355,6 +355,7 @@ class FaceSwapInsightFace():
         self._swap_providers = None   # providers used to build the swap session(s)
         self._model_arg = None        # onnx path or serialized bytes handed to ORT
         self._trt_disabled = False    # set once we fall back off TensorRT for this model
+        self._batch_unsupported = False   # set once RunBatch/RunBatchMulti fail for this model
         # Contract consumed by ProcessMgr — defaults match inswapper_128.
         self.model_output_size = 128
         self.model_mean = [0.0, 0.0, 0.0]
@@ -443,6 +444,7 @@ class FaceSwapInsightFace():
             self._swap_providers = swap_providers
             self._model_arg = model_arg
             self._trt_disabled = False
+            self._batch_unsupported = False
 
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
@@ -635,15 +637,29 @@ class FaceSwapInsightFace():
 
     def _infer(self, feed):
         """Run the swap net, transparently falling back off a broken TensorRT
-        engine to CUDA/CPU the first time it fails (see _rebuild_without_trt).
-        Shared by Run / RunBatch / RunBatchMulti."""
+        engine to CUDA/CPU the first time a SINGLE-FRAME (batch=1) call fails
+        (see _rebuild_without_trt). Shared by Run / RunBatch / RunBatchMulti.
+
+        A batch>1 failure must NOT trigger this: for a model whose export has
+        an internal reshape baked to batch=1 (e.g. hyperswap), batch>1 failing
+        says nothing about whether batch=1 works under TensorRT — it does,
+        measured at ~24ms/call vs ~600ms/call once wrongly disabled here (a
+        25x regression that used to hit every single-frame swap for the rest
+        of the run). RunBatch/RunBatchMulti already have their own fallback
+        to sequential Run() calls for exactly this case, and each of those
+        goes through _infer() again with batch=1 — so re-raising immediately
+        here just lets that fallback's own single-frame calls get a fair,
+        unpoisoned shot at TensorRT instead of inheriting a CUDA-only session
+        that a batch-shape problem, not a real TRT failure, forced onto them.
+        """
+        is_batch1 = feed[self.image_input_name].shape[0] <= 1
         try:
             if self.pool is not None:
                 with self.pool.lease() as sess:
                     return sess.run(None, feed)
             return self.model_swap_insightface.run(None, feed)
         except Exception:
-            if not self._rebuild_without_trt():
+            if not is_batch1 or not self._rebuild_without_trt():
                 raise
             if self.pool is not None:
                 with self.pool.lease() as sess:
@@ -671,12 +687,34 @@ class FaceSwapInsightFace():
         self._stash_masks(ort_outs, 1)
         return ort_outs[0][0]
 
+    def _sequential_fallback(self, requests: list) -> list:
+        """requests = list of (source_face, target_face, blob). Runs each crop
+        through Run() one at a time — the numerically-identical, always-safe
+        path RunBatch/RunBatchMulti fall back to when batching doesn't work."""
+        results = []
+        masks = []
+        for src, tgt, blob in requests:
+            results.append(self.Run(src, tgt, blob))
+            # Each Run stashes its OWN mask into the same single-slot
+            # thread-local, so it has to be drained here — otherwise only
+            # the last crop's mask survives the loop and the caller, which
+            # expects one mask per crop, silently loses the swap model's
+            # face mask (or fails to reassemble it) on exactly the path
+            # this fallback exists to rescue.
+            m = self.take_masks()
+            masks.append(m[0] if m else None)
+        self._republish_masks(masks)
+        return results
+
     def RunBatch(self, source_face: Face, target_face: Face, temp_frames: list) -> list:
         """Batched equivalent of Run: temp_frames is a list of [1,3,H,W]
         preprocessed crops sharing the same source identity. Returns a list of
         [3,H,W] outputs, one per crop — numerically identical to calling Run on
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
+        if self._batch_unsupported:
+            return self._sequential_fallback(
+                [(source_face, target_face, t) for t in temp_frames])
         latent = self._compute_source_input(source_face)
         if latent is None:
             # Image-source model with no source crop → no-op (return the input
@@ -691,30 +729,30 @@ class FaceSwapInsightFace():
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
-            # If batch inference fails (e.g. TRT shape restriction or static-batch model),
-            # fall back gracefully to running single face swaps sequentially.
-            print(f"[swap] RunBatch: batch inference failed ({batch_err!r}); "
-                  f"falling back to sequential single-frame swaps.")
-            results = []
-            masks = []
-            for t in temp_frames:
-                results.append(self.Run(source_face, target_face, t))
-                # Each Run stashes its OWN mask into the same single-slot
-                # thread-local, so it has to be drained here — otherwise only
-                # the last crop's mask survives the loop and the caller, which
-                # expects one mask per crop, silently loses the swap model's
-                # face mask (or fails to reassemble it) on exactly the path
-                # this fallback exists to rescue.
-                m = self.take_masks()
-                masks.append(m[0] if m else None)
-            self._republish_masks(masks)
-            return results
+            # If batch inference fails (e.g. TRT shape restriction or a model
+            # whose graph has an internal reshape baked to batch=1 — some
+            # exports can't be made batch-dynamic just by relaxing the graph's
+            # declared input/output shapes), fall back gracefully to running
+            # single face swaps sequentially. This is a property of the loaded
+            # MODEL, not a transient condition, so remember it and stop
+            # attempting the batched path for the rest of this model's
+            # lifetime — otherwise every remaining frame pays for a doomed
+            # inference call (and a matching TensorRT/CUDA error) before
+            # falling back anyway.
+            self._batch_unsupported = True
+            print(f"[swap] '{self.loaded_model_key}' does not support batched inference "
+                  f"({batch_err!r}); disabling batching for the rest of this run "
+                  f"(falling back to sequential single-frame swaps).")
+            return self._sequential_fallback(
+                [(source_face, target_face, t) for t in temp_frames])
 
     def RunBatchMulti(self, requests: list) -> list:
         """Like RunBatch but each crop carries its OWN source identity (for
         cross-frame coalescing where different faces batch together).
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
+        if self._batch_unsupported:
+            return self._sequential_fallback(requests)
         latents = [self._compute_source_input(src) for src, _tgt, _blob in requests]
         if any(l is None for l in latents):
             # Image-source model with a crop-less source → no-op passthrough.
@@ -728,17 +766,12 @@ class FaceSwapInsightFace():
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
-            # Fall back to single-face swaps if multi-batch inference fails
-            print(f"[swap] RunBatchMulti: batch inference failed ({batch_err!r}); "
-                  f"falling back to sequential single-frame swaps.")
-            results = []
-            masks = []
-            for src, tgt, blob in requests:
-                results.append(self.Run(src, tgt, blob))
-                m = self.take_masks()
-                masks.append(m[0] if m else None)
-            self._republish_masks(masks)
-            return results
+            # See RunBatch above: a model-level incompatibility, not transient.
+            self._batch_unsupported = True
+            print(f"[swap] '{self.loaded_model_key}' does not support batched inference "
+                  f"({batch_err!r}); disabling batching for the rest of this run "
+                  f"(falling back to sequential single-frame swaps).")
+            return self._sequential_fallback(requests)
 
     def Release(self):
         if self.pool is not None:

@@ -114,6 +114,22 @@ def separated_frame(video, stride=1, limit=400):
     A capture taken while the heads already overlap can pick up the merged
     detection that spans both of them, and every later identity decision is
     then measured against a face that is half of each person.
+
+    Also requires both faces to pass `_landmarks_plausible` (det_score +
+    anatomically-sane keypoints) and a minimum bbox width — this frame seeds
+    `capture_targets`' left-to-right person-index assignment, which every
+    downstream capture and the whole clip's source binding inherits, but
+    unlike `capture_targets_best_frontal`'s own refinement scan (which DOES
+    gate on `_landmarks_plausible`), nothing here previously stopped it from
+    accepting the FIRST frame with any two separated boxes at all — including
+    a tiny, low-confidence, partially-cropped detection. Found on d11.mp4
+    (roop-recode phase 2, d11 dropout investigation): its first separated
+    frame (idx 110) is a wide establishing shot where the two leads are
+    background-scale, 46-47px, det_score 0.69-0.76 — a marginal enough
+    embedding that two independent runs bound harjot and shambhavi to
+    OPPOSITE physical people (confirmed via embedding-distance grading, not
+    assumed). A confident, reasonably-sized seed removes that ambiguity at
+    the source rather than hoping the refinement scan corrects for it later.
     """
     from roop.face_util import get_all_faces
     cap = cv2.VideoCapture(video)
@@ -131,9 +147,17 @@ def separated_frame(video, stride=1, limit=400):
         a, b = [f.bbox for f in faces]
         dx = max(b[0] - a[2], a[0] - b[2], 0.0)
         w = 0.5 * ((a[2] - a[0]) + (b[2] - b[0]))
-        if dx > 0.25 * w:
-            cap.release()
-            return i, fr
+        if dx < 0.25 * w:
+            continue
+        if not all(
+            (float(f.bbox[2]) - float(f.bbox[0])) >= 60
+            and _landmarks_plausible(f.bbox, f.kps,
+                                      det_score=float(getattr(f, 'det_score', 1.0)))
+            for f in faces
+        ):
+            continue
+        cap.release()
+        return i, fr
     cap.release()
     raise SystemExit("no frame with two well-separated faces")
 
@@ -157,6 +181,257 @@ def capture_targets(frame, extra_angles=()):
             targets.append(f)
             groups.append(person)
     return targets, groups
+
+
+def separated_frame_with_fallback(video, log_prefix="[capture]"):
+    """separated_frame() raises SystemExit if no frame in the first 400 has two
+    CLEARLY separated faces. Rather than hard-failing a whole clip over that
+    (both people may just stay close together the entire time, or the wider
+    part of the clip has a good frame past the default search window), widen
+    the search before giving up, then fall back to the first frame with
+    exactly 2 faces at all (regardless of separation) — flagged, not silent,
+    since a capture from an overlapping frame is a real quality caveat for the
+    reviewer to weigh, not a reason to skip the clip entirely."""
+    try:
+        return separated_frame(video, stride=1, limit=400)
+    except SystemExit:
+        pass
+    try:
+        idx, frame = separated_frame(video, stride=1, limit=3000)
+        print(f"{log_prefix} NOTE: needed a wider search (up to frame 3000) to find "
+              f"two well-separated faces", flush=True)
+        return idx, frame
+    except SystemExit:
+        pass
+    from roop.face_util import get_all_faces
+    cap = cv2.VideoCapture(video)
+    i = -1
+    while True:
+        ok, fr = cap.read()
+        if not ok or i > 3000:
+            break
+        i += 1
+        faces = get_all_faces(fr) or []
+        if len(faces) == 2:
+            cap.release()
+            print(f"{log_prefix} WARNING: no frame had two CLEARLY separated faces in "
+                  f"the first 3000 — captured from frame {i} where the two faces "
+                  f"are simply both present (possibly close/overlapping). Review "
+                  f"this clip's target capture quality.", flush=True)
+            return i, fr
+    cap.release()
+    raise SystemExit(f"never found 2 faces in the same frame in {video}")
+
+
+_CAPTURE_MIN_DET_SCORE = 0.6
+
+
+def _landmarks_plausible(bbox, kps, det_score=None, min_det_score=_CAPTURE_MIN_DET_SCORE):
+    """Sanity-check a face's 5-point landmarks against its own bbox before
+    trusting it as a reference-capture candidate.
+
+    A face rotated far enough away from camera can still return a bbox and 5
+    keypoints from the detector, with an off-axis reading that looks
+    deceptively good — but the eye/nose/mouth labels no longer correspond to
+    real anatomy at that point. Measured directly on d1.mp4 (roop-recode
+    phase 2, investigating a regression from 19.6% back to 81.1% not-swapped):
+    the "best" (lowest off-axis, 15.8 degrees) frame for one person was the
+    "Neck Rotation" exercise's fully-back head-tilt pose — chin at the sky,
+    no face actually visible — and its detected "mouth" keypoints sat ABOVE
+    the "eye" keypoints, an anatomically inverted geometry no real
+    frontal-ish face has regardless of yaw/pitch/roll. The other person's bad
+    capture in the same investigation had normal-looking landmark geometry
+    but a det_score of 0.434 on a barely-60px bbox — a different failure
+    (a low-confidence, likely-spurious detection), caught by the det_score
+    floor instead.
+    """
+    if det_score is not None and det_score < min_det_score:
+        return False
+    x0, y0, x1, y1 = (float(v) for v in bbox)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return False
+    kps = np.asarray(kps, dtype=np.float64)
+    if kps.shape[0] < 5:
+        return False
+    ny = (kps[:, 1] - y0) / h
+    eye_y = (ny[0] + ny[1]) / 2.0
+    nose_y = ny[2]
+    mouth_y = (ny[3] + ny[4]) / 2.0
+    margin = 0.05
+    if mouth_y < eye_y + margin:
+        return False
+    if not (eye_y - margin <= nose_y <= mouth_y + margin):
+        return False
+    return True
+
+
+def capture_targets_best_frontal(video, samples=None, max_offaxis_gate=0.85, seed_frame=None):
+    """TARGET_FACES / TARGET_FACE_GROUP for the two people, each captured from
+    THEIR OWN most-frontal frame rather than one shared frame.
+
+    `capture_targets` on a single separated frame breaks down on content where
+    the two people are never both simultaneously frontal — measured on a
+    "neck rotation" exercise clip (d1.mp4, roop-recode session 3) that cycles
+    both people through extreme up/down/profile poses for its entire runtime,
+    with each person's own frontal-ish close-up occurring at a DIFFERENT time
+    than the other's. A single shared capture frame there is a coin flip
+    between "both mid-rotation" (which is what the naive picker landed on:
+    heads tilted ~90 degrees back) and simply doesn't exist as a good frame at
+    all. Independently finding each person's best moment fixed the resulting
+    68-70% "not swapped" swap-audit rate to under 20% on that clip.
+
+    Seeds identity from `capture_targets` on `separated_frame`'s pick (so left/
+    right person assignment stays anchored the same way), then scans the whole
+    video, matches each detected face to whichever seed it's closer to
+    (declining anything not clearly one of the two — `max_offaxis_gate` is
+    actually a cosine-distance gate despite the name, kept loose since this
+    is a coarse "which person" match, not a final identity decision), and
+    keeps the lowest off-axis (`solve_pose_5pt` + `offaxis_deg`) frame seen
+    for each. A person whose own best frame is no better than the seed simply
+    keeps the seed (this never makes the capture worse).
+
+    `seed_frame`: pass an already-located separated frame instead of
+    re-deriving one internally. Internally defaults to
+    `separated_frame_with_fallback`, not the plain 400-frame `separated_frame`
+    — a clip whose two people are never both on screen early (measured on
+    d2.mp4, roop-recode session 3, over 3700 frames long) must not hard-fail
+    the whole capture over that alone.
+
+    Tried gating candidates on `face_contact.crop_contamination` too (reject
+    any touching/contaminated frame outright, no matter its angle) after d9.mp4
+    (roop-recode session, baseline_double review) showed its lowest-off-axis
+    frame per person was still a contact frame. Measured NET NEGATIVE and
+    reverted: on that clip the only "clean" frames the gate accepted were far
+    worse references overall (65/59 degrees off-axis, one majority
+    hair-occluded) than the contaminated-but-well-posed ones it rejected —
+    the actual swap's not-swapped rate got WORSE (35.8% -> 45.4%), not better.
+    Off-axis alone, uncorrected, is what's shipped; do not re-add a hard
+    contamination gate here without measuring the real swap outcome, not just
+    the captured frame's pixels, since a "clean" frame can still be a worse
+    reference than a "contaminated" one if its pose/occlusion is bad enough.
+    """
+    from roop.face_util import get_all_faces, solve_pose_5pt, offaxis_deg
+    from roop.utilities import compute_cosine_distance
+
+    cap_frame = seed_frame if seed_frame is not None else separated_frame_with_fallback(video)[1]
+    seed_targets, seed_groups = capture_targets(cap_frame)
+    seed_embs = {g: np.asarray(seed_targets[i].embedding, np.float64)
+                 for i, g in enumerate(seed_groups)}
+
+    cap = cv2.VideoCapture(video)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if samples is None:
+        # ~3 samples/second of content rather than a fixed count — a flat 200
+        # samples is dense enough on a 30s clip but sparse (every ~0.75s) on a
+        # multi-minute one, and a brief frontal moment between two people in
+        # near-constant contact (measured on d2.mp4, roop-recode session 3)
+        # can fall entirely between samples at that stride. Capped so an hour-
+        # long clip doesn't turn the capture into its own multi-minute scan.
+        samples = int(min(2000, max(200, (total / fps) * 3)))
+    stride = max(1, total // samples)
+
+    best = {}  # group -> (offaxis_deg, face)
+    for fpos in range(0, total, stride):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fpos)
+        ok, fr = cap.read()
+        if not ok:
+            continue
+        for f in (get_all_faces(fr) or []):
+            e = getattr(f, 'embedding', None)
+            if e is None:
+                continue
+            e = np.asarray(e, np.float64)
+            g_best, d_best = None, 1e9
+            for grp, se in seed_embs.items():
+                d = compute_cosine_distance(e, se)
+                if d < d_best:
+                    d_best, g_best = d, grp
+            if d_best > max_offaxis_gate:
+                continue
+            if float(f.bbox[2]) - float(f.bbox[0]) < 60:
+                continue  # too small for a reliable pose read
+            if not _landmarks_plausible(f.bbox, f.kps, det_score=float(getattr(f, 'det_score', 1.0))):
+                continue
+            pose = solve_pose_5pt(f.kps)
+            if pose is None:
+                continue
+            off = offaxis_deg(pose[0], pose[1])
+            cur = best.get(g_best)
+            if cur is None or off < cur[0]:
+                best[g_best] = (off, f)
+    cap.release()
+
+    targets, groups = [], []
+    for i, grp in enumerate(seed_groups):
+        if grp in best:
+            off, face = best[grp]
+            print(f"[capture] person {grp}: best frame off-axis {off:.1f} deg "
+                  f"(replacing the shared-seed capture)", flush=True)
+            targets.append(face)
+        else:
+            print(f"[capture] person {grp}: no better frame found than the shared "
+                  f"seed capture", flush=True)
+            targets.append(seed_targets[i])
+        groups.append(grp)
+    return targets, groups
+
+
+def enrich_targets_auto_angles(video, targets, groups, log_prefix="[capture]"):
+    """Grow each person's single best-frontal capture into a multi-angle bank
+    via the real `/api/target/auto_angles` feature, in-process.
+
+    Tried once before (roop-recode phase-1 d1 investigation) and found only
+    marginal (70.1% -> 68.6% not-swapped) — but that was enriching around a
+    GARBAGE seed (a fully-turned-away, anatomically-implausible capture that
+    `_landmarks_plausible` didn't exist to reject yet), so there was nothing
+    legitimate nearby to chain onto. Re-tried after that fix (roop-recode
+    phase-2 d1-regression investigation) with a real, if imperfect
+    (partially-occluded), seed and got 54.7% -> 9.3% not-swapped — auto_angles
+    doing exactly what it is for: compensating for one imperfect single-frame
+    reference by chaining pose-adjacent angles onto it. The lesson is that
+    this step is only as good as `capture_targets_best_frontal`'s seed; it is
+    not a substitute for a plausible seed, only a multiplier on top of one.
+
+    `targets`/`groups` should already be a plausible per-person seed capture
+    (e.g. from `capture_targets_best_frontal`). Runs IN-PROCESS against the
+    real `api.target_auto_angles` handler (same one the React UI's "harvest
+    angles" button calls) via `roop.globals.TARGET_FACES`/`TARGET_FACE_GROUP`,
+    so the result is bit-identical to what a user clicking that button would
+    get, not a reimplementation.
+
+    `ROOP_TEST_NO_AUTOANGLES=1` skips this step (returns the seed unchanged)
+    — an A/B kill switch for isolating this step's effect from everything else
+    in a harness run, kept for future investigations of this kind.
+    """
+    import os
+    if os.environ.get('ROOP_TEST_NO_AUTOANGLES') == '1':
+        print(f"{log_prefix} auto_angles enrichment SKIPPED (ROOP_TEST_NO_AUTOANGLES=1)", flush=True)
+        return targets, groups
+    import types
+    import roop.globals as g
+    import api
+
+    g.TARGET_FACES = list(targets)
+    g.TARGET_FACE_GROUP = list(groups)
+    n_people = len(set(groups))
+
+    prev_files, prev_idx, prev_processing = (
+        api.list_files_process, api.state.selected_target_index, api._progress["processing"])
+    try:
+        api.list_files_process = [types.SimpleNamespace(filename=video)]
+        api.state.selected_target_index = 0
+        api._progress["processing"] = False
+        for person in range(n_people):
+            api.target_auto_angles({"person": person, "index": 0})
+    finally:
+        api.list_files_process, api.state.selected_target_index, api._progress["processing"] = (
+            prev_files, prev_idx, prev_processing)
+
+    print(f"{log_prefix} auto_angles enrichment: {len(targets)} -> {len(g.TARGET_FACES)} "
+          f"angle(s) total for {n_people} person(s)", flush=True)
+    return list(g.TARGET_FACES), list(g.TARGET_FACE_GROUP)
 
 
 def trim(video, start, end, out_path, fps=None):
@@ -436,7 +711,7 @@ def main():
     if args.capture >= 0:
         cap_idx, cap_frame = args.capture, frame_at(args.video, args.capture)
     else:
-        cap_idx, cap_frame = separated_frame(args.video)
+        cap_idx, cap_frame = separated_frame_with_fallback(args.video)
     print(f"[bench] target faces captured from frame {cap_idx}", flush=True)
     extra = [frame_at(args.video, int(x)) for x in args.capture_extra.split(",") if x.strip()]
     targets, groups = capture_targets(cap_frame, extra)

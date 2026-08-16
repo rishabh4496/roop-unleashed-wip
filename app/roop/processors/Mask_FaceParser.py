@@ -143,10 +143,11 @@ class Mask_FaceParser():
                 self.pool = session_pool.SessionPool(
                     lambda i, _e=([self.model] + extras): _e[i], n)
 
-    def Run(self, img1, keywords: str) -> Frame:
-        # img1 is the aligned face crop (BGR uint8). Returned mask matches the
-        # other engines' convention: 1.0 = keep ORIGINAL (exclude from swap),
-        # 0.0 = use the swapped pixels. process_mask resizes it to the crop.
+    def RunLabels(self, img1):
+        """Raw (512,512) per-pixel class-id map, before any region grouping,
+        blur or inversion -- split out from Run() so a caller (RealityUX) that
+        needs the raw semantic classes, not just the default face/not-face
+        mask, doesn't have to re-run inference itself."""
         resized = cv2.resize(img1, (512, 512), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         rgb = (rgb - _MEAN) / _STD
@@ -157,7 +158,13 @@ class Mask_FaceParser():
                 ort_outs = sess.run([self.output_name], {self.input_name: blob})
         else:
             ort_outs = self.model.run([self.output_name], {self.input_name: blob})
-        labels = ort_outs[0][0].argmax(0)                          # (512,512) class ids
+        return ort_outs[0][0].argmax(0)                             # (512,512) class ids
+
+    def Run(self, img1, keywords: str) -> Frame:
+        # img1 is the aligned face crop (BGR uint8). Returned mask matches the
+        # other engines' convention: 1.0 = keep ORIGINAL (exclude from swap),
+        # 0.0 = use the swapped pixels. process_mask resizes it to the crop.
+        labels = self.RunLabels(img1)
         face = _region_mask(labels)                                # 1 inside swap region
         # Soften edges so the blend matches the smooth XSeg output.
         face = cv2.GaussianBlur(face, (0, 0), sigmaX=3)

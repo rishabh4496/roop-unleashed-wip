@@ -113,6 +113,17 @@ MERGE_PAIR_SEP = _env_float('ROOP_FACE_MERGE_PAIR_SEP', 0.35)
 # "between" them. 0.15..0.85 excludes a box sitting on top of either end.
 MERGE_BETWEEN = _env_float('ROOP_FACE_MERGE_BETWEEN', 0.15)
 
+# A profile-view "kiss" can leave the two real face boxes with a small real
+# gap between them (measured on baseline_double/d2.mp4, frame 1214: a 17.8px
+# gap on ~54px-radius boxes) rather than touching or overlapping. The
+# junction that bridges that gap is still a junction, but union-coverage
+# alone cannot see it: the middle of the gap belongs to neither parent.
+# Capped as a fraction of the smaller face's radius so this never reaches
+# out to genuinely distant faces (see
+# test_small_distant_face_between_two_near_ones_survives, whose gap is a
+# full face-width and must stay refused).
+MERGE_BRIDGE_GAP = _env_float('ROOP_FACE_MERGE_BRIDGE_GAP', 0.4)
+
 
 def _centre(b):
     return ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5)
@@ -168,6 +179,27 @@ def _min_side(b):
     return min(b[2] - b[0], b[3] - b[1])
 
 
+def _edge_gap(a, b):
+    """Shortest distance between two axis-aligned boxes; 0 if they touch or
+    overlap on both axes."""
+    dx = max(a[0] - b[2], b[0] - a[2], 0.0)
+    dy = max(a[1] - b[3], b[1] - a[3], 0.0)
+    return float(np.hypot(dx, dy))
+
+
+def _bridged(a, b):
+    """`a`, `b` grown toward each other just enough to close a small real
+    gap, for the coverage check only -- see MERGE_BRIDGE_GAP."""
+    gap = _edge_gap(a, b)
+    if gap <= 0.0:
+        return a, b
+    if gap > MERGE_BRIDGE_GAP * min(_radius(a), _radius(b)):
+        return a, b
+    pad = gap * 0.5 + 1.0
+    return ((a[0] - pad, a[1] - pad, a[2] + pad, a[3] + pad),
+            (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
+
+
 def merged_indices(boxes):
     """Indices of `boxes` that are the junction of two of the others.
 
@@ -205,7 +237,8 @@ def merged_indices(boxes):
                     continue
                 if _min_side(m) < MERGE_SIZE * min(_min_side(a), _min_side(b)):
                     continue
-                if _union_cover(m, a, b) < MERGE_COVER:
+                ba, bb = _bridged(a, b)
+                if _union_cover(m, ba, bb) < MERGE_COVER:
                     continue
                 out.append(k)
                 hit = True
@@ -248,9 +281,20 @@ _ARCFACE_DST = np.array([[38.2946, 51.6963], [73.5318, 51.5014],
 # ROOP_EMB_CONTAM=0 disables the whole mechanism.
 CONTAM_MAX = _env_float('ROOP_EMB_CONTAM', 0.35)
 
+# Scale factor for the neighbour's core facial feature region in template space
+# (scaled around template center 56, 56) when testing overlap against a subject's
+# crop quad. ArcFace's 112x112 template contains generous margin padding around
+# the 5 landmarks (landmarks occupy ~35px horizontal span, center ~40px). Full
+# quad-vs-quad (scale=1.0) over-measures background padding as contamination (~90%
+# false dirty), while axis-aligned detection box alone under-measures angled profile
+# kisses (~24-28% measured vs >45% actual corruption). A core region scale of ~0.65-0.70
+# captures the neighbour's active facial features (mouth/lips/nose) without the
+# surrounding padding space.
+CONTAM_CORE_SCALE = _env_float('ROOP_EMB_CONTAM_CORE', 0.65)
 
-def _crop_quad(kps, size=112.0):
-    """The four corners of the ArcFace crop, in frame coordinates.
+
+def _crop_quad(kps, size=112.0, scale=1.0):
+    """The four corners of the ArcFace crop (or scaled core region), in frame coordinates.
 
     A least-squares SIMILARITY fit (rotation, uniform scale, translation) of the
     5 keypoints onto the template — the same estimator skimage's
@@ -258,6 +302,9 @@ def _crop_quad(kps, size=112.0):
     skimage and so the maths is visible: the whole point of the function is that
     for a profile face this transform resolves to something much larger than the
     detection box, and that is worth being able to read.
+
+    When `scale` < 1.0, scales the template quad around its center (size/2, size/2)
+    to yield the core facial feature region without the outer template padding.
     """
     src = np.asarray(kps, dtype=np.float64).reshape(5, 2)
     dst = _ARCFACE_DST * (size / 112.0)
@@ -274,15 +321,20 @@ def _crop_quad(kps, size=112.0):
     if np.linalg.det(u) * np.linalg.det(vt) < 0:
         d[1] = -1.0
     r = u @ np.diag(d) @ vt
-    scale = float(s @ d) / (var / 5.0)
-    if not np.isfinite(scale) or scale < 1e-9:
+    scale_fit = float(s @ d) / (var / 5.0)
+    if not np.isfinite(scale_fit) or scale_fit < 1e-9:
         return None
     # Forward transform maps frame -> crop; we want the crop's corners in the
     # frame, so invert it.
-    a = scale * r
+    a = scale_fit * r
     t = dm - a @ sm
     inv = np.linalg.inv(a)
-    corners = np.array([[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]])
+    if scale >= 1.0:
+        corners = np.array([[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]])
+    else:
+        c0 = size * 0.5 * (1.0 - scale)
+        c1 = size * 0.5 * (1.0 + scale)
+        corners = np.array([[c0, c0], [c1, c0], [c1, c1], [c0, c1]])
     return ((corners - t) @ inv.T).astype(np.float32)
 
 
@@ -298,32 +350,57 @@ def _quad_box_overlap(quad, box):
     return float(inter) / area if area > 1e-6 else 0.0
 
 
+def _quad_quad_overlap(quad_i, quad_j):
+    """Fraction of `quad_i`'s area covered by oriented convex `quad_j`."""
+    try:
+        inter, _ = cv2.intersectConvexConvex(quad_i, quad_j, True)
+    except Exception:
+        return 0.0
+    area = float(cv2.contourArea(quad_i))
+    return float(inter) / area if area > 1e-6 else 0.0
+
+
 def crop_contamination(faces):
     """Per face, the largest fraction of its recognition crop owned by another.
 
     Returns a list of floats, one per face, 0.0 when nothing overlaps or the
-    geometry could not be built. Cheap: a 2x2 solve and one convex-polygon
-    intersection per pair, only for pairs whose boxes are anywhere near.
+    geometry could not be built. Cheap: a 2x2 solve and convex-polygon
+    intersections per pair, only for pairs whose bboxes are nearby.
+
+    Measures subject face `i`'s full ArcFace recognition crop quad against both
+    the neighbour's axis-aligned detection box `box[j]` and the neighbour's
+    core facial feature region `core_quad[j]` (scaled by CONTAM_CORE_SCALE).
+    This bridges the gap between axis-aligned box alone (which under-measures
+    angled/profile kissing faces where mouth/lips extend outside the bbox) and
+    full quad-vs-quad (which over-measures by including the generous ArcFace
+    template padding).
     """
     n = len(faces)
     if n < 2:
         return [0.0] * n
-    quads, boxes = [], []
+    quads, core_quads, boxes = [], [], []
     for f in faces:
         try:
             boxes.append(tuple(float(v) for v in f.bbox))
         except Exception:
             boxes.append(None)
         kps = getattr(f, 'kps', None)
-        quads.append(_crop_quad(kps) if kps is not None else None)
+        if kps is not None:
+            quads.append(_crop_quad(kps, scale=1.0))
+            core_quads.append(_crop_quad(kps, scale=CONTAM_CORE_SCALE) if CONTAM_CORE_SCALE > 0 else None)
+        else:
+            quads.append(None)
+            core_quads.append(None)
     out = [0.0] * n
     for i in range(n):
         if quads[i] is None:
             continue
         for j in range(n):
-            if i == j or boxes[j] is None:
+            if i == j:
                 continue
-            out[i] = max(out[i], _quad_box_overlap(quads[i], boxes[j]))
+            o_box = _quad_box_overlap(quads[i], boxes[j]) if boxes[j] is not None else 0.0
+            o_core = _quad_quad_overlap(quads[i], core_quads[j]) if core_quads[j] is not None else 0.0
+            out[i] = max(out[i], o_box, o_core)
     return out
 
 
