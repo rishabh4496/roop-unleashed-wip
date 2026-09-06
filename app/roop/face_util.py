@@ -775,6 +775,14 @@ def _lm68_should_measure(faces):
         if tilt is not None and abs(tilt) >= LM68_ARM_DEG:
             _lm68_arm()
             return True
+        kps = getattr(f, 'kps', None)
+        if kps is not None and len(kps) >= 5:
+            kps_arr = np.asarray(kps, dtype=np.float32)
+            emid = (kps_arr[0] + kps_arr[1]) / 2.0
+            mmid = (kps_arr[3] + kps_arr[4]) / 2.0
+            if np.dot(mmid - emid, kps_arr[2] - emid) < 0:
+                _lm68_arm()
+                return True
     return False
 
 
@@ -822,11 +830,37 @@ def _upright_remeasure(frame, faces):
     # DISTINCT turn (at most three), not one per face.
     wanted = {}
     for i, f in enumerate(faces):
-        axis = face_down_axis(f)
-        if axis is None:
-            continue
-        action = _action_for_down_axis(*axis)
-        if action in turns:
+        ax68 = _axis_from_68(f)
+        axkp = _axis_from_kps(f)
+        t68 = _tilt_from_axis(ax68)
+        tkp = _tilt_from_axis(axkp)
+        actions = set()
+        if ax68 is not None:
+            act_68 = _action_for_down_axis(*ax68)
+            if act_68 in turns:
+                actions.add(act_68)
+        if axkp is not None:
+            act_kp = _action_for_down_axis(*axkp)
+            if act_kp in turns:
+                actions.add(act_kp)
+        if t68 is not None and tkp is not None:
+            dis = abs((t68 - tkp + 180.0) % 360.0 - 180.0)
+            if dis >= 45.0 and not actions:
+                actions.add("rotate_180")
+        kps = getattr(f, 'kps', None)
+        if kps is not None and len(kps) >= 5:
+            kps_arr = np.asarray(kps, dtype=np.float32)
+            emid = (kps_arr[0] + kps_arr[1]) / 2.0
+            mmid = (kps_arr[3] + kps_arr[4]) / 2.0
+            e2m = mmid - emid
+            e2n = kps_arr[2] - emid
+            edist = float(np.linalg.norm(kps_arr[0] - kps_arr[1]))
+            emdist = float(np.linalg.norm(e2m))
+            bw = float(f.bbox[2] - f.bbox[0])
+            bh = float(f.bbox[3] - f.bbox[1])
+            if np.dot(e2m, e2n) < 0 or (bw > 0 and bh > 0 and edist / bw < 0.18 and emdist / bh < 0.24):
+                actions.add("rotate_180")
+        for action in actions:
             wanted.setdefault(action, []).append(i)
     if not wanted:
         return faces
@@ -864,7 +898,25 @@ def _upright_remeasure(frame, faces):
             oy = (float(orig.bbox[1]) + float(orig.bbox[3])) / 2.0
             osize = max(float(orig.bbox[2] - orig.bbox[0]),
                         float(orig.bbox[3] - orig.bbox[1]))
-            otilt = face_roll_tilt(orig)
+            otilt_68 = _tilt_from_axis(_axis_from_68(orig))
+            otilt_kp = _tilt_from_axis(_axis_from_kps(orig))
+            disagree = (otilt_68 is not None and otilt_kp is not None and
+                        abs((otilt_68 - otilt_kp + 180.0) % 360.0 - 180.0) >= 45.0)
+            orig_crushed_or_inv = False
+            kps = getattr(orig, 'kps', None)
+            if kps is not None and len(kps) >= 5:
+                kps_arr = np.asarray(kps, dtype=np.float32)
+                emid = (kps_arr[0] + kps_arr[1]) / 2.0
+                mmid = (kps_arr[3] + kps_arr[4]) / 2.0
+                e2m = mmid - emid
+                e2n = kps_arr[2] - emid
+                edist = float(np.linalg.norm(kps_arr[0] - kps_arr[1]))
+                emdist = float(np.linalg.norm(e2m))
+                bw = float(orig.bbox[2] - orig.bbox[0])
+                bh = float(orig.bbox[3] - orig.bbox[1])
+                orig_crushed_or_inv = (np.dot(e2m, e2n) < 0 or
+                                       (bw > 0 and bh > 0 and edist / bw < 0.18 and emdist / bh < 0.24))
+
             best, best_d = None, None
             for c, tilt in scored:
                 cx = (float(c.bbox[0]) + float(c.bbox[2])) / 2.0
@@ -879,9 +931,17 @@ def _upright_remeasure(frame, faces):
             if best is None:
                 continue
             cand, tilt = best
-            if tilt is None or otilt is None:
+            if tilt is None:
                 continue
-            if abs(tilt) < abs(otilt) - 5.0:
+            upright_imp = False
+            for ot in (otilt_68, otilt_kp):
+                if ot is not None and abs(tilt) < abs(ot) - 5.0:
+                    upright_imp = True
+                    break
+            resolves_disagree = disagree and abs(tilt) < 45.0
+            resolves_geometry = orig_crushed_or_inv and abs(tilt) < 45.0
+
+            if upright_imp or resolves_disagree or resolves_geometry:
                 faces[i] = cand
     return faces
 
