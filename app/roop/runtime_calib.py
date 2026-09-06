@@ -42,8 +42,9 @@ _ALPHA = 0.35          # EMA weight for the newest run
 _VERSION = 2
 
 # Perf-relevant settings. Each tuple is (canonical_name, [payload keys to try]).
-# The enhancer name already encodes GPEN size ("GPEN 1024"), so no size field is
-# needed. Order is irrelevant — the signature sorts by canonical name.
+# GPEN size/profile is encoded by the enhancer name (for example "GPEN 1024"
+# and "GPEN Ultimate"), so no separate size field is needed. Order is
+# irrelevant — the signature sorts by canonical name.
 _SIG_FIELDS = [
     ("swap_model",        ["swap_model"]),
     ("enhancer",          ["enhancer", "selected_enhancer"]),

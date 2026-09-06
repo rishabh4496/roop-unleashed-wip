@@ -112,6 +112,16 @@ Then open the Settings tab in the UI and change **Provider** to `tensorrt`.
 > **Note:** On first use with TensorRT, each ONNX model is compiled to a TRT engine. This takes
 > several minutes per model but is cached in `app/models/trt_cache/` — subsequent starts are instant.
 
+In **Settings → Precision mode (TensorRT)**, all three modes are supported by **GPEN Ultimate**
+and **Restore Ultra**:
+
+- `mixed` (recommended): FP16 TensorRT execution with FP32 layer-normalization fallback.
+- `fp16`: maximum FP16 throughput where TensorRT supports it.
+- `fp32`: FP32 TensorRT execution for maximum numerical headroom.
+
+Each mode has its own engine/timing-cache directory, and the two profiles pass the selected mode
+through unchanged. Restart the app after changing precision so every session is rebuilt consistently.
+
 ### Step 6 — Run
 
 ```bash
@@ -144,7 +154,7 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 | Color/lighting match | Match the swapped face's tone & lighting to the scene: `rct` (default) · `lct` (fixes hue casts) · `mkl` (fullest match) · `none` |
 | Refine alignment (68-pt) | Derives alignment keypoints from the 68-point landmarks — steadier on angled faces |
 | Rescue small faces | Retries detection on a 2× upscale when a frame has no face |
-| Enhancer | Post-processing: GPEN (512/1024/2048), GFPGAN, CodeFormer, DMDNet, RestoreFormer++ |
+| Enhancer | Post-processing: GPEN (256/512/1024/2048), GPEN Ultimate, GFPGAN, CodeFormer, DMDNet, RestoreFormer++, Restore Ultra |
 | Restore original mouth | Composites the target's original mouth back over the swap |
 | Video swapping method | **In-Memory** (fast, more RAM) or **Extract Frames** (large videos) |
 | Subsample upscale | Internal face resolution: 128 → 256 → 512 px |
@@ -302,7 +312,7 @@ curl -F "files=@clip.mp4"  "$API/api/target/add"
 curl -X POST "$API/api/target/add_path" -H 'Content-Type: application/json' \
      -d '{"paths":["/abs/path/clip.mp4"]}'
 curl -X POST "$API/api/swap" -H 'Content-Type: application/json' \
-     -d '{"enhancer":"GFPGAN","detection":"All faces"}'
+     -d '{"enhancer":"GPEN Ultimate","detection":"All faces"}'
 
 curl "$API/api/progress"
 curl -X POST "$API/api/stop"
@@ -316,7 +326,7 @@ const API = `http://127.0.0.1:${8001}`;   // or the port shown in the launcher t
 await fetch(`${API}/api/swap`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ enhancer: 'GFPGAN', detection: 'All faces' }),
+  body: JSON.stringify({ enhancer: 'Restore Ultra', detection: 'All faces' }),
 });
 
 // Poll progress
@@ -342,7 +352,7 @@ with open("face.jpg", "rb") as f:
 # and be written to disk a second time.
 requests.post(f"{API}/api/target/add_path", json={"paths": [os.path.abspath("clip.mp4")]})
 
-requests.post(f"{API}/api/swap", json={"enhancer": "GFPGAN", "detection": "All faces"})
+requests.post(f"{API}/api/swap", json={"enhancer": "GPEN Ultimate", "detection": "All faces"})
 
 print(requests.get(f"{API}/api/progress").json())
 requests.post(f"{API}/api/stop")

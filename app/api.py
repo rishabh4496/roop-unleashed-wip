@@ -674,10 +674,11 @@ def get_meta():
     return {
         "git_version": _get_git_version(),
         "providers": providers,
-        "trt_precisions": ["fp32", "fp16", "mixed"],
+        "trt_precisions": ["mixed", "fp16", "fp32"],
         "enhancers": ["None", "Codeformer", "Codeformer (fp16)", "DMDNet",
                        "GFPGAN", "GPEN 256", "GPEN", "GPEN 1024", "GPEN 2048",
-                       "Restoreformer++", "KEEP (sidecar)"],
+                       "GPEN Ultimate", "Restoreformer++", "Restore Ultra",
+                       "KEEP (sidecar)"],
         "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
                          "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
                          "simswap", "simswap_512", "hififace", "blendswap", "uniface"],

@@ -7,7 +7,8 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path, conditional_download
-from roop.processors.enhance_common import is_usable, sized
+from roop.processors.enhance_common import is_usable, sized, inject_reference_detail
+from roop import session_pool
 
 
 def _fp32_trt_providers(providers):
@@ -85,6 +86,9 @@ class Enhance_GPEN():
         # engine loads and yanks the session out from under a Run() in flight
         # (NoneType io_binding / NaN → black face).
         self.sessions = {}
+        self.pool = None
+        self._pool_model_size = None
+        self.profile = None
 
     def Initialize(self, plugin_options:dict):
         if self.plugin_options is not None:
@@ -93,22 +97,52 @@ class Enhance_GPEN():
 
         self.plugin_options = plugin_options
 
+        self.profile = plugin_options.get("profile")
+
         size = int(plugin_options.get("size", 512))
         if size not in GPEN_MODELS:
             size = 512
 
-        if size not in self.sessions:
-            spec = GPEN_MODELS[size]
+        def _build(model_size):
+            spec = GPEN_MODELS[model_size]
             model_dir = resolve_relative_path('../models')
             conditional_download(model_dir, [spec["url"]])
             model_path = f"{model_dir}/{spec['file']}"
             providers = roop.globals.execution_providers
             # 1024/2048 overflow in FP16 → black face; force FP32 on TensorRT.
-            # 512 (classic weight) is stable in FP16, so leave it fast.
-            if size >= 1024:
+            # 512 and 256 are stable in FP16, so leave those fast.
+            if model_size >= 1024:
                 providers = _fp32_trt_providers(providers)
-            session = onnxruntime.InferenceSession(model_path, None, providers=providers)
-            self.sessions[size] = session
+            return onnxruntime.InferenceSession(model_path, None, providers=providers)
+
+        if size not in self.sessions:
+            self.sessions[size] = _build(size)
+
+        # GPEN Ultimate is the throughput profile.  The 256px network is already
+        # the fastest GPEN tier; independent TensorRT contexts remove the global
+        # one-session bottleneck when several video workers are active.  Keep the
+        # original GPEN tiers on their historical single-session path.
+        wants_pool = self.profile == 'ultimate' and session_pool.pooling_enabled()
+        if (self.pool is not None and
+                (not wants_pool or self._pool_model_size != size)):
+            self.pool.release()
+            self.pool = None
+            self._pool_model_size = None
+        if wants_pool and self.pool is None:
+            n = session_pool.pool_size()
+            extras = []
+            try:
+                extras = [_build(size) for _ in range(n - 1)]
+                primary = self.sessions[size]
+                self.pool = session_pool.SessionPool(
+                    lambda i, _e=([primary] + extras): _e[i], n)
+                self._pool_model_size = size
+            except Exception as e:
+                extras.clear()
+                self.pool = None
+                self._pool_model_size = None
+                print(f"[GPEN] multi-context pool unavailable ({e}); "
+                      f"falling back to one session behind the GPU lock")
 
         # replace Mac mps with cpu for the moment
         self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
@@ -121,7 +155,8 @@ class Enhance_GPEN():
         # preprocess
         input_size = temp_frame.shape[1]
         sz = self.model_size
-        temp_frame = cv2.resize(temp_frame, (sz, sz), interpolation=cv2.INTER_CUBIC)
+        reference_bgr = temp_frame  # full crop, retained for the final detail pass
+        temp_frame = cv2.resize(reference_bgr, (sz, sz), interpolation=cv2.INTER_CUBIC)
         fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
 
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
@@ -129,11 +164,18 @@ class Enhance_GPEN():
         temp_frame = (temp_frame - 0.5) / 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
 
-        io_binding = self.model_gpen.io_binding()
-        io_binding.bind_cpu_input(self.name, temp_frame)
-        io_binding.bind_output(self.output_name, self.devicename)
-        self.model_gpen.run_with_iobinding(io_binding)
-        ort_outs = io_binding.copy_outputs_to_cpu()
+        def _infer(session):
+            io_binding = session.io_binding()
+            io_binding.bind_cpu_input(self.name, temp_frame)
+            io_binding.bind_output(self.output_name, self.devicename)
+            session.run_with_iobinding(io_binding)
+            return io_binding.copy_outputs_to_cpu()
+
+        if self.pool is not None:
+            with self.pool.lease() as session:
+                ort_outs = _infer(session)
+        else:
+            ort_outs = _infer(self.model_gpen)
         result = ort_outs[0][0]
 
         # Defense-in-depth: FP16 overflow or a torn session can yield non-finite
@@ -151,9 +193,22 @@ class Enhance_GPEN():
         result = (result + 1) / 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        return sized(result.astype(np.uint8), input_size)
+        result, scale_factor = sized(result.astype(np.uint8), input_size)
+        if self.profile == 'ultimate':
+            # Apply the finish after the 256px output is restored to crop size;
+            # doing it before sized() softened the detail again during resize.
+            result = inject_reference_detail(
+                result,
+                cv2.resize(reference_bgr, (result.shape[1], result.shape[0]),
+                           interpolation=cv2.INTER_CUBIC),
+                strength=0.46, crispness=0.24)
+        return result, scale_factor
 
 
     def Release(self):
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
+        self._pool_model_size = None
         self.sessions.clear()
         self.model_gpen = None

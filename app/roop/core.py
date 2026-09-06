@@ -30,7 +30,7 @@ import roop.metadata
 import roop.utilities as util
 import roop.util_ffmpeg as ffmpeg
 import ui.main as main
-from settings import Settings
+from settings import Settings, normalize_trt_precision
 from roop.face_util import extract_face_images
 from roop.ProcessEntry import ProcessEntry
 from roop.ProcessMgr import ProcessMgr
@@ -91,6 +91,23 @@ def encode_execution_providers(execution_providers: List[str]) -> List[str]:
     return [execution_provider.replace('ExecutionProvider', '').lower() for execution_provider in execution_providers]
 
 
+def _trt_precision_options(precision):
+    """Translate the UI precision mode to ONNX Runtime TensorRT options.
+
+    TensorRT exposes FP16 as a mode switch rather than separate "mixed" and
+    "full FP16" provider modes.  ``mixed`` therefore enables FP16 for the
+    graph while retaining FP32 layer-normalization math for stability; ``fp16``
+    removes that quality fallback for maximum throughput; and ``fp32`` leaves
+    FP16 disabled.  The engine cache is partitioned by the same canonical mode
+    in ``decode_execution_providers``.
+    """
+    mode = normalize_trt_precision(precision)
+    return mode, {
+        'trt_fp16_enable': mode in ('mixed', 'fp16'),
+        'trt_layer_norm_fp32_fallback': mode == 'mixed',
+    }
+
+
 def decode_execution_providers(execution_providers: List[str]) -> List[str]:
     import onnxruntime
     try:
@@ -116,8 +133,9 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
             elif list_providers[i] == 'TensorrtExecutionProvider':
                 trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
                 os.makedirs(trt_cache, exist_ok=True)
-                trt_precision = getattr(roop.globals.CFG, 'trt_precision', 'mixed') if roop.globals.CFG else 'mixed'
-                fp16_enable = trt_precision in ('fp16', 'mixed')
+                trt_precision, precision_opts = _trt_precision_options(
+                    getattr(roop.globals.CFG, 'trt_precision', 'mixed')
+                    if roop.globals.CFG else 'mixed')
                 precision_cache = os.path.join(trt_cache, trt_precision)
                 os.makedirs(precision_cache, exist_ok=True)
 
@@ -171,7 +189,6 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
 
                 trt_opts = {
                     'device_id': roop.globals.cuda_device_id,
-                    'trt_fp16_enable': fp16_enable,
                     'trt_engine_cache_enable': True,
                     'trt_engine_cache_path': precision_cache,
                     'trt_max_partition_iterations': partition_iters,
@@ -179,8 +196,12 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     'trt_timing_cache_enable': True,
                     'trt_timing_cache_path': precision_cache,
                 }
+                trt_opts.update(precision_opts)
                 if workspace_size > 0:
                     trt_opts['trt_max_workspace_size'] = workspace_size
+                print(f"[TRT] precision={trt_precision} "
+                      f"fp16={precision_opts['trt_fp16_enable']} "
+                      f"layer_norm_fp32={precision_opts['trt_layer_norm_fp32_fallback']}")
                 list_providers[i] = ('TensorrtExecutionProvider', trt_opts)
     except:
         pass
@@ -412,8 +433,12 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         processors.update({"gpen": {"size": 1024}})
     elif roop.globals.selected_enhancer == 'GPEN 2048':
         processors.update({"gpen": {"size": 2048}})
+    elif roop.globals.selected_enhancer == 'GPEN Ultimate':
+        processors.update({"gpen_ultimate": {}})
     elif roop.globals.selected_enhancer == 'Restoreformer++':
         processors.update({"restoreformer++": {}})
+    elif roop.globals.selected_enhancer == 'Restore Ultra':
+        processors.update({"restore_ultra": {}})
     elif roop.globals.selected_enhancer == 'KEEP (sidecar)':
         # Experimental: runs in sidecar_keep/.venv as a separate process
         # (dependency conflict with the main env); passes through unenhanced

@@ -225,7 +225,7 @@ class CatalogueFollowsTheSettings(unittest.TestCase):
         self.assertEqual(modes.get('mask_xseg'), ('heavy',))
         self.assertIn('standard', modes['swap'])
 
-    def test_an_unpooled_enhancer_is_reported_as_unpooled(self):
+    def test_pooling_is_reported_for_the_optimized_profiles(self):
         # GPEN and GFPGAN have no SessionPool, so under TensorRT they take the
         # global GPU lock and serialise every other stage behind them. That is
         # the single most useful thing the report can say about a configuration,
@@ -234,6 +234,35 @@ class CatalogueFollowsTheSettings(unittest.TestCase):
         self.assertFalse(self._stage('enhance').pooled)
         g.CFG.selected_enhancer = 'Restoreformer++'
         self.assertTrue(self._stage('enhance').pooled)
+        # GPEN 256 is an optional download in this fixture, so make only that
+        # existing model path visible while checking the catalogue metadata.
+        original_exists = bench._exists
+        bench._exists = lambda rel: ('fixture' if rel == 'gpen_bfr_256.onnx'
+                                     else original_exists(rel))
+        try:
+            g.CFG.selected_enhancer = 'GPEN Ultimate'
+            self.assertTrue(self._stage('enhance').pooled)
+        finally:
+            bench._exists = original_exists
+        g.CFG.selected_enhancer = 'Restore Ultra'
+        self.assertTrue(self._stage('enhance').pooled)
+
+    def test_gpen_ultimate_keeps_the_fast_precision_path(self):
+        import importlib
+        gpen = importlib.import_module('roop.processors.Enhance_GPEN')
+        original_exists = bench._exists
+        original_fp32 = gpen._fp32_trt_providers
+        calls = []
+        bench._exists = lambda rel: ('fixture' if rel == 'gpen_bfr_256.onnx'
+                                     else original_exists(rel))
+        gpen._fp32_trt_providers = lambda providers: calls.append(providers) or providers
+        try:
+            g.CFG.selected_enhancer = 'GPEN Ultimate'
+            self._stage('enhance')
+            self.assertEqual(calls, [], 'GPEN Ultimate should keep TRT FP16/mixed')
+        finally:
+            bench._exists = original_exists
+            gpen._fp32_trt_providers = original_fp32
 
     def test_a_selected_model_that_is_not_on_disk_warns_instead_of_failing(self):
         g.CFG.selected_enhancer = 'DMDNet'      # a .pth, not single-file ONNX

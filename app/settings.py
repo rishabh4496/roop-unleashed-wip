@@ -1,6 +1,17 @@
 import os
 import yaml
 
+
+# The TensorRT UI exposes these three modes.  Keep the values canonical before
+# they reach ONNX Runtime so a hand-edited config cannot silently create a
+# fourth cache namespace or accidentally disable the requested precision.
+TRT_PRECISION_MODES = ('mixed', 'fp16', 'fp32')
+
+
+def normalize_trt_precision(value):
+    mode = str(value or '').strip().lower()
+    return mode if mode in TRT_PRECISION_MODES else 'mixed'
+
 # --- Make the TensorRT execution provider actually loadable on Windows ---
 # onnxruntime advertises 'TensorrtExecutionProvider' as available even when its
 # native runtime DLLs cannot be loaded. Loading onnxruntime_providers_tensorrt.dll
@@ -110,8 +121,11 @@ class Settings:
         
         self.memory_limit = self.default_get(data, 'memory_limit', 0)
         self.provider = self.default_get(data, 'provider', 'cuda')
-        # TensorRT precision mode: 'fp32' | 'fp16' | 'mixed' (only used when provider == 'tensorrt')
-        self.trt_precision = self.default_get(data, 'trt_precision', 'mixed')
+        # TensorRT precision mode: 'mixed' | 'fp16' | 'fp32' (only used when
+        # provider == 'tensorrt'). Normalize config/imported recipe values so
+        # the provider and its precision-specific engine cache agree.
+        self.trt_precision = normalize_trt_precision(
+            self.default_get(data, 'trt_precision', 'mixed'))
         self.force_cpu = self.default_get(data, 'force_cpu', False)
         self.output_template = self.default_get(data, 'output_template', '{file}_{time}')
         # Faceset library folder: persistent, named .fsz facesets that survive

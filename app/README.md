@@ -22,7 +22,7 @@ Uncensored Deepfakes for images and videos without training and an easy-to-use G
   - Landmark-based mask outline for angled and profile faces
   - Text-prompt masking (CLIP) and automatic XSeg occlusion masking
 - 3D source pose matching — warps the source face to match the target head angle for improved profile and angled swaps (experimental)
-- Optional face upscaler/restoration using CodeFormer, GFPGAN, DMDNet, RestoreFormer++ and others
+- Optional face upscaler/restoration using CodeFormer, GFPGAN, DMDNet, RestoreFormer++, plus the optimized GPEN Ultimate and Restore Ultra profiles
 - Restore original mouth area option
 - Auto-refresh preview on every setting change with side-by-side face-crop comparison
 - Extras tab for resizing, rotating, cropping and changing FPS of video/image files

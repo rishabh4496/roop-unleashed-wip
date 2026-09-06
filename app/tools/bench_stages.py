@@ -61,6 +61,8 @@ STAGES = {
         ('CodeFormer',      'models/CodeFormer/CodeFormerv0.1.onnx', 'has a fidelity input'),
         ('GPEN-BFR-512',    'models/GPEN-BFR-512.onnx', ''),
         ('GPEN-BFR-256',    'models/gpen_bfr_256.onnx', 'output resized back to crop size'),
+        ('GPEN Ultimate',   'models/gpen_bfr_256.onnx', 'pooled + detail-preserving profile'),
+        ('Restore Ultra',   'models/restoreformer_plus_plus.onnx', 'pooled + detail-preserving profile'),
         ('GFPGAN v1.4',     'models/GFPGANv1.4.onnx', ''),
     ],
     'mask': [

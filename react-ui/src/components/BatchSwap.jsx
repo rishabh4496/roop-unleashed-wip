@@ -11,6 +11,8 @@ import { FACESWAP_DEFAULTS } from './faceswap/defaults';
 const targetPreviewUrl = (idx) => `${API}/api/target/preview?index=${idx}&frame=1`;
 
 const ENHANCER_OPTIONS = [
+  'GPEN Ultimate',
+  'Restore Ultra',
   'Restoreformer++',
   'CodeFormer',
   'GFPGAN',

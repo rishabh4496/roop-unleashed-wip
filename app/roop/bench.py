@@ -291,11 +291,15 @@ def _enhancer_model(name):
         'GFPGAN': ('GFPGANv1.4.onnx', 'default'),
         'Codeformer': ('CodeFormer/CodeFormerv0.1.onnx', 'has a fidelity input'),
         'Codeformer (fp16)': ('CodeFormer/CodeFormerv0.1.onnx', 'fp16 variant'),
-        'GPEN 256': ('gpen_bfr_256.onnx', 'FP32-forced under TRT'),
+        'GPEN 256': ('gpen_bfr_256.onnx', '256px output resized back to crop size'),
         'GPEN': ('GPEN-BFR-512.onnx', 'FP32-forced under TRT'),
         'GPEN 1024': ('gpen_bfr_1024.onnx', 'FP32-forced under TRT'),
         'GPEN 2048': ('gpen_bfr_2048.onnx', 'FP32-forced under TRT'),
+        'GPEN Ultimate': ('gpen_bfr_256.onnx',
+                          '256px GPEN with pooled contexts + detail finish'),
         'Restoreformer++': ('restoreformer_plus_plus.onnx', ''),
+        'Restore Ultra': ('restoreformer_plus_plus.onnx',
+                          'pooled RestoreFormer++ + detail finish'),
     }
     if name not in table:
         return None, f'{name} is not a single-file ONNX enhancer'
@@ -411,14 +415,16 @@ def build_catalogue(faces_per_frame=1.0):
     if enh_name and enh_name != 'None':
         enh_path, enh_note = _enhancer_model(enh_name)
         if enh_path:
-            is_gpen = enh_name.startswith('GPEN')
-            # CodeFormer and RestoreFormer++ pool on ROOP_TRT_POOL; GPEN, GFPGAN
-            # and DMDNet have no pool at all, so under TensorRT they hold the
-            # global lock and serialise the whole pipeline behind one face.
-            pooled_enh = enh_name.startswith('Codeformer') or enh_name == 'Restoreformer++'
+            gpen_fp32 = enh_name in ('GPEN 1024', 'GPEN 2048')
+            # CodeFormer, RestoreFormer++ and the two named optimized profiles
+            # pool on ROOP_TRT_POOL. The original GPEN tiers retain their
+            # historical single-session path for compatibility.
+            pooled_enh = (enh_name.startswith('Codeformer') or
+                          enh_name in ('Restoreformer++', 'Restore Ultra',
+                                       'GPEN Ultimate'))
             stages.append(Stage(
                 'enhance', f'Enhancer — {enh_name}', enh_path,
-                _fp32_trt_providers(prov) if is_gpen else prov,
+                _fp32_trt_providers(prov) if gpen_fp32 else prov,
                 'trt_pool' if pooled_enh else None, F,
                 note=enh_note or ('no pool — takes the global GPU lock'
                                   if not pooled_enh else ''),
