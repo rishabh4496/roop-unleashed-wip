@@ -251,9 +251,79 @@ def verify_tol_for(swap_processor):
 _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 
 
+def _relax_batch_reshapes(model):
+    """Mutate `model` in place, rewriting Reshape targets that hardcode the
+    batch dimension as a literal 1 into a 0 ("copy dim 0 from the input").
+
+    Relaxing the graph's declared input/output batch dim is not enough on its
+    own: an export made at batch 1 can bake that 1 into the *middle* of the
+    graph. HyperSwap does exactly this — its generator reshapes the identity
+    vector with a [1, -1, 1, 1] target before a Conv, so at batch N the N rows
+    fold into the channel axis (N*512 instead of 512) and the Conv fails with
+    'Input channels C is not equal to kernel channels * group. C: 1024 kernel
+    channels: 512' on CPU/CUDA, or a static-dimension mismatch on the bound
+    TensorRT input. The visible cost was that a batch-capable run gave up on
+    batching at the first coalesced call and spent the rest of the job on the
+    sequential path.
+
+    Only Reshapes whose *input* has a statically-inferred dim 0 of 1 are
+    touched, so this must run before the graph's inputs are made symbolic: in a
+    batch-1 export that leading 1 is the batch, so replacing it with 0 is a
+    no-op at batch 1 and carries the batch through at batch N. A reshape that
+    deliberately folds the batch into another axis does not match (its target's
+    leading entry would not be 1), and neither does one operating on a tensor
+    whose dim 0 is something other than the batch. Returns True if it changed
+    anything."""
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+    except Exception:
+        return False
+    static_dim0 = {}
+    for vi in (list(inferred.graph.value_info) + list(inferred.graph.input)
+               + list(inferred.graph.output)):
+        dims = vi.type.tensor_type.shape.dim
+        if len(dims):
+            d = dims[0]
+            static_dim0[vi.name] = d.dim_value if d.dim_param == '' else None
+    inits = {i.name: i for i in model.graph.initializer}
+    # The target shape can arrive either as an initializer or as the output of
+    # a Constant node — HyperSwap uses the latter, which is why the existing
+    # initializer-only ConvTranspose pass never saw it.
+    consts = {n.output[0]: n for n in model.graph.node if n.op_type == 'Constant'}
+    changed = False
+    for node in model.graph.node:
+        if node.op_type != 'Reshape' or len(node.input) < 2:
+            continue
+        if static_dim0.get(node.input[0]) != 1:
+            continue
+        if any(a.name == 'allowzero' and a.i for a in node.attribute):
+            # allowzero=1 makes a 0 mean a literal zero-sized dim, not "copy".
+            continue
+        tensor = None
+        if node.input[1] in inits:
+            tensor = inits[node.input[1]]
+        elif node.input[1] in consts:
+            tensor = next((a.t for a in consts[node.input[1]].attribute
+                           if a.name == 'value'), None)
+        if tensor is None:
+            continue
+        arr = onnx.numpy_helper.to_array(tensor)
+        if arr.size == 0 or int(arr.reshape(-1)[0]) != 1:
+            continue
+        patched = arr.copy()
+        patched[0] = 0
+        tensor.CopyFrom(onnx.numpy_helper.from_array(patched, tensor.name))
+        changed = True
+    return changed
+
+
 def _relax_batch_dim(model):
     """Mutate `model` in place, giving every graph input/output a symbolic
     batch dimension so the session accepts batches > 1."""
+    # Before the inputs go symbolic, while dim 0 is still a literal 1 that
+    # shape inference can see — otherwise the batch-collapsing reshapes below
+    # are unfindable.
+    _relax_batch_reshapes(model)
     for t in list(model.graph.input) + list(model.graph.output):
         dims = t.type.tensor_type.shape.dim
         if len(dims):
