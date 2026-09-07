@@ -14,7 +14,8 @@ sys.path.insert(0, APP)
 import roop.globals as g                                      # noqa: E402
 from roop.core import get_processing_plugins, _trt_precision_options  # noqa: E402
 from roop import session_pool                                     # noqa: E402
-from roop.processors.enhance_common import inject_reference_detail  # noqa: E402
+from roop.processors.enhance_common import (                        # noqa: E402
+    inject_reference_detail, enhance_eyes_clarity, _eye_region)
 from roop.processors.Enhance_GPENUltimate import Enhance_GPENUltimate  # noqa: E402
 from roop.processors.Enhance_RestoreUltra import Enhance_RestoreUltra  # noqa: E402
 
@@ -120,6 +121,119 @@ class DetailFinish(unittest.TestCase):
         self.assertGreater(int(np.abs(finished.astype(np.int16)
                                      - texture_only.astype(np.int16)).max()), 0)
         self.assertEqual(finished[4, 4].tolist(), restored[4, 4].tolist())
+
+
+class EyeClarityLeavesTheSkinAlone(unittest.TestCase):
+    """The eye finish may add local contrast; it may not change tone.
+
+    The first version ran CLAHE over the whole crop's L channel and blended the
+    result into a feathered ellipse pair. CLAHE redistributes a region's levels,
+    so its output differs from its input by a large low-frequency term — and
+    blending that into an oval writes a tone STEP into the periocular skin with
+    the mask's feather as its only edge. That is a halo around the eyes, which
+    is what it was reported as. Measured on the reported frames: +12.5 L of
+    brightening painted into the ellipse.
+
+    These lock the two properties that make the halo impossible rather than
+    merely unlikely — the operation is zero-mean, and it cannot reach skin it
+    was never meant to touch.
+    """
+
+    W = 512
+    # ffhq_512's own eye keypoints (face_util.WARP_TEMPLATES).
+    EYES = ((0.37691676, 0.46864664), (0.62285697, 0.46912813))
+
+    @classmethod
+    def _face(cls):
+        """A face-like luminance field. The eye-socket shadow is the point: it
+        is the local structure a histogram equalisation flattens, and flattening
+        it is what moved the tone."""
+        w = cls.W
+        rng = np.random.default_rng(0)
+        yy, xx = np.mgrid[0:w, 0:w].astype(np.float32)
+        lum = 172 + 14 * (yy / w)
+        centres = [(fx * w, fy * w) for fx, fy in cls.EYES]
+        iod = centres[1][0] - centres[0][0]
+        for cx, cy in centres:
+            r = np.hypot((xx - cx) / (iod * 0.42), (yy - cy) / (iod * 0.34))
+            lum -= 34 * np.exp(-r * r)
+        lum -= 18 * np.exp(-(((xx - w * 0.5) / (w * 0.05)) ** 2
+                             + ((yy - w * 0.62) / (w * 0.14)) ** 2))
+        lum += rng.normal(0, 1.6, lum.shape)
+        img = np.clip(np.dstack([lum * 0.80, lum * 0.89, lum]), 0, 255).astype(np.uint8)
+        for cx, cy in centres:
+            c = (int(cx), int(cy))
+            cv2.ellipse(img, c, (int(iod * .21), int(iod * .11)), 0, 0, 360, (232, 235, 238), -1)
+            cv2.circle(img, c, int(iod * .085), (72, 78, 92), -1)
+            cv2.circle(img, c, int(iod * .038), (12, 12, 14), -1)
+            cv2.ellipse(img, c, (int(iod * .22), int(iod * .12)), 0, 180, 360, (44, 42, 44), 2)
+        return img, centres, iod
+
+    @staticmethod
+    def _luma(img):
+        return cv2.cvtColor(img, cv2.COLOR_BGR2LAB)[:, :, 0].astype(np.float32)
+
+    def test_the_periocular_skin_keeps_its_tone(self):
+        img, centres, iod = self._face()
+        out = enhance_eyes_clarity(img, template='ffhq_512', strength=0.52)
+        delta = self._luma(out) - self._luma(img)
+
+        w = self.W
+        yy, xx = np.mgrid[0:w, 0:w]
+        skin = np.zeros((w, w), bool)
+        for cx, cy in centres:
+            rr = np.hypot(xx - cx, yy - cy)
+            skin |= (rr > iod * 0.32) & (rr < iod * 0.55)
+        far = np.zeros((w, w), bool)
+        far[30:110, 200:312] = True
+
+        step = abs(float(delta[skin].mean()) - float(delta[far].mean()))
+        self.assertLess(step, 0.25, f'periocular tone moved {step:.2f} L')
+
+    def test_nothing_outside_the_eye_box_moves_at_all(self):
+        img = np.random.default_rng(1).integers(
+            0, 255, (self.W, self.W, 3), dtype=np.uint8)
+        out = enhance_eyes_clarity(img, template='ffhq_512', strength=0.52)
+        x0, y0, x1, y1 = _eye_region(self.W, self.W, 'ffhq_512', 0.52)[1]
+        outside = np.ones((self.W, self.W), bool)
+        outside[y0:y1, x0:x1] = False
+        # Not "close to" — identical. The old full-crop BGR->LAB->BGR round trip
+        # moved pixels the mask gave zero weight.
+        self.assertTrue(np.array_equal(img[outside], out[outside]))
+
+    def test_the_ellipse_is_an_eye_and_not_a_band_across_the_face(self):
+        weight, (x0, y0, x1, y1), _ = _eye_region(self.W, self.W, 'ffhq_512', 0.52)
+        # The shipped 0.115w x 0.075h pair plus its feather covered ~98 rows of
+        # a 512 crop, brows to cheekbones. An eye is ~33 rows.
+        self.assertLess(y1 - y0, 72)
+        # And the two ellipses must not meet over the nose bridge.
+        self.assertLess(float(weight[:, (weight.shape[1] // 2)].max()), 0.05)
+
+    def test_it_still_sharpens_the_eye(self):
+        # Softened first, because that is the input this exists for: a restorer
+        # that left the eyes milky. A synthetic face drawn with hard vector
+        # edges is already at the ceiling the 3x3 envelope allows, so sharpening
+        # it further is exactly what must NOT happen.
+        img, centres, iod = self._face()
+        img = cv2.GaussianBlur(img, (0, 0), sigmaX=1.6)
+        out = enhance_eyes_clarity(img, template='ffhq_512', strength=0.52)
+        w = self.W
+        yy, xx = np.mgrid[0:w, 0:w]
+        eye = np.zeros((w, w), bool)
+        for cx, cy in centres:
+            eye |= np.hypot(xx - cx, yy - cy) < iod * 0.16
+
+        def detail(im):
+            luma = self._luma(im)
+            return np.abs(luma - cv2.GaussianBlur(luma, (0, 0), 1.2))
+
+        self.assertGreater(detail(out)[eye].mean(), detail(img)[eye].mean() * 1.05)
+
+    def test_neutral_strength_and_a_tiny_crop_are_no_ops(self):
+        img = np.full((64, 64, 3), 128, np.uint8)
+        self.assertIs(enhance_eyes_clarity(img, strength=0.0), img)
+        tiny = np.full((12, 12, 3), 128, np.uint8)
+        self.assertIs(enhance_eyes_clarity(tiny, strength=0.5), tiny)
 
 
 class TensorRTPrecisionContract(unittest.TestCase):

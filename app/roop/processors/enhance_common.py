@@ -67,12 +67,71 @@ def _inject_bilateral_detail(enhanced, ref, sigma_color, threshold, softness,
     return out.astype(np.uint8)
 
 
-# The eye ellipse pair and its feather depend only on the crop size and the
-# template, and the strength is a per-profile constant — so the whole
-# `eye_mask * strength` term is the same array on every call for a given
-# enhancer. Building it per face cost an ellipse rasterisation, a Gaussian blur
-# and two more full-size multiplies for a result that never changed.
+# The eye ellipse pair, its feather and the box they live in depend only on the
+# crop size and the template, and the strength is a per-profile constant — so
+# the whole `eye_mask * strength` term is the same array on every call for a
+# given enhancer. Building it per face cost an ellipse rasterisation, a Gaussian
+# blur and two more full-size multiplies for a result that never changed.
 _EYE_MASK_CACHE = {}
+
+
+# The two eye keypoints of the warp template the enhancer aligned this crop to
+# (the same numbers as face_util.WARP_TEMPLATES), so on that crop they land on
+# the eyes by construction — force_align guarantees the crop is in one of these
+# two spaces before the finish runs.
+_EYE_TEMPLATE_KPS = {
+    'ffhq_512':       ((0.37691676, 0.46864664), (0.62285697, 0.46912813)),
+    'arcface_112_v2': ((0.34191607, 0.46157411), (0.65653393, 0.45983393)),
+}
+
+
+def _eye_region(h, w, template, strength):
+    """`(weight, (x0, y0, x1, y1), sigma)` — the feathered eye mask, the box it
+    lives in, and the sharpening radius for this crop size. None when the crop
+    is too small to place a pair of eyes on.
+    """
+    key = (h, w, template, float(strength))
+    cached = _EYE_MASK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    centres = [(fx * w, fy * h) for fx, fy
+               in _EYE_TEMPLATE_KPS.get(template,
+                                        _EYE_TEMPLATE_KPS['arcface_112_v2'])]
+    # Radii from the template's OWN interocular distance, at the fractions
+    # apply_eyes_area measured an eye at (0.21x IOD across, 0.13x tall). The
+    # fixed `0.115 w` x `0.075 h` this replaces was 2.3x an eye wide and 2.4x
+    # its height on ffhq_512: the two ellipses met over the nose bridge and
+    # reached the temples, so once the feather was added the "eye" region was a
+    # 264 x 98 px band straight across the middle of a 512 crop — brows,
+    # sockets and upper cheeks included. It also ignored the template it was
+    # handed, sizing the much wider arcface pair identically.
+    iod = abs(centres[1][0] - centres[0][0])
+    rx = int(round(iod * 0.21))
+    ry = int(round(iod * 0.13))
+    if rx < 2 or ry < 2:
+        return None
+
+    feather = int(max(rx, ry) * 0.4) | 1
+    pad = feather + 4
+    x0 = max(0, int(min(c[0] for c in centres) - rx - pad))
+    x1 = min(w, int(max(c[0] for c in centres) + rx + pad) + 1)
+    y0 = max(0, int(min(c[1] for c in centres) - ry - pad))
+    y1 = min(h, int(max(c[1] for c in centres) + ry + pad) + 1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.float32)
+    for cx, cy in centres:
+        cv2.ellipse(mask, (int(round(cx)) - x0, int(round(cy)) - y0),
+                    (rx, ry), 0, 0, 360, 1.0, -1)
+    mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+
+    # 1.0 px at the 512-crop reference size, scaled with the eye so a 256 and a
+    # 1024 crop get the same effect on screen.
+    cached = (mask * float(strength), (x0, y0, x1, y1), max(0.8, rx / 26.0))
+    _EYE_MASK_CACHE[key] = cached
+    return cached
 
 
 def is_usable(result):
@@ -250,62 +309,65 @@ def apply_anti_halo_sharpen(img, amount=0.35, sigma=1.0, limit=2.5):
 
 
 def enhance_eyes_clarity(img, template='ffhq_512', kps=None, strength=0.55):
-    """Specifically enhance eye clarity, iris contrast, and pupil depth with ZERO halo.
+    """Sharpen the eyes — lashes, lid line, iris and pupil edge — and nothing else.
 
-    Neural face restorers often leave eyes looking slightly milky or hazy.
-    This applies local dynamic contrast (CLAHE on L-channel) in the eye orbits,
-    combined with anti-halo bounded sharpening, so pupils are deep, irises are
-    richly defined, catchlights are preserved, and NO white or dark halo rings form.
+    Neural face restorers leave eyes slightly milky, so lifting their detail
+    back is worth doing. What this must NOT do is change the TONE of the region,
+    and the first version did exactly that: it ran CLAHE over the whole crop's L
+    channel and blended the result into a feathered ellipse pair. CLAHE is a
+    local histogram equalisation — it redistributes a region's levels, so its
+    output differs from the input by a large LOW-FREQUENCY term, not just by
+    detail. Measured on the two frames this was reported from, CLAHE at the
+    shipped settings (clipLimit 1.8, 4x4 tiles) moved L over the eye ellipses by
+    +28.5 and +23.4 levels on average; at the shipped 0.48 blend that is a
+    +12.5 / +10.5 level brightening painted into an oval and feathered at its
+    rim. That is the halo the docstring promised could not form: periocular skin
+    several levels lighter than the skin around it, with the mask's own blur as
+    the only edge between them. The "anti-halo" clamp never saw it, because it
+    bounded the sharpen against CLAHE's OWN erode/dilate — which says nothing
+    about how far the tone had already moved from the input.
+
+    So the tonal stage is gone. What remains is a high-pass, zero-mean by
+    construction, clamped to the ORIGINAL L's 3x3 min/max envelope: a pixel can
+    never leave the range its immediate neighbours already span, so there is no
+    overshoot at any radius for the feather to spread into a ring. Catchlights
+    and pupil depth survive because they ARE local edges; flat periocular skin,
+    where the envelope is a couple of levels wide, is left alone.
+
+    `kps` is accepted and unused — the crop is template-aligned, so the eye
+    positions are known from the template rather than from the face.
     """
-    if strength <= 0 or img is None:
+    if strength <= 0 or img is None or getattr(img, 'ndim', 0) != 3:
         return img
     h, w = img.shape[:2]
-    if template == 'ffhq_512':
-        cx1, cy1 = int(0.3769 * w), int(0.4686 * h)
-        cx2, cy2 = int(0.6229 * w), int(0.4691 * h)
-    else:
-        cx1, cy1 = int(0.3419 * w), int(0.4616 * h)
-        cx2, cy2 = int(0.6565 * w), int(0.4598 * h)
+    region = _eye_region(h, w, template, strength)
+    if region is None:
+        return img
+    weight, (x0, y0, x1, y1), sigma = region
 
-    rx = int(0.115 * w)
-    ry = int(0.075 * h)
-
-    # The ellipse pair, its feather and the strength scaling depend only on
-    # (h, w, template, strength) — all constant for a given enhancer profile —
-    # so the whole weighting plane is built once and reused. See _EYE_MASK_CACHE.
-    key = (h, w, template, float(strength))
-    weight = _EYE_MASK_CACHE.get(key)
-    if weight is None:
-        eye_mask = np.zeros((h, w), dtype=np.float32)
-        for cx, cy in [(cx1, cy1), (cx2, cy2)]:
-            cv2.ellipse(eye_mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-
-        feather = int(max(rx, ry) * 0.4) | 1
-        eye_mask = cv2.GaussianBlur(eye_mask, (feather, feather), 0)
-        weight = eye_mask * float(strength)
-        _EYE_MASK_CACHE[key] = weight
-
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    # Only the eye box is converted, filtered and written back. The old version
+    # ran a CLAHE, an erode, a dilate and a blur across the whole 512 plane to
+    # use 5% of it, and round-tripped every pixel through BGR->LAB->BGR — which
+    # is lossy, so pixels the mask gave zero weight still came back a level or
+    # two different from what was handed in.
+    lab = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2LAB)
     L = lab[:, :, 0].astype(np.float32)
 
-    # clahe.apply wants the uint8 L that cvtColor already produced. The old
-    # float32 -> clip -> uint8 round-trip through `L` could not change a single
-    # value (LAB's L channel is uint8 in [0, 255] to begin with) and cost two
-    # more full-size passes.
-    clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(4, 4))
-    L_clahe = clahe.apply(lab[:, :, 0]).astype(np.float32)
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    L_min = cv2.erode(L_clahe, kernel)
-    L_max = cv2.dilate(L_clahe, kernel)
+    L_min = cv2.erode(L, kernel)
+    L_max = cv2.dilate(L, kernel)
 
-    # Edge-preserving eye sharpening bounded by local min/max
-    L_sharp = L_clahe + 0.35 * (L_clahe - cv2.GaussianBlur(L_clahe, (0, 0), sigmaX=1.0))
-    L_sharp = np.clip(L_sharp, L_min, L_max)
+    sharp = L + 0.9 * (L - cv2.GaussianBlur(L, (0, 0), sigmaX=sigma))
+    np.clip(sharp, L_min, L_max, out=sharp)
 
-    L_final = L * (1.0 - weight) + L_sharp * weight
-    lab[:, :, 0] = np.clip(L_final, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    sharp -= L
+    sharp *= weight
+    sharp += L
+    lab[:, :, 0] = np.clip(sharp, 0, 255).astype(np.uint8)
+
+    out = img.copy()
+    out[y0:y1, x0:x1] = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    return out
 
 
 def enhance_gpen_ultimate(enhanced, reference, target_face=None,
