@@ -114,13 +114,21 @@ export default function FaceManager({ meta: appMeta, notify, registerFileListene
   };
   const remove = async () => {
     if (sel < 0 || sel >= faces.length) return;
-    const res = await postJSON('/api/facemgr/remove', { index: sel });
-    applyPayload(res);
-    setSel((s) => Math.max(0, Math.min(s, (res.faces || []).length - 1)));
+    setBusy(true);
+    try {
+      const res = await postJSON('/api/facemgr/remove', { index: sel });
+      applyPayload(res);
+      setSel((s) => Math.max(0, Math.min(s, (res.faces || []).length - 1)));
+    } catch (e) { notify(e.message, 'error'); }
+    finally { setBusy(false); }
   };
   const clear = async () => {
-    const res = await postJSON('/api/facemgr/clear', {});
-    applyPayload(res); setVideo(null); setBuilt(null); setSel(0);
+    setBusy(true);
+    try {
+      const res = await postJSON('/api/facemgr/clear', {});
+      applyPayload(res); setVideo(null); setBuilt(null); setSel(0);
+    } catch (e) { notify(e.message, 'error'); }
+    finally { setBusy(false); }
   };
   const prune = async () => {
     setBusy(true);
