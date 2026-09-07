@@ -26,6 +26,8 @@ APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(os.path.dirname(APP), 'react-ui', 'src')
 FACESWAP = os.path.join(SRC, 'components', 'FaceSwap.jsx')
 HOOK = os.path.join(SRC, 'components', 'faceswap', 'useCompareGrid.js')
+LOADER = os.path.join(SRC, 'components', 'faceswap', 'useGridPreviewLoader.js')
+GRID = os.path.join(SRC, 'components', 'faceswap', 'CompareGrid.jsx')
 
 STORAGE_KEY = re.compile(r"storageKey:\s*'([^']+)'")
 
@@ -64,6 +66,17 @@ class CompareGrids(unittest.TestCase):
             src, r'length\s*<=\s*4',
             'useCompareGrid must cap the stored selection at four, which is '
             'what CompareGrid lays out')
+
+    def test_each_grid_uses_the_live_catalog_and_error_state(self):
+        """A stale saved selection must not consume capacity invisibly."""
+        src = _read(FACESWAP)
+        for catalog in ('meta.enhancers', 'meta.mask_engines', 'meta.swap_models'):
+            self.assertIn(f'allowed: {catalog}', src)
+        self.assertIn('allowed: AI_UPSCALE_MODELS.map((m) => m.label)', src)
+        self.assertEqual(src.count('errors: '), 4)
+        self.assertRegex(_read(LOADER), r'allowedKey')
+        self.assertRegex(_read(LOADER), r'setErrors\(keepFresh\)')
+        self.assertRegex(_read(GRID), r'errors\?\.\[label\]')
 
 
 if __name__ == '__main__':

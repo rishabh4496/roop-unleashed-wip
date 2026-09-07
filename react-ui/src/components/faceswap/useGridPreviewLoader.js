@@ -38,7 +38,7 @@ export default function useGridPreviewLoader({
   selection,          // the chosen variants, in display order
   allowed,            // values the backend actually supports (undefined = allow all)
   paramKey,           // the settings key this grid varies
-  setPreviews, setTimes, setTimers, intervalsRef,   // from useCompareGrid
+  setPreviews, setTimes, setTimers, setErrors, intervalsRef,   // from useCompareGrid
   settings,           // current params; each cell overrides `paramKey` on a copy
   fakePreview,
   selTarget, frame, targetCount,
@@ -46,6 +46,7 @@ export default function useGridPreviewLoader({
   cacheSuffix,        // the source/target/selection part of the cache key
   reloadKey,          // previewKey — any preview-relevant setting change
 }) {
+  const allowedKey = Array.isArray(allowed) ? allowed.join('\u0001') : '';
   /* eslint-disable react-hooks/exhaustive-deps -- intentional: `load` is
      rebuilt every render and closes over current values on purpose; the effect
      is keyed on the things that should actually re-render the grid. Depending
@@ -78,6 +79,7 @@ export default function useGridPreviewLoader({
       setPreviews(keepFresh);
       setTimes(keepFresh);
       setTimers(keepFresh);
+      setErrors(keepFresh);
 
       for (const value of available) {
         if (!activeCheck()) return;
@@ -88,6 +90,7 @@ export default function useGridPreviewLoader({
           if (!activeCheck()) return;
           setPreviews((prev) => ({ ...prev, [value]: previewCacheRef.current[cacheKey].image }));
           setTimes((prev) => ({ ...prev, [value]: 'Cached' }));
+          setErrors((prev) => ({ ...prev, [value]: null }));
           continue;
         }
 
@@ -100,6 +103,7 @@ export default function useGridPreviewLoader({
 
         try {
           const start = Date.now();
+          setErrors((prev) => ({ ...prev, [value]: null }));
           setTimers((prev) => ({ ...prev, [value]: '0.0s' }));
           intervalsRef.current[value] = setInterval(() => {
             setTimers((prev) => ({ ...prev, [value]: `${((Date.now() - start) / 1000).toFixed(1)}s` }));
@@ -115,15 +119,26 @@ export default function useGridPreviewLoader({
             setPreviews((prev) => ({ ...prev, [value]: res.image }));
             setTimes((prev) => ({ ...prev, [value]: `${duration}s` }));
             setTimers((prev) => ({ ...prev, [value]: null }));
+            setErrors((prev) => ({ ...prev, [value]: null }));
             previewCacheRef.current[cacheKey] = { faces: res.faces || [], image: res.image };
+          } else {
+            setTimers((prev) => ({ ...prev, [value]: null }));
+            setErrors((prev) => ({
+              ...prev,
+              [value]: String(res.error || 'No preview image returned'),
+            }));
           }
-        } catch {
+        } catch (error) {
           stopTimer();
+          if (!activeCheck()) return;
           setTimers((prev) => ({ ...prev, [value]: null }));
-          // Fail silently, per cell. One variant failing is normal and must not
-          // take the grid down: a swapper model can fail to download on first
-          // use, and SAM2-tracked masking needs a video pre-pass so it may skip
-          // a single frame.
+          // Keep the other cells rendering, but expose the failed cell. A
+          // swapper model can fail to download on first use, and SAM2-tracked
+          // masking may skip a frame; a permanent spinner made both look hung.
+          setErrors((prev) => ({
+            ...prev,
+            [value]: String(error?.message || 'Preview failed for this variant'),
+          }));
         }
       }
     };
@@ -138,6 +153,6 @@ export default function useGridPreviewLoader({
         intervalsRef.current = {};
       }
     };
-  }, [enabled, selection, frame, selTarget, targetCount, cacheSuffix, reloadKey]);
+  }, [enabled, selection, frame, selTarget, targetCount, cacheSuffix, reloadKey, allowedKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 }

@@ -15,10 +15,11 @@ const ZOOM_MAX = 8;
  *   previews       {label: dataURL}
  *   times          {label: "1.23s" | "Cached"}
  *   timers         {label: "0.4s"}  — live elapsed while rendering
+ *   errors         {label: message} — an individual cell's render failure
  *   gridColsClass  tailwind grid-cols class
  *   emptyHint      optional string shown center when there are no items
  */
-export default function CompareGrid({ items, previews, times, timers, gridColsClass, emptyHint }) {
+export default function CompareGrid({ items, previews, times, timers, errors, gridColsClass, emptyHint }) {
   // Zoom/pan is shared by every cell, so the same region is magnified in all
   // variants at once — that's what makes fine differences readable.
   const [zoom, setZoom] = useState(1);
@@ -212,6 +213,12 @@ export default function CompareGrid({ items, previews, times, timers, gridColsCl
           {previews[label] ? (
             <div className="w-full h-full flex items-center justify-center transition-transform duration-75 select-none" style={transformStyle}>
               <img src={previews[label]} alt={label} className="max-w-full max-h-full object-contain pointer-events-none" draggable={false} />
+            </div>
+          ) : errors?.[label] ? (
+            <div className="flex flex-col items-center justify-center gap-2 text-red-200/80 text-xs px-5 text-center">
+              <span className="text-lg" aria-hidden="true">⚠</span>
+              <span className="font-semibold">Preview failed</span>
+              <span className="text-micro text-red-100/55 break-words">{errors[label]}</span>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center gap-2 text-white/40 text-xs px-3 text-center">

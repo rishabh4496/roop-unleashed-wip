@@ -115,6 +115,7 @@ export default function FaceSwap({
 
   const [previewing, setPreviewing] = useState(false);
   const [previewSecs, setPreviewSecs] = useState(0);
+  const [previewClipRunActive, setPreviewClipRunActive] = useState(false);
   const [compare, setCompare] = useState(false);
   const [sliderEffectEnabled, setSliderEffectEnabled] = useState(true);
   const [splitView, setSplitView] = useState(false);
@@ -128,10 +129,12 @@ export default function FaceSwap({
     previews: enhancerPreviews, setPreviews: setEnhancerPreviews,
     times: enhancerTimes, setTimes: setEnhancerTimes,
     timers: liveRenderingTimers, setTimers: setLiveRenderingTimers,
+    errors: enhancerErrors, setErrors: setEnhancerErrors,
     intervalsRef: activeIntervalsRef,
   } = useCompareGrid({
     storageKey: 'roop_grid_enhancers',
     defaults: ['None', 'GPEN Ultimate', 'Restore Ultra', 'Restoreformer++'],
+    allowed: meta.enhancers,
   });
 
   // Which panels the current workspace mode shows, and the drawer toggles that
@@ -182,10 +185,12 @@ export default function FaceSwap({
     previews: maskPreviews, setPreviews: setMaskPreviews,
     times: maskTimes, setTimes: setMaskTimes,
     timers: maskRenderTimers, setTimers: setMaskRenderTimers,
+    errors: maskErrors, setErrors: setMaskErrors,
     intervalsRef: maskIntervalsRef,
   } = useCompareGrid({
     storageKey: 'roop_grid_masks',
     defaults: ['None', 'DFL XSeg', 'Face Occluder', 'Face Parser (BiSeNet)'],
+    allowed: meta.mask_engines,
   });
 
   // ── Swapper-model comparison grid (mirrors the enhancer/mask grid) ──
@@ -195,10 +200,12 @@ export default function FaceSwap({
     previews: swapperPreviews, setPreviews: setSwapperPreviews,
     times: swapperTimes, setTimes: setSwapperTimes,
     timers: swapperRenderTimers, setTimers: setSwapperRenderTimers,
+    errors: swapperErrors, setErrors: setSwapperErrors,
     intervalsRef: swapperIntervalsRef,
   } = useCompareGrid({
     storageKey: 'roop_grid_swappers',
     defaults: ['inswapper', 'reswapper', 'hyperswap', 'simswap'],
+    allowed: meta.swap_models,
   });
 
   // ── AI-upscale comparison grid (mirrors the enhancer/mask/swapper grid) ──
@@ -215,11 +222,13 @@ export default function FaceSwap({
     previews: upscalePreviews, setPreviews: setUpscalePreviews,
     times: upscaleTimes, setTimes: setUpscaleTimes,
     timers: upscaleRenderTimers, setTimers: setUpscaleRenderTimers,
+    errors: upscaleErrors, setErrors: setUpscaleErrors,
     intervalsRef: upscaleIntervalsRef,
   } = useCompareGrid({
     storageKey: 'roop_grid_upscalers',
     defaults: AI_UPSCALE_MODELS.slice(0, 2).map((m) => m.label),
     isValid: (x) => AI_UPSCALE_MODELS.some((m) => m.label === x),
+    allowed: AI_UPSCALE_MODELS.map((m) => m.label),
   });
 
   // Telemetry HUD — GPU/VRAM/CPU/RAM/threads poller (see faceswap/useTelemetry).
@@ -895,7 +904,8 @@ export default function FaceSwap({
     enabled: comparingEnhancers, selection: selectedGridEnhancers,
     allowed: meta.enhancers, paramKey: 'selected_enhancer',
     setPreviews: setEnhancerPreviews, setTimes: setEnhancerTimes,
-    setTimers: setLiveRenderingTimers, intervalsRef: activeIntervalsRef,
+    setTimers: setLiveRenderingTimers, setErrors: setEnhancerErrors,
+    intervalsRef: activeIntervalsRef,
   });
 
   useGridPreviewLoader({
@@ -903,7 +913,8 @@ export default function FaceSwap({
     enabled: comparingMasks, selection: selectedGridMasks,
     allowed: meta.mask_engines, paramKey: 'mask_engine',
     setPreviews: setMaskPreviews, setTimes: setMaskTimes,
-    setTimers: setMaskRenderTimers, intervalsRef: maskIntervalsRef,
+    setTimers: setMaskRenderTimers, setErrors: setMaskErrors,
+    intervalsRef: maskIntervalsRef,
   });
 
   useGridPreviewLoader({
@@ -911,7 +922,8 @@ export default function FaceSwap({
     enabled: comparingSwappers, selection: selectedGridSwappers,
     allowed: meta.swap_models, paramKey: 'swap_model',
     setPreviews: setSwapperPreviews, setTimes: setSwapperTimes,
-    setTimers: setSwapperRenderTimers, intervalsRef: swapperIntervalsRef,
+    setTimers: setSwapperRenderTimers, setErrors: setSwapperErrors,
+    intervalsRef: swapperIntervalsRef,
   });
 
   // ── AI-upscale grid preview loader ─────────────────────────────────────
@@ -943,26 +955,33 @@ export default function FaceSwap({
     setUpscalePreviews(keepOnly);
     setUpscaleTimes(keepOnly);
     setUpscaleRenderTimers(keepOnly);
+    setUpscaleErrors(keepOnly);
 
     // Swap the frame ONCE to get the base image every cell upscales. fake_preview
     // is forced on so the grid always compares upscalers on the swapped result
     // (falls back to the raw frame server-side when there are no source faces).
     let baseImage = '';
+    let baseError = '';
     try {
       const baseRes = await runExclusive(() =>
         postJSON('/api/preview', buildPreviewPayload(p, { index: selTarget, frame, fake: true })));
       baseImage = baseRes.image || '';
-    } catch {
-      // handled below (no base → nothing to upscale)
+      if (!baseImage) baseError = String(baseRes.error || 'Base preview returned no image');
+    } catch (error) {
+      baseError = String(error?.message || 'Base preview failed');
     }
     if (!activeCheck()) return;
-    if (!baseImage) return;
+    if (!baseImage) {
+      setUpscaleErrors(Object.fromEntries(available.map((label) => [label, baseError])));
+      return;
+    }
 
     for (const label of available) {
       if (!activeCheck()) return;
       const subtype = AI_UPSCALE_MODELS.find(m => m.label === label)?.value || 'esrganx2';
       try {
         const start = Date.now();
+        setUpscaleErrors(prev => ({ ...prev, [label]: null }));
         setUpscaleRenderTimers(prev => ({ ...prev, [label]: '0.0s' }));
         upscaleIntervalsRef.current[label] = setInterval(() => {
           setUpscaleRenderTimers(prev => ({ ...prev, [label]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
@@ -981,14 +1000,25 @@ export default function FaceSwap({
           setUpscalePreviews((prev) => ({ ...prev, [label]: res.image }));
           setUpscaleTimes((prev) => ({ ...prev, [label]: `${duration}s` }));
           setUpscaleRenderTimers((prev) => ({ ...prev, [label]: null }));
+          setUpscaleErrors((prev) => ({ ...prev, [label]: null }));
+        } else {
+          setUpscaleRenderTimers((prev) => ({ ...prev, [label]: null }));
+          setUpscaleErrors((prev) => ({
+            ...prev,
+            [label]: String(res.error || 'No upscaled image returned'),
+          }));
         }
-      } catch {
+      } catch (error) {
         if (upscaleIntervalsRef.current[label]) {
           clearInterval(upscaleIntervalsRef.current[label]);
           delete upscaleIntervalsRef.current[label];
         }
+        if (!activeCheck()) return;
         setUpscaleRenderTimers((prev) => ({ ...prev, [label]: null }));
-        // Fail silently (a model may fail to download or init on a single frame)
+        setUpscaleErrors((prev) => ({
+          ...prev,
+          [label]: String(error?.message || 'Upscale preview failed for this model'),
+        }));
       }
     }
   };
@@ -1149,21 +1179,31 @@ export default function FaceSwap({
   };
 
   const removeTarget = async (i) => {
-    const res = await postJSON('/api/target/remove', { index: i });
-    setTargets(res.targets);
-    const newSel = res.selected_target_index || 0;
-    setSelTarget(newSel);
-    if (res.targets.length === 0) { setPreviewSrc(''); setPreviewFor(''); setMaxFrames(1); }
-    else { setMaxFrames(res.targets[newSel]?.frames || 1); setFrame(1); }
+    try {
+      const res = await postJSON('/api/target/remove', { index: i });
+      setTargets(res.targets);
+      const newSel = res.selected_target_index || 0;
+      setSelTarget(newSel);
+      if (res.targets.length === 0) { setPreviewSrc(''); setPreviewFor(''); setMaxFrames(1); }
+      else { setMaxFrames(res.targets[newSel]?.frames || 1); setFrame(1); }
+    } catch (e) { notify(`Could not remove target: ${e.message}`, 'error'); }
   };
 
   const selectTarget = async (i) => {
+    const previous = selTarget;
     setSelTarget(i);
-    const res = await postJSON('/api/target/select', { index: i });
-    setTargets(res.targets);
-    const mf = res.targets[i]?.frames || 1;
-    setMaxFrames(mf); setFrame(1);
-    refreshPreview({ index: i, frame: 1 });
+    try {
+      const res = await postJSON('/api/target/select', { index: i });
+      setTargets(res.targets);
+      const selected = res.selected_target_index ?? i;
+      setSelTarget(selected);
+      const mf = res.targets[selected]?.frames || 1;
+      setMaxFrames(mf); setFrame(1);
+      refreshPreview({ index: selected, frame: 1 });
+    } catch (e) {
+      setSelTarget(previous);
+      notify(`Could not select target: ${e.message}`, 'error');
+    }
   };
 
   // The backend reports it if the faceset list and the gallery thumbnails have
@@ -1180,10 +1220,12 @@ export default function FaceSwap({
       const res = checkDesync(await postJSON(path, body));
       if (res.source_faces) setSourceFaces(res.source_faces);
       if (res.source_faces_info) setSourceFacesInfo(res.source_faces_info);
+      return res;
     } catch (e) {
       // Surface failures (e.g. a 404 when the backend hasn't been restarted to
       // pick up a new endpoint) instead of silently doing nothing.
       notify(`${path.split('/').pop()} failed: ${e.message}. If this is a new feature, restart the app server.`, 'error');
+      return null;
     }
   };
 
@@ -1192,7 +1234,8 @@ export default function FaceSwap({
   // at whatever slid into the removed slot (wrong face) or off the end of the
   // list (the backend then swaps in an empty faceset).
   const removeSource = async (i) => {
-    await sourceAction('/api/source/remove', { index: i });
+    const res = await sourceAction('/api/source/remove', { index: i });
+    if (!res) return;
     setFaceMapping((prev) => {
       const next = {};
       for (const [pid, src] of Object.entries(prev || {})) {
@@ -1208,7 +1251,40 @@ export default function FaceSwap({
     }
   };
 
-  const selectSource = async (i) => { setSelSource(i); await postJSON('/api/source/select', { index: i }); };
+  const selectSource = async (i) => {
+    const previous = selSource;
+    setSelSource(i);
+    try {
+      await postJSON('/api/source/select', { index: i });
+    } catch (e) {
+      setSelSource(previous);
+      notify(`Could not select source: ${e.message}`, 'error');
+    }
+  };
+
+  const clearSources = async () => {
+    const res = await sourceAction('/api/source/clear', {});
+    if (!res) return;
+    setFaceMapping({});
+    setSelSource(0);
+  };
+
+  const clearTargets = async () => {
+    try {
+      const res = await postJSON('/api/target/clear', {});
+      setTargets(res.targets || []);
+      setTargetFaces([]);
+      setTargetGroups([]);
+      setTargetNames([]);
+      setTargetFacesInfo([]);
+      setFaceMapping({});
+      setSelTarget(0);
+      setMaxFrames(1);
+      setFrame(1);
+      setPreviewSrc('');
+      setPreviewFor('');
+    } catch (e) { notify(`Could not clear targets: ${e.message}`, 'error'); }
+  };
 
   const useFaceFromFrame = async () => {
     try {
@@ -1289,7 +1365,12 @@ export default function FaceSwap({
 
   // Stop stays here because the floating dock offers it from this tab. Pause and
   // Resume moved to the Processing tab with the run bar that carried them.
-  const stop = async () => { await postJSON('/api/stop', {}); notify('Stopping…', 'info'); };
+  const stop = async () => {
+    try {
+      await postJSON('/api/stop', {});
+      notify('Stopping…', 'info');
+    } catch (e) { notify(`Could not stop processing: ${e.message}`, 'error'); }
+  };
 
   // Hide the previous "Latest output" while a job is running so a new upload +
   // run never shows a stale result. The poll keeps reporting the old _last_output
@@ -1638,6 +1719,9 @@ export default function FaceSwap({
     const previewStart = frame;
     // 5 seconds preview = frame + 5 * fps
     const previewEnd = Math.min(maxFrames, frame + Math.round(5 * fps));
+    // The completion effect must not restore the original range during the
+    // several awaits below, before /api/swap has actually been accepted.
+    setPreviewClipRunActive(false);
 
     try {
       // Set temporary start/end frames in backend
@@ -1659,19 +1743,37 @@ export default function FaceSwap({
       });
 
       setStartTime(Date.now());
+      // /api/swap claims the processing flag synchronously, but the next poll
+      // has not necessarily reached React yet. Mirror that state locally so
+      // the restoration effect cannot mistake the request setup for a finished
+      // clip; the flag is also cleared by the normal progress transition.
+      setProgress((pr) => ({ ...pr, processing: true, paused: false, progress: 0, desc: 'Starting…', error: '' }));
+      setPreviewClipRunActive(true);
       notify('Generating 5-second preview clip...');
     } catch (e) {
+      // The temporary range may already have been written when a later setup
+      // request fails. Best-effort restore it before dropping the local state,
+      // otherwise a failed preview can silently leave the next real render
+      // limited to five seconds.
+      try {
+        await postJSON('/api/target/set_frame', { which: 'start', frame: origStart });
+        await postJSON('/api/target/set_frame', { which: 'end', frame: origEnd });
+      } catch (restoreError) {
+        notify(`Preview setup failed and the original timeline could not be restored: ${restoreError.message}`, 'error');
+      }
       notify(e.message, 'error');
       setIsGeneratingPreviewClip(false);
       setOrigStartEnd(null);
+      setPreviewClipRunActive(false);
     }
   };
 
   // Restoration effect when swapping finishes
   /* eslint-disable react-hooks/exhaustive-deps -- intentional: fires on processing-complete transition; notify is stable */
   useEffect(() => {
-    if (isGeneratingPreviewClip && !progress.processing && origStartEnd) {
+    if (isGeneratingPreviewClip && previewClipRunActive && !progress.processing && origStartEnd) {
       const restore = async () => {
+        let restoreError = null;
         try {
           await postJSON('/api/target/set_frame', { which: 'start', frame: origStartEnd.start });
           await postJSON('/api/target/set_frame', { which: 'end', frame: origStartEnd.end });
@@ -1680,16 +1782,26 @@ export default function FaceSwap({
           const res = await getJSON('/api/state');
           if (res.targets) setTargets(res.targets);
         } catch (e) {
+          restoreError = e;
           console.error("Failed to restore timeline range markers:", e);
         } finally {
           setIsGeneratingPreviewClip(false);
           setOrigStartEnd(null);
-          notify('5-second preview clip generated successfully!');
+          setPreviewClipRunActive(false);
+          if (progress.error) {
+            notify(`5-second preview clip failed: ${progress.error}`, 'error');
+          } else if ((progress.progress || 0) < 0.99) {
+            notify('5-second preview clip stopped before completion.', 'warning');
+          } else if (restoreError) {
+            notify(`Preview clip finished, but the timeline could not be restored: ${restoreError.message}`, 'error');
+          } else {
+            notify('5-second preview clip generated successfully!');
+          }
         }
       };
       restore();
     }
-  }, [progress.processing, isGeneratingPreviewClip, origStartEnd]);
+  }, [progress.processing, isGeneratingPreviewClip, origStartEnd, previewClipRunActive]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // Keyboard Escape, Shortcuts HUD, & Global Productivity Hotkeys
@@ -2490,7 +2602,7 @@ export default function FaceSwap({
             )}
             {targets.length > 0 && (
               <div className="pt-2 border-t border-white/5 flex justify-end">
-                <Button size="sm" variant="stop" onClick={async () => { const r = await postJSON('/api/target/clear', {}); setTargets(r.targets); setTargetFaces([]); setTargetGroups([]); setTargetNames([]); setTargetFacesInfo([]); setFaceMapping({}); setPreviewSrc(''); setPreviewFor(''); }}>Clear targets</Button>
+                <Button size="sm" variant="stop" onClick={clearTargets}>Clear targets</Button>
               </div>
             )}
           </Section>
@@ -2537,9 +2649,9 @@ export default function FaceSwap({
                 </Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'left' })}>⬅ Move</Button>
                 <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/move', { index: selSource, direction: 'right' })}>Move ➡</Button>
-                <Button size="sm" variant="secondary" onClick={() => sourceAction('/api/source/remove', { index: selSource })}>Remove</Button>
+                <Button size="sm" variant="secondary" onClick={() => removeSource(selSource)}>Remove</Button>
                 <Button size="sm" variant="secondary" title="Set each tile to the most frontal face in its set" onClick={() => sourceAction('/api/source/refresh_thumbs', {})}>Frontal thumb</Button>
-                <Button size="sm" variant="stop" onClick={() => sourceAction('/api/source/clear', {})}>Clear all</Button>
+                <Button size="sm" variant="stop" onClick={clearSources}>Clear all</Button>
               </div>
               
               {sourceFacesInfo[selSource] && (
@@ -2678,7 +2790,10 @@ export default function FaceSwap({
                   <div className="space-y-4">
                     {/* Enhancer selector row */}
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
-                      <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Enhancers (Select up to 4)</span>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Enhancers (Select up to 4)</span>
+                        <span className="text-micro text-white/45">{activeList.length}/4 selected</span>
+                      </div>
                       <div className="flex flex-wrap gap-2">
                         {meta.enhancers?.map((enh) => {
                           const isSelected = selectedGridEnhancers.includes(enh);
@@ -2692,10 +2807,10 @@ export default function FaceSwap({
                                     setSelectedGridEnhancers(prev => prev.filter(x => x !== enh));
                                   }
                                 } else {
-                                  if (selectedGridEnhancers.length >= 4) {
+                                  if (activeList.length >= 4) {
                                     notify('You can select a maximum of 4 enhancers for grid comparison.', 'warning');
                                   } else {
-                                    setSelectedGridEnhancers(prev => [...prev, enh]);
+                                    setSelectedGridEnhancers(prev => [...prev.filter(x => meta.enhancers?.includes(x)), enh]);
                                   }
                                 }
                               }}
@@ -2715,6 +2830,7 @@ export default function FaceSwap({
                       previews={enhancerPreviews}
                       times={enhancerTimes}
                       timers={liveRenderingTimers}
+                      errors={enhancerErrors}
                     />
                   </div>
                 );
@@ -2727,6 +2843,7 @@ export default function FaceSwap({
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Mask Engines (Select up to 4)</span>
+                        <span className="text-micro text-white/45">{activeMasks.length}/4 selected</span>
                         <span className="text-micro text-white/45">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -2742,10 +2859,10 @@ export default function FaceSwap({
                                     setSelectedGridMasks(prev => prev.filter(x => x !== mE));
                                   }
                                 } else {
-                                  if (selectedGridMasks.length >= 4) {
+                                  if (activeMasks.length >= 4) {
                                     notify('You can select a maximum of 4 mask engines for grid comparison.', 'warning');
                                   } else {
-                                    setSelectedGridMasks(prev => [...prev, mE]);
+                                    setSelectedGridMasks(prev => [...prev.filter(x => meta.mask_engines?.includes(x)), mE]);
                                   }
                                 }
                               }}
@@ -2765,6 +2882,7 @@ export default function FaceSwap({
                       previews={maskPreviews}
                       times={maskTimes}
                       timers={maskRenderTimers}
+                      errors={maskErrors}
                     />
                   </div>
                 );
@@ -2777,6 +2895,7 @@ export default function FaceSwap({
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare Swapper Models (Select up to 4)</span>
+                        <span className="text-micro text-white/45">{activeSwappers.length}/4 selected</span>
                         <span className="text-micro text-white/45">Enhancer: <span className="text-white/55 font-semibold">{p.selected_enhancer || 'None'}</span></span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -2792,10 +2911,10 @@ export default function FaceSwap({
                                     setSelectedGridSwappers(prev => prev.filter(x => x !== sM));
                                   }
                                 } else {
-                                  if (selectedGridSwappers.length >= 4) {
+                                  if (activeSwappers.length >= 4) {
                                     notify('You can select a maximum of 4 swapper models for grid comparison.', 'warning');
                                   } else {
-                                    setSelectedGridSwappers(prev => [...prev, sM]);
+                                    setSelectedGridSwappers(prev => [...prev.filter(x => meta.swap_models?.includes(x)), sM]);
                                   }
                                 }
                               }}
@@ -2815,6 +2934,7 @@ export default function FaceSwap({
                       previews={swapperPreviews}
                       times={swapperTimes}
                       timers={swapperRenderTimers}
+                      errors={swapperErrors}
                     />
                   </div>
                 );
@@ -2827,6 +2947,7 @@ export default function FaceSwap({
                     <div className="p-3.5 rounded-xl bg-black/45 border border-white/5 space-y-2 select-none">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-micro font-semibold uppercase tracking-[0.14em] text-white/45 block">Compare AI Upscalers (Select up to 4)</span>
+                        <span className="text-micro text-white/45">{activeUpscalers.length}/4 selected</span>
                         <span className="text-micro text-white/45">Swaps once, then upscales each</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -2842,10 +2963,10 @@ export default function FaceSwap({
                                     setSelectedGridUpscalers(prev => prev.filter(x => x !== m.label));
                                   }
                                 } else {
-                                  if (selectedGridUpscalers.length >= 4) {
+                                  if (activeUpscalers.length >= 4) {
                                     notify('You can select a maximum of 4 upscalers for grid comparison.', 'warning');
                                   } else {
-                                    setSelectedGridUpscalers(prev => [...prev, m.label]);
+                                    setSelectedGridUpscalers(prev => [...prev.filter(x => AI_UPSCALE_MODELS.some(model => model.label === x)), m.label]);
                                   }
                                 }
                               }}
@@ -2865,6 +2986,7 @@ export default function FaceSwap({
                       previews={upscalePreviews}
                       times={upscaleTimes}
                       timers={upscaleRenderTimers}
+                      errors={upscaleErrors}
                     />
                   </div>
                 );

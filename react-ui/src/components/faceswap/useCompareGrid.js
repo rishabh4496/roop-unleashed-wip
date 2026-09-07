@@ -23,13 +23,48 @@ import { useEffect, useRef, useState } from 'react';
 
 const isString = (x) => typeof x === 'string';
 
+const normalizeSelection = (values, defaults, isValid, allowed) => {
+  const allowedSet = Array.isArray(allowed) ? new Set(allowed) : null;
+  const seen = new Set();
+  const valid = (Array.isArray(values) ? values : [])
+    .filter((value) => isValid(value) && (!allowedSet || allowedSet.has(value)))
+    .filter((value) => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .slice(0, 4);
+  if (valid.length > 0) return valid;
+
+  const fallback = (Array.isArray(defaults) ? defaults : [])
+    .find((value) => isValid(value) && (!allowedSet || allowedSet.has(value)));
+  if (fallback !== undefined) return [fallback];
+
+  const catalogFallback = Array.isArray(allowed)
+    ? allowed.find((value) => isValid(value))
+    : undefined;
+  if (catalogFallback !== undefined) return [catalogFallback];
+
+  // A catalog can be empty while metadata is loading. Keep the selection empty
+  // in that case; the next catalog update will normalize it again.
+  if (allowedSet) return [];
+  return (Array.isArray(defaults) ? defaults : [])
+    .filter(isValid)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(0, 4);
+};
+
 /**
  * @param {string}   storageKey  localStorage key holding the chosen list.
  * @param {string[]} defaults    used when nothing valid is stored.
  * @param {(x:any)=>boolean} [isValid]  per-item check; defaults to "a string".
+ * @param {string[]} [allowed]         current backend catalog for this grid.
  */
-export default function useCompareGrid({ storageKey, defaults, isValid = isString }) {
+export default function useCompareGrid({ storageKey, defaults, isValid = isString, allowed }) {
   const [comparing, setComparing] = useState(false);
+  // Keep the catalog effect stable even when the parent creates metadata
+  // arrays while rendering, and rerun it when metadata arrives asynchronously.
+  const allowedKey = Array.isArray(allowed) ? allowed.join('\u0001') : '';
 
   const [selected, setSelected] = useState(() => {
     try {
@@ -37,11 +72,26 @@ export default function useCompareGrid({ storageKey, defaults, isValid = isStrin
       // 1..4 cells: the grid lays out at most four, and an empty list would
       // render a comparison with nothing in it.
       if (Array.isArray(saved) && saved.length >= 1 && saved.length <= 4 && saved.every(isValid)) {
-        return saved;
+        return normalizeSelection(saved, defaults, isValid, allowed);
       }
     } catch { /* fall through to default */ }
-    return defaults;
+    return normalizeSelection(defaults, defaults, isValid, allowed);
   });
+
+  // localStorage can outlive a backend catalog after a model is renamed or
+  // removed. Previously those stale entries counted toward the four-cell limit
+  // while the grid silently filtered them out.
+  useEffect(() => {
+    if (!Array.isArray(allowed)) return;
+    setSelected((prev) => {
+      const next = normalizeSelection(prev, defaults, isValid, allowed);
+      if (next.length === prev.length && next.every((value, index) => value === prev[index])) return prev;
+      return next;
+    });
+    // The joined catalog is the intentional dependency; `allowed` may be a
+    // freshly-created array on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedKey]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(selected));
@@ -53,6 +103,7 @@ export default function useCompareGrid({ storageKey, defaults, isValid = isStrin
   const [previews, setPreviews] = useState({});
   const [times, setTimes] = useState({});
   const [timers, setTimers] = useState({});
+  const [errors, setErrors] = useState({});
   const intervalsRef = useRef({});
 
   return {
@@ -61,6 +112,7 @@ export default function useCompareGrid({ storageKey, defaults, isValid = isStrin
     previews, setPreviews,
     times, setTimes,
     timers, setTimers,
+    errors, setErrors,
     intervalsRef,
   };
 }

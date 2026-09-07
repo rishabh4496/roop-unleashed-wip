@@ -439,11 +439,18 @@ def _classical_vf(mode, target_w, target_h):
 
 
 def _classical_image_apply(img, mode, scale):
-    """Resample a single image for a classical mode. cv2 has no spline/sinc
-    kernels, so all modes resample with Lanczos here (near-identical at image
-    scales); 'fsr' additionally gets an unsharp-mask sharpen approximating CAS."""
+    """Resample a single image for a classical mode.
+
+    OpenCV has no exact Spline36 or windowed-sinc kernel. Cubic is the closest
+    available preview approximation for Spline36, while Lanczos is the closest
+    available approximation for Sinc. Keeping these distinct matters because
+    this endpoint powers the A/B comparison grid; treating every mode as
+    Lanczos made two of the advertised choices visually identical in previews,
+    even though the final video path used distinct ffmpeg filters.
+    """
     h, w = img.shape[:2]
-    out = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+    interpolation = cv2.INTER_CUBIC if mode == "spline" else cv2.INTER_LANCZOS4
+    out = cv2.resize(img, (w * scale, h * scale), interpolation=interpolation)
     if mode == "fsr":
         amount = _cas_strength()
         if amount > 0:

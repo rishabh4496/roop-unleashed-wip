@@ -198,11 +198,25 @@ export default function Gallery({ notify, setSettings, setTab }) {
     }
   };
 
-  const copySelectedPaths = () => {
+  const copySelectedPaths = async () => {
     const paths = selectedVisible.map((name) => `${outputPath}/${name}`).join('\n');
-    navigator.clipboard.writeText(paths);
-    notify(`Copied ${selectedVisible.length} output path(s) to clipboard!`);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard access is unavailable');
+      await navigator.clipboard.writeText(paths);
+      notify(`Copied ${selectedVisible.length} output path(s) to clipboard!`);
+    } catch (e) {
+      notify(`Could not copy output paths: ${e.message}`, 'error');
+    }
   };
+
+  // A refresh or deletion can invalidate an open comparison. Reconcile that
+  // asynchronously; setting state while rendering the modal used to trigger a
+  // React warning and could leave the gallery in a render loop in development.
+  useEffect(() => {
+    if (comparePair && comparePair.some((name) => !files.some((f) => f.name === name))) {
+      setComparePair(null);
+    }
+  }, [comparePair, files]);
 
   // Filter & Search files
   const filteredFiles = files.filter((f) => {
@@ -535,7 +549,7 @@ export default function Gallery({ notify, setSettings, setTab }) {
         const [aName, bName] = comparePair;
         const a = files.find((f) => f.name === aName);
         const b = files.find((f) => f.name === bName);
-        if (!a || !b) { setComparePair(null); return null; }
+        if (!a || !b) return null;
         return (
           <OutputCompare
             a={a}

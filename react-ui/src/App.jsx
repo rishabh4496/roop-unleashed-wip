@@ -648,7 +648,7 @@ export default function App() {
         if (pr.processing) startPolling();
       } catch { /* progress is non-critical for boot */ }
     } catch {
-      setError('Cannot reach backend on 127.0.0.1:8001. Make sure the server (run.py) is running.');
+      setError('Cannot reach the backend. Make sure the server (run.py) is running, then retry.');
       // 1s, 2s, 4s … capped at 8s, forever — a launcher window left open should
       // heal itself the moment the server comes up.
       const wait = Math.min(8000, 1000 * 2 ** bootAttemptRef.current++);
@@ -805,7 +805,7 @@ export default function App() {
                       try {
                         await postJSON('/api/resume', {});
                         setProgress((pr) => ({ ...pr, paused: false, desc: 'Resuming…' }));
-                      } catch {}
+                      } catch (err) { notify(err.message, 'error'); }
                     }}
                     className="grid place-items-center hover:text-white text-white/60 transition-colors cursor-pointer"
                     title="Resume Job" aria-label="Resume job"
@@ -820,7 +820,7 @@ export default function App() {
                       try {
                         await postJSON('/api/pause', {});
                         setProgress((pr) => ({ ...pr, paused: true, desc: 'Paused' }));
-                      } catch {}
+                      } catch (err) { notify(err.message, 'error'); }
                     }}
                     className="grid place-items-center hover:text-white text-white/60 transition-colors cursor-pointer"
                     title="Pause Job" aria-label="Pause job"
@@ -835,7 +835,7 @@ export default function App() {
                     if (await confirmDialog({ title: 'Stop job?', message: 'Stop the active job? The partial output so far is finalized and kept.', confirmLabel: 'Stop', danger: true })) {
                       try {
                         await postJSON('/api/stop', {});
-                      } catch {}
+                      } catch (err) { notify(err.message, 'error'); }
                     }
                   }}
                   className="grid place-items-center hover:text-red-400 text-white/60 transition-colors cursor-pointer"

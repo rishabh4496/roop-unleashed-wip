@@ -102,7 +102,10 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // best_threads is in there too and is a nested object, not a settings key;
   // it is filtered out rather than assigned over `benchmark_results`.
   const onBenchmarkResult = useCallback((result) => {
-    const { best_threads, ...live } = result?.applied?.applied_now || {};
+    const live = Object.fromEntries(
+      Object.entries(result?.applied?.applied_now || {})
+        .filter(([key]) => key !== 'best_threads')
+    );
     const pending = result?.applied?.pending_restart || {};
     setSettings((s) => ({ ...s, ...pending, ...live, benchmark_results: result }));
   }, [setSettings]);

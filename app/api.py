@@ -684,7 +684,7 @@ def get_meta():
                          "simswap", "simswap_512", "hififace", "blendswap", "uniface"],
         "face_detection_modes": ["First found", "All input faces", "All female",
                                   "All male", "All faces", "Selected face"],
-        "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "Face Parser (BiSeNet)",
+        "mask_engines": ["None", "Clip2Seg", "DFL XSeg", "RealityUX", "Face Parser (BiSeNet)",
                           "Face Occluder", "Face Occluder v3 (XSeg-3)",
                           "Segment Anything (MobileSAM)", "Segment Anything (FastSAM)",
                           "Segment Anything 2 (tracked)"],
