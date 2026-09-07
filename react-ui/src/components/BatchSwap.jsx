@@ -50,6 +50,23 @@ const DETECTION_MODE_HINTS = {
 };
 const DETECTION_MODE_FALLBACK = ['Selected face', 'All input faces', 'All faces', 'First found'];
 
+// A job's frame range is in the BACKEND's coordinates, not the timeline's.
+// `frame_start` is a 0-based INCLUSIVE index and `frame_end` is EXCLUSIVE:
+// read_frames_thread seeks to frame_start and then reads exactly
+// (frame_end - frame_start) frames (ProcessMgr.run_batch_inmem). A fresh target
+// therefore reports start_frame 0 / end_frame = total, which renders the whole
+// clip.
+//
+// The timeline on the Face Swap tab DISPLAYS 1-based frame numbers (see the
+// note in usePlaybackBuffer), and that display convention had leaked in here as
+// `target.start_frame || 1` -- which turns the 0 a fresh target reports into 1
+// and silently drops frame 0 from every batch job. Measured on a 100-frame
+// clip: 99 frames rendered, frame 0 missing.
+const wholeFileRange = (t) => ({
+  frame_start: Math.max(0, Number(t?.start_frame) || 0),
+  frame_end: Number(t?.end_frame) || Number(t?.frames) || 1,
+});
+
 export default function BatchSwap({ meta, settings = {}, notify }) {
   const enhancerOptions = useMemo(
     () => (Array.isArray(meta?.enhancers) && meta.enhancers.length ? meta.enhancers : ENHANCER_FALLBACK),
@@ -130,6 +147,19 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // Every configuration below addresses a target file by its INDEX -- the keys
+  // of matrixConfig, the mode-1 selection, a group's targetIndices -- and
+  // /api/target/remove renumbers every file after the one it drops. Nothing
+  // re-pointed those indices, so removing a target silently shifted every
+  // configuration onto its neighbour: the matrix row that said "file B ->
+  // faceset 3, trim 200-400" now described file C, and the batch rendered it
+  // that way without a word. The prune effect below only dropped indices past
+  // the end of the list, which conceals the shift rather than correcting it.
+  //
+  // Names are the stable handle -- they are what the queue resolves a job by at
+  // dispatch time (routes_queue._run_one), for the same reason.
+  const targetNamesRef = useRef([]);
+
   const refreshBackendState = useCallback(async () => {
     const cfg = settingsRef.current || {};
     try {
@@ -145,6 +175,36 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
       setTargetNames(st.target_names || []);
       setTargets(tg);
 
+      // Re-point index-addressed config at the files it was made for, before
+      // anything below fills in defaults for the new numbering.
+      const prevNames = targetNamesRef.current;
+      const names = tg.map((t) => t.name);
+      targetNamesRef.current = names;
+      const shifted = prevNames.length > 0
+        && (prevNames.length !== names.length
+            || prevNames.some((n, i) => n !== names[i]));
+      if (shifted) {
+        const remap = new Map();
+        prevNames.forEach((name, oldIdx) => {
+          const at = names.indexOf(name);
+          if (at !== -1) remap.set(oldIdx, at);
+        });
+        const move = (list) => list
+          .map((i) => remap.get(i))
+          .filter((i) => i !== undefined);
+        setMatrixConfig((prev) => {
+          const moved = {};
+          remap.forEach((newIdx, oldIdx) => {
+            if (prev[oldIdx]) moved[newIdx] = prev[oldIdx];
+          });
+          return moved;
+        });
+        setMode1SelectedTargets(move);
+        setGroups((prev) => prev.map((g) => ({
+          ...g, targetIndices: move(g.targetIndices),
+        })));
+      }
+
       // Initialize default selected targets for Mode 1 if empty
       setMode1SelectedTargets((prev) => (prev.length === 0 ? tg.map((_, i) => i) : prev));
 
@@ -159,8 +219,8 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
               enabled: true,
               enhancer: cfg.selected_enhancer || 'Restoreformer++',
               faceDistance: parseFloat(cfg.max_face_distance || 0.75),
-              frameStart: t.start_frame || 1,
-              frameEnd: t.end_frame || t.frames || 1,
+              frameStart: wholeFileRange(t).frame_start,
+              frameEnd: wholeFileRange(t).frame_end,
             };
           }
         });
@@ -482,8 +542,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
           source_index: primarySourceIdx,
           source_name: sName,
           mappings,
-          frame_start: target.start_frame || 1,
-          frame_end: target.end_frame || target.frames || 1,
+          ...wholeFileRange(target),
           total_frames: target.frames || 1,
           label: `NxM Combinatorial | ${target.name} ➔ ${sName}`,
           payload,
@@ -514,8 +573,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         source_index: primarySourceIdx,
         source_name: sName,
         mappings,
-        frame_start: target.start_frame || 1,
-        frame_end: target.end_frame || target.frames || 1,
+        ...wholeFileRange(target),
         total_frames: target.frames || 1,
         label: `Sequential | ${target.name} ➔ ${sName}`,
         payload,
@@ -541,11 +599,18 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
     const step = Math.ceil(totalFrames / segs);
     const newJobs = [];
 
+    // 0-based, half-open [fs, fe) -- see wholeFileRange. This was written
+    // 1-based and inclusive (`i * step + 1` .. `(i + 1) * step`), which left a
+    // one-frame hole at EVERY segment boundary as well as dropping frame 0:
+    // measured on a 100-frame clip split four ways, 96 frames rendered with
+    // 0, 25, 50 and 75 missing. Joining those segments back together is the
+    // whole point of the splitter, and the join then has a visible hitch at
+    // each seam. Dropping the +1 makes the segments exactly contiguous.
     for (let i = 0; i < segs; i++) {
-      const fs = i * step + 1;
+      const fs = i * step;
       const fe = Math.min((i + 1) * step, totalFrames);
-      if (fs > totalFrames) break;
-      const span = fe - fs + 1;
+      if (fs >= totalFrames) break;
+      const span = fe - fs;
 
       const { payload, primarySourceIdx, mappings } = createJobPayload(
         [{ personRank: 0, sourceIdx: 0 }],
@@ -562,7 +627,8 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         frame_start: fs,
         frame_end: fe,
         total_frames: span,
-        label: `Segment ${i + 1}/${segs} (${fs}-${fe}) | ${target.name}`,
+        // Labelled 1-based inclusive, to read the same as the timeline.
+        label: `Segment ${i + 1}/${segs} (${fs + 1}-${fe}) | ${target.name}`,
         payload,
       });
     }
@@ -609,8 +675,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         source_index: primarySourceIdx,
         source_name: sourceFacesInfo[primarySourceIdx]?.name || `Faceset ${primarySourceIdx + 1}`,
         mappings,
-        frame_start: target?.start_frame || 1,
-        frame_end: target?.end_frame || target?.frames || 1,
+        ...wholeFileRange(target),
         total_frames: target?.frames || 1,
         label: `1:M | ${targetName} (${mapDesc})`,
         payload,
@@ -699,8 +764,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
           source_index: primarySourceIdx,
           source_name: sourceFacesInfo[primarySourceIdx]?.name || `Faceset ${primarySourceIdx + 1}`,
           mappings,
-          frame_start: target.start_frame || 1,
-          frame_end: target.end_frame || target.frames || 1,
+          ...wholeFileRange(target),
           total_frames: target.frames || 1,
           label: `${grp.label} | ${targetName} (${mapDesc})`,
           payload,
@@ -765,9 +829,10 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         faceDistance: cfg.faceDistance,
       });
 
-      const fs = cfg.frameStart != null ? cfg.frameStart : target.start_frame || 1;
-      const fe = cfg.frameEnd != null ? cfg.frameEnd : target.end_frame || target.frames || 1;
-      const spanFrames = Math.max(1, fe - fs + 1);
+      const whole = wholeFileRange(target);
+      const fs = cfg.frameStart != null ? cfg.frameStart : whole.frame_start;
+      const fe = cfg.frameEnd != null ? cfg.frameEnd : whole.frame_end;
+      const spanFrames = Math.max(1, fe - fs);
       const mapDesc = mappings.map((m) => `P#${m.personRank + 1}➔F#${m.sourceIdx + 1}`).join(', ');
 
       newJobs.push({
@@ -950,14 +1015,24 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         label: j.label,
       }));
 
-      // Uses atomic /api/queue/add_batch via useQueue hook
-      await queue.addMany(jobsToAdd);
+      // Uses atomic /api/queue/add_batch via useQueue hook.
+      //
+      // The result has to be CHECKED. useQueue's `act` swallows the failure --
+      // it notifies, re-reads the queue and returns null, it does not throw --
+      // so the catch below never fires on a rejected request. This used to
+      // announce "Enqueued N job(s)" and then clear stagedJobs regardless, so a
+      // backend that refused the batch left the user with a success toast and
+      // an empty staging list: the whole configuration gone, with nothing
+      // queued. Keeping the staged jobs on failure is the point.
+      const snap = await queue.addMany(jobsToAdd);
+      if (!snap) return;          // `act` has already surfaced the reason
       notify?.(`Enqueued ${jobsToAdd.length} job(s) to server queue`);
       setStagedJobs([]);
 
       if (autoStart) {
-        await queue.start();
-        notify?.('Started batch processing queue!');
+        // Same again: /api/queue/start answers 409 when a single run is already
+        // processing, or when the hardware benchmark holds the GPU.
+        if (await queue.start()) notify?.('Started batch processing queue!');
       }
     } catch (e) {
       notify?.('Failed to enqueue jobs: ' + e.message, 'error');
@@ -1903,8 +1978,8 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
                   enabled: true,
                   enhancer: 'Restoreformer++',
                   faceDistance: 0.75,
-                  frameStart: target.start_frame || 1,
-                  frameEnd: target.end_frame || target.frames || 1,
+                  frameStart: wholeFileRange(target).frame_start,
+                  frameEnd: wholeFileRange(target).frame_end,
                 };
 
                 return (
@@ -1950,16 +2025,23 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
                       {/* Trim Segment Range Controls */}
                       <div className="flex items-center gap-2 text-micro shrink-0">
                         <span className="text-white/40 font-medium">Trim:</span>
+                        {/* Shown and typed 1-based inclusive, the way the
+                            timeline reads. cfg holds the backend's 0-based
+                            half-open pair, so only the start shifts: a 1-based
+                            inclusive end is already the exclusive end. */}
                         <input
                           type="number"
                           min="1"
                           max={target.frames || 999999}
-                          value={cfg.frameStart ?? 1}
+                          value={(cfg.frameStart ?? 0) + 1}
                           disabled={!cfg.enabled}
                           onChange={(e) =>
                             setMatrixConfig((prev) => ({
                               ...prev,
-                              [tIdx]: { ...cfg, frameStart: parseInt(e.target.value, 10) || 1 },
+                              [tIdx]: {
+                                ...cfg,
+                                frameStart: Math.max(0, (parseInt(e.target.value, 10) || 1) - 1),
+                              },
                             }))
                           }
                           className="w-16 bg-black/60 border border-white/10 rounded px-1.5 py-0.5 text-center text-white"
@@ -1974,7 +2056,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
                           onChange={(e) =>
                             setMatrixConfig((prev) => ({
                               ...prev,
-                              [tIdx]: { ...cfg, frameEnd: parseInt(e.target.value, 10) || 1 },
+                              [tIdx]: { ...cfg, frameEnd: Math.max(1, parseInt(e.target.value, 10) || 1) },
                             }))
                           }
                           className="w-16 bg-black/60 border border-white/10 rounded px-1.5 py-0.5 text-center text-white"
