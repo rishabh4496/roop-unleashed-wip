@@ -62,6 +62,80 @@ def _readahead_depth(cap, budget_mb=256.0, lo=4, hi=16):
     return max(lo, min(hi, int((budget_mb * 1024 * 1024) // per_frame)))
 
 
+# The adaptive temporal scan compares tiny grayscale thumbnails, not detector
+# features.  This keeps the gate cheap enough to run on every decoded frame
+# while still noticing the motion that makes linear landmark interpolation
+# unsafe.  The dimensions are deliberately fixed so the thresholds are stable
+# across input resolutions.
+_ADAPTIVE_MOTION_SIZE = (160, 90)
+_ADAPTIVE_GLOBAL_MEAN = 1.5
+_ADAPTIVE_FACE_MEAN = 2.5
+_ADAPTIVE_PIXEL_DELTA = 36
+_ADAPTIVE_CHANGED_FRACTION = 0.02
+
+
+def _motion_signature(frame):
+    """Return a small grayscale signature for the adaptive temporal gate."""
+    if frame is None or getattr(frame, 'ndim', 0) < 2:
+        return None
+    if frame.ndim == 2:
+        gray = frame
+    else:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, _ADAPTIVE_MOTION_SIZE, interpolation=cv2.INTER_AREA)
+
+
+def _adaptive_motion_is_stable(previous, current, boxes, frame_shape):
+    """Whether a frame is safe to fill from its neighbouring detections.
+
+    This is intentionally a conservative veto: missing geometry, a missing
+    active track, a scene-wide change, or meaningful motion in any tracked-face
+    crop all force a real detector call.  Returning True is only the cheap
+    case where the whole frame and every known face are quiet.
+    """
+    if previous is None or current is None or not boxes:
+        return False
+    if previous.shape != current.shape or previous.size == 0:
+        return False
+    try:
+        height, width = frame_shape[:2]
+    except (TypeError, ValueError, IndexError):
+        return False
+    if width <= 0 or height <= 0:
+        return False
+
+    delta = cv2.absdiff(previous, current)
+    if float(delta.mean()) > _ADAPTIVE_GLOBAL_MEAN:
+        return False
+    changed = float(np.count_nonzero(delta >= _ADAPTIVE_PIXEL_DELTA)) / float(delta.size)
+    if changed > _ADAPTIVE_CHANGED_FRACTION:
+        return False
+
+    thumb_h, thumb_w = delta.shape[:2]
+    sx, sy = thumb_w / float(width), thumb_h / float(height)
+    for box in boxes:
+        try:
+            values = np.asarray(box).reshape(-1)[:4].astype(np.float64)
+        except (TypeError, ValueError):
+            return False
+        if values.size < 4 or not np.isfinite(values).all():
+            return False
+        x0, y0, x1, y1 = values
+        if x1 <= x0 or y1 <= y0:
+            return False
+        # Include a little context around the face: a box can be quiet while
+        # the head is beginning to turn just outside its last detector extent.
+        pad_x, pad_y = (x1 - x0) * 0.15, (y1 - y0) * 0.15
+        rx0 = max(0, min(thumb_w - 1, int((x0 - pad_x) * sx)))
+        ry0 = max(0, min(thumb_h - 1, int((y0 - pad_y) * sy)))
+        rx1 = max(rx0 + 1, min(thumb_w, int(np.ceil((x1 + pad_x) * sx))))
+        ry1 = max(ry0 + 1, min(thumb_h, int(np.ceil((y1 + pad_y) * sy))))
+        roi = delta[ry0:ry1, rx0:rx1]
+        if roi.size == 0 or float(roi.mean()) > _ADAPTIVE_FACE_MEAN:
+            return False
+    return True
+
+
 class TrackingMixin:
     def _precompute_sam2(self, sam2_p, source_video, frame_start, frame_end, frame_count):
         """SAM2 pre-pass: dump the trimmed frames to a temp JPEG dir (0-based,
@@ -118,7 +192,7 @@ class TrackingMixin:
 
     def _precompute_tracks(self, source_video, frame_start, frame_end, frame_count,
                            awebp_frames=None, step=3, collect_obs=False,
-                           desc='Tracking identities'):
+                           desc='Tracking identities', adaptive=False):
         """Identity-lock pass 1: build tracklets (IoU + embedding association)
         across the clip, assign each tracklet to ONE source via its mean embedding,
         and store {frame_idx: [(bbox_centroid, src_index, emb_mean), ...]} for pass 2 to look
@@ -128,7 +202,9 @@ class TrackingMixin:
         Also serves as the shared scan for the temporal-detection pre-pass:
         step=1 detects every frame, collect_obs=True stores each track's Face
         observations ({frame_idx: Face} under track['obs']), and awebp_frames
-        feeds pre-decoded animated-WebP frames instead of a VideoCapture.
+        feeds pre-decoded animated-WebP frames instead of a VideoCapture. When
+        adaptive is true, skipped frames are only omitted when a thumbnail
+        motion gate says linear interpolation is safe.
         Returns the full track list (active + retired)."""
         import os
         from roop.face_util import get_all_faces, get_all_faces_in_roi, get_all_faces_hires
@@ -221,7 +297,9 @@ class TrackingMixin:
         # REID_MAX is the tighter bar for association WITHOUT spatial evidence.
         IOU_MIN, EMB_MAX, STALE = 0.2, (_TRACK_EMB_MAX or 0.7), 15
         REID_MAX = _TRACK_REID_MAX if _TRACK_REID_MAX > 0 else EMB_MAX
-        print(f'[Track] {desc}: scanning frames (step={TRACK_STEP})...')
+        adaptive = bool(adaptive and TRACK_STEP > 1)
+        step_label = f'{TRACK_STEP}, adaptive' if adaptive else str(TRACK_STEP)
+        print(f'[Track] {desc}: scanning frames (step={step_label})...')
 
         def _predict_bbox(t, f_idx):
             """Project a track's last bbox forward by its linear velocity to
@@ -490,6 +568,8 @@ class TrackingMixin:
         # (frame_idx, Future) pairs, oldest-submitted first — bounded to pool_workers
         # and always drained in this order, so consumption stays in frame order.
         in_flight = _deque()
+        adaptive_skipped = 0
+        adaptive_motion_detects = 0
         # ── Read-ahead decode ────────────────────────────────────────────────
         # Decoding used to run on this thread, in series with the wait for the
         # oldest detection future, so the loop cost was decode + wait per frame
@@ -546,6 +626,7 @@ class TrackingMixin:
                 # come out of the finally block and mask the real failure.
                 reader = _t
             idx = 0
+            previous_motion = None
             while roop.globals.processing:
                 wait_while_paused()
                 if not roop.globals.processing:
@@ -588,8 +669,25 @@ class TrackingMixin:
                 # clock read (~0.27us).
                 self._publish_live(frame)
 
-                # Skip frames to speed up detection and save memory
-                if idx > 0 and idx % TRACK_STEP != 0:
+                # The adaptive mode keeps the configured stride as its upper
+                # bound, but brings a real detector call back for a meaningful
+                # scene/face change.  It only does thumbnail work when enabled;
+                # the explicit numeric modes retain their previous hot path.
+                detect_this_frame = idx == 0 or idx % TRACK_STEP == 0
+                current_motion = (_motion_signature(frame) if adaptive else None)
+                if adaptive and idx > 0 and idx % TRACK_STEP != 0:
+                    boxes = [_predict_bbox(t, idx) for t in active]
+                    detect_this_frame = not _adaptive_motion_is_stable(
+                        previous_motion, current_motion, boxes, frame.shape)
+                    if detect_this_frame:
+                        adaptive_motion_detects += 1
+                    else:
+                        adaptive_skipped += 1
+                if adaptive:
+                    previous_motion = current_motion
+
+                # Skip frames to speed up detection when motion is quiet.
+                if not detect_this_frame:
                     idx += 1
                     pbar.update(1)
                     continue
@@ -633,6 +731,9 @@ class TrackingMixin:
             while in_flight:
                 done_idx, done_fut = in_flight.popleft()
                 _consume(done_idx, done_fut.result())
+            if adaptive:
+                print(f'[Track] adaptive motion gate: skipped {adaptive_skipped} frame(s); '
+                      f'forced detection for {adaptive_motion_detects} moving frame(s).')
         finally:
             pbar.close()
             if det_executor is not None:
@@ -1372,8 +1473,7 @@ class TrackingMixin:
     def _precompute_temporal(self, source_video, awebp_frames, frame_start, frame_end, frame_count):
         """Temporal detection pre-pass (anti-flicker).
 
-        Runs the tracked scan at step=1 collecting every frame's Face objects,
-        then per track:
+        Runs the tracked scan collecting Face objects, then per track:
           - gap-fill: linearly interpolate bbox/kps/landmarks across detection
             misses of up to ROOP_TEMPORAL_GAP frames (default 10), so a face
             that blinks out of detection for a few frames keeps being swapped;
@@ -1398,20 +1498,33 @@ class TrackingMixin:
         # fine while a head moves steadily, visibly behind on a fast turn. Raise
         # it only for footage without quick motion. Stepping past the gap limit
         # would leave the skipped frames with no faces at all, so it is capped.
-        try:
-            scan_step = max(1, int(os.environ.get('ROOP_TEMPORAL_STEP', '1') or '1'))
-        except ValueError:
-            scan_step = 1
+        raw_step = str(os.environ.get('ROOP_TEMPORAL_STEP', '1') or '1').strip().lower()
+        adaptive = raw_step in ('auto', 'adaptive', 'smart')
+        if adaptive:
+            # Two is the only stride that can leave a single interpolated frame
+            # between real observations. The motion gate below turns that into
+            # step=1 exactly where the linear fill would be least trustworthy.
+            scan_step = 2
+        else:
+            try:
+                scan_step = max(1, int(raw_step))
+            except ValueError:
+                scan_step = 1
         if scan_step > gap_max:
             print(f'[Temporal] scan step {scan_step} exceeds the gap limit {gap_max} — '
                   f'clamping to {gap_max}, or the skipped frames would not be filled.')
             scan_step = gap_max
-        if scan_step > 1:
+        if adaptive and scan_step <= 1:
+            adaptive = False
+        if adaptive:
+            print('[Temporal] adaptive scan enabled: checking every other frame at most; '
+                  'motion forces a fresh detection.')
+        elif scan_step > 1:
             print(f'[Temporal] scanning every {scan_step} frames; the rest are interpolated.')
         self._track_scanned = 0
         tracks = self._precompute_tracks(source_video, frame_start, frame_end, frame_count,
                                          awebp_frames=awebp_frames, step=scan_step, collect_obs=True,
-                                         desc='Analyzing faces')
+                                         desc='Analyzing faces', adaptive=adaptive)
         self._temporal_faces = self._build_temporal_faces(tracks or [], gap_max)
         n_frames = len(self._temporal_faces)
         n_faces = sum(len(v) for v in self._temporal_faces.values())

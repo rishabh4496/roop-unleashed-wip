@@ -19,37 +19,14 @@ module.exports = async (kernel) => {
             // thread recovers most of the idle-thread imbalance (25-59% of chunk
             // time on static splits) for ~+19% warm-up recompute. See ProcessMgr.
             ROOP_STAB_BLOCKS_PER_THREAD: "2",
-            // Scan stride for the "Analyzing faces" pre-pass. Back to "1", which
-            // is the code default, after "2" was reported as flicker on a moving
-            // face with nothing in front of it — the exact failure the old
-            // comment here warned about, so this is the warning being taken
-            // rather than a new discovery.
-            //
-            // At "2" only frames 0, 2, 4... are ever detected. The others get a
-            // bbox, keypoints and 106 landmarks LINEARLY INTERPOLATED between
-            // their neighbours, and those decide the swap crop, the paste mask
-            // and the mouth region. Measured on the reported clip: 649 of 1281
-            // faces (51%) were interpolated. Linear is exact for a head moving
-            // steadily and wrong by the second-order term for one that is
-            // turning, so the registration alternates good/approximate every
-            // other frame — which is a 2-frame flicker on exactly the footage
-            // where the face is moving.
-            //
-            // The cost of "1" is real and worth stating: the pre-pass is
-            // detection-bound (profiled at track_wait 10.81ms/frame against
-            // track_detect 43.52ms across a 4-instance pool — the main thread is
-            // blocked on the detector ~97% of the time) and it is ~30% of a long
-            // run, so this roughly doubles it. On the reported clip that is
-            // track_detect 52.6s -> ~105s. Trading a minute of pre-pass for a
-            // swap that sits still is the right way round for a quality tool;
-            // set it back to "2" for footage with little head movement.
-            //
-            // Capped at ROOP_TEMPORAL_GAP (10) by the script either way, since a
-            // stride past the gap limit would leave skipped frames with no faces
-            // at all. The SWAP AUDIT now prints what fraction of the faces it
-            // actually swapped had interpolated landmarks — read that before
-            // changing this.
-            ROOP_TEMPORAL_STEP: "1",
+            // Scan stride for the "Analyzing faces" pre-pass. "auto" keeps the
+            // speed benefit of a two-frame stride on quiet footage, but runs the
+            // detector on a would-be skipped frame when the whole image or any
+            // tracked face is moving. Only quiet frames are linearly filled, so
+            // head turns keep the step=1 quality path without paying for it on
+            // every frame of a stable shot. Use "1" for an unconditional
+            // every-frame scan, or a numeric value for the legacy fixed stride.
+            ROOP_TEMPORAL_STEP: "auto",
             // ROOP_EXPR_POOL is deliberately NOT set here. It used to be pinned
             // to "2" — measured +28% on the expression stage for +654MB — but
             // this file ships to every install, and forcing two extra restorer

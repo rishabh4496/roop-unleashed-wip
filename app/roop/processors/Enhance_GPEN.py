@@ -86,6 +86,10 @@ class Enhance_GPEN():
         # engine loads and yanks the session out from under a Run() in flight
         # (NoneType io_binding / NaN → black face).
         self.sessions = {}
+        # GPEN Ultimate keeps one output binding per session.  Creating and
+        # configuring an io_binding for every face leaves TensorRT idle while
+        # the worker rebuilds the same binding metadata over and over.
+        self._io_bindings = {}
         self.pool = None
         self._pool_model_size = None
         self.profile = None
@@ -118,10 +122,28 @@ class Enhance_GPEN():
         if size not in self.sessions:
             self.sessions[size] = _build(size)
 
-        # GPEN Ultimate is the throughput profile.  The 256px network is already
-        # the fastest GPEN tier; independent TensorRT contexts remove the global
-        # one-session bottleneck when several video workers are active.  Keep the
-        # original GPEN tiers on their historical single-session path.
+        # replace Mac mps with cpu for the moment
+        self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
+        self.model_size = size
+        self.model_gpen = self.sessions[size]
+        self.name = self.model_gpen.get_inputs()[0].name
+        self.output_name = self.model_gpen.get_outputs()[0].name
+
+        def _new_io_binding(session):
+            binding = session.io_binding()
+            binding.bind_output(self.output_name, self.devicename)
+            return binding
+
+        # Restore Ultra already follows this pattern.  Limit the GPEN change to
+        # the new pooled/ultimate profile so the historical GPEN path remains
+        # unchanged for users who did not select GPEN Ultimate.
+        if self.profile == 'ultimate' and size not in self._io_bindings:
+            self._io_bindings[size] = _new_io_binding(self.model_gpen)
+
+        # GPEN Ultimate is the throughput profile: independent TensorRT contexts
+        # remove the global one-session bottleneck when several video workers are
+        # active.  Keep the original GPEN tiers on their historical single-session
+        # path.
         wants_pool = self.profile == 'ultimate' and session_pool.pooling_enabled()
         if (self.pool is not None and
                 (not wants_pool or self._pool_model_size != size)):
@@ -132,8 +154,10 @@ class Enhance_GPEN():
             n = session_pool.pool_size()
             extras = []
             try:
-                extras = [_build(size) for _ in range(n - 1)]
-                primary = self.sessions[size]
+                for _ in range(n - 1):
+                    extra_session = _build(size)
+                    extras.append((extra_session, _new_io_binding(extra_session)))
+                primary = (self.model_gpen, self._io_bindings[size])
                 self.pool = session_pool.SessionPool(
                     lambda i, _e=([primary] + extras): _e[i], n)
                 self._pool_model_size = size
@@ -144,13 +168,6 @@ class Enhance_GPEN():
                 print(f"[GPEN] multi-context pool unavailable ({e}); "
                       f"falling back to one session behind the GPU lock")
 
-        # replace Mac mps with cpu for the moment
-        self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
-        self.model_size = size
-        self.model_gpen = self.sessions[size]
-        self.name = self.model_gpen.get_inputs()[0].name
-        self.output_name = self.model_gpen.get_outputs()[0].name
-
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
         # preprocess
         input_size = temp_frame.shape[1]
@@ -160,20 +177,27 @@ class Enhance_GPEN():
         fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
 
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-        temp_frame = temp_frame.astype('float32') / 255.0
-        temp_frame = (temp_frame - 0.5) / 0.5
+        # Keep the same operation order as Restore Ultra, but avoid two
+        # temporary 512x512 float planes for every face.
+        temp_frame = temp_frame.astype('float32')
+        temp_frame /= 255.0
+        temp_frame -= 0.5
+        temp_frame /= 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
 
-        def _infer(session):
-            io_binding = session.io_binding()
+        def _infer(session, io_binding=None):
+            if io_binding is None:
+                io_binding = session.io_binding()
+                io_binding.bind_output(self.output_name, self.devicename)
             io_binding.bind_cpu_input(self.name, temp_frame)
-            io_binding.bind_output(self.output_name, self.devicename)
             session.run_with_iobinding(io_binding)
             return io_binding.copy_outputs_to_cpu()
 
         if self.pool is not None:
-            with self.pool.lease() as session:
-                ort_outs = _infer(session)
+            with self.pool.lease() as (session, io_binding):
+                ort_outs = _infer(session, io_binding)
+        elif self.profile == 'ultimate':
+            ort_outs = _infer(self.model_gpen, self._io_bindings[self.model_size])
         else:
             ort_outs = _infer(self.model_gpen)
         result = ort_outs[0][0]
@@ -190,7 +214,8 @@ class Enhance_GPEN():
 
         # post-process
         result = np.clip(result, -1, 1)
-        result = (result + 1) / 2
+        result += 1
+        result /= 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
         result, scale_factor = sized(result.astype(np.uint8), input_size)
@@ -206,5 +231,6 @@ class Enhance_GPEN():
             self.pool.release()
             self.pool = None
         self._pool_model_size = None
+        self._io_bindings.clear()
         self.sessions.clear()
         self.model_gpen = None

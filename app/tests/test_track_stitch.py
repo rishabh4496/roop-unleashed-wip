@@ -472,16 +472,13 @@ class TheMechanicsHold(unittest.TestCase):
         self.assertEqual(len(_prof_times), 0)
         self.assertEqual(len(_prof_counts), 0)
 
-    def test_the_launcher_scans_every_frame(self):
-        """The stride is what makes most of those interpolated faces, and it is a
-        launcher setting rather than a code default — so the code default being
-        1 is not enough on its own."""
+    def test_the_launcher_uses_the_adaptive_temporal_scan(self):
+        """The launcher opts into the motion-gated stride rather than a fixed
+        stride that would interpolate through a moving face."""
         import re
         js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                '..', '..', 'start_react.js'), encoding='utf-8').read()
-        m = re.search(r'ROOP_TEMPORAL_STEP:\s*"(\d+)"', js)
-        self.assertIsNotNone(m, 'ROOP_TEMPORAL_STEP is no longer pinned here')
-        self.assertEqual(m.group(1), '1')
+        self.assertRegex(js, r'ROOP_TEMPORAL_STEP:\s*"auto"')
 
     def test_first_bbox_is_recorded_at_creation(self):
         """The link compares one track's LAST position with the next one's

@@ -34,6 +34,7 @@ class _FakeIOBinding:
 class _FakeSession:
     created = 0
     providers_seen = []
+    io_bindings_created = 0
 
     def __init__(self, path, options, providers):
         type(self).created += 1
@@ -46,6 +47,7 @@ class _FakeSession:
         return [type('Output', (), {'name': 'y'})()]
 
     def io_binding(self):
+        type(self).io_bindings_created += 1
         return _FakeIOBinding()
 
     def run_with_iobinding(self, io_binding):
@@ -377,6 +379,7 @@ class GpenUltimateRuntime(unittest.TestCase):
         }
         try:
             _FakeSession.created = 0
+            _FakeSession.io_bindings_created = 0
             module.onnxruntime = types.SimpleNamespace(InferenceSession=_FakeSession)
             module.conditional_download = lambda _dir, _urls: None
             module.resolve_relative_path = lambda path: path
@@ -388,12 +391,16 @@ class GpenUltimateRuntime(unittest.TestCase):
             processor.Initialize({'devicename': 'cpu'})
             result, scale = processor.Run(
                 None, None, np.zeros((512, 512, 3), dtype=np.uint8))
+            processor.Run(None, None, np.zeros((512, 512, 3), dtype=np.uint8))
 
             self.assertEqual(processor.model_size, 512)
             self.assertTrue(getattr(processor, 'force_align', False))
             self.assertEqual(getattr(processor, 'model_template', None), 'ffhq_512')
             self.assertIsNotNone(processor.pool)
             self.assertEqual(_FakeSession.created, 3)
+            self.assertEqual(_FakeSession.io_bindings_created, 3)
+            self.assertTrue(all(isinstance(item, tuple) and len(item) == 2
+                                for item in processor.pool._items))
             self.assertEqual(result.shape, (512, 512, 3))
             self.assertEqual(scale, 1)
             processor.Release()
