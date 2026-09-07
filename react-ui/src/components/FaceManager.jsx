@@ -5,13 +5,21 @@ import { Section, Slider, Toggle, Button } from './ui';
 // Detector engines the Face Manager can extract with. SCRFD is buffalo_l's
 // built-in detector (the pipeline default); the others help harvest faces from
 // footage where a different detector locks on better.
-const DETECTORS = [
-  { id: 'scrfd', label: 'SCRFD (default)' },
-  { id: 'retinaface', label: 'RetinaFace 10G' },
-  { id: 'retinaface_r50', label: 'RetinaFace R50' },
-  { id: 'yoloface', label: 'YOLOFace' },
-  { id: 'yunet', label: 'YuNet' },
-];
+//
+// The LIST comes from meta.detector_engines, not from here — a hand-maintained
+// copy of a backend enum drifts, and when it does the symptom is silent (the
+// backend falls back to its default and the panel keeps showing the name you
+// picked). This is only the display labels, and an engine with no entry falls
+// back to its own id, so a new backend engine appears here the day it is added
+// rather than the day someone remembers to list it.
+const DETECTOR_LABELS = {
+  scrfd: 'SCRFD (default)',
+  retinaface: 'RetinaFace 10G',
+  retinaface_r50: 'RetinaFace R50',
+  yoloface: 'YOLOFace',
+  yunet: 'YuNet',
+};
+const DETECTOR_FALLBACK = ['scrfd', 'retinaface', 'retinaface_r50', 'yoloface', 'yunet'];
 
 // Score → colour band. These thresholds are advisory (the numbers are a
 // composite FIQA score, not a hard classifier), so keep the bands gentle.
@@ -22,7 +30,17 @@ const TONE = {
   red: { text: 'text-red-400', ring: 'ring-red-400/40', bg: 'bg-red-500/15' },
 };
 
-export default function FaceManager({ notify, registerFileListener }) {
+// `meta` is renamed on the way in: this component already has a `meta` state of
+// its own (the per-face quality breakdowns), and two bindings of that name in
+// one scope is a redeclaration, not a shadow.
+export default function FaceManager({ meta: appMeta, notify, registerFileListener }) {
+  const detectors = useMemo(() => {
+    const ids = Array.isArray(appMeta?.detector_engines) && appMeta.detector_engines.length
+      ? appMeta.detector_engines
+      : DETECTOR_FALLBACK;
+    return ids.map((id) => ({ id, label: DETECTOR_LABELS[id] || id }));
+  }, [appMeta]);
+
   const [faces, setFaces] = useState([]);   // data-URL thumbnails
   const [scores, setScores] = useState([]); // parallel FIQA scores 0..1
   const [meta, setMeta] = useState([]);     // parallel breakdown dicts
@@ -150,7 +168,7 @@ export default function FaceManager({ notify, registerFileListener }) {
               onChange={(e) => setDetector(e.target.value)}
               className="mt-1.5 w-full px-3 py-2 rounded-lg glass-input text-white text-sm focus:outline-none"
             >
-              {DETECTORS.map((d) => <option key={d.id} value={d.id} className="bg-[#121420]">{d.label}</option>)}
+              {detectors.map((d) => <option key={d.id} value={d.id} className="bg-[#121420]">{d.label}</option>)}
             </select>
             <span className="mt-1 block text-mini text-white/45">Engine used to find & align faces on add / cut.</span>
           </label>

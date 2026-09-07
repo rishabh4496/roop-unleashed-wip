@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { postJSON } from '../../api';
+import { runExclusive } from './previewGate';
 
 // ── One comparison grid's preview loader ──────────────────────────────────
 // Renders one preview per selected variant, holding every OTHER setting fixed,
@@ -23,6 +24,12 @@ import { postJSON } from '../../api';
 // and after every await: when the effect is torn down (grid closed, frame
 // scrubbed, a setting changed) the in-flight cell finishes but its result is
 // dropped rather than written into the state of a grid that has moved on.
+//
+// ── Serialisation ─────────────────────────────────────────────────────────
+// Rendering cells in sequence is not on its own enough, because this loader is
+// not the only thing calling /api/preview. Every request goes through
+// previewGate so a cell can never overlap the main preview or another surface —
+// see previewGate.js for what overlapping actually costs.
 
 const TIMER_TICK_MS = 100;
 
@@ -51,21 +58,31 @@ export default function useGridPreviewLoader({
     const load = async () => {
       const available = allowed ? selection.filter((v) => allowed.includes(v)) : selection;
 
-      // Drop cells for variants no longer selected, keep the ones still shown —
-      // deselecting one must not blank the others back to a spinner.
-      const keepOnly = (prev) => {
+      const cacheKeyFor = (value) =>
+        `${selTarget}_${frame}_${previewSignature({ ...settings, [paramKey]: value }, fakePreview)}_${cacheSuffix}`;
+
+      // Which cells on screen are already a render of the CURRENT settings.
+      // Everything else is dropped, and that distinction is the whole point:
+      // deselecting one variant must not blank the others back to a spinner
+      // (they are still correct), but a SETTINGS change invalidates all of
+      // them — and keeping those on screen left the previous settings' pictures
+      // up, with no spinner, while the new ones rendered one at a time behind
+      // them. The grid then reads as "nothing happened when I changed
+      // anything", which is exactly the failure a comparison grid must not have.
+      const fresh = new Set(available.filter((v) => previewCacheRef.current[cacheKeyFor(v)]));
+      const keepFresh = (prev) => {
         const reset = {};
-        for (const v of available) if (prev[v]) reset[v] = prev[v];
+        for (const v of available) if (fresh.has(v) && prev[v]) reset[v] = prev[v];
         return reset;
       };
-      setPreviews(keepOnly);
-      setTimes(keepOnly);
-      setTimers(keepOnly);
+      setPreviews(keepFresh);
+      setTimes(keepFresh);
+      setTimers(keepFresh);
 
       for (const value of available) {
         if (!activeCheck()) return;
         const localParams = { ...settings, [paramKey]: value };
-        const cacheKey = `${selTarget}_${frame}_${previewSignature(localParams, fakePreview)}_${cacheSuffix}`;
+        const cacheKey = cacheKeyFor(value);
 
         if (previewCacheRef.current[cacheKey]) {
           if (!activeCheck()) return;
@@ -88,9 +105,9 @@ export default function useGridPreviewLoader({
             setTimers((prev) => ({ ...prev, [value]: `${((Date.now() - start) / 1000).toFixed(1)}s` }));
           }, TIMER_TICK_MS);
 
-          const res = await postJSON('/api/preview', buildPreviewPayload(localParams, {
+          const res = await runExclusive(() => postJSON('/api/preview', buildPreviewPayload(localParams, {
             index: selTarget, frame, fake: fakePreview,
-          }));
+          })));
           const duration = ((Date.now() - start) / 1000).toFixed(2);
           stopTimer();
           if (!activeCheck()) return;

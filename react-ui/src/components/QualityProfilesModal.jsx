@@ -3,7 +3,35 @@ import { motion, AnimatePresence, spring } from '../motion';
 import { Card, Button, MotionIcon } from './ui';
 import { Icon } from '../icons';
 import { confirmDialog } from './confirm';
+import { heuristicMsPerFrame } from './faceswap/useRuntimeEstimate';
 
+// ── Built-in profiles ─────────────────────────────────────────────────────
+// Each is a NAME, a description and a settings patch. Nothing else: what the
+// profile does to your settings, and what that costs, are both derived from the
+// patch by evaluateCustomProfileMetrics below.
+//
+// They used to carry two more things, and both were wrong in the way a
+// hand-written duplicate always eventually is:
+//
+//   `fps` / `msPerFrame` / `timePer1000f` — three performance figures per
+//   profile, typed in by hand. No machine produced them, they did not depend on
+//   your GPU, and they sat in the card next to the CUSTOM profiles, whose
+//   numbers came from an actual (if rough) model — so the two halves of the
+//   same modal were not comparable.
+//
+//   `settingsSummary` — a hand-written list of what the profile turns on, which
+//   had already drifted from the patch beside it. Ultra Fast claimed "NVDEC
+//   Decode: Auto GPU" and "Batched Swap: Enabled" from a patch that sets
+//   neither; Multi-Person Ensemble claimed "Auto Threads: Dynamic Scaling" the
+//   same way. The summary is now read off the patch, so it cannot say the
+//   profile does something the profile does not do.
+//
+// The values are NUMBERS, not the strings they used to be. `max_face_distance:
+// '0.85'` reached the backend correctly (faceswap/utils.num coerces), but the
+// Slider Tracker bar uses a stricter check and fell back to the DEFAULT for any
+// non-number — so applying Ultra Fast set face distance to 0.85 while the
+// slider above the preview showed 0.75. Two different numbers for one setting,
+// one of them on screen and the other in the render.
 export const BUILTIN_PROFILES = [
   {
     id: 'fast',
@@ -11,23 +39,12 @@ export const BUILTIN_PROFILES = [
     badge: 'MAX SPEED',
     variant: 'amber',
     icon: Icon.brand,
-    fps: 75,
-    msPerFrame: 13,
-    timePer1000f: 13,
     description: 'Minimal latency for live previewing and fast draft passes. Subsamples tiles and disables heavy restorer passes.',
-    settingsSummary: [
-      { label: 'Enhancer Pass', value: 'Disabled (None)', active: false },
-      { label: 'Subsample Upscale', value: '128px (Draft)', active: true },
-      { label: 'Max Face Distance', value: '0.85 (Lenient)', active: true },
-      { label: 'Swap Steps', value: '1 Step', active: true },
-      { label: 'NVDEC Decode', value: 'Auto GPU', active: true },
-      { label: 'Batched Swap', value: 'Enabled', active: true },
-    ],
     settingsPatch: {
       selected_enhancer: 'None',
       subsample_upscale: '128px',
-      max_face_distance: '0.85',
-      num_swap_steps: '1',
+      max_face_distance: 0.85,
+      num_swap_steps: 1,
     },
   },
   {
@@ -36,23 +53,12 @@ export const BUILTIN_PROFILES = [
     badge: 'PREMIUM QUALITY',
     variant: 'accent',
     icon: Icon.brand,
-    fps: 32,
-    msPerFrame: 31,
-    timePer1000f: 31,
     description: 'Full resolution restoration with Restoreformer++ and DFL XSeg neural mask parsing. Maximum visual realism.',
-    settingsSummary: [
-      { label: 'Enhancer Pass', value: 'Restoreformer++', active: true },
-      { label: 'Subsample Upscale', value: '512px (Ultra High)', active: true },
-      { label: 'Max Face Distance', value: '0.75 (Strict)', active: true },
-      { label: 'Swap Steps', value: '2 Steps (Precision)', active: true },
-      { label: 'Mask Parse Engine', value: 'DFL XSeg Neural', active: true },
-      { label: 'NVDEC Decode', value: 'Auto GPU', active: true },
-    ],
     settingsPatch: {
       selected_enhancer: 'Restoreformer++',
       subsample_upscale: '512px',
-      max_face_distance: '0.75',
-      num_swap_steps: '2',
+      max_face_distance: 0.75,
+      num_swap_steps: 2,
       mask_engine: 'DFL XSeg',
     },
   },
@@ -62,20 +68,14 @@ export const BUILTIN_PROFILES = [
     badge: 'IDENTITY TRACKING',
     variant: 'cyan',
     icon: Icon.faces,
-    fps: 38,
-    msPerFrame: 26,
-    timePer1000f: 26,
-    description: 'CodeFormer restorer with dense identity tracking across multi-face group scenes.',
-    settingsSummary: [
-      { label: 'Enhancer Pass', value: 'CodeFormer', active: true },
-      { label: 'Max Face Distance', value: '0.75 (Strict)', active: true },
-      { label: 'Identity Tracking', value: 'Dense Rank Tracking', active: true },
-      { label: 'Auto Threads', value: 'Dynamic Scaling', active: true },
-      { label: 'NVDEC Decode', value: 'Auto GPU', active: true },
-    ],
+    description: 'Codeformer restorer with dense identity tracking across multi-face group scenes.',
     settingsPatch: {
-      selected_enhancer: 'CodeFormer',
-      max_face_distance: '0.75',
+      // 'Codeformer', not 'CodeFormer'. The backend matches the enhancer name
+      // exactly and falls through to NO enhancer when nothing matches, so this
+      // profile — whose own card advertised the restorer — was the one profile
+      // that shipped with its headline feature silently switched off.
+      selected_enhancer: 'Codeformer',
+      max_face_distance: 0.75,
       track_identities: true,
     },
   },
@@ -85,16 +85,7 @@ export const BUILTIN_PROFILES = [
     badge: 'VRAM OPTIMIZED',
     variant: 'emerald',
     icon: Icon.cpu,
-    fps: 48,
-    msPerFrame: 21,
-    timePer1000f: 21,
     description: 'In-Memory video swapping with capped tensor context allocations. Designed for GPUs with 8GB-12GB VRAM.',
-    settingsSummary: [
-      { label: 'Enhancer Pass', value: 'Restoreformer++', active: true },
-      { label: 'Video Swapping', value: 'In-Memory Stream', active: true },
-      { label: 'TRT Context Pool', value: 'Auto Tiered', active: true },
-      { label: 'Batched Swap', value: 'Enabled', active: true },
-    ],
     settingsPatch: {
       selected_enhancer: 'Restoreformer++',
       video_swapping_method: 'In-Memory processing',
@@ -102,36 +93,38 @@ export const BUILTIN_PROFILES = [
   },
 ];
 
-// Helper to estimate processing latency and summary for custom profiles
+// What a profile costs and what it changes, both read off its settings patch.
+//
+// The cost goes through the SAME heuristic as the Face Swap tab's pre-run
+// estimate and the Batch Matrix's queue estimate, so the three agree. This used
+// to be a fourth, private model — and one that tested the enhancer against
+// 'CodeFormer', a name the backend does not use, so the branch it guarded could
+// never be taken.
 export function evaluateCustomProfileMetrics(settings = {}) {
   const enhancer = settings.selected_enhancer || 'None';
   const hasEnhancer = enhancer !== 'None';
   const res = settings.subsample_upscale || 'Original';
   const mask = settings.mask_engine || 'Auto';
-  const nvdec = settings.perf_nvdec || 'auto';
-  const batch = settings.perf_batch_swap || 'auto';
 
-  let baseMs = 13;
-  if (hasEnhancer) {
-    if (enhancer === 'CodeFormer' || enhancer === 'Restoreformer++') baseMs += 18;
-    else if (enhancer === 'GPEN' || enhancer === 'DMDNet') baseMs += 25;
-    else baseMs += 14;
-  }
-  if (res === '512px') baseMs += 8;
-  if (mask === 'DFL XSeg') baseMs += 6;
-
-  const fps = Math.max(10, Math.round(1000 / baseMs));
-  const timePer1000f = Math.round(1000 / fps);
+  const msPerFrame = Math.max(1, Math.round(heuristicMsPerFrame(settings, undefined)));
+  const fps = Math.max(1, Math.round(1000 / msPerFrame));
+  const timePer1000f = Math.round((1000 * msPerFrame) / 1000);
 
   const summary = [
-    { label: 'Enhancer Pass', value: enhancer, active: hasEnhancer },
+    { label: 'Enhancer Pass', value: hasEnhancer ? enhancer : 'None', active: hasEnhancer },
     { label: 'Subsample Upscale', value: res, active: res !== 'Original' },
-    { label: 'Masking Engine', value: mask, active: mask !== 'Auto' },
-    { label: 'NVDEC Decode', value: String(nvdec).toUpperCase(), active: nvdec !== 'off' && nvdec !== false },
-    { label: 'Batched Swap', value: String(batch).toUpperCase(), active: batch !== 'off' && batch !== false },
-  ];
+    { label: 'Masking Engine', value: mask, active: mask !== 'Auto' && mask !== 'None' },
+    { label: 'Max Face Distance', value: String(settings.max_face_distance ?? '—'),
+      active: settings.max_face_distance != null },
+    { label: 'Swap Steps', value: String(settings.num_swap_steps ?? '—'),
+      active: settings.num_swap_steps != null },
+    { label: 'Identity Tracking', value: settings.track_identities ? 'On' : 'Off',
+      active: !!settings.track_identities },
+    { label: 'Video Method', value: settings.video_swapping_method || '—',
+      active: !!settings.video_swapping_method },
+  ].filter((row) => row.value !== '—');
 
-  return { fps, msPerFrame: baseMs, timePer1000f, summary };
+  return { fps, msPerFrame, timePer1000f, summary };
 }
 
 export default function QualityProfilesModal({
@@ -379,6 +372,10 @@ export default function QualityProfilesModal({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {BUILTIN_PROFILES.map((prof) => {
                   const isActive = activeProfileId === prof.id;
+                  // Derived from the patch, exactly like the custom cards below,
+                  // so the two halves of this modal are comparable.
+                  const { fps, msPerFrame, timePer1000f, summary } =
+                    evaluateCustomProfileMetrics(prof.settingsPatch);
                   return (
                     <Card
                       key={prof.id}
@@ -415,15 +412,15 @@ export default function QualityProfilesModal({
                       <div className="grid grid-cols-3 gap-2 p-2.5 rounded-xl bg-black/40 border border-white/5 text-center">
                         <div>
                           <span className="text-nano text-white/40 block">Est. Speed</span>
-                          <span className="text-xs font-bold text-emerald-400 font-mono">~{prof.fps} FPS</span>
+                          <span className="text-xs font-bold text-emerald-400 font-mono">~{fps} FPS</span>
                         </div>
                         <div>
                           <span className="text-nano text-white/40 block">Latency</span>
-                          <span className="text-xs font-bold text-amber-400 font-mono">~{prof.msPerFrame} ms/f</span>
+                          <span className="text-xs font-bold text-amber-400 font-mono">~{msPerFrame} ms/f</span>
                         </div>
                         <div>
                           <span className="text-nano text-white/40 block">1,000 Frames</span>
-                          <span className="text-xs font-bold text-cyan-400 font-mono">~{prof.timePer1000f} sec</span>
+                          <span className="text-xs font-bold text-cyan-400 font-mono">~{timePer1000f} sec</span>
                         </div>
                       </div>
 
@@ -433,7 +430,7 @@ export default function QualityProfilesModal({
                           ⚙️ Settings Summary (ON):
                         </span>
                         <div className="grid grid-cols-2 gap-1.5">
-                          {prof.settingsSummary.map((st, i) => (
+                          {summary.map((st, i) => (
                             <div
                               key={i}
                               className={`px-2 py-1 rounded text-nano flex items-center justify-between ${

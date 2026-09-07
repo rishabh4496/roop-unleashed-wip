@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { postJSON } from '../api';
+import { runExclusive } from './faceswap/previewGate';
 import { PERSON_COLORS } from './constants';
 import { confirmDialog } from './confirm';
 import { Icon } from '../icons';
@@ -82,10 +83,17 @@ export default function PersonGroups({
   const nameFor = (rank) => (targetNames && targetNames[rank]) || '';
   const labelFor = (rank) => nameFor(rank) || `Person ${rank + 1}`;
 
-  const call = async (path, body, okMsg) => {
+  // `gpu` marks the endpoints that actually run the detector on the shared
+  // pool (capturing an angle, re-clustering). Those are serialised against the
+  // live preview and the comparison grids — this panel lives on the Face Swap
+  // tab, where a preview refresh can be in flight at any moment, and two
+  // detection passes at once corrupt each other. The bookkeeping calls
+  // (rename, regroup, remove) touch no GPU and are left alone.
+  const call = async (path, body, okMsg, { gpu = false } = {}) => {
     setBusy(true);
     try {
-      const res = await postJSON(path, body);
+      const send = () => postJSON(path, body);
+      const res = await (gpu ? runExclusive(send) : send());
       applyPayload(res);
       if (res && res.message && !res.count) {
         notify(res.message, 'warning');
@@ -108,7 +116,7 @@ export default function PersonGroups({
   };
 
   const addAngle = (rank) => call('/api/target/add_angle', { person: rank, index: selTarget, frame },
-    `Captured a new angle for ${labelFor(rank)}`);
+    `Captured a new angle for ${labelFor(rank)}`, { gpu: true });
 
   // Scan the whole video and auto-capture this person at many poses, filling
   // their angle bank so identity survives turns without manual capturing.
@@ -118,7 +126,11 @@ export default function PersonGroups({
   const autoAngles = async (rank) => {
     setHarvesting(rank);
     try {
-      const res = await postJSON('/api/target/auto_angles', { person: rank, index: selTarget });
+      // A whole-video scan on the shared detector pool. It holds the GPU queue
+      // for its duration, which is the point: a preview fired mid-scan would
+      // fight it. See faceswap/previewGate.
+      const res = await runExclusive(() =>
+        postJSON('/api/target/auto_angles', { person: rank, index: selTarget }));
       applyPayload(res);
       const detail = res.scanned
         ? ` — scanned ${res.scanned} frames in ${res.seconds}s, ${res.bins} pose bin${res.bins === 1 ? '' : 's'} covered`
@@ -155,7 +167,7 @@ export default function PersonGroups({
   };
 
   const autoCluster = async () => {
-    const res = await call('/api/target/autocluster', {});
+    const res = await call('/api/target/autocluster', {}, undefined, { gpu: true });
     if (res) { setExpanded({}); notify(`Grouped into ${res.people} ${res.people === 1 ? 'person' : 'people'}`); }
   };
 

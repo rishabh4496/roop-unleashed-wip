@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { postJSON } from '../../api';
+import { runExclusive } from './previewGate';
 
 // ── Clip advisor ──────────────────────────────────────────────────────────
 // Samples the selected target (face sizes, count, detection coverage, motion,
@@ -39,7 +40,11 @@ export default function useClipAdvisor({ targets, selTarget, settings, set, noti
     setAdvisorBusy(true);
     setAdvice(null);
     try {
-      const res = await postJSON('/api/advisor', { index: selTarget, settings });
+      // Samples the clip and runs detection over it — the same shared pool the
+      // preview and the comparison grids use, so it queues behind them rather
+      // than competing. See faceswap/previewGate.
+      const res = await runExclusive(() =>
+        postJSON('/api/advisor', { index: selTarget, settings }));
       setAdvice(res);
       if (res.recommendations?.length === 0 && !res.message) notify('Settings already fit this clip ✓');
     } catch (e) { notify(e.message, 'error'); } finally { setAdvisorBusy(false); }

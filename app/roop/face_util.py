@@ -35,6 +35,7 @@ _ANALYSER_DET_SIZE = None         # det_size the pool was built with (rebuild on
 _ANALYSER_DET_THRESH = None       # det_thresh the pool was built with (rebuild on change)
 _ANALYSER_ENGINE = None           # detector engine the pool was built with (rebuild on change)
 _ANALYSER_LM68_LAZY = None        # lm68_lazy the pool was built with (rebuild on change)
+_ANALYSER_FORCE_CPU = None        # force_cpu the pool was built with (rebuild on change)
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
@@ -126,18 +127,27 @@ def _ensure_face_analyser():
     changed, or when the detection resolution (face_detector_size) or threshold changed. Returns
     the primary instance."""
     global FACE_ANALYSER, FACE_ANALYSER_POOL, _ANALYSER_Q, _ANALYSER_DET_SIZE, _ANALYSER_DET_THRESH
-    global _ANALYSER_ENGINE, _ANALYSER_LM68_LAZY
+    global _ANALYSER_ENGINE, _ANALYSER_LM68_LAZY, _ANALYSER_FORCE_CPU
     # Fast path (no lock): pool is built once before the run and the module set,
     # det_size, det_thresh, and engine are stable during it, so the hot per-frame detect path skips the lock.
     cur_det_thresh = getattr(roop.globals, 'face_detector_threshold', 0.60)
     cur_engine = _current_engine()
     cur_lm68_lazy = bool(getattr(roop.globals, 'lm68_lazy', False))
+    # force_cpu decides the providers _build_face_analyser hands to InsightFace,
+    # so it belongs in this set for the same reason the other four do. It was
+    # missing, which made the Settings toggle "Force CPU for face analyser" a
+    # control that did nothing: the value saved, the marker appeared beside it,
+    # and the already-built pool carried on using the GPU until some UNRELATED
+    # change (a different detector engine, a different detection resolution)
+    # happened to rebuild it — or until the app was restarted.
+    cur_force_cpu = bool(roop.globals.CFG.force_cpu) if roop.globals.CFG is not None else False
     if (FACE_ANALYSER_POOL
             and roop.globals.g_current_face_analysis == roop.globals.g_desired_face_analysis
             and _ANALYSER_DET_SIZE == _desired_det_size()
             and _ANALYSER_DET_THRESH == cur_det_thresh
             and _ANALYSER_ENGINE == cur_engine
-            and _ANALYSER_LM68_LAZY == cur_lm68_lazy):
+            and _ANALYSER_LM68_LAZY == cur_lm68_lazy
+            and _ANALYSER_FORCE_CPU == cur_force_cpu):
         return FACE_ANALYSER
     with THREAD_LOCK_ANALYSER:
         if (not FACE_ANALYSER_POOL
@@ -145,12 +155,14 @@ def _ensure_face_analyser():
                 or _ANALYSER_DET_SIZE != _desired_det_size()
                 or _ANALYSER_DET_THRESH != cur_det_thresh
                 or _ANALYSER_ENGINE != cur_engine
-                or _ANALYSER_LM68_LAZY != cur_lm68_lazy):
+                or _ANALYSER_LM68_LAZY != cur_lm68_lazy
+                or _ANALYSER_FORCE_CPU != cur_force_cpu):
             roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
             _ANALYSER_DET_SIZE = _desired_det_size()
             _ANALYSER_DET_THRESH = cur_det_thresh
             _ANALYSER_ENGINE = cur_engine
             _ANALYSER_LM68_LAZY = cur_lm68_lazy
+            _ANALYSER_FORCE_CPU = cur_force_cpu
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
             n = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1

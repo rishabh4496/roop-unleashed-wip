@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmHost, confirmDialog } from './components/confirm';
 import { fmtTime } from './components/faceswap/utils';
 import useRunCompleteAlert from './components/faceswap/useRunCompleteAlert';
+import useTelemetry from './components/faceswap/useTelemetry';
 import { themeByName, allThemes, applyThemeToDom } from './themes';
 import { SETTINGS_CATALOG, focusSetting } from './components/settingsCatalog';
 import { motion, AnimatePresence, MotionConfig, spring, viewTransition } from './motion';
@@ -277,6 +278,8 @@ export default function App() {
   }, [zoom]);
 
   const [showHud, setShowHud] = useState(false);
+  // Only polled while the HUD is actually open — see useTelemetry.
+  const hudTelemetry = useTelemetry(3000, showHud);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [showProfilesModal, setShowProfilesModal] = useState(false);
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false);
@@ -930,24 +933,45 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hardware Telemetry HUD Banner */}
+      {/* ── Hardware Telemetry HUD ──────────────────────────────────────────
+          Every one of these four readouts used to be a hardcoded string:
+          "CUDA / TensorRT (FP16)", "2.0 GB Capped Arena", "OpenCV (1 thread)",
+          and — under a heading that says "Engine Connection" — a literal
+          "Online (0.2 ms latency)". A panel labelled Hardware Telemetry that
+          reports invented numbers is worse than no panel: it stayed green while
+          the backend was down, and it claimed TensorRT on a CPU-only machine.
+          These now come from /api/system/telemetry (the same poll the
+          Processing tab's diagnostics use) and from the state this shell
+          already holds, and say "—" when a value is not available. */}
       {showHud && (
         <div className="w-[98%] mx-auto mt-3 p-4 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs text-white shadow-xl animate-slide-up z-30 relative">
           <div className="flex flex-col">
-            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">Execution Engine</span>
-            <span className="font-mono text-emerald-400 font-bold">CUDA / TensorRT (FP16)</span>
+            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">Execution Provider</span>
+            <span className="font-mono text-emerald-400 font-bold">
+              {meta?.providers?.length ? meta.providers.join(' / ') : '—'}
+            </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">VRAM Workspace</span>
-            <span className="font-mono text-amber-300 font-bold">2.0 GB Capped Arena</span>
+            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">VRAM</span>
+            <span className="font-mono text-amber-300 font-bold">
+              {hudTelemetry?.vram_total
+                ? `${hudTelemetry.vram_used ?? 0} / ${hudTelemetry.vram_total} GB`
+                : '—'}
+            </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">CPU Threading</span>
-            <span className="font-mono text-cyan-300 font-bold">OpenCV (1 thread)</span>
+            <span className="text-nano font-semibold uppercase tracking-wider text-white/40">CPU / RAM</span>
+            <span className="font-mono text-cyan-300 font-bold">
+              {hudTelemetry
+                ? `${Math.round(hudTelemetry.cpu_percent ?? 0)}%  ·  ${hudTelemetry.ram_used ?? 0} / ${hudTelemetry.ram_total ?? 0} GB`
+                : '—'}
+            </span>
           </div>
           <div className="flex flex-col">
             <span className="text-nano font-semibold uppercase tracking-wider text-white/40">Engine Connection</span>
-            <span className="font-mono text-emerald-400 font-bold">Online (0.2 ms latency)</span>
+            <span className={`font-mono font-bold ${offline || error ? 'text-red-400' : 'text-emerald-400'}`}>
+              {error ? 'Unreachable' : offline ? 'Reconnecting…' : 'Online'}
+            </span>
           </div>
         </div>
       )}
@@ -1099,6 +1123,7 @@ export default function App() {
                 )}
                 {tab === 'batch' && (
                   <BatchSwap
+                    meta={meta}
                     settings={settings}
                     notify={notify}
                     progress={progress}
@@ -1115,7 +1140,7 @@ export default function App() {
                     onToggleDesktopAlerts={toggleDesktopAlerts}
                   />
                 )}
-                {tab === 'facemgr' && <FaceManager notify={notify} registerFileListener={registerFileListener} />}
+                {tab === 'facemgr' && <FaceManager meta={meta} notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'extras' && <Extras notify={notify} registerFileListener={registerFileListener} />}
                 {tab === 'gallery' && <Gallery notify={notify} setSettings={setSettings} setTab={setTab} />}
                 {tab === 'history' && <RunHistory notify={notify} setSettings={setSettings} setTab={setTab} />}

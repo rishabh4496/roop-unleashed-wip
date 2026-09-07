@@ -44,7 +44,14 @@ const sigPayload = (p) => ({
 
 // Rough wall-clock cost of a frame from the settings alone, used before there
 // is anything measured to go on (and blended in when the measurement is thin).
-const heuristicMsPerFrame = (p, threads) => {
+//
+// Exported because the Batch Matrix needs the same answer for jobs that are
+// staged but not yet running, where there is no single "current settings" to
+// ask the backend about. It had its own version of this — a flat 115 ms with an
+// enhancer and 35 ms without — which ignored detection resolution, swap steps,
+// tracking and thread count, and so reported the same runtime for a 320px
+// single-step job and a 1280px three-step one.
+export const heuristicMsPerFrame = (p, threads) => {
   let ms = 45;
   if (p.selected_enhancer && p.selected_enhancer !== 'None') ms += 70;
   const det = parseInt(p.face_detector_size || '640', 10) || 640;

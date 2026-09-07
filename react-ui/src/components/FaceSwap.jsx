@@ -35,6 +35,7 @@ import useUserDefaults from './faceswap/useUserDefaults';
 import useViewPersistence from './faceswap/useViewPersistence';
 import usePlaybackBuffer from './faceswap/usePlaybackBuffer';
 import useGridPreviewLoader from './faceswap/useGridPreviewLoader';
+import { runExclusive } from './faceswap/previewGate';
 import useWorkspaceLayout from './faceswap/useWorkspaceLayout';
 import { TRACKER_DEFAULT_VALUES, TRACKER_BYPASS_VALUES } from './faceswap/trackerConfig';
 import { TiltCard } from '../motion';
@@ -570,7 +571,10 @@ export default function FaceSwap({
   const sliderEffectMounted = useRef(false);
   useEffect(() => {
     if (!sliderEffectMounted.current) { sliderEffectMounted.current = true; return; }
-    refreshPreview({ force: true });
+    // refreshNow, not refreshPreview: this toggle sits above the stage, so it is
+    // reachable with a comparison grid up, and there it has to redo the grid.
+    // (Declared further down; the effect body only runs after the render.)
+    refreshNow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sliderEffectEnabled]);
 
@@ -654,7 +658,10 @@ export default function FaceSwap({
 
   const resetTrackerSliders = () => {
     Object.entries(TRACKER_DEFAULT_VALUES).forEach(([k, v]) => set(k, v));
-    refreshPreview({ force: true });
+    // Deferred, not called here: see forcePreview. Calling refreshPreview
+    // directly rendered the values being reset AWAY FROM, because this closure
+    // still holds the pre-reset `p`.
+    forcePreview();
   };
 
   // index/frame are separate cache dimensions, so they are zeroed here rather
@@ -786,13 +793,23 @@ export default function FaceSwap({
     
     previewBusyRef.current = true;
     setPreviewing(true);
-    // Safety net: the first run of a new model downloads it and builds a
-    // TensorRT/CUDA engine (minutes). Abort after 15 min so a genuine hang can
-    // never wedge the single-flight guard permanently.
-    const ctrl = new AbortController();
-    const killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
+    let killer = null;
     try {
-      const res = await postJSON('/api/preview', buildPreviewPayload(p, { index: idx, frame: fr, fake }), { signal: ctrl.signal });
+      // Through the tab-wide gate, not straight out on the wire. `previewBusyRef`
+      // above only stops THIS function overlapping itself; the comparison grids
+      // and the single-frame upscale call the same endpoint from their own
+      // loops, and the backend cannot survive two of those at once — see
+      // faceswap/previewGate.
+      //
+      // The 15-minute abort (a first run downloads the model and builds a
+      // TensorRT engine) is armed INSIDE the gate, so time spent waiting for a
+      // grid ahead of us in the queue is not billed against this request's
+      // deadline.
+      const res = await runExclusive(() => {
+        const ctrl = new AbortController();
+        killer = setTimeout(() => ctrl.abort(), 15 * 60 * 1000);
+        return postJSON('/api/preview', buildPreviewPayload(p, { index: idx, frame: fr, fake }), { signal: ctrl.signal });
+      });
       if (res.faces) setPreviewFaces(res.faces);
       setPreviewPersonIds(res.person_ids || []);
       setPreviewKps(res.kps || []);
@@ -806,7 +823,7 @@ export default function FaceSwap({
       notify(e.name === 'AbortError' ? 'Preview timed out (model build took too long)' : e.message, 'error');
     }
     finally {
-      clearTimeout(killer);
+      if (killer) clearTimeout(killer);
       previewBusyRef.current = false;
       setPreviewing(false);
       if (previewPendingRef.current) {
@@ -816,6 +833,48 @@ export default function FaceSwap({
       }
     }
   };
+
+  // ── A forced re-render that must see the change it follows ───────────────
+  // Bumped by the controls that write several settings and then want the
+  // preview redone immediately (the Slider Tracker's presets, the slider
+  // reset). Calling refreshPreview() straight from those handlers renders with
+  // the settings the click CLOSED OVER — the ones you just left — because `p`
+  // is this render's props and setSettings has not committed yet. Running it
+  // from an effect means the new values are on screen before the request is
+  // built. Same trap, and the same fix, as the sliderEffectEnabled toggle above.
+  const [forcePreviewTick, setForcePreviewTick] = useState(0);
+  const forcePreview = () => setForcePreviewTick((n) => n + 1);
+
+  // A comparison grid REPLACES the single preview on the stage, so while one is
+  // open the main preview is not merely redundant — it is harmful. It refreshes
+  // on exactly the same trigger the grid does (any settings change), and the two
+  // then hit /api/preview together, which is the one thing that endpoint cannot
+  // take. The grid owns the GPU while it is up; the main preview marks itself
+  // out of date and catches up when the grid closes.
+  const anyGridOpen = comparingEnhancers || comparingMasks || comparingSwappers || comparingUpscalers;
+
+  // "Refresh" has to mean "re-render what I am actually looking at". With a grid
+  // on the stage that is the grid, not the single preview it replaced — so the
+  // button used to fire a render nobody could see and leave the grid exactly as
+  // it was. Bumping this tick is the grid's equivalent of `force`: the cache is
+  // dropped, so every cell misses and genuinely re-renders.
+  const [gridReloadTick, setGridReloadTick] = useState(0);
+  const refreshNow = () => {
+    if (anyGridOpen) {
+      clearPreviewCache();
+      setGridReloadTick((n) => n + 1);
+      return;
+    }
+    refreshPreview({ force: true });
+  };
+
+  // Declared below refreshNow because it calls it: with a grid open, "redo the
+  // preview now" means redo the grid.
+  useEffect(() => {
+    if (forcePreviewTick === 0) return;
+    refreshNow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forcePreviewTick]);
 
   // ── Comparison-grid preview loaders ─────────────────────────────────────
   // Enhancers, mask engines and swapper models each render one preview per
@@ -828,7 +887,7 @@ export default function FaceSwap({
   const gridCommon = {
     settings: p, fakePreview, selTarget, frame, targetCount: targets.length,
     buildPreviewPayload, previewSignature, previewCacheRef,
-    cacheSuffix, reloadKey: previewKey,
+    cacheSuffix, reloadKey: `${previewKey}_${gridReloadTick}`,
   };
 
   useGridPreviewLoader({
@@ -860,13 +919,24 @@ export default function FaceSwap({
   // this swaps the frame ONCE then upscales that single result with each
   // selected model — so the grid isolates the upscaler's effect (and is much
   // cheaper: one swap + N upscales instead of N full swaps).
+  const upscaleSigRef = useRef('');
   const loadUpscalePreviews = async (activeCheck) => {
     if (targets.length === 0) return;
     const labels = AI_UPSCALE_MODELS.map(m => m.label);
     const available = selectedGridUpscalers.filter(l => labels.includes(l));
 
+    // This grid has no per-cell cache, so "is what is on screen still valid?"
+    // is answered by remembering what the cells on screen were rendered from.
+    // Deselecting a model must leave the others alone; changing a SETTING must
+    // blank them, or the previous settings' pictures stay up with no spinner
+    // and the grid looks like it ignored the change (see the same fix in
+    // useGridPreviewLoader).
+    const sig = `${previewKey}_${selTarget}_${frame}_${cacheSuffix}_${gridReloadTick}`;
+    const stale = upscaleSigRef.current !== sig;
+    upscaleSigRef.current = sig;
     const keepOnly = (prev) => {
       const reset = {};
+      if (stale) return reset;
       for (const l of available) if (prev[l]) reset[l] = prev[l];
       return reset;
     };
@@ -879,7 +949,8 @@ export default function FaceSwap({
     // (falls back to the raw frame server-side when there are no source faces).
     let baseImage = '';
     try {
-      const baseRes = await postJSON('/api/preview', buildPreviewPayload(p, { index: selTarget, frame, fake: true }));
+      const baseRes = await runExclusive(() =>
+        postJSON('/api/preview', buildPreviewPayload(p, { index: selTarget, frame, fake: true })));
       baseImage = baseRes.image || '';
     } catch {
       // handled below (no base → nothing to upscale)
@@ -897,7 +968,8 @@ export default function FaceSwap({
           setUpscaleRenderTimers(prev => ({ ...prev, [label]: ((Date.now() - start) / 1000).toFixed(1) + 's' }));
         }, 100);
 
-        const res = await postJSON('/api/preview_upscale', { image: baseImage, subtype });
+        const res = await runExclusive(() =>
+          postJSON('/api/preview_upscale', { image: baseImage, subtype }));
 
         const duration = ((Date.now() - start) / 1000).toFixed(2);
         if (upscaleIntervalsRef.current[label]) {
@@ -933,7 +1005,7 @@ export default function FaceSwap({
         upscaleIntervalsRef.current = {};
       }
     };
-  }, [comparingUpscalers, selectedGridUpscalers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey]);
+  }, [comparingUpscalers, selectedGridUpscalers, frame, selTarget, targets.length, sourceSig, targetSig, selSource, selTargetFace, previewKey, gridReloadTick]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // Live elapsed timer for the "Rendering…" badge so a slow first run reads as
@@ -950,30 +1022,35 @@ export default function FaceSwap({
   // changes (targets.length covers initial rehydrate after a page refresh).
   useEffect(() => {
     if (targets.length === 0 || progress.processing || isScrubbing || isPlaying) return;
+    // A comparison grid is on the stage and rendering its own cells — see
+    // `anyGridOpen`. Note it as out of date and let the effect below catch up
+    // once the grid closes.
+    if (anyGridOpen) { previewDeferredRef.current = true; return; }
     const t = setTimeout(() => refreshPreview(), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selTarget, frame, targets.length, isScrubbing, isPlaying]);
+  }, [selTarget, frame, targets.length, isScrubbing, isPlaying, anyGridOpen]);
 
   useEffect(() => {
     if (targets.length === 0 || isScrubbing || isPlaying) return;
     // A run is in flight — the GPU is busy, so remember that the preview is now
     // out of date and re-render it once the run finishes. Without this, faces
-    // changed during a run leave the previous result frozen on screen.
-    if (progress.processing) { previewDeferredRef.current = true; return; }
+    // changed during a run leave the previous result frozen on screen. A grid
+    // being open is the same situation for the same reason.
+    if (progress.processing || anyGridOpen) { previewDeferredRef.current = true; return; }
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewKey, sourceSig, targetSig, isScrubbing, isPlaying]);
+  }, [previewKey, sourceSig, targetSig, isScrubbing, isPlaying, anyGridOpen]);
 
   useEffect(() => {
-    if (progress.processing || !previewDeferredRef.current) return;
+    if (progress.processing || anyGridOpen || !previewDeferredRef.current) return;
     previewDeferredRef.current = false;
     if (targets.length === 0 || isScrubbing || isPlaying) return;
     const t = setTimeout(() => refreshPreview(), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [progress.processing]);
+  }, [progress.processing, anyGridOpen]);
 
   // ── source / target file handling ──
   // A cancelled upload is an outcome, not a failure: the user asked for it, so
@@ -1135,7 +1212,10 @@ export default function FaceSwap({
 
   const useFaceFromFrame = async () => {
     try {
-      const res = await postJSON('/api/target/use_face', { index: selTarget, frame });
+      // Runs detection on the shared pool — serialised against the preview
+      // and the grids so it cannot overlap one. See faceswap/previewGate.
+      const res = await runExclusive(() =>
+        postJSON('/api/target/use_face', { index: selTarget, frame }));
       setTargetFaces(res.target_faces);
       setTargetGroups(res.target_groups || []);
       setTargetNames(res.target_names || []);
@@ -1152,10 +1232,10 @@ export default function FaceSwap({
     if (!previewSrc) { notify('No preview to upscale', 'error'); return; }
     setUpscaling(true);
     try {
-      const res = await postJSON('/api/preview_upscale', {
+      const res = await runExclusive(() => postJSON('/api/preview_upscale', {
         image: previewSrc,
         subtype: p.upscale_model_after || 'esrganx2',
-      });
+      }));
       if (!res.image) throw new Error(res.message || 'upscale failed');
       setUpscaledSrc(res.image);
       setUpscaledDims(res.width && res.height ? { w: res.width, h: res.height } : null);
@@ -1170,7 +1250,8 @@ export default function FaceSwap({
   // as a NEW target face (face_index = its left-to-right box order).
   const addPersonFromBox = async (faceIndex) => {
     try {
-      const res = await postJSON('/api/target/use_face', { index: selTarget, frame, face_index: faceIndex });
+      const res = await runExclusive(() =>
+        postJSON('/api/target/use_face', { index: selTarget, frame, face_index: faceIndex }));
       if (!res.count) { notify('No face found for that box', 'error'); return; }
       setTargetFaces(res.target_faces);
       setTargetGroups(res.target_groups || []);
@@ -1766,7 +1847,7 @@ export default function FaceSwap({
     queue: addToQueue,
     compare: () => setCompare((v) => { const n = !v; if (n) { setComparingEnhancers(false); setComparingMasks(false); setComparingSwappers(false); setComparingUpscalers(false); } return n; }),
     split: () => setSplitView((v) => !v),
-    preview: () => refreshPreview({ force: true }),   // explicit user action — same as Refresh
+    preview: refreshNow,   // explicit user action — same as the Refresh button
     shortcuts: () => setShowShortcutHUD(true),
     // Applying a named preset is the one command that takes an argument, hence
     // the detail object being forwarded to the handler below.
@@ -2580,10 +2661,16 @@ export default function FaceSwap({
                   sliderEffectEnabled={sliderEffectEnabled}
                   onToggleSliderEffect={toggleSliderEffect}
                   onResetSliders={resetTrackerSliders}
-                  onRefreshPreview={() => refreshPreview({ force: true })}
+                  onRefreshPreview={forcePreview}
                 />
 
-                {previewSrc ? (
+                {/* A comparison grid renders its own cells and does not need
+                    the single preview to exist first. Gating the whole block on
+                    `previewSrc` meant turning a grid on before the main preview
+                    had ever rendered — the common case, since the grid is what
+                    you reach for INSTEAD of it — showed the "No preview yet"
+                    placeholder while four cells rendered behind it, invisible. */}
+                {(anyGridOpen || previewSrc) ? (
                   comparingEnhancers ? (() => {
                 const activeList = selectedGridEnhancers.filter(e => meta.enhancers?.includes(e));
                 const gridColsClass = activeList.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
@@ -2623,6 +2710,7 @@ export default function FaceSwap({
 
                     <CompareGrid
                       items={activeList}
+                      emptyHint="Pick at least one enhancer above to compare."
                       gridColsClass={gridColsClass}
                       previews={enhancerPreviews}
                       times={enhancerTimes}
@@ -2672,6 +2760,7 @@ export default function FaceSwap({
 
                     <CompareGrid
                       items={activeMasks}
+                      emptyHint="Pick at least one mask engine above to compare."
                       gridColsClass={gridColsClass}
                       previews={maskPreviews}
                       times={maskTimes}
@@ -2721,6 +2810,7 @@ export default function FaceSwap({
 
                     <CompareGrid
                       items={activeSwappers}
+                      emptyHint="Pick at least one swapper model above to compare."
                       gridColsClass={gridColsClass}
                       previews={swapperPreviews}
                       times={swapperTimes}
@@ -2770,6 +2860,7 @@ export default function FaceSwap({
 
                     <CompareGrid
                       items={activeUpscalers}
+                      emptyHint="Pick at least one upscaler above to compare."
                       gridColsClass={gridColsClass}
                       previews={upscalePreviews}
                       times={upscaleTimes}
@@ -2913,7 +3004,7 @@ export default function FaceSwap({
                 to fire one, and the automatic refreshes still hold off until
                 the run is over (see the deferred-preview effect above). */}
             <div className={`flex items-center flex-wrap gap-3 ${maxFrames > 1 ? 'pt-3 border-t border-white/5' : ''}`}>
-              <Button size="sm" variant="secondary" title="Re-run the swap for this frame, ignoring the cached result" onClick={() => refreshPreview({ force: true })}>Refresh</Button>
+              <Button size="sm" variant="secondary" title="Re-run the swap for this frame (or every cell of the open grid), ignoring the cached result" onClick={refreshNow}>Refresh</Button>
               <Button size="sm" variant="primary" onClick={useFaceFromFrame}>Use face from frame</Button>
               {previewSrc && !comparingEnhancers && !comparingMasks && !comparingSwappers && !comparingUpscalers && (
                 <Button size="sm" variant="secondary" disabled={upscaling} onClick={upscaleThisFrame}
@@ -3130,7 +3221,7 @@ export default function FaceSwap({
         onStartSwap={start}
         onCancelSwap={stop}
         progress={Math.round((progress.progress || 0) * 100)}
-        onPreview={() => refreshPreview({ force: true })}
+        onPreview={refreshNow}
         previewing={previewing}
         ambilightEnabled={ambilightEnabled}
         setAmbilightEnabled={setAmbilightEnabled}

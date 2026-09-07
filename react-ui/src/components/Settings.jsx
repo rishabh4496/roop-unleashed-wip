@@ -349,7 +349,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           {p.provider === 'tensorrt' && (
             <Select label="Precision mode (TensorRT)" info="mixed = recommended; fp16 = fastest; fp32 = most accurate. Applies after app restart." {...bind('trt_precision', 'mixed')} options={meta.trt_precisions ?? ['fp32', 'fp16', 'mixed']} />
           )}
-          <Toggle label="Force CPU for face analyser" {...bindToggle('force_cpu')} />
+          <Toggle
+            label="Force CPU for face analyser"
+            info="Runs face DETECTION on the CPU instead of the GPU — a fallback for when the GPU detector misbehaves; it does not move the swap itself off the GPU, and it is much slower. Takes effect on the next detection with the stock SCRFD engine. The alternate engines (RetinaFace / YOLOFace / YuNet) build their pool once per session, so switching this while one of those is selected needs an app restart."
+            {...bindToggle('force_cpu')}
+          />
 
           <Toggle
             label="Auto thread selection"

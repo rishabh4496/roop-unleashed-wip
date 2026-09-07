@@ -2242,9 +2242,33 @@ def _apply_parser_region_settings(payload):
 
 
 # ── Live preview swap ────────────────────────────────────────────────────────
+# Whole-request lock for /api/preview.
+#
+# This endpoint's first act is to copy the payload's swap parameters into
+# roop_globals — which are PROCESS-WIDE — and only later does live_swap read
+# them back (get_processing_plugins picks the enhancer off
+# roop.globals.selected_enhancer at call time). live_swap's own lock is taken
+# after all of that, so it serialises the GPU but not the configuration: two
+# overlapping requests interleave their writes and the first one comes back
+# rendered with the second one's settings.
+#
+# The comparison grids in the React UI are what exposed this. They render one
+# cell per enhancer/mask/swapper while the main preview refreshes on the same
+# trigger, so the grid's cells came back as N copies of the same render. The UI
+# now serialises its own calls too (react-ui/.../previewGate.js), but the
+# invariant belongs here: a preview request is only meaningful as an atomic
+# "configure, then render".
+_preview_request_lock = threading.Lock()
+
+
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
     """Render the selected target frame, optionally with a live face swap."""
+    with _preview_request_lock:
+        return _preview_locked(payload)
+
+
+def _preview_locked(payload: dict):
     _update_mask_offsets_from_payload(payload)
     idx = int(payload.get("index", state.selected_target_index))
     frame = int(payload.get("frame", 1))

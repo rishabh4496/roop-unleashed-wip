@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { getJSON, postJSON, postFiles, API } from '../api';
 import { Card, Section, Button, InfoBadge, MotionIcon } from './ui';
 import { Icon } from '../icons';
@@ -6,23 +6,65 @@ import useQueue from './faceswap/useQueue';
 import QueuePanel from './faceswap/QueuePanel';
 import FacesetLibrary from './faceswap/FacesetLibrary';
 import { FACESWAP_DEFAULTS } from './faceswap/defaults';
+import { heuristicMsPerFrame } from './faceswap/useRuntimeEstimate';
 
 // Helper to convert index to target preview URL
 const targetPreviewUrl = (idx) => `${API}/api/target/preview?index=${idx}&frame=1`;
 
-const ENHANCER_OPTIONS = [
-  'GPEN Ultimate',
-  'Restore Ultra',
-  'Restoreformer++',
-  'CodeFormer',
-  'GFPGAN',
-  'GPEN',
-  'DMDNet',
-  'KEEP',
-  'None',
+// Fallback only — the real list is `meta.enhancers`, straight from the backend
+// (see the `enhancerOptions` memo below).
+//
+// This used to be a hand-written list, and it had drifted into two names the
+// backend does not have: 'CodeFormer' (it is 'Codeformer') and 'KEEP' (it is
+// 'KEEP (sidecar)'). get_processing_plugins matches the enhancer by exact
+// string and falls through to no enhancer at all when nothing matches, so
+// picking either of those in a batch silently rendered the whole job with
+// enhancement OFF — no error, no warning, just a worse output than the one
+// asked for. Deriving the list from meta is what stops that recurring.
+const ENHANCER_FALLBACK = [
+  'GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'Codeformer',
+  'GFPGAN', 'GPEN', 'DMDNet', 'None',
 ];
 
-export default function BatchSwap({ settings = {}, notify }) {
+// The handful offered as one-click "set every file to this" shortcuts. Filtered
+// against what the backend actually supports before being shown.
+const BULK_ENHANCERS = ['GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'None'];
+
+// Fixing the list above does not fix the Quick Slots and exported presets that
+// were saved WHILE it was wrong — those still carry the bad names, and would
+// keep rendering with no enhancer. Translated on the way into a payload, which
+// is the one place every path (slots, presets, matrix rows, the mode-1 select)
+// converges.
+const LEGACY_ENHANCER_ALIASES = { CodeFormer: 'Codeformer', KEEP: 'KEEP (sidecar)' };
+const normalizeEnhancer = (name) => LEGACY_ENHANCER_ALIASES[name] || name;
+
+// Same rule as the enhancers: the LIST is meta.face_detection_modes, and only
+// the parenthetical hints live here. The four spelled out in this panel were a
+// subset of the backend's six — "All female" and "All male" simply could not be
+// picked for a batch, for no reason anyone recorded.
+const DETECTION_MODE_HINTS = {
+  'Selected face': 'By Person Rank',
+  'All input faces': 'Gallery Order',
+  'All faces': 'Swap every detected face',
+  'First found': 'First detected face',
+};
+const DETECTION_MODE_FALLBACK = ['Selected face', 'All input faces', 'All faces', 'First found'];
+
+export default function BatchSwap({ meta, settings = {}, notify }) {
+  const enhancerOptions = useMemo(
+    () => (Array.isArray(meta?.enhancers) && meta.enhancers.length ? meta.enhancers : ENHANCER_FALLBACK),
+    [meta],
+  );
+  const bulkEnhancers = useMemo(
+    () => BULK_ENHANCERS.filter((e) => enhancerOptions.includes(e)),
+    [enhancerOptions],
+  );
+  const detectionModes = useMemo(
+    () => (Array.isArray(meta?.face_detection_modes) && meta.face_detection_modes.length
+      ? meta.face_detection_modes
+      : DETECTION_MODE_FALLBACK),
+    [meta],
+  );
   // ── Server State ────────────────────────────────────────────────────────
   const [targets, setTargets] = useState([]);
   const [sourceFaces, setSourceFaces] = useState([]);
@@ -80,7 +122,16 @@ export default function BatchSwap({ settings = {}, notify }) {
   const [splitSegmentCount, setSplitSegmentCount] = useState(4);
 
   // ── Rehydrate State from Backend ────────────────────────────────────────
+  // `settings` is read here only to seed a NEW matrix row's defaults, so it is
+  // read through a ref rather than being a dependency. As a dependency it made
+  // this callback a new function on every settings edit, and the mount effect
+  // below re-ran with it: every change on the Settings tab silently re-fetched
+  // /api/state and flipped this whole panel back to its loading state.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   const refreshBackendState = useCallback(async () => {
+    const cfg = settingsRef.current || {};
     try {
       setLoadingState(true);
       const st = await getJSON('/api/state');
@@ -106,8 +157,8 @@ export default function BatchSwap({ settings = {}, notify }) {
               mappings: [{ personRank: 0, sourceIdx: 0 }],
               swapMode: 'Selected face',
               enabled: true,
-              enhancer: settings.selected_enhancer || 'Restoreformer++',
-              faceDistance: parseFloat(settings.max_face_distance || 0.75),
+              enhancer: cfg.selected_enhancer || 'Restoreformer++',
+              faceDistance: parseFloat(cfg.max_face_distance || 0.75),
               frameStart: t.start_frame || 1,
               frameEnd: t.end_frame || t.frames || 1,
             };
@@ -120,7 +171,7 @@ export default function BatchSwap({ settings = {}, notify }) {
     } finally {
       setLoadingState(false);
     }
-  }, [notify, settings]);
+  }, [notify]);
 
   useEffect(() => {
     refreshBackendState();
@@ -283,7 +334,7 @@ export default function BatchSwap({ settings = {}, notify }) {
       return {
         payload: {
           ...base,
-          enhancer: overrides.enhancer || base.selected_enhancer || 'Restoreformer++',
+          enhancer: normalizeEnhancer(overrides.enhancer || base.selected_enhancer || 'Restoreformer++'),
           detection: swapMode || 'Selected face',
           output_method: base.output_method || 'Images & Video',
           video_method: base.video_swapping_method || 'In-Memory processing',
@@ -824,6 +875,11 @@ export default function BatchSwap({ settings = {}, notify }) {
   };
 
   // ── Batch Time & Frame Estimator ─────────────────────────────────────────
+  // Costed per job from that job's OWN payload, through the same heuristic the
+  // Face Swap tab's pre-run estimate uses. Staged jobs can differ from each
+  // other in every lever that matters (enhancer, detection resolution, swap
+  // steps, tracking), so a single flat ms/frame for the whole batch — which is
+  // what this was — could not be right for more than one of them at a time.
   const stagedStats = useMemo(() => {
     let totalFrames = 0;
     let estSeconds = 0;
@@ -831,8 +887,13 @@ export default function BatchSwap({ settings = {}, notify }) {
     stagedJobs.forEach((job) => {
       const frames = job.total_frames || job.payload?.end_frame || 1;
       totalFrames += frames;
-      const enhancer = job.payload?.enhancer || 'None';
-      const perFrameMs = enhancer !== 'None' ? 115 : 35;
+      const pl = job.payload || {};
+      // The override lands on `enhancer`; `selected_enhancer` is the base
+      // config it was built from. The heuristic reads the latter name.
+      const perFrameMs = heuristicMsPerFrame(
+        { ...pl, selected_enhancer: pl.enhancer ?? pl.selected_enhancer },
+        undefined,   // no telemetry on this tab — the heuristic's own default
+      );
       estSeconds += (frames * perFrameMs) / 1000;
     });
 
@@ -842,6 +903,34 @@ export default function BatchSwap({ settings = {}, notify }) {
 
     return { totalFrames, timeStr };
   }, [stagedJobs]);
+
+  // ── Pre-flight checks ────────────────────────────────────────────────────
+  // These are what the health modal reports. It used to print three fixed
+  // lines — two green ticks claiming the target names and the source indices
+  // had been resolved, and a shield claiming auto-fallback was on — none of
+  // which looked at anything. A pre-flight that always passes is worse than
+  // none, because the button under it starts the batch.
+  //
+  // The queue resolves a job by target NAME at dispatch time and by source
+  // INDEX into the loaded facesets, so those are exactly the two things that
+  // can be stale here: a target removed after staging, or a mapping pointing
+  // past the end of a faceset list that has since shrunk.
+  const preflight = useMemo(() => {
+    const names = new Set(targets.map((t) => t.name));
+    const missingTargets = [...new Set(
+      stagedJobs.filter((j) => !names.has(j.target_name)).map((j) => j.target_name),
+    )];
+    const badSources = stagedJobs.filter((j) => {
+      const idxs = (j.mappings || []).map((m) => Number(m.sourceIdx));
+      idxs.push(Number(j.source_index));
+      return idxs.some((i) => !Number.isInteger(i) || i < 0 || i >= sourceFaces.length);
+    });
+    return {
+      missingTargets,
+      badSourceCount: badSources.length,
+      ok: missingTargets.length === 0 && badSources.length === 0,
+    };
+  }, [stagedJobs, targets, sourceFaces.length]);
 
   // ── Staged Jobs Commit Handlers (Atomic Batch Add) ──────────────────────
   const enqueueStagedJobs = async (autoStart = false) => {
@@ -947,18 +1036,50 @@ export default function BatchSwap({ settings = {}, notify }) {
                 System Diagnostics & Verification
               </span>
               <div className="space-y-1.5 text-white/80">
-                <div className="flex items-center gap-2 text-emerald-400">
-                  <span>✓</span>
-                  <span>All target media basenames resolved cleanly against workspace.</span>
-                </div>
-                <div className="flex items-center gap-2 text-emerald-400">
-                  <span>✓</span>
-                  <span>Source faceset indices & names mapped with dense rank fallback.</span>
-                </div>
-                <div className="flex items-center gap-2 text-yellow-300">
-                  <span>🛡️</span>
+                {preflight.missingTargets.length === 0 ? (
+                  <div className="flex items-center gap-2 text-emerald-400">
+                    <span>✓</span>
+                    <span>
+                      All {stagedJobs.length} target name{stagedJobs.length === 1 ? '' : 's'} resolve
+                      against the {targets.length} loaded file{targets.length === 1 ? '' : 's'}.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 text-red-400">
+                    <span>✕</span>
+                    <span>
+                      {preflight.missingTargets.length} target{preflight.missingTargets.length === 1 ? '' : 's'} no
+                      longer loaded — these jobs will fail at dispatch:{' '}
+                      <span className="font-mono text-red-300">{preflight.missingTargets.join(', ')}</span>
+                    </span>
+                  </div>
+                )}
+
+                {preflight.badSourceCount === 0 ? (
+                  <div className="flex items-center gap-2 text-emerald-400">
+                    <span>✓</span>
+                    <span>
+                      Every source mapping points inside the {sourceFaces.length} loaded
+                      faceset{sourceFaces.length === 1 ? '' : 's'}.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 text-red-400">
+                    <span>✕</span>
+                    <span>
+                      {preflight.badSourceCount} job{preflight.badSourceCount === 1 ? '' : 's'} map to a faceset
+                      index that no longer exists — they would swap the wrong face or none at all.
+                      Re-generate them after reloading the sources.
+                    </span>
+                  </div>
+                )}
+
+                <div className={`flex items-center gap-2 ${autoFallbackEnabled ? 'text-yellow-300' : 'text-white/45'}`}>
+                  <span>{autoFallbackEnabled ? '🛡️' : '○'}</span>
                   <span>
-                    Auto-Fallback Enhancer Enabled: If GPU memory spikes, jobs auto-retry safely with enhancer=None.
+                    {autoFallbackEnabled
+                      ? 'Auto-fallback on: if GPU memory spikes, a job retries with enhancer=None.'
+                      : 'Auto-fallback off: a job that runs out of GPU memory fails instead of retrying.'}
                   </span>
                 </div>
               </div>
@@ -976,7 +1097,9 @@ export default function BatchSwap({ settings = {}, notify }) {
                   enqueueStagedJobs(true);
                 }}
               >
-                🚀 Confirm & Launch Batch ({stagedJobs.length} Jobs)
+                {preflight.ok
+                  ? `🚀 Confirm & Launch Batch (${stagedJobs.length} Jobs)`
+                  : `⚠ Launch Anyway (${stagedJobs.length} Jobs)`}
               </Button>
             </div>
           </div>
@@ -1419,10 +1542,11 @@ export default function BatchSwap({ settings = {}, notify }) {
                   onChange={(e) => setMode1SwapMode(e.target.value)}
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
                 >
-                  <option value="Selected face">Selected face (By Person Rank)</option>
-                  <option value="All input faces">All input faces (Gallery Order)</option>
-                  <option value="All faces">All faces (Swap every detected face)</option>
-                  <option value="First found">First found (First detected face)</option>
+                  {detectionModes.map((m) => (
+                    <option key={m} value={m}>
+                      {DETECTION_MODE_HINTS[m] ? `${m} (${DETECTION_MODE_HINTS[m]})` : m}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1438,7 +1562,7 @@ export default function BatchSwap({ settings = {}, notify }) {
                     onChange={(e) => setMode1Enhancer(e.target.value)}
                     className="w-full bg-black/50 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white"
                   >
-                    {ENHANCER_OPTIONS.map((e) => (
+                    {enhancerOptions.map((e) => (
                       <option key={e} value={e}>
                         {e}
                       </option>
@@ -1751,7 +1875,7 @@ export default function BatchSwap({ settings = {}, notify }) {
 
               <div className="flex items-center gap-2">
                 <span className="text-white/40 font-semibold">Bulk Enhancer:</span>
-                {ENHANCER_OPTIONS.slice(0, 4).map((enh) => (
+                {bulkEnhancers.map((enh) => (
                   <button
                     key={enh}
                     type="button"
