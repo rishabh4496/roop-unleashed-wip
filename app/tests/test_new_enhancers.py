@@ -64,6 +64,8 @@ class NamedProfiles(unittest.TestCase):
         self.assertEqual(plugins['gpen_ultimate'], {})
         self.assertEqual(Enhance_GPENUltimate.processorname, 'gpen_ultimate')
         self.assertIn('Enhance_GPEN', Enhance_GPENUltimate.__mro__[1].__name__)
+        self.assertTrue(getattr(Enhance_GPENUltimate, 'force_align', False))
+        self.assertEqual(getattr(Enhance_GPENUltimate, 'model_template', None), 'ffhq_512')
 
     def test_restore_ultra_is_a_distinct_restoreformer_profile(self):
         g.selected_enhancer = 'Restore Ultra'
@@ -72,6 +74,8 @@ class NamedProfiles(unittest.TestCase):
         self.assertEqual(Enhance_RestoreUltra.processorname, 'restore_ultra')
         self.assertIn('Enhance_RestoreFormerPPlus',
                       Enhance_RestoreUltra.__mro__[1].__name__)
+        self.assertTrue(getattr(Enhance_RestoreUltra, 'force_align', False))
+        self.assertEqual(getattr(Enhance_RestoreUltra, 'model_template', None), 'ffhq_512')
 
 
 class DetailFinish(unittest.TestCase):
@@ -245,7 +249,7 @@ class ProfileDeclarations(unittest.TestCase):
 
 
 class GpenUltimateRuntime(unittest.TestCase):
-    def test_initializes_the_256_model_and_pooled_sessions(self):
+    def test_initializes_the_512_model_and_pooled_sessions(self):
         import importlib
         import types
 
@@ -271,7 +275,9 @@ class GpenUltimateRuntime(unittest.TestCase):
             result, scale = processor.Run(
                 None, None, np.zeros((512, 512, 3), dtype=np.uint8))
 
-            self.assertEqual(processor.model_size, 256)
+            self.assertEqual(processor.model_size, 512)
+            self.assertTrue(getattr(processor, 'force_align', False))
+            self.assertEqual(getattr(processor, 'model_template', None), 'ffhq_512')
             self.assertIsNotNone(processor.pool)
             self.assertEqual(_FakeSession.created, 3)
             self.assertEqual(result.shape, (512, 512, 3))

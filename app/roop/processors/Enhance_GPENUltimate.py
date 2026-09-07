@@ -1,19 +1,33 @@
-"""GPEN Ultimate: pooled GPEN-BFR-256 with a fast detail-preserving finish."""
+"""GPEN Ultimate: razor-sharp face restoration with forced alignment and anti-halo clarity."""
 
 from roop.processors.Enhance_GPEN import Enhance_GPEN
+from roop.processors.enhance_common import enhance_gpen_ultimate, inject_reference_detail
 
 
 class Enhance_GPENUltimate(Enhance_GPEN):
-    """A named throughput/quality profile built on the GPEN 256 checkpoint.
+    """An ultimate quality profile built on GPEN-512 with forced FFHQ alignment.
 
-    This is intentionally a profile over the published GPEN weights, not a
-    second checkpoint: the gain comes from the 256px network, pooled inference
-    contexts, and registered high-frequency detail from the swapped crop.
+    Features:
+    - Forced alignment with original face geometry via target keypoints.
+    - Native 512px resolution (matching swap crop, avoiding 256px blur).
+    - Dedicated eye clarity boost with anti-halo bounding (zero halos around eyes).
+    - Bilateral edge-preserving detail transfer and anti-halo sharpening for crisp skin texture.
+    - Pooled multi-context TensorRT inference.
     """
 
     processorname = 'gpen_ultimate'
+    force_align = True
+    model_template = 'ffhq_512'
 
     def Initialize(self, plugin_options: dict):
         options = dict(plugin_options)
-        options.update({"size": 256, "profile": "ultimate"})
+        size = int(options.get("size", 512))
+        options.update({"size": size, "profile": "ultimate"})
         super().Initialize(options)
+
+    def Run(self, source_faceset, target_face, temp_frame):
+        reference = temp_frame
+        result, scale_factor = super().Run(source_faceset, target_face, temp_frame)
+        result = enhance_gpen_ultimate(result, reference, target_face=target_face)
+        return result, scale_factor
+

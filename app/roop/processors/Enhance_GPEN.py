@@ -7,7 +7,7 @@ import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path, conditional_download
-from roop.processors.enhance_common import is_usable, sized, inject_reference_detail
+from roop.processors.enhance_common import is_usable, sized, inject_reference_detail, enhance_gpen_ultimate
 from roop import session_pool
 
 
@@ -194,14 +194,10 @@ class Enhance_GPEN():
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
         result, scale_factor = sized(result.astype(np.uint8), input_size)
-        if self.profile == 'ultimate':
-            # Apply the finish after the 256px output is restored to crop size;
-            # doing it before sized() softened the detail again during resize.
-            result = inject_reference_detail(
-                result,
-                cv2.resize(reference_bgr, (result.shape[1], result.shape[0]),
-                           interpolation=cv2.INTER_CUBIC),
-                strength=0.46, crispness=0.24)
+        if self.profile == 'ultimate' and type(self) is Enhance_GPEN:
+            ref_scaled = cv2.resize(reference_bgr, (result.shape[1], result.shape[0]),
+                                    interpolation=cv2.INTER_CUBIC)
+            result = enhance_gpen_ultimate(result, ref_scaled, target_face=target_face)
         return result, scale_factor
 
 

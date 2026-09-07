@@ -3539,8 +3539,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # passes, and whether the better-matched prior is worth that is
                 # a judgement to make on real footage rather than on paper.
                 _tmpl = getattr(p, 'model_template', None)
-                _realign = (roop.globals.enhancer_align and _tmpl
-                            and _tmpl != swap_template)
+                _force_align = getattr(p, 'force_align', False)
+                _realign = bool(_tmpl and _tmpl != swap_template
+                                and (roop.globals.enhancer_align or _force_align))
                 _A = None
                 enh_input = fake_frame
                 if _realign:
