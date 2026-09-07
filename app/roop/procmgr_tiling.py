@@ -12,8 +12,13 @@ class PixelBoostMixin:
     def prepare_crop_frame(self, swap_frame, swap_p=None):
         model_mean = getattr(swap_p, 'model_mean', [0.0, 0.0, 0.0])
         model_standard_deviation = getattr(swap_p, 'model_standard_deviation', [1.0, 1.0, 1.0])
+        # The divide by a Python float promotes the crop to float64, so the
+        # normalise that follows was allocating two more float64 planes before
+        # the whole thing got cast down to float32 at the end. Same arithmetic,
+        # same order, one buffer.
         swap_frame = swap_frame[:, :, ::-1] / 255.0
-        swap_frame = (swap_frame - model_mean) / model_standard_deviation
+        swap_frame -= model_mean
+        swap_frame /= model_standard_deviation
         swap_frame = swap_frame.transpose(2, 0, 1)
         swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
         return swap_frame

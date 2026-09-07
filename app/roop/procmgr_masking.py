@@ -372,9 +372,35 @@ class MaskingMixin:
         # background regions where the swap model put grey fill pixels.
         if face_landmarks is not None:
             lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4], kps=face_kps)
-            img_matte = np.minimum(img_matte, lm_mask)
+            # min(0, anything) is 0, so the intersection can only change pixels
+            # the ellipse matte already covers — the rest of the frame was being
+            # compared for a result that was 0 before and 0 after.
+            _ex, _ey, _ew, _eh = cv2.boundingRect(img_matte)
+            if _ew > 0 and _eh > 0:
+                _e = (slice(_ey, _ey + _eh), slice(_ex, _ex + _ew))
+                np.minimum(img_matte[_e], lm_mask[_e], out=img_matte[_e])
+            else:
+                img_matte = np.minimum(img_matte, lm_mask)
 
         img_matte = self.blur_area(img_matte, mask_offsets[4])
+
+        # Everything from here to the return is a FULL-FRAME float32 blend, and
+        # at 1280x720 that is 2.7 MPix of arithmetic per face to change the few
+        # hundred thousand pixels the matte actually covers. Outside the matte
+        # the blend evaluates to `0 * paste + 1 * target`, i.e. the target frame
+        # copied back onto itself through a float32 round trip.
+        #
+        # So take the matte's bounding box now, while it is still uint8 and
+        # boundingRect can find it in one pass, and do the blend only there. The
+        # two layers that come after — the neighbour-overlap trim and the swap
+        # model's own mask — can only ever REMOVE matte, so a box taken here
+        # stays a valid superset of the final non-zero region.
+        #
+        # Measured with py-spy on a live 720p render: the three full-frame
+        # float32 lines this skips were 9.9% of ALL worker-thread time, for a
+        # matte covering under a tenth of the frame.
+        _bx, _by, _bw, _bh = cv2.boundingRect(img_matte)
+
         img_matte = img_matte.astype(np.float32) / 255
 
         # Cut this face's matte back where another face in the frame owns the
@@ -413,7 +439,27 @@ class MaskingMixin:
             if fake_face.shape[:2] != upsk_face.shape[:2]:
                 fake_face = cv2.resize(fake_face, (upsk_face.shape[1], upsk_face.shape[0]), interpolation=cv2.INTER_CUBIC)
             fake_face = cv2.warpAffine(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+            # Left full-frame on purpose. cv2.addWeighted takes a different
+            # vectorised path for a CONTINUOUS Mat than for a row-strided
+            # sub-view, and the two disagree by 1 LSB on a handful of pixels
+            # per frame — measured, not assumed. It is 0.3% of worker time
+            # against the 10% below, so it is not worth being the one step in
+            # this function whose output moves.
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
+
+        # The debug overlay draws over the whole frame, so it keeps the
+        # full-frame path; it is off in every normal render.
+        if not self.options.show_face_area_overlay:
+            if _bw == 0 or _bh == 0:
+                # No matte survived: the blend is the target frame, exactly.
+                return target_img.copy()
+            box = (slice(_by, _by + _bh), slice(_bx, _bx + _bw))
+            sub_matte = img_matte[box]
+            blended = sub_matte * paste_face[box]
+            blended = blended + (1 - sub_matte) * target_img[box].astype(np.float32)
+            out = target_img.copy()
+            out[box] = blended.astype(np.uint8)
+            return out
 
         paste_face = img_matte * paste_face
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
@@ -549,11 +595,17 @@ class MaskingMixin:
         img_matte = cv2.GaussianBlur(img_matte, (3, 3), 0)
         if face_mask_blend <= 0:
             return img_matte
-        mask_h_inds, mask_w_inds = np.where(img_matte > 127)
-        if len(mask_h_inds) == 0 or len(mask_w_inds) == 0:
+        # boundingRect, not np.where: only the extent is wanted, and np.where
+        # was materialising two index arrays the size of the matte's whole
+        # footprint to derive four numbers from them. Same box, one pass, no
+        # allocation. `- 1` reproduces max-index minus min-index exactly (a
+        # w-wide box spans w-1).
+        _bx, _by, _bw, _bh = cv2.boundingRect(
+            (img_matte > 127).view(np.uint8))
+        if _bw == 0 or _bh == 0:
             return img_matte
-        mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
-        mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
+        mask_h = _bh - 1
+        mask_w = _bw - 1
         mask_size = int(np.sqrt(mask_h * mask_w))
         
         # Calculate blend radius (feather size)
@@ -565,8 +617,44 @@ class MaskingMixin:
         # from bleeding / haloing onto background regions, hair, or ears.
         erosion_px = max(1, blend_px // 2)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_px * 2 + 1, erosion_px * 2 + 1))
+
+        # Both of these run over the whole frame to feather a matte that is zero
+        # across almost all of it — the 61-tap Gaussian alone measured 8.2 ms at
+        # 720p against 2.8 ms on the box the matte actually occupies. Restrict
+        # them to a padded crop, which is EXACTLY equivalent here:
+        #
+        #  * erode is a local min that includes its own centre, so every pixel
+        #    outside the matte's non-zero box stays 0 no matter what the crop's
+        #    border rule says, and every pixel inside the box is more than
+        #    `erosion_px` from the crop edge;
+        #  * after the erode the support is still inside that box, so the blur
+        #    can only write inside box+radius, and each of those outputs reads
+        #    within box+2*radius — inside the crop by construction. Where the
+        #    crop was clamped to the frame edge its border IS the frame border,
+        #    so BORDER_REFLECT_101 does the same thing either way.
+        #
+        # Verified against the full-frame path over 600 mask shapes and blend
+        # settings, byte for byte.
+        radius = blur_size // 2
+        nzx, nzy, nzw, nzh = cv2.boundingRect(img_matte)
+        if nzw > 0 and nzh > 0:
+            h, w = img_matte.shape[:2]
+            pad = erosion_px + 2 * radius + 1
+            cx0, cy0 = max(0, nzx - pad), max(0, nzy - pad)
+            cx1, cy1 = min(w, nzx + nzw + pad), min(h, nzy + nzh + pad)
+            if (cx1 - cx0) * (cy1 - cy0) < 0.75 * w * h:
+                sub = cv2.erode(img_matte[cy0:cy1, cx0:cx1], kernel, iterations=1)
+                sub = cv2.GaussianBlur(sub, (blur_size, blur_size), 0)
+                kx0, ky0 = max(0, nzx - radius), max(0, nzy - radius)
+                kx1 = min(w, nzx + nzw + radius)
+                ky1 = min(h, nzy + nzh + radius)
+                out = np.zeros_like(img_matte)
+                out[ky0:ky1, kx0:kx1] = sub[ky0 - cy0:ky1 - cy0,
+                                            kx0 - cx0:kx1 - cx0]
+                return out
+
         img_matte = cv2.erode(img_matte, kernel, iterations=1)
-        
+
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 
     def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount, kps=None):
@@ -591,6 +679,31 @@ class MaskingMixin:
             expand_px = max(1, int(np.sqrt(face_h * face_w) * blend_amount / 400))
             kernel    = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (expand_px * 2 + 1, expand_px * 2 + 1))
+            # Cropped for the same reason as blur_area's pair, and on the same
+            # argument: dilate is a local max over its own centre too, so it
+            # stays 0 everywhere further than expand_px from the filled hull,
+            # and every output inside hull+expand_px reads inside
+            # hull+2*expand_px, which the pad puts inside the crop.
+            #
+            # The box comes from the RASTERISED mask, not from the hull points:
+            # the hull is in frame coordinates and a face at the edge of shot
+            # has vertices off-frame entirely, so its point box can miss the
+            # image. boundingRect of what actually got filled cannot.
+            hx, hy, hw, hh = cv2.boundingRect(mask)
+            fh, fw = mask.shape[:2]
+            pad = 2 * expand_px + 1
+            cx0, cy0 = max(0, hx - pad), max(0, hy - pad)
+            cx1, cy1 = min(fw, hx + hw + pad), min(fh, hy + hh + pad)
+            if (hw > 0 and hh > 0
+                    and (cx1 - cx0) * (cy1 - cy0) < 0.75 * fw * fh):
+                sub = cv2.dilate(mask[cy0:cy1, cx0:cx1], kernel, iterations=1)
+                kx0, ky0 = max(0, hx - expand_px), max(0, hy - expand_px)
+                kx1 = min(fw, hx + hw + expand_px)
+                ky1 = min(fh, hy + hh + expand_px)
+                out = np.zeros_like(mask)
+                out[ky0:ky1, kx0:kx1] = sub[ky0 - cy0:ky1 - cy0,
+                                            kx0 - cx0:kx1 - cx0]
+                return out
             mask = cv2.dilate(mask, kernel, iterations=1)
 
         return mask

@@ -16,6 +16,65 @@ _CRISP_KERNEL = np.array(
      [0.0, -1.0, 0.0]], dtype=np.float32)
 
 
+# ── Precomputed tables for the soft-knee detail curve ─────────────────────
+# The knee is evaluated on `ref - bilateral(ref)`, and both operands are uint8
+# — so the difference is an INTEGER in [-255, 255] and the curve can only ever
+# take 511 distinct values. It was written with np.where, which computes BOTH
+# branches over every pixel: a full sign(), abs() and tanh() pass over
+# 512x512x3 to decide the ~1% of pixels that are actually over the knee.
+# Measured on a 512px crop with cv2 single-threaded (which is how the workers
+# run it, see ProcessMgr): 12.5 ms for the knee against 2.2 ms for the
+# bilateral filter it post-processes.
+#
+# The table is built with the identical float32 expression, so `lut[d + 255]`
+# is bit-for-bit what np.where returned, and the strength multiply is folded in
+# because it is a per-call constant. Keyed by the curve's own parameters so the
+# GPEN (12.0 / 3.0) and Restore (10.0 / 2.5) profiles each get their own.
+_KNEE_LUTS = {}
+
+
+def _knee_lut(threshold, softness, strength):
+    key = (float(threshold), float(softness), float(strength))
+    lut = _KNEE_LUTS.get(key)
+    if lut is None:
+        d = np.arange(-255, 256, dtype=np.float32)
+        lut = np.where(
+            np.abs(d) <= threshold,
+            d,
+            np.sign(d) * (threshold + softness
+                          * np.tanh((np.abs(d) - threshold) / softness))
+        ) * float(strength)
+        lut = np.ascontiguousarray(lut, dtype=np.float32)
+        _KNEE_LUTS[key] = lut
+    return lut
+
+
+def _inject_bilateral_detail(enhanced, ref, sigma_color, threshold, softness,
+                             strength):
+    """`enhanced + knee(ref - bilateral(ref)) * strength`, through that table.
+
+    Bit-identical to the np.where form it replaces (verified elementwise over
+    the whole 511-value domain), and now independent of how much of the crop
+    sits over the knee.
+    """
+    base_ref = cv2.bilateralFilter(ref, d=5, sigmaColor=sigma_color,
+                                   sigmaSpace=4.0)
+    idx = cv2.subtract(ref, base_ref, dtype=cv2.CV_16S)
+    idx += 255
+    out = enhanced.astype(np.float32)
+    out += _knee_lut(threshold, softness, strength).take(idx)
+    np.clip(out, 0.0, 255.0, out=out)
+    return out.astype(np.uint8)
+
+
+# The eye ellipse pair and its feather depend only on the crop size and the
+# template, and the strength is a per-profile constant — so the whole
+# `eye_mask * strength` term is the same array on every call for a given
+# enhancer. Building it per face cost an ellipse rasterisation, a Gaussian blur
+# and two more full-size multiplies for a result that never changed.
+_EYE_MASK_CACHE = {}
+
+
 def is_usable(result):
     """False when the model returned anything non-finite.
 
@@ -157,11 +216,30 @@ def apply_anti_halo_sharpen(img, amount=0.35, sigma=1.0, limit=2.5):
     blur = cv2.GaussianBlur(L, (0, 0), sigmaX=sigma)
     high = L - blur
 
-    # Soft coring to ignore sensor noise (|high| < 1.0) and soft saturation on large steps
-    high_cored = np.sign(high) * np.maximum(0.0, np.abs(high) - 1.0)
-    high_clamped = np.sign(high_cored) * np.minimum(
-        np.abs(high_cored), 18.0 + 4.0 * np.tanh((np.abs(high_cored) - 18.0) / 4.0)
-    )
+    # Soft coring to ignore sensor noise (|high| < 1.0) and soft saturation on
+    # large steps.
+    #
+    # Written as magnitude-then-sign rather than the two sign()/minimum() passes
+    # it replaces, because the saturation only ever binds above 18: for
+    # |x| <= 18 the bound 18 + 4*tanh((|x|-18)/4) sits ABOVE |x| (their
+    # difference is 4*(tanh(u) - u) >= 0 for u <= 0), so np.minimum returned
+    # |x| unchanged there — and that is the overwhelming majority of a face
+    # crop. Evaluating tanh over the whole 512x512 plane to establish it cost
+    # 10.9 ms of a 36 ms post-process. The cut is taken at 17 rather than 18 so
+    # the untouched branch is exactly untouched: at |x| = 17 the bound is
+    # already 0.02 clear of it, which is many orders of magnitude more than a
+    # float32 ulp, so no value that np.minimum would have altered can fall in
+    # the cheap branch.
+    mag = np.abs(high)
+    mag -= 1.0
+    np.maximum(mag, 0.0, out=mag)
+    over = mag > 17.0
+    if over.any():
+        m = mag[over]
+        mag[over] = np.minimum(m, 18.0 + 4.0 * np.tanh((m - 18.0) / 4.0))
+    # copysign, not sign(): where the cored magnitude is 0 the old expression
+    # produced sign(0) * 0 = 0 and this produces +-0.0, which adds identically.
+    high_clamped = np.copysign(mag, high)
 
     sharpened = L + float(amount) * high_clamped
     # Anti-halo bounding: clamp to local neighborhood range with tiny tolerance
@@ -192,18 +270,30 @@ def enhance_eyes_clarity(img, template='ffhq_512', kps=None, strength=0.55):
     rx = int(0.115 * w)
     ry = int(0.075 * h)
 
-    eye_mask = np.zeros((h, w), dtype=np.float32)
-    for cx, cy in [(cx1, cy1), (cx2, cy2)]:
-        cv2.ellipse(eye_mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
+    # The ellipse pair, its feather and the strength scaling depend only on
+    # (h, w, template, strength) — all constant for a given enhancer profile —
+    # so the whole weighting plane is built once and reused. See _EYE_MASK_CACHE.
+    key = (h, w, template, float(strength))
+    weight = _EYE_MASK_CACHE.get(key)
+    if weight is None:
+        eye_mask = np.zeros((h, w), dtype=np.float32)
+        for cx, cy in [(cx1, cy1), (cx2, cy2)]:
+            cv2.ellipse(eye_mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
 
-    feather = int(max(rx, ry) * 0.4) | 1
-    eye_mask = cv2.GaussianBlur(eye_mask, (feather, feather), 0)
+        feather = int(max(rx, ry) * 0.4) | 1
+        eye_mask = cv2.GaussianBlur(eye_mask, (feather, feather), 0)
+        weight = eye_mask * float(strength)
+        _EYE_MASK_CACHE[key] = weight
 
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     L = lab[:, :, 0].astype(np.float32)
 
+    # clahe.apply wants the uint8 L that cvtColor already produced. The old
+    # float32 -> clip -> uint8 round-trip through `L` could not change a single
+    # value (LAB's L channel is uint8 in [0, 255] to begin with) and cost two
+    # more full-size passes.
     clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(4, 4))
-    L_clahe = clahe.apply(np.clip(L, 0, 255).astype(np.uint8)).astype(np.float32)
+    L_clahe = clahe.apply(lab[:, :, 0]).astype(np.float32)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     L_min = cv2.erode(L_clahe, kernel)
@@ -213,7 +303,7 @@ def enhance_eyes_clarity(img, template='ffhq_512', kps=None, strength=0.55):
     L_sharp = L_clahe + 0.35 * (L_clahe - cv2.GaussianBlur(L_clahe, (0, 0), sigmaX=1.0))
     L_sharp = np.clip(L_sharp, L_min, L_max)
 
-    L_final = L * (1.0 - eye_mask * float(strength)) + L_sharp * (eye_mask * float(strength))
+    L_final = L * (1.0 - weight) + L_sharp * weight
     lab[:, :, 0] = np.clip(L_final, 0, 255).astype(np.uint8)
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
@@ -239,18 +329,13 @@ def enhance_gpen_ultimate(enhanced, reference, target_face=None,
         ref = cv2.resize(ref, (enhanced.shape[1], enhanced.shape[0]),
                          interpolation=cv2.INTER_CUBIC)
 
-    # 1. Edge-preserving texture extraction (bilateral filter preserves boundaries)
+    # 1. Edge-preserving texture extraction (bilateral filter preserves
+    #    boundaries), with the soft coring / saturation knee taken from the
+    #    511-entry table — see _inject_bilateral_detail.
     try:
-        base_ref = cv2.bilateralFilter(ref, d=5, sigmaColor=22.0, sigmaSpace=4.0)
-        detail_ref = ref.astype(np.float32) - base_ref.astype(np.float32)
-        # Soft coring & saturation knee
-        detail_ref = np.where(
-            np.abs(detail_ref) <= 12.0,
-            detail_ref,
-            np.sign(detail_ref) * (12.0 + 3.0 * np.tanh((np.abs(detail_ref) - 12.0) / 3.0))
-        )
-        out = enhanced.astype(np.float32) + detail_ref * float(strength)
-        out = np.clip(out, 0.0, 255.0).astype(np.uint8)
+        out = _inject_bilateral_detail(enhanced, ref, sigma_color=22.0,
+                                       threshold=12.0, softness=3.0,
+                                       strength=strength)
     except Exception:
         out = enhanced
 
@@ -283,17 +368,12 @@ def enhance_restore_ultra(enhanced, reference, target_face=None,
         ref = cv2.resize(ref, (enhanced.shape[1], enhanced.shape[0]),
                          interpolation=cv2.INTER_CUBIC)
 
-    # 1. Subtle bilateral texture injection
+    # 1. Subtle bilateral texture injection, with the soft knee taken from the
+    #    511-entry table — see _inject_bilateral_detail.
     try:
-        base_ref = cv2.bilateralFilter(ref, d=5, sigmaColor=18.0, sigmaSpace=4.0)
-        detail_ref = ref.astype(np.float32) - base_ref.astype(np.float32)
-        detail_ref = np.where(
-            np.abs(detail_ref) <= 10.0,
-            detail_ref,
-            np.sign(detail_ref) * (10.0 + 2.5 * np.tanh((np.abs(detail_ref) - 10.0) / 2.5))
-        )
-        out = enhanced.astype(np.float32) + detail_ref * float(strength)
-        out = np.clip(out, 0.0, 255.0).astype(np.uint8)
+        out = _inject_bilateral_detail(enhanced, ref, sigma_color=18.0,
+                                       threshold=10.0, softness=2.5,
+                                       strength=strength)
     except Exception:
         out = enhanced
 

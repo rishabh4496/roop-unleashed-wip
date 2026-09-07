@@ -60,8 +60,13 @@ class Enhance_RestoreFormerPPlus():
         temp_frame = cv2.resize(temp_frame, (512, 512), interpolation=cv2.INTER_CUBIC)
         fallback_bgr = temp_frame   # resized input, kept for the non-finite guard
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-        temp_frame = temp_frame.astype('float32') / 255.0
-        temp_frame = (temp_frame - 0.5) / 0.5
+        # Same three operations in the same order, applied in place: written as
+        # expressions each one allocated another 3 MB plane per face, and this
+        # runs once per swapped face on every frame.
+        temp_frame = temp_frame.astype('float32')
+        temp_frame /= 255.0
+        temp_frame -= 0.5
+        temp_frame /= 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
         
         if self.pool is not None:
@@ -86,8 +91,11 @@ class Enhance_RestoreFormerPPlus():
                   "(FP16 overflow? try an fp32 provider)")
             return sized(fallback_bgr.astype(np.uint8), input_size)
 
+        # np.clip allocates the buffer we then own outright, so the rescale
+        # runs in place on it rather than allocating twice more.
         result = np.clip(result, -1, 1)
-        result = (result + 1) / 2
+        result += 1
+        result /= 2
         result = result.transpose(1, 2, 0) * 255.0
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
         return sized(result.astype(np.uint8), input_size)

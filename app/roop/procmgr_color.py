@@ -63,10 +63,15 @@ class ColorTransferMixin:
 
         # If source is effectively grayscale (B&W media), skip color transfer.
         # Chrominance std ≈ 0 causes division explosion → blue artifact.
-        src_f = source.astype(np.float32)
-        if (np.mean(np.abs(src_f[:, :, 0] - src_f[:, :, 1])) < 5 and
-                np.mean(np.abs(src_f[:, :, 1] - src_f[:, :, 2])) < 5):
-            return source
+        # Per channel rather than one float32 copy of the whole crop: the same
+        # float32 values reach the same np.mean, and the second test is only
+        # reached when the first passes.
+        _b = source[:, :, 0].astype(np.float32)
+        _g = source[:, :, 1].astype(np.float32)
+        if np.mean(np.abs(_b - _g)) < 5:
+            _r = source[:, :, 2].astype(np.float32)
+            if np.mean(np.abs(_g - _r)) < 5:
+                return source
 
         if mode == 'lct':
             return self._color_transfer_lct(source, target)
@@ -84,8 +89,16 @@ class ColorTransferMixin:
         source_std  = np.maximum(source_std.reshape(1, 1, 3), 1.0)  # guard near-zero
         target_mean = target_mean.reshape(1, 1, 3)
         target_std  = target_std.reshape(1, 1, 3)
-        source = (source - source_mean) * (target_std / source_std) + target_mean
-        return cv2.cvtColor(np.clip(source, 0, 255).astype("uint8"), cv2.COLOR_LAB2BGR)
+        # cv2.meanStdDev returns float64, so `source - source_mean` promotes the
+        # whole plane to float64 and the chained expression then allocated three
+        # more of them (24 MB of traffic on a 512px crop, for what is one scale
+        # and one shift). Same arithmetic, same dtype, same result — one buffer.
+        source = source.astype(np.float64)
+        source -= source_mean
+        source *= (target_std / source_std)
+        source += target_mean
+        np.clip(source, 0, 255, out=source)
+        return cv2.cvtColor(source.astype("uint8"), cv2.COLOR_LAB2BGR)
 
     def _color_transfer_lct(self, source, target):
         """Linear (covariance-whitening) color transfer in LAB. Whitens the
