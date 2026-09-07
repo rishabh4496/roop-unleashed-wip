@@ -66,6 +66,65 @@ class PluginListTakesEitherForm(unittest.TestCase):
                          ['faceswap', 'mask_xseg'])
 
 
+class EveryEngineHandsBackAFlatMask(unittest.TestCase):
+    """A mask engine returns (h, w). DFL XSeg used to return (h, w, 1).
+
+    Its ONNX output is (1, 256, 256, 1) and it dropped only the batch axis,
+    where Mask_Occluder and Mask_XSeg3 drop both. Three separate callers grew a
+    workaround for the difference — Mask_RealityUX._to_2d, whose docstring calls
+    it "a measured real bug on XSeg's raw ONNX output"; _recover_undersized_mask,
+    which squashes to 2D and reshapes back; and _composite_mask, which happens to
+    survive because cv2.resize drops the trailing axis for it. The reason it kept
+    needing new workarounds instead of raising once is that (h, w, 1) and (h, w)
+    are both individually valid broadcast shapes, so combining them elementwise
+    yields a silent (h, w, h) array. Fixed at the source; asserted here for every
+    engine that shares the convention, so a fourth workaround is never needed.
+    """
+
+    ENGINES = (
+        ('Mask_XSeg', 'model_xseg'),
+        ('Mask_XSeg3', 'model_xseg3'),
+        ('Mask_Occluder', 'model_occluder'),
+    )
+
+    def test_the_mask_is_two_dimensional(self):
+        import importlib
+        import numpy as np
+
+        class _Binding:
+            def bind_cpu_input(self, name, value):
+                self.seen = value
+
+            def bind_output(self, name, device):
+                pass
+
+            def copy_outputs_to_cpu(self):
+                # The raw NHWC contract every one of these models exports.
+                return [np.full((1, 256, 256, 1), 0.9, dtype=np.float32)]
+
+        class _Session:
+            def io_binding(self):
+                return _Binding()
+
+            def run_with_iobinding(self, binding):
+                return None
+
+        for classname, attr in self.ENGINES:
+            with self.subTest(engine=classname):
+                module = importlib.import_module('roop.processors.' + classname)
+                engine = getattr(module, classname)()
+                engine.pool = None
+                engine.devicename = 'cpu'
+                engine.model_inputs = [type('I', (), {'name': 'x'})()]
+                engine.model_outputs = [type('O', (), {'name': 'y'})()]
+                setattr(engine, attr, _Session())
+                mask = engine.Run(np.zeros((512, 512, 3), np.uint8), '')
+                self.assertEqual(mask.ndim, 2, f'{classname} returned {mask.shape}')
+                self.assertEqual(mask.shape, (256, 256))
+                # High on face in, low ("swap here") out — the project's polarity.
+                self.assertLess(float(mask.max()), 0.5)
+
+
 class TheUiNamesMapToEngines(unittest.TestCase):
     def setUp(self):
         from api import map_mask_engines

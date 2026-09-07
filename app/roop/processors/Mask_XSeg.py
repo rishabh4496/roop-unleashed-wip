@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import cv2
 import onnxruntime
@@ -5,10 +7,21 @@ import threading
 import roop.globals
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, conditional_download
 from roop import session_pool
 
 THREAD_LOCK_CLIP = threading.Lock()
+
+# DFL's XSeg, as mirrored by the roop-unleashed model host. core.py pre-warms
+# this at startup, but only when it finds itself online — so an offline first
+# run, or a models folder someone has cleaned out, reaches Initialize with no
+# file on disk. Downloading here as well (the same way Mask_Occluder and
+# Mask_XSeg3 already do) turns that into a fetch instead of a bare
+# onnxruntime load failure raised out of a worker thread, which matters more
+# for this engine than for its siblings: DFL XSeg is the DEFAULT mask engine,
+# and Mask_RealityUX is built on top of it.
+_MODEL_URL = 'https://huggingface.co/countfloyd/deepfake/resolve/main/xseg.onnx'
+_MODEL_FILE = 'xseg.onnx'
 
 
 class Mask_XSeg():
@@ -34,7 +47,9 @@ class Mask_XSeg():
 
         self.plugin_options = plugin_options
         if self.model_xseg is None:
-            model_path = resolve_relative_path('../models/xseg.onnx')
+            model_dir = resolve_relative_path('../models')
+            conditional_download(model_dir, [_MODEL_URL])
+            model_path = os.path.join(model_dir, _MODEL_FILE)
             onnxruntime.set_default_logger_severity(3)
 
             def _build(_i=0):
@@ -73,7 +88,21 @@ class Mask_XSeg():
                 ort_outs = self._run_session(sess, temp_frame)
         else:
             ort_outs = self._run_session(self.model_xseg, temp_frame)
+        # Output: (1, 256, 256, 1) → drop batch + channel dims to a 2D mask.
+        # The channel squeeze is not cosmetic. Without it this engine alone hands
+        # back a (256, 256, 1) mask where every caller in the project assumes
+        # (256, 256), and three of them already carry a workaround written for
+        # exactly this: Mask_RealityUX._to_2d (which names it "a measured real
+        # bug on XSeg's raw ONNX output"), _recover_undersized_mask's
+        # reshape-and-restore dance in procmgr_masking, and _composite_mask
+        # leaning on cv2.resize dropping the trailing axis for it. The failure
+        # mode when one is missed is silent rather than loud: (h, w, 1) and
+        # (h, w) are both individually valid broadcast shapes, so an elementwise
+        # combine of the two produces an (h, w, h) array instead of raising.
+        # Normalise at the source, the way Mask_Occluder and Mask_XSeg3 do.
         result = ort_outs[0][0]
+        if result.ndim == 3:
+            result = result[..., 0]
         result = np.clip(result, 0, 1.0)
         result[result < 0.1] = 0
         # invert values to mask areas to keep
