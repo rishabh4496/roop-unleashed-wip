@@ -1989,14 +1989,50 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR:
                 if len(self.input_face_datas) > num_swapped:
                     return None
-            self.num_frames_no_face = 0
-            self.last_swapped_frame = temp_frame.copy()
+            # Copy OUTSIDE the lock (a 1080p copy is ~6 MB and every worker
+            # takes this path on a good frame); publish the pair together so a
+            # reader can never see a fresh frame beside a stale counter.
+            snapshot = temp_frame.copy()
+            with self.lock:
+                self.num_frames_no_face = 0
+                self.last_swapped_frame = snapshot
             self._publish_live(temp_frame)
             return temp_frame
         if roop.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
-            if self.last_swapped_frame is not None and self.num_frames_no_face < self.options.max_num_reuse_frame:
-                self.num_frames_no_face += 1
-                ret = self.last_swapped_frame.copy()
+            # `self.lock` has existed since __init__ and was never taken; this is
+            # the state it is for. num_frames_no_face is not a statistic like
+            # total_swaps (whose lost increments are explicitly accepted) — it is
+            # the control variable capping how many consecutive frames may be
+            # reused, and check-then-increment across N worker threads is a
+            # textbook TOCTOU.
+            #
+            # Scope, honestly: this is HARDENING, not a fix for a measured
+            # failure. The window is about three bytecodes and only frames where
+            # nothing was detected reach it, so contention is low — 8 threads
+            # hammering the unlocked form never overran the cap, including at
+            # sys.setswitchinterval(1e-9). What the lock buys is that the cap and
+            # the stored frame are now provably consistent, for the cost of an
+            # uncontended acquire on an already-rare path.
+            #
+            # The reference is grabbed here and copied outside, which is safe
+            # because last_swapped_frame is only ever REBOUND to a fresh array,
+            # never mutated in place.
+            #
+            # What a lock cannot fix, and what this deliberately does not pretend
+            # to: "last swapped frame" is a sequential idea. Frames are handed to
+            # workers round-robin, so the most recently STORED frame is not the
+            # preceding one — under threads>1 this policy reuses a nearby frame,
+            # not the previous frame. Correct ordering would need this policy to
+            # force threads=1; that is a behaviour change for a user-visible
+            # setting, so it is flagged rather than taken unilaterally.
+            with self.lock:
+                reuse = (self.last_swapped_frame is not None
+                         and self.num_frames_no_face < self.options.max_num_reuse_frame)
+                if reuse:
+                    self.num_frames_no_face += 1
+                    snapshot = self.last_swapped_frame
+            if reuse:
+                ret = snapshot.copy()
                 self._publish_live(ret)
                 return ret
             self._publish_live(frame)

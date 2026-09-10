@@ -700,6 +700,39 @@ def _get_git_version() -> str:
             return "main"
 
 
+def parse_subsample_size(value, default=256):
+    """'256px' -> 256, for any value a client might actually send.
+
+    Was `int(str(value)[:3])` at both call sites, which only works because every
+    advertised option ('128px', '256px', '512px') happens to have a three-digit
+    prefix. Anything else either crashes or silently lies:
+
+        '64px'   -> int('64p')  -> ValueError -> HTTP 500 on the whole request
+        ''       -> int('')     -> ValueError -> HTTP 500
+        '1024px' -> int('102')  -> 102, a size no model tiles into
+
+    /api/meta advertises the valid set but nothing validates the payload against
+    it, so a stale client, a saved preset from another build, or a hand-made
+    request takes the endpoint out. Parse the leading digits, keep it inside the
+    range the pixel-boost path can actually tile, and fall back rather than
+    raise — a wrong-but-sane subsample size costs a little quality, where a 500
+    costs the run.
+    """
+    digits = ''
+    for ch in str(value).strip():
+        if not ch.isdigit():
+            break
+        digits += ch
+    if not digits:
+        return default
+    size = int(digits)
+    # ProcessMgr clamps up to the swap model's own output size (128-512) and
+    # tiles by integer division, so anything outside this band is meaningless.
+    if size < 64 or size > 1024:
+        return default
+    return size
+
+
 @app.get("/api/meta")
 def get_meta():
     """Choice lists + current galleries for the React UI to render."""
@@ -2407,7 +2440,7 @@ def _preview_locked(payload: dict):
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", "Retry rotated"))
         roop_globals.vr_mode = bool(payload.get("vr_mode", False))
         roop_globals.autorotate_faces = bool(payload.get("autorotate", True))
-        roop_globals.subsample_size = int(str(payload.get("upscale", "256px"))[:3])
+        roop_globals.subsample_size = parse_subsample_size(payload.get("upscale", "256px"))
         roop_globals.execution_threads = roop_globals.CFG.max_threads
         roop_globals.color_transfer_mode = payload.get("color_transfer_mode", getattr(roop_globals.CFG, "color_transfer_mode", "rct"))
         roop_globals.sam2_model_size = payload.get("sam2_model_size", getattr(roop_globals.CFG, "sam2_model_size", "tiny"))
@@ -2583,7 +2616,7 @@ def _run_swap(payload):
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", roop_globals.CFG.no_face_action))
         roop_globals.vr_mode = bool(payload.get("vr_mode", roop_globals.CFG.vr_mode))
         roop_globals.autorotate_faces = bool(payload.get("autorotate", roop_globals.CFG.autorotate_faces))
-        roop_globals.subsample_size = int(str(upsample)[:3])
+        roop_globals.subsample_size = parse_subsample_size(upsample)
         roop_globals.upscale_after_swap = bool(payload.get("upscale_after_swap", getattr(roop_globals.CFG, "upscale_after_swap", True)))
         roop_globals.upscale_model_after = payload.get("upscale_model_after", getattr(roop_globals.CFG, "upscale_model_after", "esrganx2"))
         if getattr(roop_globals.CFG, 'auto_thread_selection', True):
