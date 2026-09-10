@@ -39,7 +39,7 @@ def probe_encoder(codec="libx265", crf=14, timeout=30):
     Returns (ok: bool, message: str). message is empty on success.
     """
     import tempfile
-    from roop.util_ffmpeg import clamp_quality
+    from roop.util_ffmpeg import _rate_control, clamp_quality
     crf = clamp_quality(codec, crf)
     tmp = os.path.join(tempfile.gettempdir(), f"roop_encoder_probe_{os.getpid()}.mp4")
     cmd = [
@@ -49,10 +49,7 @@ def probe_encoder(codec="libx265", crf=14, timeout=30):
         '-f', 'lavfi', '-i', 'testsrc=size=256x256:rate=25:duration=1',
         '-frames:v', '3', '-vcodec', codec,
     ]
-    if codec in ('h264_nvenc', 'hevc_nvenc'):
-        cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-preset', 'p5', '-tune', 'hq'])
-    else:
-        cmd.extend(['-crf', str(crf)])
+    cmd.extend(_rate_control(codec, crf))
     cmd.extend(['-pix_fmt', 'yuv420p', tmp])
 
     popen_params = {"stdout": sp.PIPE, "stderr": sp.PIPE, "stdin": DEVNULL}
@@ -189,7 +186,8 @@ class FFMPEG_VideoWriter:
             nvenc_preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
             if nvenc_preset not in {f'p{i}' for i in range(1, 8)}:
                 nvenc_preset = 'p5'
-            cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-preset', nvenc_preset, '-tune', 'hq'])
+            cmd.extend(['-rc', 'vbr', '-cq', str(crf), '-b:v', '0',
+                        '-preset', nvenc_preset, '-tune', 'hq'])
         else:
             cmd.extend(['-crf', str(crf)])
 

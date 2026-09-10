@@ -11,7 +11,10 @@ module.exports = async (kernel) => {
         params: {
           venv: "env",
           env: {
-            ROOP_PROFILE: "1",
+            // Profiling takes a timer + lock for every measured stage. Keep it
+            // opt-in: disabling diagnostics changes no pixels and frees that
+            // bookkeeping from normal renders.
+            ROOP_PROFILE: "0",
             ROOP_BATCH_SWAP_XFRAME: "1",
             ROOP_BATCH_SWAP: "1",
             ROOP_STAB_PARALLEL: "1",

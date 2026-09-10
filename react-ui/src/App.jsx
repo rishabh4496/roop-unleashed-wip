@@ -707,8 +707,13 @@ export default function App() {
     if (!body) return;
     settingsDirtyRef.current = null;
     if (settingsSaveRef.current) { clearTimeout(settingsSaveRef.current); settingsSaveRef.current = null; }
-    postJSON('/api/settings', body, { keepalive }).catch(() => { /* offline — persists on next edit/run */ });
-  }, []);
+    postJSON('/api/settings', body, { keepalive }).catch((err) => {
+      // Keep the latest unsaved state dirty. A later edit or page-hide flush can
+      // retry it, and the toast prevents a rejected payload looking saved.
+      if (!settingsDirtyRef.current) settingsDirtyRef.current = body;
+      notify(`Could not save settings: ${err.message}`, 'error');
+    });
+  }, [notify]);
   useEffect(() => {
     if (!settings) return;
     // Skip the first value (just fetched from the backend) so we don't re-POST

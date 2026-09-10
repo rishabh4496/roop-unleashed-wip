@@ -158,8 +158,9 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 | Restore original mouth | Composites the target's original mouth back over the swap |
 | Video swapping method | **In-Memory** (fast, more RAM) or **Extract Frames** (large videos) |
 | Subsample upscale | Internal face resolution: 128 → 256 → 512 px |
+| Video output | The format filters the codec list to valid FFmpeg pairs. NVENC CQ output has no default bitrate cap, so high-detail footage keeps the requested quality. |
 
-The **Editor** tab also offers AI post-processing on any image/video: Real-ESRGAN / LSDIR upscaling, DeOldify colorization, and stylize filters (cartoon, pencil, C64, …). Advanced performance knobs (TensorRT pool sizes, encoder preset, profiling) live under **Settings → Advanced performance** and apply after an app restart.
+The **Editor** tab also offers AI post-processing on any image/video: Real-ESRGAN / LSDIR upscaling, DeOldify colorization, and stylize filters (cartoon, pencil, C64, …). Advanced performance knobs (TensorRT pool sizes, codec-aware encoder preset, profiling) live under **Settings → Advanced performance** and apply after an app restart. Stage profiling defaults off because its timers are diagnostic overhead; enable it only while measuring a run.
 
 ---
 

@@ -79,8 +79,18 @@ def _rate_control(codec: str, quality) -> List[str]:
         preset = os.environ.get('ROOP_NVENC_PRESET', 'p5').strip().lower()
         if preset not in {f'p{i}' for i in range(1, 8)}:
             preset = 'p5'
-        return ['-rc', 'vbr', '-cq', str(q), '-preset', preset, '-tune', 'hq']
-    return ['-crf', str(q)]
+        # -cq selects the target quality, while -b:v 0 removes FFmpeg's default
+        # bitrate ceiling. Without it, detailed/high-resolution footage can be
+        # bitrate-starved even at a low CQ value.
+        return ['-rc', 'vbr', '-cq', str(q), '-b:v', '0',
+                '-preset', preset, '-tune', 'hq']
+    args = ['-crf', str(q)]
+    if codec in ('libx264', 'libx265'):
+        valid = {'ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                 'medium', 'slow', 'slower', 'veryslow', 'placebo'}
+        preset = os.environ.get('ROOP_ENCODER_PRESET', 'faster').strip().lower()
+        args.extend(['-preset', preset if preset in valid else 'faster'])
+    return args
 
 
 def cut_video(original_video: str, cut_video: str, start_frame: int, end_frame: int, reencode: bool):

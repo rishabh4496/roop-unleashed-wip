@@ -247,7 +247,7 @@ class TestSettingsPersistence(unittest.TestCase):
 
 
     def test_settings_defaults_are_exposed_for_the_ui(self):
-        """GET /api/settings returns CFG.__dict__, so a field missing from
+        """GET /api/settings returns CFG.public_dict(), so a field missing from
         Settings.__init__ never reaches the UI."""
         from settings import Settings
         cfg = Settings(str(REPO / "app" / "config.yaml"))
@@ -271,7 +271,7 @@ class TestPerfKnobWiring(unittest.TestCase):
 
     A perf knob reaches the code through five places, and missing any one fails
     silently in a different way: Settings.jsx (invisible), Settings.__init__
-    (never reaches the UI, since GET returns CFG.__dict__), save() (resets on
+    (never reaches the UI, since GET returns CFG.public_dict()), save() (resets on
     restart), run.py (saved but never applied — the worst, because the UI shows
     the value the run is not using), and finally the env var the consumer reads.
     """
@@ -307,7 +307,8 @@ class TestPerfKnobWiring(unittest.TestCase):
             # (var, key) tuple loop for the auto/on/off tri-states.
             self.assertTrue(
                 re.search(rf"_set\('([A-Z_]+)',\s*cfg\.get\('{key}'\)\)", run_src)
-                or re.search(rf"'{key}'\)", run_src),
+                or re.search(rf"'{key}'\)", run_src)
+                or re.search(rf"cfg\.get\('{key}'(?:,|\))", run_src),
                 f"{key} is in the UI but run.py never maps it to an env var")
 
     def test_the_expression_pool_knob_is_wired_end_to_end(self):

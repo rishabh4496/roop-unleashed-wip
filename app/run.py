@@ -46,7 +46,15 @@ def _apply_perf_env():
     _set('ROOP_DETMASK_POOL', cfg.get('perf_detmask_pool'))
     _set('ROOP_DETECTOR_POOL', cfg.get('perf_detector_pool'))
     _set('ROOP_EXPR_POOL', cfg.get('perf_expr_pool'))
-    _set('ROOP_ENCODER_PRESET', cfg.get('perf_encoder_preset'))
+    # The UI intentionally uses one preset setting, but FFmpeg uses different
+    # option families and env vars for software encoders and NVENC. Route the
+    # saved value to the consumer that can actually use it.
+    encoder_preset = cfg.get('perf_encoder_preset')
+    output_codec = str(cfg.get('output_video_codec', '')).strip().lower()
+    if output_codec in ('h264_nvenc', 'hevc_nvenc'):
+        _set('ROOP_NVENC_PRESET', encoder_preset)
+    elif output_codec in ('libx264', 'libx265'):
+        _set('ROOP_ENCODER_PRESET', encoder_preset)
     for var, key in (('ROOP_PROFILE', 'perf_profile'), ('ROOP_BATCH_SWAP', 'perf_batch_swap'),
                      ('ROOP_NVDEC', 'perf_nvdec')):
         v = str(cfg.get(key, 'auto')).strip().lower()

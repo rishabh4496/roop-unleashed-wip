@@ -1,10 +1,23 @@
 // Thin client for the FastAPI backend (app/api.py) proxied via Vite.
 export const API = window.location.origin;
 
+function errorMessage(payload, fallback) {
+  const detail = payload?.message ?? payload?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => item?.msg || String(item)).filter(Boolean);
+    if (messages.length) return messages.join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    try { return JSON.stringify(detail); } catch { /* use fallback */ }
+  }
+  return fallback;
+}
+
 async function handle(res) {
   if (!res.ok) {
     let msg = res.statusText;
-    try { msg = (await res.json()).message || msg; } catch { /* ignore */ }
+    try { msg = errorMessage(await res.json(), msg); } catch { /* ignore */ }
     throw new Error(msg);
   }
   const ct = res.headers.get('content-type') || '';
@@ -109,7 +122,7 @@ const xhrUpload = (path, fd, { onProgress, signal } = {}) => new Promise((resolv
       return;
     }
     let msg = xhr.statusText || `HTTP ${xhr.status}`;
-    try { msg = JSON.parse(xhr.responseText).message || msg; } catch { /* ignore */ }
+    try { msg = errorMessage(JSON.parse(xhr.responseText), msg); } catch { /* ignore */ }
     reject(new Error(msg));
   };
   xhr.onerror = () => { cleanup(); reject(new Error('Network error during upload')); };

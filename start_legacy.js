@@ -10,7 +10,9 @@ module.exports = async (kernel) => {
         params: {
           venv: "env",
           env: {
-            ROOP_PROFILE: "1",
+            // Diagnostics are opt-in; per-stage timing adds bookkeeping but
+            // does not change the rendered frames.
+            ROOP_PROFILE: "0",
             ROOP_BATCH_SWAP_XFRAME: "1",
             ROOP_BATCH_SWAP: "1",
             ROOP_STAB_PARALLEL: "1",

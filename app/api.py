@@ -454,7 +454,7 @@ class ApiProgress:
 @app.get("/api/settings")
 def get_settings():
     if roop_globals.CFG:
-        return roop_globals.CFG.__dict__
+        return roop_globals.CFG.public_dict()
     return {}
 
 
@@ -473,18 +473,55 @@ def get_settings_defaults():
     """
     from settings import Settings
     try:
-        return Settings(os.path.join(os.path.dirname(__file__), '__nonexistent_defaults__.yaml')).__dict__
+        return Settings(os.path.join(os.path.dirname(__file__), '__nonexistent_defaults__.yaml')).public_dict()
     except Exception:
         return {}
 
 
 @app.post("/api/settings")
 def save_settings(settings: dict = Body(...)):
-    _update_mask_offsets_from_payload(settings)
+    payload = dict(settings)
     if roop_globals.CFG:
-        for k, v in settings.items():
-            if hasattr(roop_globals.CFG, k):
+        # Container and codec are one choice, not two independent strings. The
+        # React UI submits them atomically, but recipes and API callers can still
+        # send an impossible pair, so reject it before mutating any live state.
+        if 'output_video_format' in payload or 'output_video_codec' in payload:
+            output_format = str(payload.get(
+                'output_video_format', roop_globals.CFG.output_video_format)).lower()
+            output_codec = str(payload.get(
+                'output_video_codec', roop_globals.CFG.output_video_codec)).lower()
+            compatible = _video_codecs_by_format(_available_video_codecs())
+            if output_format not in compatible or not compatible[output_format]:
+                return JSONResponse(status_code=422, content={
+                    "message": f"Video format '{output_format}' has no compatible encoder "
+                               "in this FFmpeg build."})
+            if output_codec not in compatible[output_format]:
+                choices = ', '.join(compatible[output_format])
+                return JSONResponse(status_code=422, content={
+                    "message": f"Codec '{output_codec}' is not compatible with "
+                               f"{output_format}. Choose: {choices}."})
+            payload['output_video_format'] = output_format
+            payload['output_video_codec'] = output_codec
+
+        _update_mask_offsets_from_payload(payload)
+        allowed = set(roop_globals.CFG.public_dict())
+        for k, v in payload.items():
+            if k in allowed:
                 setattr(roop_globals.CFG, k, v)
+
+        # Range- and codec-dependent values can also arrive from an imported
+        # recipe or a direct API call, bypassing the browser controls.
+        from settings import (normalize_encoder_preset, normalize_thread_count,
+                              normalize_trt_precision, normalize_video_quality)
+        roop_globals.CFG.video_quality = normalize_video_quality(
+            roop_globals.CFG.output_video_codec, roop_globals.CFG.video_quality)
+        roop_globals.CFG.perf_encoder_preset = normalize_encoder_preset(
+            roop_globals.CFG.output_video_codec,
+            roop_globals.CFG.perf_encoder_preset)
+        roop_globals.CFG.trt_precision = normalize_trt_precision(
+            roop_globals.CFG.trt_precision)
+        roop_globals.CFG.max_threads = normalize_thread_count(
+            roop_globals.CFG.max_threads)
         roop_globals.CFG.save()
     return {"status": "success"}
 
@@ -671,6 +708,8 @@ def get_meta():
         providers = suggest_execution_providers()
     except Exception:
         providers = ["cpu"]
+    video_codecs = _available_video_codecs()
+    video_codecs_by_format = _video_codecs_by_format(video_codecs)
     return {
         "git_version": _get_git_version(),
         "providers": providers,
@@ -693,20 +732,37 @@ def get_meta():
         "detector_engines": ["scrfd", "yoloface", "retinaface", "retinaface_r50", "yunet"],
         "encoder_presets": ["auto", "ultrafast", "superfast", "veryfast", "faster",
                              "fast", "medium", "slow", "slower", "veryslow"],
+        "nvenc_encoder_presets": ["auto", "p1", "p2", "p3", "p4", "p5", "p6", "p7"],
         "pool_sizes": ["auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+        "max_threads": os.cpu_count() or 4,
         "tristate": ["auto", "on", "off"],
         "no_face_actions": no_face_choices,
         "upscale": ["128px", "256px", "512px"],
         "video_methods": ["Extract Frames to media", "In-Memory processing"],
         "output_methods": ["File", "Virtual Camera", "Both"],
         "image_formats": ["jpg", "png", "webp"],
-        "video_formats": ["avi", "mkv", "mp4", "webm"],
-        "video_codecs": _available_video_codecs(),
+        "video_formats": [name for name, codecs in video_codecs_by_format.items() if codecs],
+        "video_codecs": video_codecs,
+        "video_codecs_by_format": video_codecs_by_format,
     }
 
 
 _VIDEO_CODECS = ["libx264", "libx265", "libvpx-vp9", "h264_nvenc", "hevc_nvenc"]
+_VIDEO_FORMAT_CODECS = {
+    "avi": ["libx264", "libx265", "h264_nvenc", "hevc_nvenc"],
+    "mkv": _VIDEO_CODECS,
+    "mp4": ["libx264", "libx265", "h264_nvenc", "hevc_nvenc"],
+    "webm": ["libvpx-vp9"],
+}
 _codec_cache = {"list": None}
+
+
+def _video_codecs_by_format(available):
+    installed = set(available)
+    return {
+        container: [codec for codec in codecs if codec in installed]
+        for container, codecs in _VIDEO_FORMAT_CODECS.items()
+    }
 
 
 def _available_video_codecs():

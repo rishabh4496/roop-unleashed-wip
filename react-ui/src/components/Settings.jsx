@@ -9,6 +9,14 @@ import { fmtVal } from './settingsDiff';
 import { FOCUS_SETTING_EVENT } from './settingsCatalog';
 import { confirmDialog } from './confirm';
 import { Icon } from '../icons';
+import {
+  codecsForFormat,
+  encoderPresetsForCodec,
+  isNvencCodec,
+  normalizeOutputSettings,
+  outputSettingsChanged,
+  videoQualityMax,
+} from './videoSettings';
 
 // A Section that participates in the settings search and the "only changed"
 // filter. With either active it keeps just the controls that match (or the
@@ -107,8 +115,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
         .filter(([key]) => key !== 'best_threads')
     );
     const pending = result?.applied?.pending_restart || {};
-    setSettings((s) => ({ ...s, ...pending, ...live, benchmark_results: result }));
-  }, [setSettings]);
+    setSettings((s) => normalizeOutputSettings(
+      { ...s, ...pending, ...live, benchmark_results: result },
+      meta,
+    ));
+  }, [setSettings, meta]);
 
   useEffect(() => {
     let live = true;
@@ -117,6 +128,16 @@ export default function Settings({ meta, settings, setSettings, notify }) {
       .catch(() => { /* pre-restart backend — markers stay off */ });
     return () => { live = false; };
   }, []);
+
+  // Repair older configs and imported snapshots atomically. Otherwise the
+  // slider can display a clamped value while autosave persists the stale one.
+  useEffect(() => {
+    if (!meta?.video_formats || !settings) return;
+    setSettings((current) => {
+      const normalized = normalizeOutputSettings(current, meta);
+      return outputSettingsChanged(current, normalized) ? normalized : current;
+    });
+  }, [meta, settings, setSettings]);
 
   // fmtVal normalises the comparison the same way the run-history diff does, so
   // 14 and "14" — which YAML and a number input disagree about — do not read as
@@ -140,13 +161,23 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   // Everything a control binds to, in one place, so `bind` can hand a control
   // its value, its change handler, its modified marker and its reset together —
   // and so the key is present on the element for FilterSection to collect.
-  const bind = (k, fallback) => ({
-    settingKey: k,
-    value: p[k] ?? (defaults ? defaults[k] : fallback) ?? fallback,
-    onChange: (v) => set(k, v),
-    modified: isModified(k),
-    onReset: () => resetKeys([k]),
-  });
+  const bind = (k, fallback, write) => {
+    const onWrite = write || ((v) => set(k, v));
+    return {
+      settingKey: k,
+      value: p[k] ?? (defaults ? defaults[k] : fallback) ?? fallback,
+      onChange: onWrite,
+      modified: isModified(k),
+      onReset: write
+        ? () => {
+          if (defaults && k in defaults) {
+            onWrite(defaults[k]);
+            notify(`Reset ${k.replaceAll('_', ' ')} to default`, 'info');
+          }
+        }
+        : () => resetKeys([k]),
+    };
+  };
   const bindToggle = (k) => ({
     settingKey: k,
     checked: !!p[k],
@@ -158,6 +189,27 @@ export default function Settings({ meta, settings, setSettings, notify }) {
   const modifiedCount = defaults
     ? Object.keys(defaults).filter((k) => isModified(k)).length
     : 0;
+  const outputCodecOptions = codecsForFormat(meta, p.output_video_format || 'mp4');
+  const encoderPresetOptions = encoderPresetsForCodec(meta, p.output_video_codec);
+  const updateOutput = (patch) => setSettings((current) => (
+    normalizeOutputSettings({ ...current, ...patch }, meta)
+  ));
+  const updateCodec = (codec) => setSettings((current) => {
+    let outputFormat = current.output_video_format;
+    if (!codecsForFormat(meta, outputFormat).includes(codec)) {
+      // A per-control reset can request the default codec while the current
+      // container cannot hold it. Prefer the default/MP4 container instead of
+      // claiming the reset succeeded and silently restoring the old codec.
+      const candidates = [defaults?.output_video_format, 'mp4', ...(meta.video_formats || [])];
+      outputFormat = candidates.find((format) => codecsForFormat(meta, format).includes(codec))
+        || outputFormat;
+    }
+    return normalizeOutputSettings({
+      ...current,
+      output_video_format: outputFormat,
+      output_video_codec: codec,
+    }, meta);
+  });
 
   // ── Jump to a setting from the command palette ───────────────────────────
   // The palette can name any setting; landing on this tab is only half the job,
@@ -369,7 +421,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             min={0.10}
             max={0.90}
             step={0.05}
-            {...bind('face_detector_threshold', 0.60)}
+            {...bind('face_detector_threshold', 0.50)}
           />
           <Slider
             label="Overlap NMS threshold"
@@ -379,7 +431,7 @@ export default function Settings({ meta, settings, setSettings, notify }) {
             {...bind('face_detector_nms', 0.40)}
           />
           {!(p.auto_thread_selection ?? true) && (
-            <Slider label="Max threads" info="default 3 (Manual mode)" min={1} max={32} step={1} {...bind('max_threads', 3)} />
+            <Slider label="Max threads" info={`Manual worker count, capped at this machine's ${meta.max_threads || 32} logical CPUs. Auto mode uses the benchmark/workload recommendation instead.`} min={1} max={meta.max_threads || 32} step={1} {...bind('max_threads', 3)} />
           )}
           <Slider label="Max memory (GB)" info="0 = no limit" min={0} max={128} step={1} {...bind('memory_limit', 0)} />
 
@@ -392,33 +444,50 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           <Select label="Detect/Mask pool" info="ROOP_DETMASK_POOL — TensorRT contexts for face detection and masking, and the width of 'Analyzing faces'. LOWERING it slows that stage close to proportionally. DO NOT just raise it to match Max threads. Each instance carries its own model set plus a copy of the detector (retinaface_r50 is ~104MB), and on a 12GB card 8 does not fit alongside the swapper pool: measured, it ran out of VRAM and thrashed from 11.8 fps down to 0.5 and still falling, at 95% VRAM. The auto tier (12GB = 4) is chosen to leave that headroom. If you raise it, go one step at a time and watch VRAM — 5 or 6 may fit, 8 does not. Raising it only helps when the stage is DETECTION-bound. Check STAGE TIMING (ROOP_PROFILE=1): if track_decode per frame exceeds track_detect divided by this pool size, the stage is waiting on the video decoder instead and more instances buy nothing but VRAM." {...bind('perf_detmask_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Detector pool" info="ROOP_DETECTOR_POOL — Independent instances of the standalone DETECTOR, as distinct from the detect/mask pool above. The hybrid engines (retinaface, yoloface, yunet) bring their own detector and only borrow buffalo_l's aux models, so widening the detect/mask pool alone parallelises recognition and landmarks while the detector itself stays single-file. 'auto' follows the detect/mask pool. The two do not necessarily want the same width: on an RTX 4070 the benchmark measured the detector still scaling at 4 instances while recognition plateaued at 2. Turn this DOWN before the detect/mask pool when VRAM is tight — retinaface_r50 is ~104MB per instance (yoloface_8n ~9MB, yunet ~350KB, so those are nearly free)." {...bind('perf_detector_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
           <Select label="Expression pool" info="ROOP_EXPR_POOL — TensorRT contexts for the LivePortrait expression restorer, the most expensive per-face stage there is (a full re-render: 5 models, one of them a 421MB generator). Only allocated when expression restore is actually on. 'auto' is VRAM-tiered: below 11.5GB = 0 (single context), above = 2, which was measured +28% on the stage. Raise to 3 only if STAGE TIMING shows 'expression' total/wall-clock exceeding the slot count — i.e. threads queueing for a slot. Each slot is ~537MB of weights, the largest of any pool here." {...bind('perf_expr_pool', 'auto')} options={meta.pool_sizes || ['auto', '1', '2', '3', '4', '5', '6', '7', '8']} />
-          <Select label="Encoder preset" info="ROOP_ENCODER_PRESET — Encoding speed preset. 'auto' selects: 'faster' for CPU encoders (libx264/libx265), and 'p5' (VBR HQ) for NVENC GPU encoders." {...bind('perf_encoder_preset', 'auto')} options={meta.encoder_presets || ['auto', 'faster', 'fast', 'medium']} />
+          <Select
+            label={isNvencCodec(p.output_video_codec) ? 'NVENC preset' : 'Encoder preset'}
+            info={isNvencCodec(p.output_video_codec)
+              ? "ROOP_NVENC_PRESET — p1 is fastest and p7 spends more encoder effort; p5 is the balanced high-quality default. This now controls NVENC instead of silently writing the software-encoder variable."
+              : "ROOP_ENCODER_PRESET — trades software encoding time for file size at the same CRF. 'faster' is the default speed/size balance."}
+            {...bind('perf_encoder_preset', 'auto')}
+            options={encoderPresetOptions}
+          />
           <Select label="GPU video decode (NVDEC)" info="ROOP_NVDEC — Decode the source video on the GPU's dedicated NVDEC engine (ffmpeg -hwaccel cuda) instead of CPU cv2, speeding up the analysis pre-pass and the swap pass decode. 'auto'/'on' = enabled behind a per-file probe with automatic CPU fallback; 'off' = always CPU." {...bind('perf_nvdec', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
           <Select label="Batched swap" info="ROOP_BATCH_SWAP — Groups face tiles to process them in a single batched GPU pass. 'auto' defaults to 'on'." {...bind('perf_batch_swap', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
-          <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed performance execution breakdown in the terminal window. 'auto' defaults to 'on'." {...bind('perf_profile', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
+          <Select label="Stage profiling (terminal)" info="ROOP_PROFILE — Prints a detailed timing breakdown in the terminal. 'auto' defaults to off so normal renders avoid a timer and shared lock at every measured stage; turn it on only while diagnosing performance." {...bind('perf_profile', 'auto')} options={meta.tristate || ['auto', 'on', 'off']} />
         </FilterSection>
 
         <FilterSection title="Output" icon={Icon.outputs} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <Select label="Image format" {...bind('output_image_format')} options={meta.image_formats} />
-          <Select label="Video format" {...bind('output_video_format')} options={meta.video_formats} />
-          <Select label="Video codec" {...bind('output_video_codec')} options={meta.video_codecs} />
+          <Select
+            label="Video format"
+            info="Only containers with at least one compatible encoder in this FFmpeg build are offered. Changing the container also selects a valid codec when needed."
+            {...bind('output_video_format', undefined, (value) => updateOutput({ output_video_format: value }))}
+            options={meta.video_formats}
+          />
+          <Select
+            label="Video codec"
+            info={`Compatible with ${(p.output_video_format || 'mp4').toUpperCase()}; unavailable and incompatible encoders are hidden.`}
+            {...bind('output_video_codec', undefined, updateCodec)}
+            options={outputCodecOptions}
+          />
           {(() => {
             // NVENC codecs use -cq (a different scale than libx264/265 -crf); the
             // same number produces a much bigger, near-lossless file on GPU encoders.
             // Make the label/help reflect which rate control is actually in effect.
             const codec = p.output_video_codec || '';
-            const isNvenc = /_nvenc$/.test(codec);
+            const isNvenc = isNvencCodec(codec);
             // Encoder-accepted range: x264/x265 and NVENC -cq stop at 51, the
             // VP9/AV1 family at 63. The slider used to go to 100; past the limit
             // libx265 (the default) and both NVENC encoders fail the render
             // outright, while libx264 quietly clamps. Measured, not assumed.
-            const qMax = /libvpx|vp9|aom|av1/i.test(codec) ? 63 : 51;
+            const qMax = videoQualityMax(codec);
             const qLabel = isNvenc ? 'Video quality (cq)' : 'Video quality (crf)';
             const qInfo = isNvenc
-              ? `NVENC uses -cq, not CRF: LOWER = bigger/near-lossless (14 is huge). Try ~23 for a normal-size file. Max ${qMax}.`
+              ? `NVENC uses unconstrained VBR constant quality (-cq with no bitrate cap): LOWER = larger/higher quality. 14 is near-lossless but large; try ~18 for high quality or ~23 for a smaller file. Max ${qMax}.`
               : `default 14 (libx264/265 CRF: lower = bigger). Try ~23 for a normal-size file. Max ${qMax}.`;
             return (
-              <Slider label={qLabel} info={qInfo} min={0} max={qMax} step={1} {...bind('video_quality', 14)} value={Math.min(p.video_quality ?? 14, qMax)} />
+              <Slider label={qLabel} info={qInfo} min={0} max={qMax} step={1} {...bind('video_quality', 14, (value) => updateOutput({ video_quality: value }))} />
             );
           })()}
           <Toggle label="Use OS temp folder" {...bindToggle('use_os_temp_folder')} />

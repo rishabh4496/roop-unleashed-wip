@@ -520,8 +520,8 @@ class TheEncoderRecommendationIsApplied(unittest.TestCase):
 
     The codec and the preset have different lifetimes and the report has to say
     so: `_run_swap` re-reads output_video_codec from config on every run, while
-    perf_encoder_preset leaves as ROOP_ENCODER_PRESET, which run.py exports once
-    at startup.
+    perf_encoder_preset leaves through the codec-specific encoder env var, which
+    run.py exports once at startup.
     """
 
     def setUp(self):

@@ -7,6 +7,42 @@ import yaml
 # fourth cache namespace or accidentally disable the requested precision.
 TRT_PRECISION_MODES = ('mixed', 'fp16', 'fp32')
 
+CPU_ENCODER_PRESETS = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                       'medium', 'slow', 'slower', 'veryslow', 'placebo')
+NVENC_ENCODER_PRESETS = tuple(f'p{i}' for i in range(1, 8))
+
+
+def video_quality_max(codec):
+    """Largest CRF/CQ value accepted by the selected encoder family."""
+    name = str(codec or '').lower()
+    return 63 if any(token in name for token in ('libvpx', 'vp9', 'aom', 'av1')) else 51
+
+
+def normalize_video_quality(codec, value):
+    """Store the exact integer range the UI and ffmpeg can both represent."""
+    try:
+        quality = int(round(float(value)))
+    except (TypeError, ValueError):
+        quality = 14
+    return max(0, min(quality, video_quality_max(codec)))
+
+
+def normalize_encoder_preset(codec, value):
+    """Keep one setting key valid while its codec-specific option list changes."""
+    preset = str(value or 'auto').strip().lower()
+    valid = NVENC_ENCODER_PRESETS if str(codec or '').lower().endswith('_nvenc') else CPU_ENCODER_PRESETS
+    return preset if preset == 'auto' or preset in valid else 'auto'
+
+
+def normalize_thread_count(value, default=3):
+    """Bound manual workers to the CPUs that can actually run them."""
+    logical_cores = os.cpu_count() or 4
+    try:
+        threads = int(round(float(value)))
+    except (TypeError, ValueError):
+        threads = default
+    return max(1, min(threads, logical_cores))
+
 
 def normalize_trt_precision(value):
     mode = str(value or '').strip().lower()
@@ -82,7 +118,9 @@ class Settings:
         self.output_image_format = self.default_get(data, 'output_image_format', 'png')
         self.output_video_format = self.default_get(data, 'output_video_format', 'mp4')
         self.output_video_codec = self.default_get(data, 'output_video_codec', 'libx264')
-        self.video_quality = self.default_get(data, 'video_quality', 14)
+        self.video_quality = normalize_video_quality(
+            self.output_video_codec,
+            self.default_get(data, 'video_quality', 14))
         self.clear_output = self.default_get(data, 'clear_output', True)
         # Dynamically scale threads to saturate GPU without OOM
         default_threads = 3
@@ -106,15 +144,8 @@ class Settings:
             self.max_threads = default_threads
         else:
             self.max_threads = saved_threads
-
-        # Prevent extreme CPU oversubscription by capping max_threads to logical CPU cores
-        try:
-            import psutil
-            logical_cores = psutil.cpu_count(logical=True) or 4
-            if self.max_threads > logical_cores:
-                self.max_threads = logical_cores
-        except Exception:
-            pass
+        # Prevent malformed recipes and manual mode from oversubscribing the CPU.
+        self.max_threads = normalize_thread_count(self.max_threads, default_threads)
 
         self.auto_thread_selection = self.default_get(data, 'auto_thread_selection', True)
         self.benchmark_results = self.default_get(data, 'benchmark_results', {})
@@ -172,8 +203,6 @@ class Settings:
         # that came in front of the face. 'None' = one engine, as before.
         self.mask_engine_2 = self.default_get(data, 'mask_engine_2', 'None')
         self.mask_clip_text = self.default_get(data, 'mask_clip_text', 'cup,hands,hair,banana')
-        self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
-        self.track_identities = self.default_get(data, 'track_identities', False)
         self.show_mask_offsets = self.default_get(data, 'show_mask_offsets', False)
         self.restore_original_mouth = self.default_get(data, 'restore_original_mouth', False)
         self.mask_top = self.default_get(data, 'mask_top', 0.0)
@@ -272,6 +301,8 @@ class Settings:
         # 'expression' needing more concurrent threads than the pool has slots.
         self.perf_expr_pool = self.default_get(data, 'perf_expr_pool', 'auto')
         self.perf_encoder_preset = self.default_get(data, 'perf_encoder_preset', 'auto')
+        self.perf_encoder_preset = normalize_encoder_preset(
+            self.output_video_codec, self.perf_encoder_preset)
         self.perf_profile = self.default_get(data, 'perf_profile', 'auto')       # auto|on|off
         self.perf_batch_swap = self.default_get(data, 'perf_batch_swap', 'auto')  # auto|on|off
 
@@ -290,6 +321,13 @@ class Settings:
 
 
 
+
+    def public_dict(self):
+        """Settings safe to expose and accept through the HTTP API."""
+        return {
+            key: value for key, value in self.__dict__.items()
+            if key != 'config_file' and not key.startswith('_')
+        }
 
     def save(self):
         data = {
