@@ -271,13 +271,29 @@ def release_resources() -> None:
     from roop.face_util import release_face_analyser
     global process_mgr, _preview_process_mgr
 
-    release_face_analyser()
+    # Same reasoning as ProcessMgr.release_resources: these are four independent
+    # owners of GPU memory, and the whole point of this function is to end up
+    # with none of them holding any. Chaining them bare meant a raise in the
+    # first (say a detector pool whose contexts died with the CUDA error that
+    # sent us here) skipped the other three AND the empty_cache() below — so the
+    # call that exists to reclaim VRAM reclaimed nothing, and the next run
+    # started against a card that was still full.
+    try:
+        release_face_analyser()
+    except Exception as e:
+        print(f"[release] release_face_analyser() failed: {e!r}")
     if process_mgr is not None:
-        process_mgr.release_resources()
+        try:
+            process_mgr.release_resources()
+        except Exception as e:
+            print(f"[release] process_mgr.release_resources() failed: {e!r}")
         process_mgr = None
     with _preview_lock:
         if _preview_process_mgr is not None:
-            _preview_process_mgr.release_resources()
+            try:
+                _preview_process_mgr.release_resources()
+            except Exception as e:
+                print(f"[release] preview release_resources() failed: {e!r}")
             _preview_process_mgr = None
 
     gc.collect()

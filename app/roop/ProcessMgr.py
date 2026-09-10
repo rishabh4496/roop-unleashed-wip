@@ -4008,15 +4008,41 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
 
     def release_resources(self):
+        # Isolate each teardown step.
+        #
+        # This was a bare `for p in self.processors: p.Release()`. Release() frees
+        # ONNX sessions and, with pooling on, whole TensorRT engines — hundreds of
+        # MB of VRAM per processor. One processor raising (a half-built model
+        # whose attribute was never assigned, a pool already released, a CUDA
+        # error left over from the failure that brought us here) aborted the loop,
+        # so EVERY processor after it kept its engines resident, and
+        # `self.processors.clear()` below never ran either, so the manager still
+        # referenced them. Release paths run from `finally` blocks and after
+        # failed runs — precisely when something IS likely to be in a bad state —
+        # which is the worst possible time to give up on freeing VRAM.
+        #
+        # Order is deliberate: processors first (the big allocations), then the
+        # writers (which own OS processes and file handles). Each is independent,
+        # so a failure in one must not cost the others.
         for p in self.processors:
-            p.Release()
+            try:
+                p.Release()
+            except Exception as e:
+                print(f"[release] {type(p).__name__}.Release() failed: {e!r} "
+                      f"— continuing so the remaining models are still freed.")
         self.processors.clear()
         # FIX: Null out writer references after closing so GC can collect them
         if self.videowriter is not None:
-            self.videowriter.close()
+            try:
+                self.videowriter.close()
+            except Exception as e:
+                print(f"[release] videowriter.close() failed: {e!r}")
             self.videowriter = None
         if self.streamwriter is not None:
-            self.streamwriter.Close()
+            try:
+                self.streamwriter.Close()
+            except Exception as e:
+                print(f"[release] streamwriter.Close() failed: {e!r}")
             self.streamwriter = None
         # FIX: Clear face data and cached frame references so nothing holds VRAM-backed data
         self.input_face_datas = []

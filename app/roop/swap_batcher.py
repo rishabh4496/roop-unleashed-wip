@@ -97,8 +97,22 @@ class SwapBatcher:
             self._cond.notify()
         return req
 
+    # Deadlock detector, not a performance bound. A swap batch is milliseconds
+    # on a GPU and low seconds on a slow CPU fallback, so nothing legitimate
+    # comes near this — but an unbounded wait() turns any future failure to
+    # release a request into a permanently wedged worker thread and a render
+    # that stops with no message. Five minutes then a clear error is strictly
+    # better than forever and silence.
+    WAIT_TIMEOUT_S = 300.0
+
     def wait(self, req):
-        req.ev.wait()
+        if not req.ev.wait(self.WAIT_TIMEOUT_S):
+            raise RuntimeError(
+                f"swap batch did not return within {self.WAIT_TIMEOUT_S:.0f}s. "
+                f"The batcher thread is alive={self._thread.is_alive()}, "
+                f"stopped={self._stopped}. Re-run with "
+                f"ROOP_BATCH_SWAP_XFRAME=0 to bypass cross-frame batching."
+            )
         if req.err is not None:
             raise req.err
         return req.out
@@ -126,12 +140,40 @@ class SwapBatcher:
                 t0 = time.perf_counter()
                 outs = self._run_fn([(r.src, r.tgt, r.blob) for r in batch])
                 self._record(len(batch), time.perf_counter() - t0)
+
+            # A short result list is a HANG, not a dropped frame.
+            #
+            # This was `zip(batch, outs)`, which silently truncates to the
+            # shorter side: any request past len(outs) never had ev.set() called
+            # on it, and its worker thread sat in wait() — which has no timeout —
+            # for the rest of the process's life. The write thread then waits on
+            # a sentinel that worker will never send, and the render stops dead
+            # with nothing printed.
+            #
+            # It is reachable: run_fn is FaceSwapInsightFace.RunBatchMulti, which
+            # returns one entry per `out.shape[0]`, and a model whose graph
+            # collapses the batch dimension returns 1 output for N inputs. That
+            # is not hypothetical — it is the HyperSwap `[1,-1,1,1]` reshape this
+            # branch was cut to fix. Whatever run_fn does, the batcher owes every
+            # request it accepted exactly one ev.set(), so check the count here
+            # rather than trusting the callee.
+            if len(outs) != len(batch):
+                raise RuntimeError(
+                    f"swap batch returned {len(outs)} result(s) for "
+                    f"{len(batch)} request(s) — the model collapsed the batch "
+                    f"dimension. Re-run with ROOP_BATCH_SWAP_XFRAME=0 to use "
+                    f"single-crop inference for this model."
+                )
             for r, o in zip(batch, outs):
                 r.out = o
-                r.ev.set()
-        except Exception as e:  # deliver the error to every waiter in this batch
+        except Exception as e:
             for r in batch:
-                r.err = e
+                if not r.ev.is_set():
+                    r.err = e
+        finally:
+            # Unconditional: every accepted request is released exactly once, on
+            # every path out of this method, so no worker can be stranded.
+            for r in batch:
                 r.ev.set()
 
     def _run_inline(self, req):
