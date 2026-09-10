@@ -2349,6 +2349,11 @@ def _apply_parser_region_settings(payload):
 # "configure, then render".
 _preview_request_lock = threading.Lock()
 
+# Serialises the test-and-set that admits a render. Held only across the entry
+# guards in /api/swap — never across the render itself, which runs on its own
+# thread and reports through _progress.
+_swap_start_lock = threading.Lock()
+
 
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
@@ -2534,25 +2539,43 @@ def preview_upscale(payload: dict = Body(...)):
 # ── Run the swap ─────────────────────────────────────────────────────────────
 @app.post("/api/swap")
 def trigger_swap(payload: dict = Body(...)):
-    if _progress["processing"]:
-        return JSONResponse(status_code=409, content={"message": "already processing"})
-    # The benchmark holds several pools of TensorRT contexts and is timing them.
-    # Starting a render on top of that gives the render a card that is already
-    # busy AND makes the benchmark recommend settings for a machine nobody has —
-    # the refusal is mutual (see /api/settings/benchmark_threads).
-    if _benchmark_state["running"]:
-        return JSONResponse(status_code=409, content={
-            "message": "The hardware benchmark is running — cancel it first, or "
-                       "wait for it to finish."})
-    if len(list_files_process) < 1:
-        return JSONResponse(status_code=400, content={"message": "no target media"})
-    if len(roop_globals.INPUT_FACESETS) < 1:
-        return JSONResponse(status_code=400, content={"message": "no source faces"})
+    # Check and claim under ONE lock, the way /api/settings/benchmark_threads
+    # already does it (`with _benchmark_lock:` around its own test-and-set).
+    #
+    # Claiming _progress synchronously instead of leaving it to the worker
+    # thread closed most of this, but not the race itself: the test was at the
+    # top of the function and the claim ~15 lines below it, with three more
+    # guards in between. FastAPI runs a sync `def` endpoint in Starlette's
+    # threadpool, so two POSTs are two real OS threads, and that window is wide
+    # enough to lose — a double-clicked Start, a client retry after a slow
+    # response, or the UI's optimistic start racing a user click.
+    #
+    # Losing it starts two _run_swap threads over one module-global
+    # core.process_mgr, one output path and one set of ffmpeg writers. That is
+    # not a degraded render, it is two renders shredding each other's state.
+    #
+    # The guards move inside so their precedence is unchanged (a duplicate POST
+    # mid-render still says "already processing", not "no target media"). They
+    # are dict lookups and two len() calls — no I/O, no nested lock.
+    with _swap_start_lock:
+        if _progress["processing"]:
+            return JSONResponse(status_code=409, content={"message": "already processing"})
+        # The benchmark holds several pools of TensorRT contexts and is timing them.
+        # Starting a render on top of that gives the render a card that is already
+        # busy AND makes the benchmark recommend settings for a machine nobody has —
+        # the refusal is mutual (see /api/settings/benchmark_threads).
+        if _benchmark_state["running"]:
+            return JSONResponse(status_code=409, content={
+                "message": "The hardware benchmark is running — cancel it first, or "
+                           "wait for it to finish."})
+        if len(list_files_process) < 1:
+            return JSONResponse(status_code=400, content={"message": "no target media"})
+        if len(roop_globals.INPUT_FACESETS) < 1:
+            return JSONResponse(status_code=400, content={"message": "no source faces"})
 
-    # Claim the processing flag synchronously — the worker thread also sets it,
-    # but only after it starts, so two rapid POSTs could otherwise both pass
-    # the guard above and run concurrently.
-    _progress.update({"processing": True, "paused": False, "progress": 0.0, "desc": "Starting…", "error": ""})
+        _progress.update({"processing": True, "paused": False, "progress": 0.0,
+                          "desc": "Starting…", "error": ""})
+
     threading.Thread(target=_run_swap, args=(payload,), daemon=True).start()
     return {"status": "started"}
 
