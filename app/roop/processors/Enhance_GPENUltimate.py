@@ -1,7 +1,10 @@
-"""GPEN Ultimate: razor-sharp face restoration with forced alignment and anti-halo clarity."""
+"""GPEN Ultimate quality profile.
+
+GPU execution, pooling, and the finishing pass live in the shared GPEN
+processor so there is exactly one inference and one Ultimate finish per face.
+"""
 
 from roop.processors.Enhance_GPEN import Enhance_GPEN
-from roop.processors.enhance_common import enhance_gpen_ultimate, inject_reference_detail
 
 
 class Enhance_GPENUltimate(Enhance_GPEN):
@@ -24,10 +27,3 @@ class Enhance_GPENUltimate(Enhance_GPEN):
         size = int(options.get("size", 512))
         options.update({"size": size, "profile": "ultimate"})
         super().Initialize(options)
-
-    def Run(self, source_faceset, target_face, temp_frame):
-        reference = temp_frame
-        result, scale_factor = super().Run(source_faceset, target_face, temp_frame)
-        result = enhance_gpen_ultimate(result, reference, target_face=target_face)
-        return result, scale_factor
-

@@ -292,11 +292,12 @@ def _enhancer_model(name):
         'Codeformer': ('CodeFormer/CodeFormerv0.1.onnx', 'has a fidelity input'),
         'Codeformer (fp16)': ('CodeFormer/CodeFormerv0.1.onnx', 'fp16 variant'),
         'GPEN 256': ('gpen_bfr_256.onnx', '256px output resized back to crop size'),
-        'GPEN': ('GPEN-BFR-512.onnx', 'FP32-forced under TRT'),
+        'GPEN': ('GPEN-BFR-512.onnx',
+                 'fixed batch=1; pooled TensorRT contexts'),
         'GPEN 1024': ('gpen_bfr_1024.onnx', 'FP32-forced under TRT'),
         'GPEN 2048': ('gpen_bfr_2048.onnx', 'FP32-forced under TRT'),
-        'GPEN Ultimate': ('gpen_bfr_256.onnx',
-                          '256px GPEN with pooled contexts + detail finish'),
+        'GPEN Ultimate': ('GPEN-BFR-512.onnx',
+                          '512px GPEN with pooled contexts + detail finish'),
         'Restoreformer++': ('restoreformer_plus_plus.onnx', ''),
         'Restore Ultra': ('restoreformer_plus_plus.onnx',
                           'pooled RestoreFormer++ + detail finish'),
@@ -416,12 +417,12 @@ def build_catalogue(faces_per_frame=1.0):
         enh_path, enh_note = _enhancer_model(enh_name)
         if enh_path:
             gpen_fp32 = enh_name in ('GPEN 1024', 'GPEN 2048')
-            # CodeFormer, RestoreFormer++ and the two named optimized profiles
-            # pool on ROOP_TRT_POOL. The original GPEN tiers retain their
-            # historical single-session path for compatibility.
+            # 256/512 GPEN, CodeFormer and RestoreFormer use the VRAM-tuned TRT
+            # context pool. GPEN 1024/2048 stay single-context because their
+            # activation footprint is too large to multiply automatically.
             pooled_enh = (enh_name.startswith('Codeformer') or
                           enh_name in ('Restoreformer++', 'Restore Ultra',
-                                       'GPEN Ultimate'))
+                                       'GPEN', 'GPEN 256', 'GPEN Ultimate'))
             stages.append(Stage(
                 'enhance', f'Enhancer — {enh_name}', enh_path,
                 _fp32_trt_providers(prov) if gpen_fp32 else prov,

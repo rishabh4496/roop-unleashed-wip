@@ -226,12 +226,11 @@ class CatalogueFollowsTheSettings(unittest.TestCase):
         self.assertIn('standard', modes['swap'])
 
     def test_pooling_is_reported_for_the_optimized_profiles(self):
-        # GPEN and GFPGAN have no SessionPool, so under TensorRT they take the
-        # global GPU lock and serialise every other stage behind them. That is
-        # the single most useful thing the report can say about a configuration,
-        # and it is derived here.
+        # Fixed-batch GPEN 256/512 uses independent TensorRT contexts; large
+        # GPEN models stay single-context because their activation footprint is
+        # too expensive to multiply automatically.
         g.CFG.selected_enhancer = 'GPEN'
-        self.assertFalse(self._stage('enhance').pooled)
+        self.assertTrue(self._stage('enhance').pooled)
         g.CFG.selected_enhancer = 'Restoreformer++'
         self.assertTrue(self._stage('enhance').pooled)
         # GPEN 256 is an optional download in this fixture, so make only that

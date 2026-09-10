@@ -352,7 +352,8 @@ class ProfileDeclarations(unittest.TestCase):
         base_src = self._read(os.path.join(APP, 'roop', 'processors',
                                            'Enhance_GPEN.py'))
         self.assertIn('session_pool.SessionPool', base_src)
-        self.assertIn("profile == 'ultimate'", base_src)
+        self.assertIn('self.profile == "ultimate"', base_src)
+        self.assertIn('create_gpen_session', base_src)
 
     def test_restore_ultra_reuses_the_pooled_base(self):
         src = self._read(os.path.join(APP, 'roop', 'processors',
@@ -383,12 +384,16 @@ class GpenUltimateRuntime(unittest.TestCase):
             module.onnxruntime = types.SimpleNamespace(InferenceSession=_FakeSession)
             module.conditional_download = lambda _dir, _urls: None
             module.resolve_relative_path = lambda path: path
-            g.execution_providers = ['CPUExecutionProvider']
+            g.execution_providers = [
+                'TensorrtExecutionProvider',
+                'CUDAExecutionProvider',
+                'CPUExecutionProvider',
+            ]
             session_pool._pool_cache.clear()
             session_pool._pool_cache.update({'trt': 3, 'detmask': 0})
 
             processor = Enhance_GPENUltimate()
-            processor.Initialize({'devicename': 'cpu'})
+            processor.Initialize({'devicename': 'cuda'})
             result, scale = processor.Run(
                 None, None, np.zeros((512, 512, 3), dtype=np.uint8))
             processor.Run(None, None, np.zeros((512, 512, 3), dtype=np.uint8))
@@ -398,8 +403,10 @@ class GpenUltimateRuntime(unittest.TestCase):
             self.assertEqual(getattr(processor, 'model_template', None), 'ffhq_512')
             self.assertIsNotNone(processor.pool)
             self.assertEqual(_FakeSession.created, 3)
-            self.assertEqual(_FakeSession.io_bindings_created, 3)
-            self.assertTrue(all(isinstance(item, tuple) and len(item) == 2
+            # Three warm-ups plus two runtime calls. Minimal test doubles do
+            # not expose OrtValue, so they correctly exercise fresh bindings.
+            self.assertEqual(_FakeSession.io_bindings_created, 5)
+            self.assertTrue(all(hasattr(item, 'run')
                                 for item in processor.pool._items))
             self.assertEqual(result.shape, (512, 512, 3))
             self.assertEqual(scale, 1)

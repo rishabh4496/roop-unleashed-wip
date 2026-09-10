@@ -3635,8 +3635,30 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         bar_write(f"[ProcessMgr] enhancer re-align failed: {e}")
                         _A, enh_input = None, fake_frame
 
-                with _prof('enhance'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):
-                    enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, enh_input)
+                # GPEN exposes its CPU prepare/finish stages separately so the
+                # TensorRT guard covers only GPU inference. The old whole-Run
+                # guard serialised resize, colour conversion, output copying and
+                # Ultimate finishing along with the execution context, leaving
+                # the GPU idle while workers waited on CPU work.
+                if all(callable(getattr(p, name, None))
+                       for name in ('Prepare', 'Infer', 'Finish')):
+                    with _prof('enhance'):
+                        _prepared = p.Prepare(
+                            self.input_face_datas[face_index],
+                            target_face,
+                            enh_input)
+                        with _gpu_guard(
+                                pooled=getattr(p, 'pool', None) is not None):
+                            _raw_enhanced = p.Infer(_prepared)
+                        enhanced_frame, scale_factor = p.Finish(
+                            _raw_enhanced, _prepared, target_face)
+                else:
+                    with _prof('enhance'), _gpu_guard(
+                            pooled=getattr(p, 'pool', None) is not None):
+                        enhanced_frame, scale_factor = p.Run(
+                            self.input_face_datas[face_index],
+                            target_face,
+                            enh_input)
 
                 if _A is not None and enhanced_frame is not None:
                     # Back to swap-crop space. The enhancer may have returned a

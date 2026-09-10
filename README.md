@@ -162,6 +162,9 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 
 The **Editor** tab also offers AI post-processing on any image/video: Real-ESRGAN / LSDIR upscaling, DeOldify colorization, and stylize filters (cartoon, pencil, C64, …). Advanced performance knobs (TensorRT pool sizes, codec-aware encoder preset, profiling) live under **Settings → Advanced performance** and apply after an app restart. Stage profiling defaults off because its timers are diagnostic overhead; enable it only while measuring a run.
 
+For strict GPEN provider validation and repeatable GPU latency measurements,
+see [GPEN GPU diagnostics](docs/GPEN_GPU_DIAGNOSTICS.md).
+
 ---
 
 ## Updating
