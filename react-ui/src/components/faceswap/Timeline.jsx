@@ -417,7 +417,23 @@ export default function Timeline({
 
   // Labels at the very edges would hang off the track; anchor those to the edge
   // instead of centring them.
-  const anchor = (pct) => (pct < 3 ? 'translateX(0)' : pct > 97 ? 'translateX(-100%)' : 'translateX(-50%)');
+  //
+  // The threshold is HALF A LABEL, which is a pixel measurement, so it has to be
+  // converted through the measured track width rather than fixed at 3%/97%.
+  // A fixed 3% is 15px on a 500px column — narrower than the half-label it was
+  // protecting, so a centred timecode still clipped past the left edge — and
+  // 147px on an ultrawide, where labels flattened against the edge long before
+  // they were anywhere near it. trackW comes from the ResizeObserver below, so
+  // this re-solves itself on every resize; the 3 is only the pre-measure guess.
+  const LABEL_W = 68;   // widest timecode fmtTC/fmtTCF render, in px
+  const edgePct = trackW ? (LABEL_W / 2 / trackW) * 100 : 3;
+  // Same conversion for the hover card, which is 176px of still plus padding.
+  const HOVER_W = 190;
+  const hoverHalfPct = trackW ? (HOVER_W / 2 / trackW) * 100 : 9;
+  const anchor = (pct) =>
+    (pct < edgePct ? 'translateX(0)'
+      : pct > 100 - edgePct ? 'translateX(-100%)'
+        : 'translateX(-50%)');
 
   const step = (d) => setFrame((f) => clamp(f + d, 1, maxFrames));
 
@@ -488,11 +504,17 @@ export default function Timeline({
 
       {/* ── Track ────────────────────────────────────────────────────────── */}
       <div className="relative">
-        {/* Hover scrub thumbnail */}
+        {/* Hover scrub thumbnail.
+            The card is a fixed 190px wide (a 176px still plus its padding) and
+            is centred on the pointer, so the clamp that keeps it inside the
+            track has to be half of that IN PIXELS. Fixed at 9%/91% it was 45px
+            on a 500px track — a quarter of the card still hung off the left
+            edge — while on a 4900px ultrawide it parked the card 440px away
+            from the pointer it was supposed to be describing. */}
         {hoverFrame !== null && thumbUrl && hoverSrc && (
           <div
             className="absolute bottom-[104px] z-50 flex flex-col items-center pointer-events-none -translate-x-1/2"
-            style={{ left: `${clamp(pctOf(hoverFrame), 9, 91)}%` }}
+            style={{ left: `${clamp(pctOf(hoverFrame), hoverHalfPct, 100 - hoverHalfPct)}%` }}
           >
             <div className="rounded-xl border border-[var(--border-strong)] bg-[var(--card-bg)] p-1.5 backdrop-blur-xl shadow-[0_10px_30px_rgba(0,0,0,0.55)]">
               <img

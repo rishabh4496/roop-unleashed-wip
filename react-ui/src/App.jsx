@@ -50,7 +50,7 @@ const RunHistory = lazy(loadRunHistory);
 // few frames shows nothing at all rather than a jarring spinner blink.
 function TabFallback() {
   return (
-    <div className="deferred-fallback flex flex-col items-center justify-center h-[40vh] gap-3">
+    <div className="deferred-fallback flex flex-col items-center justify-center h-[calc(40*var(--vh))] gap-3">
       <div className="h-7 w-7 rounded-full border-4 border-white/10 border-t-[var(--accent)] animate-spin" />
       <div className="text-white/35 text-xs font-medium">Loading…</div>
     </div>
@@ -274,6 +274,15 @@ export default function App() {
   const bumpZoom = useCallback((d) => setZoom((z) => Math.min(1.6, Math.max(0.5, Math.round((z + d) * 20) / 20))), []);
   useEffect(() => {
     document.documentElement.style.zoom = String(zoom);
+    // `zoom` scales the USED value of every length, but viewport units compute
+    // against the unzoomed viewport and are not divided back out — so `92vh`
+    // inside this subtree paints at 92% * zoom of the real screen. At 1.6x that
+    // is 147%, which put the footer of every `max-h-[92vh]` modal below the
+    // bottom of the window with nothing to scroll it back into view.
+    // Publishing the factor lets those lengths cancel it: see --vh/--vw in
+    // index.css, and use `calc(N * var(--vh))` instead of `Nvh` anywhere the
+    // measurement is meant to be a share of the actual screen.
+    document.documentElement.style.setProperty('--app-zoom', String(zoom));
     localStorage.setItem('roop_zoom', String(zoom));
   }, [zoom]);
 
@@ -1088,7 +1097,7 @@ export default function App() {
           </div>
         )}
         {!error && !meta && (
-          <div className="flex flex-col items-center justify-center h-[50vh] gap-4">
+          <div className="flex flex-col items-center justify-center h-[calc(50*var(--vh))] gap-4">
             <div className="h-8 w-8 rounded-full border-4 border-white/10 border-t-[var(--accent)] animate-spin" />
             <div className="text-white/40 text-sm font-medium">Establishing secure gateway connection…</div>
           </div>

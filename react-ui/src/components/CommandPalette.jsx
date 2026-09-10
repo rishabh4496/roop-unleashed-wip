@@ -60,7 +60,7 @@ export default function CommandPalette({ open, onClose, commands }) {
   });
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] px-4 bg-black/50 backdrop-blur-sm animate-slide-up" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[calc(12*var(--vh))] px-4 bg-black/50 backdrop-blur-sm animate-slide-up" onMouseDown={onClose}>
       <div
         className="w-full max-w-xl rounded-2xl glass-panel border border-white/10 shadow-2xl overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
@@ -77,7 +77,7 @@ export default function CommandPalette({ open, onClose, commands }) {
           />
           <kbd className="text-nano font-mono text-white/45 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">ESC</kbd>
         </div>
-        <div ref={listRef} className="max-h-[52vh] overflow-y-auto py-2">
+        <div ref={listRef} className="max-h-[calc(52*var(--vh))] overflow-y-auto py-2">
           {filtered.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-white/30">No matching commands</div>
           ) : (

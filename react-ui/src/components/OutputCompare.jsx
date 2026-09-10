@@ -190,7 +190,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
       onClick={onClose}
     >
       <Card
-        className="w-full max-w-6xl max-h-[92vh] overflow-y-auto p-5 border border-white/10 shadow-2xl flex flex-col gap-4"
+        className="w-full max-w-6xl max-h-[calc(92*var(--vh))] overflow-y-auto p-5 border border-white/10 shadow-2xl flex flex-col gap-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
@@ -271,7 +271,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
           <div className="grid grid-cols-2 gap-2">
             {[[a, aUrl, aRef], [b, bUrl, bRef]].map(([f, url, r], i) => (
               <div key={i} className="relative bg-black/60 rounded-xl overflow-hidden border border-white/10">
-                <Media file={f} url={url} mediaRef={r} className="w-full max-h-[58vh] object-contain" />
+                <Media file={f} url={url} mediaRef={r} className="w-full max-h-[calc(58*var(--vh))] object-contain" />
                 <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-black/75 text-micro font-bold text-white/80">
                   {i === 0 ? 'A' : 'B'}
                 </span>
@@ -282,7 +282,7 @@ export default function OutputCompare({ a, b, aUrl, bUrl, historyA, historyB, on
           <div
             ref={boxRef}
             className="relative bg-black/60 rounded-xl overflow-hidden border border-white/10 select-none"
-            style={{ aspectRatio: dims ? `${dims.w}/${dims.h}` : '16/9', maxHeight: '58vh' }}
+            style={{ aspectRatio: dims ? `${dims.w}/${dims.h}` : '16/9', maxHeight: 'calc(58*var(--vh))' }}
             onPointerDown={(e) => { setDragging(true); move(e.clientX); }}
           >
             <Media

@@ -113,7 +113,7 @@ export default function PresetStudioModal({
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden rounded-3xl border border-white/15 bg-neutral-900 shadow-2xl"
+        className="relative w-full max-w-4xl max-h-[calc(85*var(--vh))] flex flex-col overflow-hidden rounded-3xl border border-white/15 bg-neutral-900 shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-neutral-950/60">

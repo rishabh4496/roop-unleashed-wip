@@ -173,7 +173,7 @@ export default function ThemeStudio({ open, onClose, initial, customThemes, onSa
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
           transition={spring.snappy}
           onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); cancel(); } }}
-          className="relative w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-2xl glass-panel p-6 shadow-2xl"
+          className="relative w-full max-w-lg max-h-[calc(88*var(--vh))] overflow-y-auto rounded-2xl glass-panel p-6 shadow-2xl"
         >
           <div className="flex items-start justify-between gap-3 mb-5">
             <div>

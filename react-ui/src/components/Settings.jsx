@@ -341,7 +341,11 @@ export default function Settings({ meta, settings, setSettings, notify }) {
           </>
         )}
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 4xl:grid-cols-4 gap-6">
+      {/* Section cards need ~320px before their label/control rows crowd. Stated
+          as an intrinsic minimum, the count follows the grid's own width rather
+          than the window's — which also covers the Settings tab being rendered
+          at a different width than the viewport (zoomed UI, narrow window). */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-6">
         <FilterSection title="Server" icon={Icon.settings} query={query} onlyModified={onlyModified} onResetKeys={resetKeys}>
           <Toggle label="Public server (share)" {...bindToggle('server_share')} />
           <Toggle label="Clear output folder before each run" {...bindToggle('clear_output')} />

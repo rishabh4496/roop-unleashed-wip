@@ -45,7 +45,7 @@ export default class ErrorBoundary extends React.Component {
       String(error?.message || ''),
     );
     return (
-      <div role="alert" className="flex flex-col items-center justify-center h-[45vh] gap-4 text-center px-6">
+      <div role="alert" className="flex flex-col items-center justify-center h-[calc(45*var(--vh))] gap-4 text-center px-6">
         {isChunk
           ? <Icon.disconnected size={30} className="text-white/40" />
           : <Icon.warning size={30} className="text-amber-400/80" />}

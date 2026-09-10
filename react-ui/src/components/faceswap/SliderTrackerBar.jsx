@@ -160,6 +160,26 @@ const BUILTIN_PRESETS = [
 // footer's other job — click it to reset. That is ~48px per slider instead of
 // ~92px, which is what makes fourteen of them fit without the bar swallowing
 // the workspace.
+
+// Where the native thumb's CENTRE actually sits, as a CSS length.
+//
+// A range thumb never reaches 0% or 100% of the track: the browser insets it by
+// half its own width at each end, so the centre travels from `thumb/2` to
+// `W - thumb/2`. A fill drawn at a plain `percent%` therefore lags the thumb at
+// the bottom of the range and overshoots it at the top, meeting it only at the
+// exact midpoint — and the same applied to the default-value pip, which sat
+// visibly off the thumb whenever a slider was at its default.
+//
+// The correction is half a thumb in PIXELS, because the thumb is measured in
+// pixels. Expressing it as a percentage would make the error depend on track
+// width, which is the bug rather than the fix: the offset is a constant 7.5px
+// against a track that ranges from ~90px at six columns to ~400px at one, so
+// the same absolute error is 8% of the range in the narrow case and 2% in the
+// wide one. --range-thumb is defined in index.css alongside the thumb rule so
+// the two cannot drift apart.
+const thumbAt = (percent) =>
+  `calc(${percent}% + (0.5 - ${percent / 100}) * var(--range-thumb))`;
+
 function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
   const span = s.max - s.min;
   const pct = (v) => Math.max(0, Math.min(100, ((v - s.min) / span) * 100));
@@ -217,7 +237,7 @@ function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
             onChange={(e) => onSetParam && onSetParam(s.key, parseFloat(e.target.value))}
             className="w-full h-1 rounded-lg appearance-none bg-white/10 cursor-pointer accent-[var(--accent)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed"
             style={{
-              background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${percent}%, rgba(255,255,255,0.1) ${percent}%, rgba(255,255,255,0.1) 100%)`,
+              background: `linear-gradient(to right, var(--accent) 0, var(--accent) ${thumbAt(percent)}, rgba(255,255,255,0.1) ${thumbAt(percent)}, rgba(255,255,255,0.1) 100%)`,
             }}
           />
           {/* Where the slider ships. Not a control — the value badge resets. */}
@@ -225,7 +245,7 @@ function TrackerSlider({ slider: s, value, enabled, onSetParam }) {
             <span
               aria-hidden="true"
               className="pointer-events-none absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-2 w-px bg-white/40"
-              style={{ left: `${pct(s.defaultVal)}%` }}
+              style={{ left: thumbAt(pct(s.defaultVal)) }}
             />
           )}
         </div>
@@ -606,15 +626,22 @@ export default function SliderTrackerBar({
                       </span>
                     </button>
 
-                    {/* The grid stops at 4 columns until the ultrawide
-                        breakpoints. The bar sits between the two side panels,
-                        so its container is well under the viewport width — six
-                        columns at 2xl left about 105px for the label, which
-                        truncates "Original / Enhanced Blend" to nothing useful.
-                        3xl/4xl are this project's own ultrawide steps
-                        (1920/2560px), added for exactly this kind of layout. */}
+                    {/* Column count follows THIS grid's width, not the window's.
+                        A slider card needs about 190px before the label starts
+                        truncating ("Original / Enhanced Blend" is the longest),
+                        which is the whole constraint — so state it directly and
+                        let auto-fit solve for the count.
+
+                        The viewport breakpoints this replaces could not express
+                        it. The bar sits between two side panels that the user
+                        can hide independently (FaceSwap.jsx), which moves this
+                        container by up to ~1020px without moving a single
+                        breakpoint: hiding both on a 1920px screen went from
+                        four comfortable columns to four columns with 480px of
+                        slack, and every step was hand-tuned on the assumption
+                        that both panels were open. */}
                     {!collapsed && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2 mt-1.5">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-2 mt-1.5">
                         {g.sliders.map((s) => (
                           <TrackerSlider
                             key={s.key}

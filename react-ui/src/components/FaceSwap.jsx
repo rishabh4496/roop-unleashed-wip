@@ -1688,12 +1688,22 @@ export default function FaceSwap({
     const ePct = pctOfFrame(targets[selTarget]?.end_frame ?? maxFrames);
     const cPct = pctOfFrame(frame);
 
-    const distStart = Math.abs(pct - sPct);
-    const distEnd = Math.abs(pct - ePct);
-    const distCurrent = Math.abs(pct - cPct);
+    // A handle scrolled outside the visible window has no on-screen position to
+    // be near — pctOfFrame returns <0 or >1 for those — so it must not win the
+    // hit test just because the click happened to land near the track edge.
+    const distTo = (p) => (p < 0 || p > 1 ? Infinity : Math.abs(pct - p));
+    const distStart = distTo(sPct);
+    const distEnd = distTo(ePct);
+    const distCurrent = distTo(cPct);
 
     let dragTarget = 'playhead';
-    const tolerance = 0.04;
+    // A grab radius is a physical distance, so it is measured in pixels — the
+    // same ~10px the magnetic snap in the scrub effect above already uses.
+    // As a fixed FRACTION of the track it scaled with the display: 20px on a
+    // 500px column, but 196px on a 32:9 screen with both side panels hidden,
+    // where a click a fifth of a second away from the In point silently became
+    // a trim instead of a scrub.
+    const tolerance = 10 / rect.width;
 
     if (distStart < tolerance && distStart < distEnd && distStart < distCurrent) {
       dragTarget = 'start';
@@ -2694,7 +2704,16 @@ export default function FaceSwap({
         </Section>
       </div>
 
-        {/* COLUMN 3: Active Canvas, Timeline & Outputs */}
+        {/* COLUMN 3: Active Canvas, Timeline & Outputs.
+            Deliberately NOT a `@container`. The two side panels above collapse
+            independently of the window, so viewport breakpoints are the wrong
+            question for anything in here — but the grids inside answer it with
+            `auto-fit`/`minmax`, which needs no container to query. Adding one
+            anyway would apply `contain: layout inline-size style`, and that
+            makes the column a containing block for fixed-position descendants:
+            the modals below would be confined to this column instead of the
+            viewport. Use auto-fit here; reach for `@container` only if some
+            future child genuinely cannot state its own minimum. */}
         <div className="flex-1 min-w-0 space-y-6">
           {/* run bar */}
           <div className="sticky top-20 z-30 pb-3 bg-[#0c0e14]/90 backdrop-blur-md">
@@ -3156,7 +3175,7 @@ export default function FaceSwap({
               onClick={() => setUpscaledSrc('')}
             >
               <div
-                className="relative flex flex-col max-w-[95vw] max-h-[92vh] rounded-2xl border border-white/10 bg-[var(--card-bg)] shadow-2xl overflow-hidden"
+                className="relative flex flex-col max-w-[calc(95*var(--vw))] max-h-[calc(92*var(--vh))] rounded-2xl border border-white/10 bg-[var(--card-bg)] shadow-2xl overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between gap-4 px-4 py-2.5 border-b border-white/10">

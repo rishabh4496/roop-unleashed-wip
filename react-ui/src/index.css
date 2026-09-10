@@ -36,6 +36,31 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* ── Zoom-corrected viewport units ────────────────────────────────────────
+   App.jsx drives an app-level `zoom` on <html> (0.5x–1.6x). CSS `zoom` scales
+   the used value of lengths, but viewport units compute against the UNZOOMED
+   viewport, so a plain `54vh` renders at 54% * zoom of the actual screen —
+   86% at 1.6x, 27% at 0.5x. Anywhere a length is meant to be a share of the
+   screen the user is looking at, write `calc(54 * var(--vh))` instead.
+   --app-zoom is set from App.jsx; the 1 here is the pre-mount default.
+
+   Declared on `html`, NOT on `:root`, and that distinction is load-bearing:
+   `:root` is this app's theme surface — test_ui_light_themes asserts that
+   deriveThemeVars emits every variable declared there, because anything a
+   theme leaves out silently inherits the default theme's value. These four are
+   layout mechanics, identical under all 38 themes and not a theme's business
+   to override, so they must stay out of that set. Same element either way. */
+html {
+  --app-zoom: 1;
+  --vh: calc(1vh / var(--app-zoom));
+  --vw: calc(1vw / var(--app-zoom));
+
+  /* Single source of truth for the native range thumb. The fill gradient and
+     the default-value pip in SliderTrackerBar have to offset by half of this
+     to line up with the thumb, so it must not be spelled twice. */
+  --range-thumb: 15px;
+}
+
 /* ── Ultrawide breakpoints ────────────────────────────────────────────────
    Tailwind's defaults stop at 2xl (1536px), so on ultrawide monitors (2560px,
    3440px, 5120px) the layout would just sit in a centered column with huge empty
@@ -674,7 +699,10 @@
   body {
     margin: 0;
     color: var(--text-main);
-    min-height: 100vh;
+    /* Not `100vh`: body sits inside the zoomed <html>, so a plain 100vh became
+       160% of the window at 1.6x UI zoom and put a permanent vertical
+       scrollbar on every tab, including empty ones. */
+    min-height: calc(100 * var(--vh));
     background-attachment: fixed;
     /* Soft top-lit ambient glow over a deep obsidian backdrop — no busy grid. */
     background:
@@ -1133,8 +1161,8 @@ input[type="range"] {
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 15px;
-  height: 15px;
+  width: var(--range-thumb);
+  height: var(--range-thumb);
   border-radius: 99px;
   background: #ffffff;
   border: 2px solid var(--accent);
@@ -1145,6 +1173,31 @@ input[type="range"]::-webkit-slider-thumb {
 
 input[type="range"]::-webkit-slider-thumb:hover {
   box-shadow: 0 0 0 5px var(--input-focus);
+}
+
+/* Gecko equivalents. The rules above are all `-webkit-` prefixed, so on
+   Firefox the thumb fell back to the OS widget while the inline fill gradient
+   kept painting underneath it — two sliders drawn on top of each other. Only
+   cosmetic in Pinokio (Chromium), but the app is also served over the LAN. */
+input[type="range"]::-moz-range-track {
+  height: 100%;
+  background: transparent;   /* the input's own gradient is the track */
+  border-radius: 99px;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: var(--range-thumb);
+  height: var(--range-thumb);
+  border-radius: 99px;
+  background: #ffffff;
+  border: 2px solid var(--accent);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+}
+
+input[type="range"]::-moz-range-thumb:active {
+  transform: scale(1.25);
 }
 
 input[type="range"]::-webkit-slider-thumb:active {

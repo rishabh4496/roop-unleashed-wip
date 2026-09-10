@@ -236,7 +236,7 @@ export default function Processing({ progress, settings, notify, setTab,
           diagnostics want the height. Floored so it stays usable on a short
           window. */}
       {processing ? (
-        <div className="relative h-[calc(100vh-230px)] min-h-[620px] rounded-2xl overflow-hidden processing-stage flex flex-col items-center select-none px-4 sm:px-6 py-4">
+        <div className="relative h-[calc(100*var(--vh)-230px)] min-h-[620px] rounded-2xl overflow-hidden processing-stage flex flex-col items-center select-none px-4 sm:px-6 py-4">
           {/* h-full + min-h-0 so the console below takes ALL the leftover height
               instead of the whole block floating in a tall box. */}
           <div className="relative h-full w-full max-w-[1900px] min-h-0 flex flex-col gap-3">
@@ -391,8 +391,8 @@ export default function Processing({ progress, settings, notify, setTab,
             <div className="rounded-2xl glass-panel p-5 shadow-2xl border border-white/5 space-y-3">
               <div className="text-mini uppercase tracking-[0.14em] text-white/45 font-semibold">Output</div>
               {out.kind === 'video'
-                ? <video src={outUrl} controls className="w-full max-h-[52vh] rounded-xl border border-white/5" />
-                : <img src={outUrl} alt="Render output" className="w-full max-h-[52vh] object-contain rounded-xl border border-white/5" />}
+                ? <video src={outUrl} controls className="w-full max-h-[calc(52*var(--vh))] rounded-xl border border-white/5" />
+                : <img src={outUrl} alt="Render output" className="w-full max-h-[calc(52*var(--vh))] object-contain rounded-xl border border-white/5" />}
               <QualityReport outputPath={out.path} notify={notify} />
             </div>
           )}

@@ -249,7 +249,7 @@ export default function QualityProfilesModal({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 10 }}
           transition={spring.snappy}
-          className="relative w-full max-w-4xl max-h-[90vh] flex flex-col bg-[#121216] border border-white/10 rounded-2xl shadow-2xl overflow-hidden text-white"
+          className="relative w-full max-w-4xl max-h-[calc(90*var(--vh))] flex flex-col bg-[#121216] border border-white/10 rounded-2xl shadow-2xl overflow-hidden text-white"
         >
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/[0.02]">

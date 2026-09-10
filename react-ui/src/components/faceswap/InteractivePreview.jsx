@@ -596,6 +596,29 @@ export default function InteractivePreview({
   };
   const aspectStyle = { aspectRatio: imgDim ? `${imgDim.w}/${imgDim.h}` : '1', maxHeight: '100%', maxWidth: '100%', display: 'flex' };
 
+  // The stage takes the MEDIA's shape, not a hardcoded 16:9.
+  //
+  // `aspect-video max-h-[54vh] min-h-[260px]` was not a 16:9 box. Given a
+  // definite width (w-full) and a clamped height, `aspect-ratio` is the
+  // constraint CSS drops — so on a 32:9 display the stage resolved to roughly
+  // 5.5:1 and a portrait clip rendered as a sliver between two enormous black
+  // bars. `min-height` made it worse in the other direction: it wins over
+  // `max-height`, so under ~481px of viewport height the two swapped roles and
+  // the stage overflowed its column.
+  //
+  // Driving the ratio from imgDim (already measured on the first load, at the
+  // `onLoad` below) also shrinks the letterbox that zoomPan.panBounds exists to
+  // correct for, since the content now fills far more of the stage.
+  //
+  // Split view shows the media TWICE side by side, so its natural stage is
+  // twice as wide as one pane. The vh cap goes through --vh, which divides out
+  // the app-level zoom — see index.css.
+  const mediaRatio = imgDim ? imgDim.w / imgDim.h : 16 / 9;
+  const stageStyle = isFullscreen ? {} : {
+    aspectRatio: String(splitMode ? mediaRatio * 2 : mediaRatio),
+    maxHeight: 'min(calc(54 * var(--vh)), 900px)',
+  };
+
   const triggerFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
@@ -888,15 +911,15 @@ export default function InteractivePreview({
     return (
       <div
         ref={containerRef}
-        className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage group border border-white/10 shadow-2xl ${
-          isFullscreen ? 'h-screen w-screen max-h-none' : ''
+        className={`relative w-full rounded-2xl overflow-hidden preview-stage group border border-white/10 shadow-2xl ${
+          isFullscreen ? 'h-[calc(100*var(--vh))] w-[calc(100*var(--vw))]' : ''
         }`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onDoubleClick={handleDoubleClick}
-        style={{ touchAction: 'none' }}
+        style={{ touchAction: 'none', ...stageStyle }}
       >
         {stageInfo()}
         <div className={`flex w-full h-full ${interacting ? '' : 'transition-transform duration-75'}`} style={transformStyle}>
@@ -938,8 +961,8 @@ export default function InteractivePreview({
 
   return (
     <div
-      className={`relative w-full aspect-video max-h-[54vh] min-h-[260px] rounded-2xl overflow-hidden preview-stage select-none group border border-white/10 shadow-2xl ${
-        isFullscreen ? 'h-screen w-screen max-h-none' : ''
+      className={`relative w-full rounded-2xl overflow-hidden preview-stage select-none group border border-white/10 shadow-2xl ${
+        isFullscreen ? 'h-[calc(100*var(--vh))] w-[calc(100*var(--vw))]' : ''
       }`}
       ref={containerRef}
       onPointerDown={handlePointerDown}
@@ -947,7 +970,7 @@ export default function InteractivePreview({
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onDoubleClick={handleDoubleClick}
-      style={{ touchAction: 'none' }}
+      style={{ touchAction: 'none', ...stageStyle }}
     >
       {/* Render indicator */}
       {previewing && (

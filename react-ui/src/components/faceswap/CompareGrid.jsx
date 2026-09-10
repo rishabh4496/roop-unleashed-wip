@@ -177,8 +177,8 @@ export default function CompareGrid({ items, previews, times, timers, errors, gr
   const cols = /grid-cols-1(?!\d)/.test(gridColsClass || '') ? 1 : 2;
   const rows = Math.max(1, Math.ceil(Math.max(items.length, 1) / cols));
   const height = useMemo(() => {
-    if (expanded) return rows > 1 ? 'min(88vh, 1240px)' : 'min(82vh, 920px)';
-    return rows > 1 ? 'clamp(420px, 74vh, 1000px)' : 'clamp(300px, 56vh, 720px)';
+    if (expanded) return rows > 1 ? 'min(calc(88*var(--vh)), 1240px)' : 'min(calc(82*var(--vh)), 920px)';
+    return rows > 1 ? 'clamp(420px, calc(74*var(--vh)), 1000px)' : 'clamp(300px, calc(56*var(--vh)), 720px)';
   }, [expanded, rows]);
 
   return (

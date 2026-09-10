@@ -373,7 +373,14 @@ export const FaceGallery = ({ title, faces, selected, onSelect, onRemove, empty,
           {empty || 'None yet'}
         </div>
       ) : (
-        <div className={vertical ? "flex flex-col gap-2" : (large ? "grid grid-cols-2 3xl:grid-cols-3 gap-2.5" : "grid grid-cols-4 3xl:grid-cols-5 4xl:grid-cols-6 gap-2")}>
+        // Thumb grids live inside the side panels, whose width is set by the
+        // panel, not the window — so the column count is stated as a minimum
+        // thumb size and solved by auto-fit. The 3xl/4xl viewport steps this
+        // replaces added a column when the MONITOR got wider, even though the
+        // panel they sit in is a fixed 360–520px either way.
+        <div className={vertical ? "flex flex-col gap-2"
+          : (large ? "grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2.5"
+            : "grid grid-cols-[repeat(auto-fit,minmax(76px,1fr))] gap-2")}>
           {faces.map((src, i) => {
             const person = groups && i < groups.length ? groups[i] : null;
             const color = person != null ? PERSON_COLORS[person % PERSON_COLORS.length] : null;
