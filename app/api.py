@@ -84,6 +84,41 @@ app.add_middleware(
 )
 
 
+# ── Malformed payloads answer 400, not 500 ───────────────────────────────────
+# Every endpoint here takes `payload: dict = Body(...)`, so FastAPI validates
+# that the body is an object and nothing more — there is no per-field schema.
+# The coercion happens by hand instead, 59 times across this file, as
+# int(payload.get("index")) / float(payload.get("accept")) and friends.
+#
+# Each of those raises ValueError or TypeError on a value that is not a number:
+# a stale client, a preset saved by an older build, a null where a number was
+# expected. Unhandled, FastAPI answers 500 with no body the UI can show, so
+# api.js's errorMessage() falls back to the bare status text and the user is
+# told "Internal Server Error" for what is entirely a bad request.
+#
+# The honest tradeoff, stated rather than hidden: this cannot tell a payload
+# coercion apart from a genuine ValueError deeper in the call, and it will
+# report the latter as 400 too. That is why the full traceback is printed —
+# a real bug stays as diagnosable as it was, while the client finally gets an
+# accurate status and a message naming the problem. Only ValueError and
+# TypeError are caught, and deliberately NOT KeyError, which in this codebase
+# is far more often an internal state lookup than a missing payload field.
+#
+# The endpoints that already validate explicitly (source_select,
+# parse_subsample_size) still return their own clearer 400s; this is the floor
+# under the other 59, not a replacement for validating at the boundary.
+@app.exception_handler(ValueError)
+@app.exception_handler(TypeError)
+async def _bad_payload_handler(request: Request, exc: Exception):
+    import traceback
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    return JSONResponse(
+        status_code=400,
+        content={"message": f"{request.url.path}: the request contained a value "
+                            f"this endpoint could not use ({exc})"},
+    )
+
+
 def mapped_facesets(mapping, swap_mode=""):
     """Reorder the loaded source facesets into person order for a swap.
 
