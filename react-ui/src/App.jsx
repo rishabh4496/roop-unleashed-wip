@@ -111,7 +111,9 @@ export default function App() {
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [startTime, setStartTime] = useState(null);
   const [confetti, setConfetti] = useState(false);
-  const pollRef = useRef(null);
+  const pollRef = useRef(null);      // pending setTimeout id (null while in flight)
+  const pollingRef = useRef(false);  // is the poll loop alive? survives the await
+  const pollSeqRef = useRef(0);      // monotonic id, so a stale reply is dropped
 
   // ── Connection health ────────────────────────────────────────────────────
   // Every backend call in this shell reports its outcome here. A single blip is
@@ -131,24 +133,61 @@ export default function App() {
     }
   }, []);
 
+  // Self-scheduling poll: one request in flight, ever.
+  //
+  // This was `setInterval(async () => { await getJSON(...) }, 1000)`. setInterval
+  // does not await anything — it re-fires on the wall clock whether or not the
+  // previous request came back. The request carries an 8 s deadline, so a
+  // backend that stalls (which is exactly what happens during heavy GPU work —
+  // the very moment this poll matters most) puts up to eight `/api/progress`
+  // requests in flight at once.
+  //
+  // Browsers allow ~6 concurrent connections per origin, so the poll alone
+  // saturates the pool and every other request in the app — preview frames,
+  // live frames, telemetry, thumbnails — queues behind it. That is the UI
+  // "stuttering under load": not render cost, connection starvation.
+  //
+  // Chaining the next tick off the previous one's COMPLETION makes pile-up
+  // structurally impossible, and self-throttles for free: a slow backend gets
+  // polled less often instead of more.
+  const stopPolling = useCallback(() => {
+    pollingRef.current = false;
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+  }, []);
+
   const startPolling = useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    // pollRef is null while a request is in flight, so a truthiness check on it
+    // alone would let visibilitychange/boot start a SECOND loop mid-request and
+    // reintroduce the concurrency this fix removes. pollingRef tracks liveness
+    // across the await; pollRef only tracks the pending timer.
+    if (pollingRef.current) return;
+    pollingRef.current = true;
+
+    const tick = async () => {
+      pollRef.current = null;
+      if (!pollingRef.current) return;
+      const seq = ++pollSeqRef.current;
       try {
         const pr = await getJSON('/api/progress', { timeout: 8000 });
-        reportNet(true);
-        setProgress(pr);
-        if (!pr.processing) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
+        if (!pollingRef.current) return;          // stopped while awaiting
+        // Ignore anything but the newest reply, so a slow response can never
+        // overwrite a fresher one and walk the progress bar backwards.
+        if (seq === pollSeqRef.current) {
+          reportNet(true);
+          setProgress(pr);
+          if (!pr.processing) { stopPolling(); return; }
         }
       } catch {
         // Keep polling: a job can outlive a transient backend stall, and the
         // health banner tells the user what is happening meanwhile.
+        if (!pollingRef.current) return;
         reportNet(false);
       }
-    }, 1000);
-  }, [reportNet]);
+      if (pollingRef.current) pollRef.current = setTimeout(tick, 1000);
+    };
+
+    pollRef.current = setTimeout(tick, 1000);
+  }, [reportNet, stopPolling]);
 
   // ── Catch up the moment this view is looked at again ─────────────────────
   // Switching to the Terminal (or another Pinokio tab) either reloads this
@@ -169,7 +208,7 @@ export default function App() {
         const pr = await getJSON('/api/progress', { timeout: 8000 });
         reportNet(true);
         setProgress(pr);
-        if (pr.processing && !pollRef.current) startPolling();
+        if (pr.processing) startPolling();
       } catch {
         reportNet(false);
       }
@@ -201,16 +240,19 @@ export default function App() {
   }, [offline, reportNet]);
 
   useEffect(() => {
-    if (progress.processing && !pollRef.current) {
-      startPolling();
-    }
-    return () => {
-      if (!progress.processing && pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [progress.processing, startPolling]);
+    // startPolling is idempotent (it returns early if the loop is alive), so
+    // this is a plain "poll iff processing" statement in both directions.
+    //
+    // The previous cleanup — `if (!progress.processing && pollRef.current)` —
+    // could never fire on the transition it was written for. An effect cleanup
+    // closes over the render it was created in, so the cleanup that runs on a
+    // true -> false change still sees processing === true; `!true` is false and
+    // the interval was never cleared there. It only ever stopped because the
+    // interval callback happened to clear itself. Unmount teardown lives in the
+    // loadCore effect below.
+    if (progress.processing) startPolling();
+    else stopPolling();
+  }, [progress.processing, startPolling, stopPolling]);
 
   // ── The Processing tab ───────────────────────────────────────────────────
   // A run no longer takes the Face Swap tab over. It gets a tab of its own,
@@ -671,10 +713,10 @@ export default function App() {
   useEffect(() => {
     loadCore();
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      stopPolling();
       if (bootTimerRef.current) clearTimeout(bootTimerRef.current);
     };
-  }, [loadCore]);
+  }, [loadCore, stopPolling]);
 
   // Warm the remaining tab chunks once the app is idle, so the very first visit
   // to any tab is instant even without a hover. requestIdleCallback keeps this
