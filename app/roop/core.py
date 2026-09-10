@@ -26,6 +26,8 @@ import argparse
 from time import time
 from roop.utilities import print_cuda_info
 import roop.globals
+import roop.tui as tui
+from roop.tui import OK, RUN, WARN, ERR, INFO, Spinner
 import roop.metadata
 import roop.utilities as util
 import roop.util_ffmpeg as ffmpeg
@@ -291,7 +293,7 @@ def release_resources() -> None:
 
 def pre_check() -> bool:
     if sys.version_info < (3, 9):
-        update_status('Python version is not supported - please upgrade to 3.9 or higher.')
+        update_status('Python version is not supported - please upgrade to 3.9 or higher.', ERR)
         return False
     
     # Pre-warm the model cache while online. Offline (auto-detected), we skip
@@ -339,13 +341,13 @@ def pre_check() -> bool:
         for subdir, urls in _pre_warm:
             util.conditional_download(util.resolve_relative_path(subdir), urls, required=False)
     else:
-        update_status('Offline mode: skipping model pre-download. Using locally available models; any missing model will be reported only when you use the feature that needs it.')
+        update_status('Offline mode: skipping model pre-download. Using locally available models; any missing model will be reported only when you use the feature that needs it.', WARN)
 
     print_cuda_info()  # Debug CUDA during pre-check
 
 
     if not shutil.which('ffmpeg'):
-       update_status('ffmpeg is not installed.')
+       update_status('ffmpeg is not installed.', ERR)
     return True
 
 def set_display_ui(function):
@@ -354,33 +356,36 @@ def set_display_ui(function):
     call_display_ui = function
 
 
-def update_status(message: str) -> None:
+def update_status(message: str, level: str = tui.INFO) -> None:
+    """Report one status line to the terminal and to the web UI.
+
+    `level` is passed by the CALLER. It used to be inferred by matching the
+    message against keyword lists, but every interesting message interpolates a
+    user filename, so the badge was decided by what the user named their file.
+    Verified against the old rule: `error_clip.mp4` printed [ERROR] at the
+    moment its render started, and `mistook_scene.mp4` printed [SUCCESS],
+    because "took" is a substring of "mistook". A caller knows its own severity
+    for free and cannot be wrong about it.
+
+    The line now goes out through roop.tui, i.e. through bar_write, rather than
+    a bare print(). That is what the rest of the codebase already does (52 call
+    sites across five modules) and what the note above ChunkedProgress asks
+    for: a bare print() lands in the middle of a live progress bar and
+    terminates it, which is how one rewritten bar became one line per frame.
+
+    Leading newlines are stripped rather than printed -- the badge is emitted
+    before the message, so a message starting with "\\n" put the badge alone on
+    one line and its text on the next. Call tui.blank_line() for a break.
+
+    Omitting `level` is still valid and yields a neutral [info] badge, so the
+    call sites can be annotated incrementally without any of them being wrong
+    in the meantime.
+    """
     global call_display_ui
 
-    # Format terminal color dynamically based on message contents/keywords
-    color_msg = message
-    try:
-        reset = "\033[0m"
-        bold = "\033[1m"
-        lower_msg = message.lower()
-        if any(kw in lower_msg for kw in ["failed", "error", "stopped", "cannot", "warning"]):
-            # Red color for warnings/errors/stops
-            color_msg = f"\033[91m{bold}[ERROR] {message}{reset}"
-        elif any(kw in lower_msg for kw in ["finished", "success", "completed", "took"]):
-            # Green color for successes/completions
-            color_msg = f"\033[92m{bold}[SUCCESS] {message}{reset}"
-        elif any(kw in lower_msg for kw in ["creating", "extracting", "restoring", "building", "downloading", "processing"]):
-            # Yellow/Amber for progression tasks
-            color_msg = f"\033[93m{bold}[ACTION] {message}{reset}"
-        else:
-            # Cyan for standard tracking logs
-            color_msg = f"\033[96m[STATUS] {message}{reset}"
-    except Exception:
-        pass
-
-    print(color_msg)
+    tui.status(message, level)
     if call_display_ui is not None:
-        call_display_ui(message)
+        call_display_ui(str(message).strip("\n"))
 
 
 
@@ -752,7 +757,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
         imagefiles:list[ProcessEntry] = []
         videofiles:list[ProcessEntry] = []
            
-        update_status('Sorting videos/images')
+        update_status('Sorting videos/images', RUN)
 
 
         for index, f in enumerate(files):
@@ -772,7 +777,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
 
         if(len(imagefiles) > 0):
-            update_status('Processing image(s)')
+            update_status('Processing image(s)', RUN)
             origimages = []
             fakeimages = []
             for f in imagefiles:
@@ -794,9 +799,10 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             if not enc_ok:
                 update_status(
                     f"Video encoder '{roop.globals.video_encoder}' is not working, aborting. "
-                    f"{enc_msg}"
+                    f"{enc_msg}",
+                    ERR,
                 )
-                end_processing('Processing stopped: video encoder unavailable.')
+                end_processing('Processing stopped: video encoder unavailable.', ERR)
                 return
 
             for index,v in enumerate(videofiles):
@@ -809,15 +815,22 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
                 is_streaming_only = output_method == "Virtual Camera"
                 if is_streaming_only == False:
-                    update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
+                    update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...', RUN)
 
                 start_processing = time()
                 _swaps_before = getattr(process_mgr, 'total_swaps', 0)
                 _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
                 if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
                     util.create_temp(v.filename)
-                    update_status('Extracting frames...')
-                    extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
+                    # Indeterminate: ffmpeg reports nothing this side of the pipe
+                    # and a long clip can sit here for minutes. On a terminal the
+                    # spinner is erased on exit and the stage collapses to one
+                    # timed line; in Pinokio's captured log it degrades to a
+                    # heartbeat every 15s instead — no animation, same reasoning
+                    # as ChunkedProgress. Frame extraction has no countable unit
+                    # here, so this is a Spinner and not a progress bar.
+                    with Spinner('Extract frames', os.path.basename(v.filename)):
+                        extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
                     if not roop.globals.processing:
                         end_processing('Processing stopped!')
                         return
@@ -826,7 +839,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     if not temp_frame_paths:
                         # Frame extraction produced no output — ffmpeg likely failed above.
                         # Log and skip this video rather than crashing on temp_frame_paths[0].
-                        update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...')
+                        update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...', ERR)
                         continue
 
                     # Save unswapped originals BEFORE run_batch overwrites them in-place.
@@ -842,7 +855,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
                     # Re-process any frames that have custom per-frame masks.
                     if per_frame_masks:
-                        update_status('Applying per-frame masks...')
+                        update_status('Applying per-frame masks...', RUN)
                         orig_paths = util.get_temp_frame_paths_from_dir(util.get_frames_orig_path(v.filename))
                         _reprocess_custom_mask_frames(
                             temp_frame_paths, orig_paths, per_frame_masks,
@@ -904,7 +917,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         destination = util.replace_template(gifname, index=index)
                         pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
-                        update_status('Creating final GIF')
+                        update_status('Creating final GIF', RUN)
                         # Pass fps explicitly so the GIF matches the original source
                         # timing — avoids a lossy re-detect from the intermediate MP4.
                         ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
@@ -931,19 +944,24 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                             shutil.move(video_file_name, destination)
 
                 elif is_streaming_only == False and not stopped:
-                    update_status(f'Failed processing {os.path.basename(v.finalname)}!')
+                    update_status(f'Failed processing {os.path.basename(v.finalname)}!', ERR)
                 elapsed_time = time() - start_processing
                 if stopped:
                     # Partial render: report what was actually saved, skip the runtime
                     # calibration (a truncated run would poison the estimate) and stop
                     # before the remaining queued videos.
                     if destination and os.path.isfile(destination):
-                        update_status(f'\nStopped after {elapsed_time:.2f} secs — partial output saved as '
-                                      f'{os.path.basename(destination)}')
-                    end_processing('Processing stopped!')
+                        # The break is its own call: the badge is emitted before
+                        # the message, so a leading "\n" put the badge alone on
+                        # one line and its text on the next.
+                        tui.blank_line()
+                        update_status(f'Stopped after {elapsed_time:.2f} secs — partial output saved as '
+                                      f'{os.path.basename(destination)}', WARN)
+                    end_processing('Processing stopped!', WARN)
                     return
                 average_fps = (v.endframe - v.startframe) / elapsed_time
-                update_status(f'\nProcessing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
+                tui.blank_line()
+                update_status(f'Processing {os.path.basename(destination or v.filename)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s', OK)
                 # Fold this run into the learned runtime estimator. Signature =
                 # settings (stashed at run start) + measured face-density bucket
                 # (avg faces/frame for THIS video). Guarded — never fatal.
@@ -967,7 +985,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                             torch.cuda.empty_cache()
                 except Exception:
                     pass
-        end_processing('Finished')
+        end_processing('Finished', OK)
     finally:
         # Guarantee the run is marked finished even if an exception escaped
         # batch_process (e.g. the legacy Gradio caller has no finally), so a
@@ -976,10 +994,16 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
         roop.globals.batch_active = False
 
 
-def end_processing(msg:str):
+def end_processing(msg:str, level:str = WARN):
+    """Wind the run down and say why.
+
+    The default is WARN, not ERR: every caller but two reaches here because the
+    user pressed stop, and an abort the user asked for is not a failure. The
+    encoder-unavailable path passes ERR and the completion path passes OK.
+    """
     from roop import keep_awake
     keep_awake.release()
-    update_status(msg)
+    update_status(msg, level)
     roop.globals.target_folder_path = None
     release_resources()
     # Encode fully wound down (writers closed, output finalized). Clear last so a
