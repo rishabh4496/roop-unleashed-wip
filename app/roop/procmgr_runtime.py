@@ -38,6 +38,50 @@ _gpu_lock = Lock()
 _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 
 
+# ── Reading numeric tuning knobs out of the environment ──────────────────────
+# Every ROOP_* threshold below used to be read with a bare float()/int() around
+# os.environ.get(), at MODULE level. That raises
+# ValueError on any value that is not a number, and a raise at module level is
+# an ImportError: the app does not start at all, and what the user sees is a
+# traceback ending inside a constants block rather than "that env var is not a
+# number".
+#
+# It is a real path, not a hypothetical one. start_react.js — tracked, and
+# shipped to every install — sets about fifteen of these (ROOP_TRACK_VETO_SINGLE
+# among them), and the file invites tuning: several are commented with the
+# measurements behind their defaults precisely so people change them. A decimal
+# comma from a locale, a stray trailing character, an accidental `0.85.`, and
+# the launcher is bricked at import.
+#
+# Falling back to the default and SAYING SO is strictly better: a mistyped
+# threshold should cost you the tuning, not the app.
+def env_float(name, default):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        print(f"[config] {name}={raw!r} is not a number — using {default}")
+        return float(default)
+
+
+def env_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        # '45.0' is a number the user plainly meant as 45; only reject what is
+        # not numeric at all.
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            print(f"[config] {name}={raw!r} is not a whole number — using {default}")
+            return int(default)
+
+
 # ── Identity-lock source veto ────────────────────────────────────────────────
 # Guards against a tracked source being applied to the wrong face (people
 # crossing, an ID switch, or an unselected bystander standing where a track
@@ -45,7 +89,7 @@ _PROFILE = os.environ.get('ROOP_PROFILE', '0') == '1'
 # clear mismatches, not a re-selection, so a blurred or turned frame of the
 # right person still swaps. Same-person frames measured up to ~0.66 on a hard
 # clip while different people sat at ~0.93-1.07, so 0.85 separates them.
-_TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
+_TRACK_VETO_DIST = env_float('ROOP_TRACK_VETO', '0.85')
 
 
 # Absolute veto for the SINGLE-selected-person case, which _TRACK_VETO_DIST
@@ -65,7 +109,7 @@ _TRACK_VETO_DIST = float(os.environ.get('ROOP_TRACK_VETO', '0.85'))
 # these constants were tuned on, so ~1.0 vetoes strangers while leaving even a
 # full profile of the right person (up to ~1.0 from a frontal capture) alone.
 # Anything near the match threshold will make hard frames blink instead.
-_TRACK_VETO_SINGLE = float(os.environ.get('ROOP_TRACK_VETO_SINGLE', '0'))
+_TRACK_VETO_SINGLE = env_float('ROOP_TRACK_VETO_SINGLE', '0')
 
 
 # Verbose match diagnostics ([TRACKASSIGN] / [TRACKMATCH]).
@@ -87,11 +131,11 @@ _DEBUG_MATCH = os.environ.get('ROOP_DEBUG_MATCH', '').strip().lower() not in (''
 # two different rules. This constant is now the single source for both.
 #
 # 0 disables the swap-time gate (restores the pre-fix behaviour).
-_TRACK_EMB_MAX = float(os.environ.get('ROOP_TRACK_EMB_MAX', '0.7'))
+_TRACK_EMB_MAX = env_float('ROOP_TRACK_EMB_MAX', '0.7')
 
 
 # Reject when a DIFFERENT selected person explains the face this much better.
-_TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
+_TRACK_VETO_MARGIN = env_float('ROOP_TRACK_VETO_MARGIN', '0.15')
 
 
 # ── Re-ID (appearance-only) association gate ─────────────────────────────────
@@ -131,7 +175,7 @@ _TRACK_VETO_MARGIN = float(os.environ.get('ROOP_TRACK_VETO_MARGIN', '0.15'))
 # on its own mean by the source assignment, so a genuine re-acquisition still
 # locks. The cost is more fragments; raise toward _TRACK_EMB_MAX if a target
 # stops locking after re-entering a shot, and see the `[Track]` refusal count.
-_TRACK_REID_MAX = float(os.environ.get('ROOP_TRACK_REID_MAX', '0.5'))
+_TRACK_REID_MAX = env_float('ROOP_TRACK_REID_MAX', '0.5')
 
 
 # ── Gap-fill continuity ──────────────────────────────────────────────────────
@@ -158,8 +202,8 @@ _TRACK_REID_MAX = float(os.environ.get('ROOP_TRACK_REID_MAX', '0.5'))
 # anchors: at most this many face-widths per skipped frame, with a bounded size
 # change. Generous by construction — a head crossing half its own width every
 # frame is already fast motion. 0 disables the guard (pre-fix behaviour).
-_INTERP_MAX_TRAVEL = float(os.environ.get('ROOP_INTERP_MAX_TRAVEL', '0.5'))
-_INTERP_MAX_SCALE = float(os.environ.get('ROOP_INTERP_MAX_SCALE', '2.0'))
+_INTERP_MAX_TRAVEL = env_float('ROOP_INTERP_MAX_TRAVEL', '0.5')
+_INTERP_MAX_SCALE = env_float('ROOP_INTERP_MAX_SCALE', '2.0')
 
 
 # ── Track → source assignment gate ───────────────────────────────────────────
@@ -179,7 +223,7 @@ _INTERP_MAX_SCALE = float(os.environ.get('ROOP_INTERP_MAX_SCALE', '2.0'))
 # A track refused here is not dropped: its frames fall through to per-frame
 # matching at the full threshold, so a real face still swaps, just without
 # identity locking. 0 restores the old behaviour (gate == max_face_distance).
-_TRACK_ASSIGN_MAX = float(os.environ.get('ROOP_TRACK_ASSIGN_MAX', '0.6'))
+_TRACK_ASSIGN_MAX = env_float('ROOP_TRACK_ASSIGN_MAX', '0.6')
 
 # A track's MEAN can fail the gate above even when the track really is the
 # selected person, if the track itself spans a long stretch of pose movement
@@ -202,7 +246,7 @@ _TRACK_ASSIGN_MAX = float(os.environ.get('ROOP_TRACK_ASSIGN_MAX', '0.6'))
 # removes one, and it needs `obs` (only populated when the pre-pass is asked
 # to collect_obs=True — the temporal-detection path). 0 disables it, falling
 # back to mean-only exactly as before.
-_TRACK_ASSIGN_MIN_OBS = int(os.environ.get('ROOP_TRACK_ASSIGN_MIN_OBS', '3') or '3')
+_TRACK_ASSIGN_MIN_OBS = env_int('ROOP_TRACK_ASSIGN_MIN_OBS', '3')
 
 
 # ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
@@ -210,7 +254,7 @@ _TRACK_ASSIGN_MIN_OBS = int(os.environ.get('ROOP_TRACK_ASSIGN_MIN_OBS', '3') or 
 # Fraction of a track's frames that must overlap an already-assigned track of the
 # same person before the track is treated as a genuinely concurrent second body
 # (and so refused that person's source) rather than an occlusion handoff.
-_TRACK_OVERLAP_FRAC = float(os.environ.get('ROOP_TRACK_OVERLAP_FRAC', '0.15'))
+_TRACK_OVERLAP_FRAC = env_float('ROOP_TRACK_OVERLAP_FRAC', '0.15')
 
 
 # ── Second-and-later track per person ────────────────────────────────────────
@@ -237,7 +281,7 @@ _TRACK_OVERLAP_FRAC = float(os.environ.get('ROOP_TRACK_OVERLAP_FRAC', '0.15'))
 # Cost of being wrong is bounded and one-sided: a refused track is not dropped,
 # it just loses identity LOCKING and falls through to per-frame matching at the
 # full threshold, so a genuine target fragment still swaps. 0 disables.
-_TRACK_ASSIGN_MARGIN = float(os.environ.get('ROOP_TRACK_ASSIGN_MARGIN', '0.15'))
+_TRACK_ASSIGN_MARGIN = env_float('ROOP_TRACK_ASSIGN_MARGIN', '0.15')
 
 
 # Floor under the margin above. The margin is relative to the person's best
@@ -251,7 +295,7 @@ _TRACK_ASSIGN_MARGIN = float(os.environ.get('ROOP_TRACK_ASSIGN_MARGIN', '0.15'))
 # the 0.5-0.6 band where the bystander tracks that motivated the margin sit.
 # It matters most alongside _TRACK_REID_MAX, which deliberately trades a tighter
 # Re-ID for MORE fragments — each of which then has to pass this gate.
-_TRACK_ASSIGN_FLOOR = float(os.environ.get('ROOP_TRACK_ASSIGN_FLOOR', '0.45'))
+_TRACK_ASSIGN_FLOOR = env_float('ROOP_TRACK_ASSIGN_FLOOR', '0.45')
 
 
 # ── Stitching fragments back together ────────────────────────────────────────
@@ -287,30 +331,30 @@ _TRACK_STITCH = os.environ.get('ROOP_TRACK_STITCH', '1').strip().lower() not in 
 # live association where a stale track costs matching work every frame, whereas
 # this runs once over a finished scan. Someone can be behind a passing head for a
 # second and a half.
-_TRACK_STITCH_GAP = int(os.environ.get('ROOP_TRACK_STITCH_GAP', '45') or '45')
+_TRACK_STITCH_GAP = env_int('ROOP_TRACK_STITCH_GAP', '45')
 
 # How far the face may have moved over that gap, as a multiple of its own width.
 # Scaled by face size rather than pixels so it means the same thing on a close-up
 # and a wide shot, and applied to the position PREDICTED from the fragment's own
 # velocity, so a head that was already moving is not penalised for continuing.
-_TRACK_STITCH_DIST = float(os.environ.get('ROOP_TRACK_STITCH_DIST', '1.5'))
+_TRACK_STITCH_DIST = env_float('ROOP_TRACK_STITCH_DIST', '1.5')
 
 # ...and how much its apparent size may change, as a ratio either way. A face
 # walking toward the camera grows; a different person standing behind is usually
 # a different size to begin with.
-_TRACK_STITCH_SIZE = float(os.environ.get('ROOP_TRACK_STITCH_SIZE', '1.8'))
+_TRACK_STITCH_SIZE = env_float('ROOP_TRACK_STITCH_SIZE', '1.8')
 
 # Appearance VETO only, not evidence. Set above the same-person profile band
 # (0.7-1.0) on purpose: the whole point is to survive a stretch where appearance
 # has collapsed, so requiring appearance to agree would refuse exactly the links
 # worth making. What it still catches is two clearly different people passing
 # through the same place — those sit above this.
-_TRACK_STITCH_EMB = float(os.environ.get('ROOP_TRACK_STITCH_EMB', '1.05'))
+_TRACK_STITCH_EMB = env_float('ROOP_TRACK_STITCH_EMB', '1.05')
 
 # The runner-up must be this much worse before a link is taken. Two candidates of
 # comparable quality means two people crossing, and a coin-flip there hands one
 # person's swap to the other.
-_TRACK_STITCH_AMBIG = float(os.environ.get('ROOP_TRACK_STITCH_AMBIG', '0.6'))
+_TRACK_STITCH_AMBIG = env_float('ROOP_TRACK_STITCH_AMBIG', '0.6')
 
 
 # ── Judging a leftover fragment against the TRACK instead of the photo ───────
@@ -335,7 +379,7 @@ _TRACK_STITCH_AMBIG = float(os.environ.get('ROOP_TRACK_STITCH_AMBIG', '0.6'))
 #
 # Applied only to tracks the first pass REFUSED, only against a track that pass
 # accepted, and still subject to the exact concurrency check. 0 disables it.
-_TRACK_INHERIT_MAX = float(os.environ.get('ROOP_TRACK_INHERIT_MAX', '0.6'))
+_TRACK_INHERIT_MAX = env_float('ROOP_TRACK_INHERIT_MAX', '0.6')
 
 # ...and the gate that makes it safe, which an absolute bar cannot be.
 #
@@ -355,7 +399,7 @@ _TRACK_INHERIT_MAX = float(os.environ.get('ROOP_TRACK_INHERIT_MAX', '0.6'))
 # reported clip that is 0.72 against the stills versus a track distance that has
 # to beat 0.57 to count; on the bystander fixture it is 0.55 against 0.55, which
 # gains nothing and is refused.
-_TRACK_INHERIT_GAIN = float(os.environ.get('ROOP_TRACK_INHERIT_GAIN', '0.15'))
+_TRACK_INHERIT_GAIN = env_float('ROOP_TRACK_INHERIT_GAIN', '0.15')
 
 
 # The OTHER justification for inheriting, for the shape the gain above cannot
@@ -383,7 +427,7 @@ _TRACK_INHERIT_GAIN = float(os.environ.get('ROOP_TRACK_INHERIT_GAIN', '0.15'))
 # left is a bare absolute bar on a disjoint track — precisely the bystander that
 # _TRACK_ASSIGN_MARGIN and the containment rule were added to refuse. With one
 # person selected this path does not exist and nothing changes.
-_TRACK_INHERIT_MARGIN = float(os.environ.get('ROOP_TRACK_INHERIT_MARGIN', '0.25'))
+_TRACK_INHERIT_MARGIN = env_float('ROOP_TRACK_INHERIT_MARGIN', '0.25')
 
 
 # ── Assign-by-elimination for exactly two selected people ───────────────────
@@ -408,7 +452,7 @@ _TRACK_INHERIT_MARGIN = float(os.environ.get('ROOP_TRACK_INHERIT_MARGIN', '0.25'
 # Runs LAST, after the mean gate and inheritance have both had their normal
 # chance — it only ever picks up tracks neither of those bound, never
 # overrides one. ROOP_TRACK_ELIM_FRAC=0 disables it.
-_TRACK_ELIM_FRAC = float(os.environ.get('ROOP_TRACK_ELIM_FRAC', '0.15'))
+_TRACK_ELIM_FRAC = env_float('ROOP_TRACK_ELIM_FRAC', '0.15')
 
 
 _prof_lock = Lock()
@@ -560,7 +604,7 @@ VERIFY_SWAP = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
 # which is the room solve_pose_5pt's 15-20 deg per-person head-shape error needs
 # on the side where being wrong costs a wrecked swap.
 try:
-    VERIFY_MIN_OFFAXIS = float(os.environ.get('ROOP_VERIFY_MIN_OFFAXIS', '30'))
+    VERIFY_MIN_OFFAXIS = env_float('ROOP_VERIFY_MIN_OFFAXIS', '30')
 except ValueError:
     VERIFY_MIN_OFFAXIS = 30.0
 
