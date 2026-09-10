@@ -71,7 +71,30 @@ def parts_snapshot():
     (a resumed run counts from the frames it inherited, not from 1)."""
     with _parts_lock:
         out = list(_parts)
-        cur = dict(_current) if _current else None
+        # Bind ONCE, then test the binding — matching current_part_index() below,
+        # which already does this and was the only one of the pair that did.
+        #
+        # Being precise about why, because the obvious reading is wrong: this was
+        # `dict(_current) if _current else None`, which reads the global twice,
+        # and _finalize_segment clears `_current = None` from the encoder thread
+        # WITHOUT taking _parts_lock — so the lock held here protects nothing
+        # about it. That looks like a TOCTOU landing as dict(None) -> TypeError
+        # on /api/progress (api.py:2887, :2915) at every segment rotation.
+        #
+        # It is not one under CPython. The interpreter only releases the GIL at
+        # eval-breaker checkpoints — backward jumps and calls — and there is none
+        # between the truthiness LOAD_GLOBAL and the second; the forward
+        # POP_JUMP_IF_FALSE is not a checkpoint. Probed at
+        # sys.setswitchinterval(1e-9) with a thread rotating _current against
+        # 300k snapshot calls: zero failures. So this is DEFENSIVE, not a fix for
+        # a live defect.
+        #
+        # It is still worth doing, because the safety is an implementation
+        # detail, not a language guarantee: on a free-threaded (3.13+ no-GIL)
+        # build there is no such interleaving guarantee and the two-read form is
+        # a genuine race. Binding once costs nothing and is correct on both.
+        cur = _current
+        cur = dict(cur) if cur else None
     if cur:
         cur["frames"] = cur.pop("_written", 0)
         cur["last"] = cur["first"] + max(0, cur["frames"] - 1)
@@ -298,7 +321,23 @@ class SegmentedVideoWriter:
             kwargs = {}
             if os.name == "nt":
                 kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-            proc = subprocess.run(cmd, capture_output=True, **kwargs)
+            # Bounded, like every other subprocess.run in the codebase
+            # (capturer:235 and nvdec_reader:82 use 30s, bench:1325 uses 300s).
+            # This one had none, so a concat that never returns — a corrupt
+            # segment, a stalled network drive, an ffmpeg wedged on a bad moov —
+            # hung the process forever at the very END of a long render, with
+            # every frame already encoded and nothing to show for it.
+            #
+            # A flat timeout is wrong here because this is a stream copy whose
+            # duration scales with the output: budget by size at a deliberately
+            # pessimistic 5 MB/s, floor 5 minutes. Timing out raises
+            # TimeoutExpired (after subprocess.run kills the child), which the
+            # handler below turns into ok=False — and that is the good outcome:
+            # the segments and manifest are KEPT, so the run stays resumable
+            # instead of being silently discarded.
+            total_bytes = sum(self._size_of(s["file"]) for s in self.segments)
+            timeout = max(300.0, total_bytes / (5 * 1024 * 1024))
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
             if proc.returncode != 0:
                 err = (proc.stderr or b"").decode("utf-8", "replace")[:400]
                 bar_write(f"[Resume] segment concat failed (ffmpeg exit {proc.returncode}): {err}")
