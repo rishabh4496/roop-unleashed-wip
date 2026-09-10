@@ -54,7 +54,34 @@ from roop import procmgr_runtime as _procmgr_runtime
 import ui.globals as ui_globals
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Local origins only — was allow_origins=["*"].
+#
+# This server binds 127.0.0.1 (see run_api) on a FIXED, guessable port (8001),
+# and "*" told every browser that any website may call it cross-origin AND read
+# the reply. So a page the user happens to have open while the app is running
+# could enumerate outputs via /api/output, read the finished videos through
+# /api/file, delete them via /api/output/delete, start renders, or pop Explorer
+# windows with /api/reveal. Loopback binding is not a defence against that: the
+# request comes from the user's own browser.
+#
+# Nothing legitimate needed it, which is what makes this safe to tighten:
+#   * react-ui/src/api.js sets `API = window.location.origin`, so the UI is
+#     always same-origin and never triggers a CORS check at all;
+#   * in dev, vite.config.js proxies /api server-side with changeOrigin, so the
+#     forwarding happens in Node, not the browser;
+#   * nothing else in the repo talks to the API — the Gradio UI shares the
+#     process rather than calling over HTTP.
+#
+# The regex still admits every local form the app is served under, including
+# Pinokio's `<port>.localhost` HTTPS proxy convention, so a webview or a dev
+# server on any port keeps working.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://([A-Za-z0-9-]+\.)*(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def mapped_facesets(mapping, swap_mode=""):
@@ -994,7 +1021,26 @@ def source_clear():
 
 @app.post("/api/source/select")
 def source_select(payload: dict = Body(...)):
-    state.selected_input_face_index = int(payload.get("index", 0))
+    # Validate at the boundary — this setter is the only way the index is set
+    # from a client, and its consumers do not all range-check it.
+    #
+    # A NEGATIVE index was the sharp edge: api.py:331 guards with
+    # `len(INPUT_FACESETS) > face_index` and :2460 with `len(...) <= face_index`,
+    # both of which -1 passes, and Python then indexes from the END. Picking
+    # source 0 and getting the last faceset is a wrong swap that reports success
+    # — worse than an error. routes_faceset.py:218 already does this correctly
+    # (`0 <= idx < len(...)`); this brings the setter in line.
+    try:
+        idx = int(payload.get("index", 0))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400,
+                            content={"message": "index must be a number"})
+    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
+        return JSONResponse(
+            status_code=400,
+            content={"message": f"index {idx} is outside the "
+                                f"{len(roop_globals.INPUT_FACESETS)} loaded source face(s)"})
+    state.selected_input_face_index = idx
     return {"selected": state.selected_input_face_index}
 
 
