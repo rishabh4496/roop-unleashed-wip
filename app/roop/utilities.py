@@ -34,6 +34,20 @@ if platform.system().lower() == "darwin":
 
 
 # https://github.com/facefusion/facefusion/blob/master/facefusion
+def _plausible_fps(value) -> bool:
+    """True only for a frame rate we would be willing to hand to ffmpeg.
+
+    Rejects None, 0, negatives, NaN (NaN fails every comparison, so the
+    `0 < v` test excludes it without a special case) and absurd values — a
+    corrupt header can report 1e6 fps, which is as unusable as 0.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return 0.0 < v <= 1000.0
+
+
 def detect_fps(target_path: str) -> float:
     # Animated WebP: OpenCV returns 0 FPS — derive from PIL frame durations instead
     if target_path and target_path.lower().endswith('.webp'):
@@ -59,12 +73,47 @@ def detect_fps(target_path: str) -> float:
         except Exception as exc:
             print(f"[detect_fps] WebP duration read failed: {exc}")
         return 10.0  # safe fallback: 100 ms per frame
-    fps = 24.0
+    # cv2 first (cheap, no subprocess), but never trust its answer unchecked.
+    #
+    # cap.get(CAP_PROP_FPS) returns 0.0 whenever OpenCV cannot read a frame rate
+    # from the container — routine for VFR MKV/WebM, fragmented MP4, and files
+    # with a damaged header — and NaN on some backends. The old code assigned
+    # that straight over the 24.0 default, because isOpened() was still True, so
+    # detect_fps returned 0.0/NaN for exactly the malformed inputs the default
+    # existed for.
+    #
+    # That value is load-bearing downstream: FFMPEG_VideoWriter interpolates it
+    # into '-r', so fps=0 makes ffmpeg reject the command and exit before a
+    # single frame is written, and restore_audio/create_gif mis-time the result.
+    #
+    # capturer._probe_video already solves this properly — ffprobe's
+    # avg_frame_rate, parsed as the rational it is ('30000/1001'), cached per
+    # path — so fall through to it instead of inventing a second probe. Imported
+    # inside the function to keep the module-level import graph acyclic, the same
+    # way capturer imports utilities.
+    fps = 0.0
     cap = cv2.VideoCapture(target_path)
     if cap.isOpened():
         fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
-    return fps
+
+    if _plausible_fps(fps):
+        return float(fps)
+
+    try:
+        from roop.capturer import _probe_video
+        info = _probe_video(target_path)
+        if info and _plausible_fps(info.get('fps')):
+            probed = float(info['fps'])
+            print(f"[detect_fps] cv2 reported {fps!r} for "
+                  f"'{os.path.basename(target_path)}'; using ffprobe's {probed:.3f}")
+            return probed
+    except Exception as exc:
+        print(f"[detect_fps] ffprobe fallback failed: {exc}")
+
+    print(f"[detect_fps] no usable frame rate for "
+          f"'{os.path.basename(target_path)}' (cv2 gave {fps!r}) — defaulting to 24.0")
+    return 24.0
 
 
 def detect_dimensions(target_path: str):

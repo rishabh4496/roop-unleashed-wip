@@ -629,8 +629,18 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         for p in self.processors:
             newp = next((x for x in options.processors.keys() if x == p.processorname), None)
             if newp is None:
-                p.Release()
-                del p
+                # Guarded for the same reason as release_resources: this frees
+                # the processors the new options dropped, and one of them
+                # raising used to abort initialize() outright — failing the run
+                # before it started AND leaving every later unwanted processor
+                # holding its VRAM. (`del p` here only unbound the loop
+                # variable; self.processors is rebuilt below, which is what
+                # actually drops the reference.)
+                try:
+                    p.Release()
+                except Exception as e:
+                    print(f"[release] {type(p).__name__}.Release() failed while "
+                          f"switching processors: {e!r}")
 
         newprocessors = []
         for key, extoption in options.processors.items():
@@ -1401,12 +1411,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 writethread.daemon = True
                 writethread.start()
 
-                # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
-                # the worker threads into one batched inference. Needs >1 thread and the
-                # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
-                self._swap_batcher = self._make_swap_batcher(threads)
-
                 try:
+                    # Cross-frame swap batcher (opt-in): coalesce concurrent swap calls from
+                    # the worker threads into one batched inference. Needs >1 thread and the
+                    # batch-dynamic swap session (ROOP_BATCH_SWAP). Off → unchanged behavior.
+                    #
+                    # Inside the try: both threads above are already RUNNING, so a raise
+                    # from here used to skip the joins in the finally and fall straight to
+                    # the outer finally — which closes the videowriter while the write
+                    # thread may still be inside write_frame(). That is the pipe-close race
+                    # the outer finally's own comment warns corrupts the temp file.
+                    self._swap_batcher = self._make_swap_batcher(threads)
                     with ChunkedProgress(total=self.total_frames, desc='Processing', unit='frames', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
                         with ThreadPoolExecutor(thread_name_prefix='swap_proc', max_workers=self.num_threads) as executor:
                             futures = []
@@ -4031,6 +4046,39 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 print(f"[release] {type(p).__name__}.Release() failed: {e!r} "
                       f"— continuing so the remaining models are still freed.")
         self.processors.clear()
+
+        # The two lazily-built restorers are NOT in self.processors, and were the
+        # only GPU-holding objects here that teardown walked straight past.
+        #
+        # They are also the biggest. Expression_LivePortrait builds a SessionPool
+        # of expression_pool_size() slots, each holding five InferenceSessions
+        # with their own TensorRT engine — session_pool.py measures that at
+        # ~537 MB of weights per slot, so ~1.1 GB at the default 2 slots on a
+        # >=11.5 GB card. Lipsync_MuseTalk holds a VAE + UNet + Whisper.
+        #
+        # Their Release() does work that nothing else does and that dropping a
+        # reference cannot do for you: Expression_LivePortrait.Release() joins
+        # the ThreadPoolExecutor it runs its overlapped front-half calls on
+        # (shutdown(wait=True)) and calls pool.release() to dispose the sessions
+        # deterministically; Lipsync_MuseTalk.Release() drops its torch modules
+        # and empties the CUDA cache. Leaving that to refcount timing is the one
+        # thing this function exists to avoid.
+        #
+        # It is load-bearing, not hygiene: api.py's upscale-after-swap pass calls
+        # release_resources() specifically to hand the upscale a clear card, and
+        # its own comment records what happens when the VRAM is not actually
+        # free — the sessions spill into shared system RAM and the pass crawls at
+        # 26s/frame. Any run that used expression restore or lipsync was starting
+        # that pass with ~1-2 GB still held.
+        for attr in ('_expr_restorer', '_lipsync_restorer_inst'):
+            inst = getattr(self, attr, None)
+            if inst is None:
+                continue
+            try:
+                inst.Release()
+            except Exception as e:
+                print(f"[release] {attr}.Release() failed: {e!r}")
+            setattr(self, attr, None)
         # FIX: Null out writer references after closing so GC can collect them
         if self.videowriter is not None:
             try:
