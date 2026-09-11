@@ -71,6 +71,11 @@ OCCLUSION_EDGE_PX = float(os.environ.get('ROOP_OCCL_EDGE_PX', '5') or 5)
 # before it is considered at all - below this it is mask noise.
 OCCLUSION_MIN_AREA_FRAC = float(os.environ.get('ROOP_OCCL_MIN_AREA', '0.01') or 0.01)
 
+# Mean absolute difference below which a "second opinion" is treated as the
+# same engine under another name and ignored. See occlusion_verdict.
+_SECOND_OPINION_MIN_DIFF = float(
+    os.environ.get('ROOP_OCCL_MIN_ENGINE_DIFF', '0.002') or 0.002)
+
 
 # -- Polarity ---------------------------------------------------------------
 
@@ -285,10 +290,25 @@ def occlusion_verdict(restore_mask: Mask,
         if s.shape != m.shape:
             s = cv2.resize(s, (m.shape[1], m.shape[0]),
                            interpolation=cv2.INTER_LINEAR)
-        other = floor_bin & (s > 0.5)
-        union = float((kept | other).sum())
-        if union > 0.0:
-            agreement = float((kept & other).sum()) / union
+        # A second opinion is only evidence if it is a second OPINION. Two
+        # engines in this project can be the same weight under two names:
+        # `xseg.onnx` and `xseg_3.onnx` are byte-identical in behaviour
+        # (verified — max |diff| 0.0 over a random input; they differ only in
+        # their ONNX tensor names, hence different checksums), and both are
+        # offered in the engine dropdown as "DFL XSeg" and "Face Occluder v3
+        # (XSeg-3)". Selecting that pair produces two identical masks, whose
+        # agreement IoU is trivially 1.0 — which would pass the threshold below
+        # on every face and permanently disable the recovery path, silently.
+        #
+        # So require the two to actually differ before believing them. This is
+        # the same argument the agreement signal rests on: it is worth
+        # something because two models have different blind spots, and two
+        # copies of one model have the same blind spot.
+        if float(np.abs(s - m).mean()) > _SECOND_OPINION_MIN_DIFF:
+            other = floor_bin & (s > 0.5)
+            union = float((kept | other).sum())
+            if union > 0.0:
+                agreement = float((kept & other).sum()) / union
 
     if agreement >= agreement_thr:
         return OcclusionVerdict(True, shortfall_frac, interiority, agreement,
