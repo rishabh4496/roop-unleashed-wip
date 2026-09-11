@@ -72,8 +72,8 @@ class Mask_FastSAM():
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
 
-            if session_pool.detmask_pooling_enabled():
-                n = session_pool.detmask_pool_size()
+            if session_pool.mask_pooling_enabled():
+                n = session_pool.mask_pool_size()
                 extras = [_build(i) for i in range(n - 1)]
                 self.pool = session_pool.SessionPool(
                     lambda i, _e=([self.model] + extras): _e[i], n)

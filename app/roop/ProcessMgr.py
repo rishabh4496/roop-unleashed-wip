@@ -1598,11 +1598,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                   "(swap_model_mask_strength > 0).")
             return None
         pooled = getattr(swap_p, 'pool', None) is not None
-        try:
-            max_b = int(os.environ.get('ROOP_BATCH_SWAP_MAX', str(threads)))
-        except ValueError:
-            max_b = threads
-        max_b = max(2, min(max_b, threads))
+        # The engine's batch profile bounds the coalescing, not the thread
+        # count: a batch past the profile's max makes TensorRT rebuild the
+        # engine mid-run. By default that profile is one face's tiles (see
+        # swap_batch_capacity for the VRAM this buys), which leaves nothing to
+        # coalesce — so the batcher stands down and says why, rather than
+        # serialising ten workers through one thread for batches of one.
+        capacity = int(getattr(swap_p, 'batch_capacity', 1) or 1)
+        max_b = min(capacity, threads)
+        if max_b < 2:
+            print("[BatchSwap] cross-frame batching OFF — the swapper's TensorRT "
+                  f"profile is built for batch {capacity} (one face's tiles). "
+                  "Set ROOP_BATCH_SWAP_MAX=4 to build one wide enough to coalesce "
+                  "(~140 MB more VRAM per pooled context per unit of width).")
+            return None
         try:
             wait_ms = float(os.environ.get('ROOP_BATCH_SWAP_WAIT_MS', '2.0'))
         except ValueError:

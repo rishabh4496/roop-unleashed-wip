@@ -520,14 +520,17 @@ def make_feeds(sess, shape_hint=None, batch=1, seed=0):
 
 # ── session building ─────────────────────────────────────────────────────────
 
-def _build_session(stage, providers=None):
+def _build_session(stage, providers=None, batch_capacity=None):
     """One session for `stage`, built the way the app builds it.
 
-    The swapper's graph transforms are reproduced exactly (frozen ConvTranspose
-    reshape, batch relaxation under ROOP_BATCH_SWAP), because they change the
-    graph hash and therefore which TensorRT engine gets loaded — mirroring them
-    means this hits the engine the app already built instead of provoking a
-    fresh multi-minute build for a benchmark.
+    The swapper goes through the app's own prepare_swap_session, because every
+    transform in it (FP32 force, frozen ConvTranspose reshape, batch relaxation,
+    the explicit batch profile) changes the graph hash or the cache name and
+    therefore which TensorRT engine gets loaded — mirroring them means this
+    hits the engine the app already built instead of provoking a fresh
+    multi-minute build for a benchmark, and measures that engine's VRAM rather
+    than a neighbour's. `batch_capacity` is for the batch probe, which needs a
+    wider profile than the app's and must not widen the app's to get it.
     """
     providers = providers if providers is not None else stage.providers
     opts = onnxruntime.SessionOptions()
@@ -535,16 +538,16 @@ def _build_session(stage, providers=None):
     model_arg = stage.path
     if stage.batch_relax:
         try:
-            import onnx
             from roop.processors.FaceSwapInsightFace import (
-                _freeze_convtranspose_reshape, _relax_batch_dim, _BATCH_SWAP)
-            m = onnx.load(stage.path)
-            changed = _freeze_convtranspose_reshape(m)
-            if _BATCH_SWAP:
-                _relax_batch_dim(m)
-                changed = True
-            if changed:
-                model_arg = m.SerializeToString()
+                SWAP_MODELS, prepare_swap_session)
+            spec = next((s for s in SWAP_MODELS.values()
+                         if os.path.basename(stage.path) == s['file']), None)
+            if spec is not None:
+                # `providers` here is already the swapper's (see
+                # build_catalogue), and prepare_swap_session re-applies the
+                # same FP32 force idempotently.
+                model_arg, providers = prepare_swap_session(
+                    spec, stage.path, providers, batch_capacity)
         except Exception:
             model_arg = stage.path
     return onnxruntime.InferenceSession(model_arg, opts, providers=providers)
@@ -1214,7 +1217,9 @@ def measure_batch_swap(stages, cfg, report, cancelled):
         return {}
     report(status='Batched swap', stage=swap.label, threads=1)
     try:
-        sess = _build_session(swap)
+        # Its own batch-4 profile: the app's engine is built for one face's
+        # tiles and a batch past that would make TensorRT rebuild it.
+        sess = _build_session(swap, batch_capacity=4)
         outs = [o.name for o in sess.get_outputs()]
         f1 = [make_feeds(sess, swap.shape_hint, batch=1)]
         c1 = best_of(cfg.get('reps', 1), throughput, [sess], f1, outs, 1,

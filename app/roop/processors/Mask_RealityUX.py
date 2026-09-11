@@ -94,7 +94,7 @@ class Mask_RealityUX():
         self.plugin_options = plugin_options
         self._xseg.Initialize(plugin_options)
         self._parser.Initialize(plugin_options)
-        if session_pool.detmask_pooling_enabled():
+        if session_pool.mask_pooling_enabled():
             self.pool = True
 
     def Run(self, img1, keywords: str) -> Frame:

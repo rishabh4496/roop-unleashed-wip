@@ -430,6 +430,75 @@ def _with_trt_batch_profiles(providers, model, profile_max, cache_prefix):
     return patched
 
 
+def swap_batch_capacity(spec, subsample_size=None):
+    """Largest batch one swapper context is built to accept.
+
+    A pooled context serves one worker thread, and a worker hands it one face's
+    pixel-boost tiles per call — `tiles` here. The cross-frame batcher is the
+    only caller that coalesces more than that (ProcessMgr._make_swap_batcher),
+    it caps itself at this value, and it does not run on the stabilised path at
+    all. So the profile is sized to the tiles, not to `threads x tiles` as it
+    was: TensorRT reserves every context's activations for the profile's MAX
+    shape, and the wider profile was paid for N times over by the pool.
+    Measured on an RTX 4070, hyperswap @256 FP32, marginal VRAM per context:
+
+        max 1  (tiles)          520 MB
+        max 10 (threads x tiles) 1760 MB     x ROOP_TRT_POOL=4 = +5.0 GB
+
+    which on a 12GB card was the difference between the model set fitting and
+    2-3 GB of it demoted to system RAM over PCIe — 54 ms/frame became 300-1300.
+
+    ROOP_BATCH_SWAP_MAX raises it (never below the tiles, which one call always
+    sends together) for a run that wants the cross-frame batcher to coalesce
+    that wide; each unit of width costs ~140 MB per pooled context. Measured
+    per-crop cost on one context: batch 1 7.97 ms, batch 4 4.06 ms, batch 10
+    5.32 ms — 4 is the useful width, and the opt shape below is already 4.
+    """
+    try:
+        subsample = int(subsample_size
+                        or getattr(roop.globals, 'subsample_size', 128) or 128)
+    except (TypeError, ValueError):
+        subsample = 128
+    tile_side = max(1, subsample // int(spec['output_size']))
+    capacity = tile_side * tile_side
+    raw = os.environ.get('ROOP_BATCH_SWAP_MAX')
+    if raw:
+        try:
+            capacity = max(capacity, int(raw))
+        except ValueError:
+            pass
+    return max(1, min(64, capacity))
+
+
+def prepare_swap_session(spec, model_path, providers, batch_capacity=None):
+    """(model_arg, providers) for one session of `spec`, the way the app builds it.
+
+    Every transform that changes the TensorRT engine lives here — the FP32
+    force, the frozen ConvTranspose reshape, batch relaxation and the explicit
+    batch profile — so that roop.bench, which imports this, measures the engine
+    the app runs and not a neighbour of it under a different cache name.
+    `batch_capacity` overrides the app's own sizing (bench's batch-4 probe uses
+    it to get its own engine rather than widening the app's).
+    """
+    swap_providers = _swap_providers(providers)
+    model_arg = model_path
+    _model = onnx.load(model_path)
+    _changed = _freeze_convtranspose_reshape(_model)
+    if _BATCH_SWAP:
+        _relax_batch_dim(_model)
+        _changed = True
+        # Tell TensorRT the batch range up front. Left implicit, ORT builds
+        # the engine for whatever batch the FIRST call used and rebuilds
+        # (minutes, per size) when a later call arrives with a different
+        # one — the "endless engine build" symptom.
+        capacity = batch_capacity or swap_batch_capacity(spec)
+        swap_providers = _with_trt_batch_profiles(
+            swap_providers, _model, capacity, spec['file'].rsplit('.', 1)[0])
+    if _changed:
+        model_arg = _model.SerializeToString()
+    return model_arg, swap_providers
+
+
 def _swap_providers(providers):
     """Return a copy of `providers` with the TensorRT provider forced to FP32.
 
@@ -448,8 +517,10 @@ def _swap_providers(providers):
             opts['trt_fp16_enable'] = False
             # Separate engine cache so the FP32 swap engine never collides with
             # the FP16 engines TensorRT builds for the other models.
+            # Idempotent: bench hands prepare_swap_session providers it has
+            # already passed through here.
             cache = opts.get('trt_engine_cache_path')
-            if cache:
+            if cache and not cache.endswith('_swap_fp32'):
                 fp32_cache = cache + '_swap_fp32'
                 os.makedirs(fp32_cache, exist_ok=True)
                 opts['trt_engine_cache_path'] = fp32_cache
@@ -502,6 +573,9 @@ class FaceSwapInsightFace():
         # (RunBatch, RunBatchMulti, swap_batcher, ProcessMgr). ProcessMgr reads it
         # immediately after its own Run call, on the same thread.
         self.model_has_mask = False
+        # Largest batch one context accepts (swap_batch_capacity); the cross-
+        # frame batcher reads it to size its coalescing.
+        self.batch_capacity = 1
         self._mask_tls = threading.local()
         # _rebuild_without_trt is reached from N worker threads at once when a
         # broken TensorRT engine fails on every one of them in the same
@@ -556,38 +630,13 @@ class FaceSwapInsightFace():
 
             self.devicename = plugin_options["devicename"].replace('mps', 'cpu')
 
-            swap_providers = _swap_providers(roop.globals.execution_providers)
-            # Load once and apply the transforms this session needs. Freezing the
-            # ConvTranspose reshape channel makes TensorRT-incompatible exports
-            # (GHOST) buildable; batch relaxation is opt-in. If neither applies we
-            # hand onnxruntime the path so it can memory-map the file directly.
-            model_arg = model_path
-            _model = onnx.load(model_path)
-            _changed = _freeze_convtranspose_reshape(_model)
-            if _BATCH_SWAP:
-                _relax_batch_dim(_model)
-                _changed = True
-                # Tell TensorRT the batch range up front. Left implicit, ORT
-                # builds the engine for whatever batch the FIRST call used and
-                # rebuilds (minutes, per size) when a coalesced or tiled call
-                # arrives with a different one — the "endless engine build"
-                # symptom. The largest batch this process can produce is one
-                # crop per worker thread times the pixel-boost tile count.
-                threads = max(1, int(getattr(roop.globals, 'execution_threads', 1) or 1))
-                tile_side = max(
-                    1,
-                    int(getattr(roop.globals, 'subsample_size', 128) or 128)
-                    // int(spec['output_size']),
-                )
-                try:
-                    profile_max = int(os.environ.get(
-                        'ROOP_BATCH_SWAP_MAX', str(threads * tile_side * tile_side)))
-                except ValueError:
-                    profile_max = threads * tile_side * tile_side
-                swap_providers = _with_trt_batch_profiles(
-                    swap_providers, _model, profile_max, spec['file'].rsplit('.', 1)[0])
-            if _changed:
-                model_arg = _model.SerializeToString()
+            # Load once and apply the transforms this session needs (see
+            # prepare_swap_session). If none applies, onnxruntime gets the path
+            # so it can memory-map the file directly.
+            self.batch_capacity = swap_batch_capacity(spec)
+            model_arg, swap_providers = prepare_swap_session(
+                spec, model_path, roop.globals.execution_providers,
+                self.batch_capacity)
 
             # Remember what we built with so a run-time TensorRT failure can
             # rebuild this exact model on CUDA/CPU (see _rebuild_without_trt).

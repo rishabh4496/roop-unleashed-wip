@@ -742,7 +742,7 @@ class PhasesRunWithoutAGpu(unittest.TestCase):
         self.assertEqual(rec['provider']['stages_cuda_refused'], 1)
 
     def test_batch_swap_phase_runs(self):
-        bench._build_session = lambda st, providers=None: self._Sess()
+        bench._build_session = lambda st, providers=None, batch_capacity=None: self._Sess()
         out = bench.measure_batch_swap([self._stage('swap')], self.cfg,
                                        self.report, lambda: False)
         self.assertNotIn('error', out, f'phase raised internally: {out}')

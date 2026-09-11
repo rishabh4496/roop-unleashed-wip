@@ -103,6 +103,10 @@ _pool_cache_lock = threading.Lock()
 # four was the slow one, so every fourth preview took 5-6s against ~0.8s, and
 # once the card started paging in earnest single previews reached 16-70s and
 # the UI's 15-minute preview deadline became reachable by scrubbing.
+# (That figure was taken while the swapper's TensorRT profile was sized to
+# threads x tiles — see swap_batch_capacity — which alone was ~5 GB of it.
+# The render was over the card for the same reason; the argument here, that
+# a one-frame-at-a-time consumer should not hold N contexts, stands on its own.)
 #
 # Inside single_context() every per-ProcessMgr pool query answers 1, so the
 # processors build one session each and go through _gpu_guard's lock like an
@@ -200,6 +204,39 @@ def detmask_pool_size(shared: bool = False) -> int:
 
 def detmask_pooling_enabled(shared: bool = False) -> bool:
     return detmask_pool_size(shared) >= 2
+
+
+# The mask engines share the detmask knob but not its curve. They are one crop
+# per face per call and cheap enough that two contexts already run ahead of
+# what a render can feed them. Measured on an RTX 4070, TRT FP16, N threads
+# each hammering its own context:
+#
+#     BiSeNet (resnet18 @512)   1: 82.9   2: 98.1   4: 97.9  calls/s   192 MB each
+#     XSeg-3  (@256)            1: 412.6  2: 535.5  4: 462.2 calls/s    ~80 MB each
+#
+# The second context is the whole gain; the third and fourth cost VRAM and,
+# for XSeg, throughput. A render at 18 fps with two faces needs ~36 of these
+# per second per engine against ~200/s at two contexts. And this is paid once
+# per SELECTED engine: mask_engine + mask_engine_2 on the 4/4 tier held
+# 2 x 4 contexts, 1.1 GB for the BiSeNet + XSeg pair, for the throughput of
+# 2 x 2. ROOP_MASK_POOL overrides; 0 or 1 means one context behind the lock.
+_MASK_POOL_CAP = 2
+
+
+def mask_pool_size() -> int:
+    if _single_context():
+        return 1
+    raw = os.environ.get('ROOP_MASK_POOL')
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return min(_MASK_POOL_CAP, detmask_pool_size())
+
+
+def mask_pooling_enabled() -> bool:
+    return mask_pool_size() >= 2
 
 
 def detector_pool_size() -> int:

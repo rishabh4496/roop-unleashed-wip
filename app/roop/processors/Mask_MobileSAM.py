@@ -85,8 +85,8 @@ class Mask_MobileSAM():
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
 
             # Optional multi-session pool over the encoder (the costly stage).
-            if session_pool.detmask_pooling_enabled():
-                n = session_pool.detmask_pool_size()
+            if session_pool.mask_pooling_enabled():
+                n = session_pool.mask_pool_size()
                 extras = [_build_enc(i) for i in range(n - 1)]
                 self.pool = session_pool.SessionPool(
                     lambda i, _e=([self.encoder] + extras): _e[i], n)

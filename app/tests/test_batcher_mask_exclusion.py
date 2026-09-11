@@ -31,6 +31,10 @@ from roop.ProcessMgr import ProcessMgr                 # noqa: E402
 class _Swapper:
     type = 'swap'
     pool = None
+    # An engine built wide enough to coalesce. The default is one face's tiles
+    # (swap_batch_capacity), on which the batcher stands down — that gate has
+    # its own tests below; these are about the mask.
+    batch_capacity = 4
 
     def __init__(self, has_mask):
         self.model_has_mask = has_mask
@@ -90,6 +94,35 @@ class BatcherYieldsToTheMask(unittest.TestCase):
 
     def test_single_thread_never_batches(self):
         self.assertIsNone(self._make(has_mask=False, strength=0.0, threads=1))
+
+    def test_a_tiles_only_engine_never_batches(self):
+        """The default profile is one face's tiles: nothing to coalesce, and a
+        batch past it would make TensorRT rebuild the engine mid-render."""
+        stub = _Stub(has_mask=False)
+        stub.processors[0].batch_capacity = 1
+        roop.globals.swap_model_mask_strength = 0.0
+        self.assertIsNone(ProcessMgr._make_swap_batcher(stub, 4))
+
+    def test_coalescing_is_bounded_by_the_engine_not_the_threads(self):
+        stub = _Stub(has_mask=False)
+        stub.processors[0].batch_capacity = 3
+        roop.globals.swap_model_mask_strength = 0.0
+        b = ProcessMgr._make_swap_batcher(stub, 10)
+        try:
+            self.assertEqual(b._max_batch, 3)
+        finally:
+            b.stop()
+
+    def test_a_swapper_without_a_capacity_reads_as_tiles_only(self):
+        """An older processor object, or a stub: the safe reading is no
+        coalescing, never a batch the engine was not built for."""
+        stub = _Stub(has_mask=False)
+        del type(stub.processors[0]).batch_capacity
+        try:
+            roop.globals.swap_model_mask_strength = 0.0
+            self.assertIsNone(ProcessMgr._make_swap_batcher(stub, 4))
+        finally:
+            _Swapper.batch_capacity = 4
 
     def test_xframe_off_never_batches(self):
         os.environ['ROOP_BATCH_SWAP_XFRAME'] = '0'
