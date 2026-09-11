@@ -3,17 +3,18 @@ module.exports = {
     bundle: "ai",
   },
   run: [
-    // Pin fresh installs to the same channel used by update.js. This avoids
-    // installing an older default-branch checkout on a new device.
+    // Keep fresh installs on the canonical main branch used by update.js.
     {
       method: "shell.run",
       params: {
         message: [
           "git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git",
-          "git fetch origin --prune \"+refs/heads/*:refs/remotes/origin/*\"",
-          "git show-ref --verify --quiet refs/heads/fix/hyperswap-batch-reshape || git switch --track -c fix/hyperswap-batch-reshape origin/fix/hyperswap-batch-reshape",
-          "git switch fix/hyperswap-batch-reshape",
-          "git pull --ff-only origin fix/hyperswap-batch-reshape"
+          "git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"",
+          "git fetch origin --prune",
+          "git show-ref --verify --quiet refs/heads/main || git switch --track -c main origin/main",
+          "git switch main",
+          "git branch --set-upstream-to=origin/main main",
+          "git pull --ff-only"
         ]
       }
     },

@@ -173,21 +173,25 @@ see [GPEN GPU diagnostics](docs/GPEN_GPU_DIAGNOSTICS.md).
 Stop the app, click **Update** in the sidebar, then click **Start** again so the
 running Python and React processes load the updated files.
 
-The updater normalizes the Git remote to the repository above, refreshes all
-remote branches, and follows the `fix/hyperswap-batch-reshape` update channel.
-If a device was initially cloned from `master`, its first Update switches it to
-that channel; later commits pushed to the channel are pulled automatically.
+The updater normalizes the Git remote to the repository above, persists an
+all-branch fetch configuration, and follows the canonical `main` branch. A
+device installed before the `main` migration may need to click **Update** twice
+during this one-time transition: the first run receives the migration on its
+legacy branch, and the second switches the checkout to `main`. Later updates
+pull `main` automatically.
 Updates use fast-forward-only Git operations, so local divergent work is
 reported instead of being overwritten.
 
 ### Manual
 ```bash
 git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git
-git fetch origin --prune "+refs/heads/*:refs/remotes/origin/*"
-git show-ref --verify --quiet refs/heads/fix/hyperswap-batch-reshape || git switch --track -c fix/hyperswap-batch-reshape origin/fix/hyperswap-batch-reshape
-git switch fix/hyperswap-batch-reshape
-git pull --ff-only origin fix/hyperswap-batch-reshape
-pip install -r app/requirements.txt
+git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git fetch origin --prune
+git show-ref --verify --quiet refs/heads/main || git switch --track -c main origin/main
+git switch main
+git branch --set-upstream-to=origin/main main
+git pull --ff-only
+uv pip install -r app/requirements.txt
 ```
 
 ---

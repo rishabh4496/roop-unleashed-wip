@@ -1,16 +1,18 @@
 module.exports = {
   run: [{
-    // Keep every device on the same repository and update channel. A plain
-    // `git pull` preserves a device's old branch, so a clone from master would
-    // never receive commits made to the current development channel.
+    // Keep every device on the canonical main branch. Persist the all-branch
+    // fetch refspec because older Pinokio clones may only fetch their original
+    // default branch.
     method: "shell.run",
     params: {
       message: [
         "git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git",
-        "git fetch origin --prune \"+refs/heads/*:refs/remotes/origin/*\"",
-        "git show-ref --verify --quiet refs/heads/fix/hyperswap-batch-reshape || git switch --track -c fix/hyperswap-batch-reshape origin/fix/hyperswap-batch-reshape",
-        "git switch fix/hyperswap-batch-reshape",
-        "git pull --ff-only origin fix/hyperswap-batch-reshape",
+        "git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"",
+        "git fetch origin --prune",
+        "git show-ref --verify --quiet refs/heads/main || git switch --track -c main origin/main",
+        "git switch main",
+        "git branch --set-upstream-to=origin/main main",
+        "git pull --ff-only",
         "git status --short --branch",
         "git log -1 --format=updated-to:%h-%s"
       ]
