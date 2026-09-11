@@ -3,6 +3,20 @@ module.exports = {
     bundle: "ai",
   },
   run: [
+    // Pin fresh installs to the same channel used by update.js. This avoids
+    // installing an older default-branch checkout on a new device.
+    {
+      method: "shell.run",
+      params: {
+        message: [
+          "git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git",
+          "git fetch origin --prune \"+refs/heads/*:refs/remotes/origin/*\"",
+          "git show-ref --verify --quiet refs/heads/fix/hyperswap-batch-reshape || git switch --track -c fix/hyperswap-batch-reshape origin/fix/hyperswap-batch-reshape",
+          "git switch fix/hyperswap-batch-reshape",
+          "git pull --ff-only origin fix/hyperswap-batch-reshape"
+        ]
+      }
+    },
     // Install Python dependencies for the backend (app/ is already in the repo)
     {
       method: "shell.run",

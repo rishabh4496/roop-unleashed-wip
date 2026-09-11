@@ -14,7 +14,7 @@ This repository contains both the Pinokio launcher scripts and the full applicat
 1. Open Pinokio and click **Discover** (or paste the repo URL directly).
 2. Paste the repo URL:
    ```
-   https://github.com/Adutchguy/roop-unleashed-wip.git
+   https://github.com/rishabh4496/roop-unleashed-wip.git
    ```
 3. Click **Download**, then **Install**.
 4. Once installed, click **Start** to launch the web UI.
@@ -38,7 +38,7 @@ Pinokio will automatically detect your GPU and install the correct PyTorch and O
 ### Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/Adutchguy/roop-unleashed-wip.git
+git clone https://github.com/rishabh4496/roop-unleashed-wip.git
 cd roop-unleashed-wip
 ```
 
@@ -170,11 +170,23 @@ see [GPEN GPU diagnostics](docs/GPEN_GPU_DIAGNOSTICS.md).
 ## Updating
 
 ### Pinokio
-Click **Update** in the sidebar.
+Stop the app, click **Update** in the sidebar, then click **Start** again so the
+running Python and React processes load the updated files.
+
+The updater normalizes the Git remote to the repository above, refreshes all
+remote branches, and follows the `fix/hyperswap-batch-reshape` update channel.
+If a device was initially cloned from `master`, its first Update switches it to
+that channel; later commits pushed to the channel are pulled automatically.
+Updates use fast-forward-only Git operations, so local divergent work is
+reported instead of being overwritten.
 
 ### Manual
 ```bash
-git pull
+git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git
+git fetch origin --prune "+refs/heads/*:refs/remotes/origin/*"
+git show-ref --verify --quiet refs/heads/fix/hyperswap-batch-reshape || git switch --track -c fix/hyperswap-batch-reshape origin/fix/hyperswap-batch-reshape
+git switch fix/hyperswap-batch-reshape
+git pull --ff-only origin fix/hyperswap-batch-reshape
 pip install -r app/requirements.txt
 ```
 
