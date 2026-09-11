@@ -19,7 +19,8 @@ import numpy as np
 
 from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MAX,
                                   _TRACK_ASSIGN_MARGIN, _TRACK_ASSIGN_FLOOR,
-                                  _TRACK_ASSIGN_MIN_OBS, _TRACK_REID_MAX,
+                                  _TRACK_ASSIGN_MIN_OBS, _TRACK_MIN_FRAMES,
+                                  _TRACK_REID_MAX,
                                   _TRACK_STITCH, _TRACK_STITCH_GAP,
                                   _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
                                   _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
@@ -1098,10 +1099,26 @@ class TrackingMixin:
         # or not it passed the gate — the second pass needs the ones that failed,
         # to ask whether a track explains them better than the photo does.
         photo_d = {}
+        refused_by_length = 0
         for t in tracks:
             t_emb = t.get('emb_mean')
             if t_emb is None:
                 continue
+            # Too few observations for the mean below to be a measurement rather
+            # than one frame of noise — see _TRACK_MIN_FRAMES. Observations
+            # rather than span, because a track seen on 2 of 50 frames is two
+            # observations however long it ran; the span is only a fallback for
+            # the path that does not collect them.
+            if _TRACK_MIN_FRAMES > 0:
+                n_obs = len(t.get('obs', {})) or max(
+                    1, int(t.get('last_seen', 0)) - int(t.get('first_seen', 0)) + 1)
+                if n_obs < _TRACK_MIN_FRAMES:
+                    refused_by_length += 1
+                    if _DEBUG_MATCH:
+                        bar_write(f"[TRACKASSIGN] track {t['id']}: {n_obs} frame(s) "
+                                  f"< {_TRACK_MIN_FRAMES} — no identity lock "
+                                  f"(falls through to per-frame matching)")
+                    continue
             for g, tis in persons.items():
                 embs = [getattr(self.target_face_datas[ti], 'embedding', None) for ti in tis]
                 embs = [e for e in embs if e is not None]
@@ -1162,6 +1179,17 @@ class TrackingMixin:
             for f, entries in per_frame.items():
                 for _c, tid in entries:
                     frames_of.setdefault(tid, set()).add(f)
+
+        # Reported here rather than through the return tuple: the caller's
+        # summary line is assembled from four values and this gate runs before
+        # any of them exist, so a fifth would have to be threaded through every
+        # caller to say one number. A short track that lost its lock is normal
+        # and expected on busy footage — it is only worth reading when someone
+        # is asking why a face did not swap.
+        if refused_by_length:
+            bar_write(f'[Track] {refused_by_length} track(s) under '
+                      f'{_TRACK_MIN_FRAMES} frames were not identity-locked '
+                      f'(they still swap via per-frame matching)')
 
         person_assigned_frames = {g: set() for g in persons}
         person_assigned_spans = {g: [] for g in persons}

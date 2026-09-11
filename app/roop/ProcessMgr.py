@@ -33,6 +33,7 @@ from roop.procmgr_tiling import PixelBoostMixin
 from roop.procmgr_tracking import TrackingMixin
 from roop.face_overlap import build_regions as build_face_regions, FaceRegion
 from roop import face_contact
+from roop import face_identity
 from roop import recognizer_adaface as _ada
 from roop import live_preview as _live_preview
 from roop.procmgr_runtime import _PROFILE, _TRACK_VETO_DIST, _TRACK_VETO_MARGIN, _TRACK_VETO_SINGLE, _TRACK_EMB_MAX, _DEBUG_MATCH, COLOR_RESET, COLOR_CYAN, COLOR_YELLOW, _prof, _prof_report, _prof_reset, _gpu_guard, PROGRESS_BAR_FORMAT, wait_while_paused, ChunkedProgress, bar_write, publish_eta as _publish_eta, _audit_hit, audit_face_begin, _audit_swapped_gapfill, _audit_reset, _audit_report, VETO_SOURCE_REUSED, VETO_SINGLE_ABS, VETO_OTHER_FITS, VETO_FAR_FROM_OWN, AUDIT_SWAP_MOVED, VERIFY_MIN_OFFAXIS, VERIFY_SWAP
@@ -92,6 +93,17 @@ _BATCH_SWAP = os.environ.get('ROOP_BATCH_SWAP', '0') == '1'
 # for clean A/B benchmarking and as an escape hatch, same pattern as
 # ROOP_TEST_NO_AUTOANGLES.
 _PARTIAL_MISS_RESCUE = os.environ.get('ROOP_NO_PARTIAL_MISS_RESCUE', '0') != '1'
+
+# Structural pre-filter on the detector's output (see the call site in
+# process_frame). min_det_score is 0 here on purpose: the detector already
+# enforces roop.globals.face_detector_threshold, and re-testing it would either
+# be exactly redundant or, if the two ever drifted apart, silently override the
+# user's setting. What this adds are the tests the detector has no opinion
+# about — box size, aspect ratio and interocular distance.
+_GEOMETRY_FILTER = (
+    None if os.environ.get('ROOP_GEOMETRY_FILTER', '1').strip().lower()
+    in ('0', 'off', 'false')
+    else face_identity.GeometryFilter(min_det_score=0.0))
 
 
 
@@ -2252,6 +2264,39 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # take the detection out for a few frames at a time.
                 _audit_hit('frames with no face detected at all')
                 return num_faces_found, frame
+
+            # ── Structural rejection, before any identity decision ────────────
+            # Answers "could this detection plausibly be the subject of a
+            # deliberate swap", which is a different question from "who is it"
+            # and is answered from numbers the detector already produced. It runs
+            # here rather than inside a swap_mode branch because every mode needs
+            # it — `all` and the gender modes have no identity check at all, so
+            # this is the ONLY thing standing between them and a swapped
+            # background extra.
+            #
+            # It is also what makes a strict identity threshold safe to set: at
+            # 20 px interocular an ArcFace embedding is noise, and noise lands
+            # wherever the threshold happens to be, so most of the scores that
+            # used to sit near the boundary came from detections whose embeddings
+            # meant nothing. Removing them first is why the threshold can be
+            # tightened without eating real matches. ROOP_GEOMETRY_FILTER=0 off.
+            if _GEOMETRY_FILTER is not None:
+                kept = []
+                for f in faces:
+                    why = _GEOMETRY_FILTER.reject_reason(f, frame.shape)
+                    if why is None:
+                        kept.append(f)
+                    else:
+                        _audit_hit(f'refused: not a plausible face ({why.split()[0]})')
+                if kept:
+                    faces = kept
+                elif faces:
+                    # Every detection failed. Distinguished from "the detector
+                    # found nothing" because the two have different causes and
+                    # different fixes, and they are indistinguishable on screen.
+                    _audit_hit('frames where every detection failed geometry')
+                    return num_faces_found, frame
+
             self.last_found_bboxes = np.array([f.bbox for f in faces])   # cache for next frame
             if os.environ.get('ROOP_DEBUG_FACELIST') == '1' and frame_idx is not None:
                 bar_write(f"[FaceList] f={frame_idx} n={len(faces)} " +
@@ -3139,6 +3184,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # the cross-frame batcher path) would inherit the previous face's mask on
         # the same worker and get trimmed to someone else's geometry.
         self._tls.swap_model_mask = None
+        # Same reasoning, for the mask ENGINE's output: process_mask stashes each
+        # engine's raw mask so the next engine on this face can use it as a
+        # second opinion (see roop.face_occlusion). Across faces it would be a
+        # second opinion about someone else.
+        self._tls.prev_engine_mask = None
 
         rotation_action = None
         if roop.globals.autorotate_faces:
@@ -3893,6 +3943,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # extension follows a tilted head instead of image-up.
         face_kps = getattr(target_face, 'kps', None)
 
+        # The SOURCE person's lower-face geometry, for the adaptive jaw boundary
+        # (roop.face_jawline via paste_upscale). The 5-point alignment does not
+        # constrain the chin, so the matte cannot know where the swap actually
+        # put one without comparing the two shapes. None when the source face
+        # carries no landmarks, which leaves the original boundary in place.
+        src_lm = getattr(inputface, 'landmark_2d_106', None) if inputface is not None else None
+        src_kps = getattr(inputface, 'kps', None) if inputface is not None else None
+
         # Where the face surface still faces the camera, in normalised crop units
         # so paste_upscale can land it on whatever resolution it is working at.
         # Faded in over the same off-axis band as the pose-matched alignment, and
@@ -3917,9 +3975,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight, src_landmarks=src_lm, src_kps=src_kps)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, face_kps=face_kps, region=region, model_mask=model_mask, model_mask_weight=model_mask_weight, src_landmarks=src_lm, src_kps=src_kps)
         _dbg_rng = os.environ.get('ROOP_DEBUG_DUMP_RANGE')
         if _dbg_rng:
             try:

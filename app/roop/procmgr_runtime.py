@@ -249,6 +249,28 @@ _TRACK_ASSIGN_MAX = env_float('ROOP_TRACK_ASSIGN_MAX', '0.6')
 _TRACK_ASSIGN_MIN_OBS = env_int('ROOP_TRACK_ASSIGN_MIN_OBS', '3')
 
 
+# ── Minimum track length before a track can own a source ─────────────────────
+# The confirm-frames half of identity hysteresis, expressed where this pipeline
+# can actually hold temporal state. A per-frame "must match N frames in a row"
+# counter is not available in the swap loop: frames are handed to N worker
+# threads and arrive out of order, so any state kept there is both racy and
+# reading the wrong history. The pre-pass, by contrast, walks the video
+# sequentially — which is why tracking and temporal detection live there.
+#
+# What it buys: a bystander who appears for a frame or two produces a very
+# short track, and a very short track's mean embedding is one or two noisy
+# observations rather than a measurement. The absolute/concurrency/margin gates
+# below all compare that noise against a threshold, and a threshold applied to
+# noise admits whatever the noise happens to be — the single-frame phantom swap.
+# Requiring a few observations first means the mean being gated is a mean.
+#
+# Cost is the same bounded, one-sided cost every other gate here carries: a
+# refused track is not dropped, it loses identity LOCKING and falls through to
+# per-frame matching at the full threshold. So a genuine brief appearance of the
+# target still swaps. 0 disables.
+_TRACK_MIN_FRAMES = env_int('ROOP_TRACK_MIN_FRAMES', '3')
+
+
 # ROOP_TRACK_VETO=0 disables the veto entirely (pre-fix behavior: a tracked
 # source is applied wherever the spatial association points).
 # Fraction of a track's frames that must overlap an already-assigned track of the

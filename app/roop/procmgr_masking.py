@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 import roop.globals
+from roop import face_occlusion, face_jawline
 from roop.typing import Frame, Face
 from roop.face_util import clamp_cut_values, kps_pose_ratios
 from roop.nonfrontal import nonfrontal_score
@@ -98,6 +99,11 @@ _MASK_RECOVER = os.environ.get('ROOP_MASK_RECOVER', '1').strip().lower() not in 
 # this is for the gross failure the measurement above describes (XSeg covered
 # roughly the middle third of the floor, not a modest shortfall).
 _MASK_RECOVER_TRIGGER = float(os.environ.get('ROOP_MASK_RECOVER_TRIGGER', '0.5') or 0.5)
+
+# Adaptive lower-face boundary in paste_upscale (see roop.face_jawline). Only
+# engages on faces whose source/target chin proportions actually disagree, so
+# ROOP_ADAPTIVE_JAW=0 is an isolation switch rather than a performance one.
+_ADAPTIVE_JAW = os.environ.get('ROOP_ADAPTIVE_JAW', '1').strip().lower() not in ('0', 'off', 'false')
 
 
 def _face_floor_ellipse(kps, M, shape):
@@ -332,7 +338,7 @@ class MaskingMixin:
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, model_mask=None, model_mask_weight=0.0):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, face_kps=None, region=None, model_mask=None, model_mask_weight=0.0, src_landmarks=None, src_kps=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -370,8 +376,39 @@ class MaskingMixin:
         # Constrain mask to actual face outline using landmark convex hull.
         # For angled/profile faces this prevents the warped ellipse from covering
         # background regions where the swap model put grey fill pixels.
+        #
+        # ── Adaptive lower boundary ───────────────────────────────────────────
+        # The hull above is built from the TARGET's landmarks, but the 5-point
+        # similarity alignment does not constrain the jaw or chin at all, so the
+        # net draws the SOURCE person's lower-face proportion scaled to the
+        # target's interocular distance. When the two chins disagree, the matte
+        # claims face where the swap has none (or vice versa) and the isotropic
+        # feather blends the difference onto the neck. Measure the disagreement
+        # and, only when it is real, clamp the boundary to the shallower chin
+        # and feather the jaw tighter than the rest. See roop.face_jawline.
+        #
+        # Faces whose proportions agree take the original path untouched, so
+        # this cannot change a result it was not aimed at. ROOP_ADAPTIVE_JAW=0
+        # disables it outright.
+        jaw_keep = None
         if face_landmarks is not None:
+            geom = None
+            if (_ADAPTIVE_JAW and src_landmarks is not None
+                    and face_kps is not None and src_kps is not None):
+                geom = face_jawline.lower_face_geometry(
+                    face_landmarks, src_landmarks, face_kps, src_kps)
             lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4], kps=face_kps)
+            if geom is not None and geom.deviates:
+                # Prepared here but APPLIED after the feather, with the other
+                # trims, for the reason the block below them already gives:
+                # blur_area sizes the seam from the matte's bounding box, so
+                # trimming first narrows the feather over the whole face.
+                jaw_keep = face_jawline.soft_lower_face_keep(
+                    target_img.shape, face_landmarks, tgt_kps=face_kps,
+                    geometry=geom,
+                    feather_px=max(3, int(OCCLUDER_EDGE_PX * 2) | 1))
+                if _DEBUG_ANGLE:
+                    print(f"[JAW] {geom} -> clamped boundary", flush=True)
             # min(0, anything) is 0, so the intersection can only change pixels
             # the ellipse matte already covers — the rest of the frame was being
             # compared for a result that was 0 before and 0 after.
@@ -426,6 +463,15 @@ class MaskingMixin:
         # sizes its feather from.
         if mm_matte is not None:
             img_matte *= mm_matte
+
+        # The adaptive lower-face boundary, in the same place and for the same
+        # two reasons as the two layers above: the feather would spread the swap
+        # back over the neck this removes, and applying it earlier would shrink
+        # the matte that blur_area sizes its feather from. Multiplicative and
+        # 1.0 everywhere on the crown side of the jaw, so it can only ever
+        # remove matte, and only below the cheekbones. See roop.face_jawline.
+        if jaw_keep is not None:
+            img_matte *= jaw_keep
 
         # Save 2D mask before reshape — used by show_face_area_overlay
         mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
@@ -1005,7 +1051,38 @@ class MaskingMixin:
                         else binary_mask)
 
         if p_name in dense_maskers and kps is not None and M is not None:
+            raw_mask = img_mask
             img_mask = _recover_undersized_mask(img_mask, kps, M)
+            if img_mask is not raw_mask:
+                # The recovery fired, which means it wants to widen this mask
+                # back toward the geometric face floor. That is right for a
+                # pose generalisation gap and WRONG for a hand: both shrink the
+                # swap region by the same area, and the trigger only measures
+                # area. Ask what the shortfall actually looks like before
+                # accepting it — see roop.face_occlusion.
+                flat = raw_mask
+                if flat.ndim == 3 and flat.shape[-1] == 1:
+                    flat = flat[..., 0]
+                ref = _face_floor_ellipse(kps, M, flat.shape)
+                if ref is not None:
+                    prev = getattr(self._tls, 'prev_engine_mask', None)
+                    # The pose score this face already carries. Near frontal the
+                    # mask models are reliable, so a hole in the mask is an
+                    # object; the recovery's own justification only exists at the
+                    # off-axis poses it was measured against.
+                    img_mask, verdict = face_occlusion.guard_undersized_recovery(
+                        img_mask, raw_mask, ref, second_opinion=prev,
+                        pose_score=nonfrontal_score(kps, tgt_pitch_deg))
+                    if _DEBUG_ANGLE:
+                        print(f"[OCCL] {p_name} {verdict} "
+                              f"recovery={'REFUSED' if verdict.is_occlusion else 'applied'}",
+                              flush=True)
+            # Stashed for the NEXT mask engine on this same face: two engines
+            # agreeing on a region is the strongest evidence available that it
+            # is an object rather than one model's blind spot. Cleared per face
+            # in ProcessMgr.process_face, alongside swap_model_mask, so a face
+            # can never inherit the previous one's mask on the same worker.
+            self._tls.prev_engine_mask = raw_mask
 
         return self._composite_mask(img_mask, frame, target), img_mask
 
