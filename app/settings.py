@@ -1,5 +1,10 @@
 import os
+import logging
+from collections.abc import Mapping
 import yaml
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # The TensorRT UI exposes these three modes.  Keep the values canonical before
@@ -96,19 +101,21 @@ class Settings:
         self.load()
 
     def default_get(_, data, name, default):
-        value = default
-        try:
-            value = data.get(name, default)
-        except:
-            pass
-        return value
+        return data.get(name, default) if isinstance(data, Mapping) else default
 
 
     def load(self):
         try:
-            with open(self.config_file, 'r') as f:
-                data = yaml.load(f, Loader=yaml.FullLoader)
-        except:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+            if data is not None and not isinstance(data, Mapping):
+                _LOGGER.warning("Ignoring non-mapping settings file %s", self.config_file)
+                data = None
+        except FileNotFoundError:
+            data = None
+        except (OSError, yaml.YAMLError) as exc:
+            _LOGGER.warning("Could not load settings from %s: %s; using defaults",
+                            self.config_file, exc)
             data = None
 
         self.selected_theme = self.default_get(data, 'selected_theme', "Default")

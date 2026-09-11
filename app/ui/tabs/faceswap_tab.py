@@ -1,4 +1,5 @@
 import os
+import logging
 import shutil
 import numpy as np
 import gradio as gr
@@ -12,6 +13,8 @@ from roop.ProcessOptions import ProcessOptions
 from roop.FaceSet import FaceSet
 
 last_image = None
+
+_LOGGER = logging.getLogger(__name__)
 
 
 SELECTED_INPUT_FACE_INDEX = 0
@@ -2309,14 +2312,17 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     if list_files_process is None or len(list_files_process) <= 0:
         return gr.Button(variant="primary"), None
     
+    prepare_environment()
     if roop.globals.CFG.clear_output:
-        shutil.rmtree(roop.globals.output_path)
+        shutil.rmtree(roop.globals.output_path, ignore_errors=True)
+        os.makedirs(roop.globals.output_path, exist_ok=True)
 
     if not util.is_installed("ffmpeg"):
         msg = "ffmpeg is not installed! No video processing possible."
-        gr.Warning(msg)
-
-    prepare_environment()
+        gr.Error(msg)
+        yield (gr.Button(variant="primary", interactive=True),
+               gr.Button(variant="secondary", interactive=False))
+        return
 
     roop.globals.selected_enhancer = enhancer
     roop.globals.target_path = None
@@ -2344,15 +2350,21 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.video_quality = roop.globals.CFG.video_quality
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
 
-    batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
-                          use_3d_recon=use_3d_recon,
-                          mask_per_frame_json=mask_per_frame_json or "",
-                          use_source_bank=use_source_bank,
-                          use_frontalization=use_frontalization,
-                          frontalization_threshold=frontalization_threshold,
-                          swap_model=swap_model)
-    is_processing = False
-    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
+    try:
+        batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
+                              use_3d_recon=use_3d_recon,
+                              mask_per_frame_json=mask_per_frame_json or "",
+                              use_source_bank=use_source_bank,
+                              use_frontalization=use_frontalization,
+                              frontalization_threshold=frontalization_threshold,
+                              swap_model=swap_model)
+    except Exception as exc:
+        _LOGGER.exception("Face-swap job failed")
+        gr.Error(f"Processing failed: {exc}")
+    finally:
+        is_processing = False
+        yield (gr.Button(variant="primary", interactive=True),
+               gr.Button(variant="secondary", interactive=False))
 
 
 def stop_swap():

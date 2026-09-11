@@ -7,6 +7,7 @@ its own, which is why both api.py and the routers can import it freely.
 import base64
 import os
 import shutil
+import tempfile
 
 import cv2
 import numpy as np
@@ -22,18 +23,33 @@ def _save_upload(file: UploadFile) -> str:
     # Recreate the upload dir every time — the Gradio "clean temp" action and
     # prepare_environment() can delete the whole temp/ tree out from under us.
     os.makedirs(API_TEMP, exist_ok=True)
-    base = os.path.basename(file.filename)
-    path = os.path.join(API_TEMP, base)
+    base = os.path.basename(file.filename or 'upload')
     # Never overwrite an earlier upload with the same name — existing target
     # entries keep pointing at the old path, so clobbering it corrupts them.
     stem, ext = os.path.splitext(base)
-    n = 1
-    while os.path.exists(path):
-        path = os.path.join(API_TEMP, f"{stem}_{n}{ext}")
-        n += 1
-    with open(path, "wb") as buffer:
+    with tempfile.NamedTemporaryFile(
+            mode='wb', dir=API_TEMP, prefix=f'{stem[:40] or "upload"}_',
+            suffix=ext, delete=False) as buffer:
         shutil.copyfileobj(file.file, buffer)
-    return path
+        return buffer.name
+
+
+def _delete_upload(path: str) -> bool:
+    """Delete one server-created upload and refuse paths outside its root."""
+    if not path or not API_TEMP:
+        return False
+    root = os.path.realpath(API_TEMP)
+    candidate = os.path.realpath(path)
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return False
+    except ValueError:
+        return False
+    try:
+        os.remove(candidate)
+        return True
+    except OSError:
+        return False
 
 def _rgb_to_dataurl(rgb) -> str:
     """rgb: HxWx3 RGB numpy (as produced by util.convert_to_gradio) -> data URL."""

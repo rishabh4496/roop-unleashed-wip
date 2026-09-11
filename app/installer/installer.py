@@ -1,87 +1,91 @@
-import argparse
-import glob
+"""Legacy standalone installer.
+
+The Pinokio launcher uses the root install.js; this module remains for users
+who invoke the historical Conda installer directly. Commands are argument
+lists so filenames and forwarded CLI arguments never pass through a shell.
+"""
+
 import os
-import shutil
-import site
 import subprocess
 import sys
+from pathlib import Path
+from typing import Mapping, Optional, Sequence
 
 
-script_dir = os.getcwd()
+APP_DIR = Path("roop-unleashed")
 
 
-def run_cmd(cmd, capture_output=False, env=None):
-    # Run shell commands
-    return subprocess.run(cmd, shell=True, capture_output=capture_output, env=env)
+def run_cmd(
+    cmd: Sequence[str],
+    *,
+    capture_output: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[Path] = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run one command without shell expansion and surface failures."""
+    completed = subprocess.run(
+        [str(part) for part in cmd],
+        shell=False,
+        capture_output=capture_output,
+        env=dict(env) if env is not None else None,
+        cwd=str(cwd) if cwd is not None else None,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            completed.args,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
+    return completed
 
 
-def check_env():
-    # If we have access to conda, we are probably in an environment
-    conda_not_exist = run_cmd("conda", capture_output=True).returncode
-    if conda_not_exist:
-        print("Conda is not installed. Exiting...")
-        sys.exit()
-    
-    # Ensure this is a new environment and not the base environment
-    if os.environ["CONDA_DEFAULT_ENV"] == "base":
-        print("Create an environment for this project and activate it. Exiting...")
-        sys.exit()
+def check_env() -> None:
+    if run_cmd(["conda", "--version"], capture_output=True,
+               check=False).returncode != 0:
+        raise RuntimeError("Conda is not installed")
+    if os.environ.get("CONDA_DEFAULT_ENV") in (None, "", "base"):
+        raise RuntimeError("Activate a non-base Conda environment first")
 
 
-def install_dependencies():
-    global MY_PATH
-
-    # Install Git and clone repo
-    run_cmd("conda install -y -k git")
-    run_cmd("git clone https://github.com/C0untFloyd/roop-unleashed.git")
-    os.chdir(MY_PATH)
-    run_cmd("git checkout 126fd699c35166772fd60dc6cbe5b0762c9967a1")
-    # Installs dependencies from requirements.txt
-    run_cmd("python -m pip install -r requirements.txt")
+def install_dependencies() -> None:
+    run_cmd(["conda", "install", "-y", "-k", "git"])
+    run_cmd(["git", "clone", "https://github.com/C0untFloyd/roop-unleashed.git",
+             str(APP_DIR)])
+    run_cmd(["git", "checkout", "126fd699c35166772fd60dc6cbe5b0762c9967a1"],
+            cwd=APP_DIR)
+    run_cmd([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=APP_DIR)
 
 
-
-def update_dependencies():
-    global MY_PATH
-    
-    os.chdir(MY_PATH)
-	# do a hard reset for to update even if there are local changes
-    run_cmd("git fetch --all")
-    run_cmd("git reset --hard origin/main")
-    run_cmd("git pull")
-    # Installs/Updates dependencies from all requirements.txt
-    run_cmd("python -m pip install -r requirements.txt")
+def update_dependencies() -> None:
+    """Fast-forward only, preserving local application changes."""
+    run_cmd(["git", "fetch", "--all"], cwd=APP_DIR)
+    run_cmd(["git", "pull", "--ff-only"], cwd=APP_DIR)
+    run_cmd([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=APP_DIR)
 
 
-def start_app():
-    global MY_PATH
-    
-    os.chdir(MY_PATH)
-    # forward commandline arguments
-    sys.argv.pop(0)
-    args = ' '.join(sys.argv)
+def start_app(arguments: Sequence[str]) -> int:
     print("Launching App")
-    run_cmd(f'python run.py {args}')
+    return run_cmd([sys.executable, "run.py", *arguments], cwd=APP_DIR,
+                   check=False).returncode
+
+
+def main() -> int:
+    check_env()
+    if not APP_DIR.exists():
+        install_dependencies()
+    elif input("Check for Updates? [y/n]").strip().lower() == "y":
+        update_dependencies()
+    return start_app(sys.argv[1:])
 
 
 if __name__ == "__main__":
-    global MY_PATH
-    
-    MY_PATH = "roop-unleashed"
-
-    
-    # Verifies we are in a conda environment
-    check_env()
-
-    # If webui has already been installed, skip and run
-    if not os.path.exists(MY_PATH):
-        install_dependencies()
-    else:
-        # moved update from batch to here, because of batch limitations
-        updatechoice = input("Check for Updates? [y/n]").lower()
-        if updatechoice == "y":
-           update_dependencies()
-
-    # Run the model with webui
-    os.chdir(script_dir)
-    start_app()
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"Installer failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

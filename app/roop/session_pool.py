@@ -18,7 +18,13 @@ in. VRAM cost scales ~N x per pooled model, so keep N small on limited GPUs.
 """
 import os
 import contextlib
-from queue import Queue
+import logging
+import threading
+import time
+from queue import Empty, Queue
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _detect_vram_gb() -> float:
@@ -81,20 +87,22 @@ def _resolve(env_name, auto_value) -> int:
 
 
 _pool_cache = {}
+_pool_cache_lock = threading.Lock()
 
 
 def _resolve_pools():
-    if not _pool_cache:
-        auto_trt, auto_detmask = _auto_pool_defaults()
-        trt = _resolve('ROOP_TRT_POOL', auto_trt)
-        detmask = _resolve('ROOP_DETMASK_POOL', auto_detmask)
-        _pool_cache['trt'] = trt
-        _pool_cache['detmask'] = detmask
-        gb = _detect_vram_gb()
-        print(f"[SessionPool] detected {gb:.1f}GB VRAM -> "
-              f"ROOP_TRT_POOL={trt}, ROOP_DETMASK_POOL={detmask} "
-              f"(env override wins if set)")
-    return _pool_cache
+    with _pool_cache_lock:
+        if not _pool_cache:
+            auto_trt, auto_detmask = _auto_pool_defaults()
+            trt = _resolve('ROOP_TRT_POOL', auto_trt)
+            detmask = _resolve('ROOP_DETMASK_POOL', auto_detmask)
+            _pool_cache['trt'] = trt
+            _pool_cache['detmask'] = detmask
+            gb = _detect_vram_gb()
+            print(f"[SessionPool] detected {gb:.1f}GB VRAM -> "
+                  f"ROOP_TRT_POOL={trt}, ROOP_DETMASK_POOL={detmask} "
+                  f"(env override wins if set)")
+        return _pool_cache
 
 
 def pool_size() -> int:
@@ -232,25 +240,83 @@ class SessionPool:
     it to the pool, so each underlying TensorRT context is only ever touched by
     one thread at a time."""
 
+    _CLOSE_POLL_SECONDS = 0.1
+
     def __init__(self, build_fn, size):
+        size = int(size)
+        if size < 1:
+            raise ValueError("SessionPool size must be at least 1")
         self._items = [build_fn(i) for i in range(size)]
         self._q = Queue()
+        self._state_lock = threading.Lock()
+        self._released = False
+        self._leased = 0
         for it in self._items:
             self._q.put(it)
 
     @contextlib.contextmanager
-    def lease(self):
-        item = self._q.get()
+    def lease(self, timeout=None):
+        """Lease one resource, aborting promptly if the pool is released.
+
+        The old unbounded ``Queue.get`` left waiters parked forever when a
+        cancellation drained the pool.  Polling only the close flag keeps the
+        steady-state queue semantics while making shutdown deterministic.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        item = None
+        while item is None:
+            with self._state_lock:
+                if self._released:
+                    raise RuntimeError("SessionPool has been released")
+            wait_for = self._CLOSE_POLL_SECONDS
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Timed out waiting for a SessionPool resource")
+                wait_for = min(wait_for, remaining)
+            try:
+                item = self._q.get(timeout=wait_for)
+            except Empty:
+                continue
+
+        with self._state_lock:
+            if self._released:
+                # release() may have won the race after Queue.get().  Do not
+                # publish an item from a closed pool to new GPU work.
+                raise RuntimeError("SessionPool was released while acquiring a resource")
+            self._leased += 1
         try:
             yield item
         finally:
-            self._q.put(item)
+            with self._state_lock:
+                self._leased -= 1
+                # Queue.put_nowait is performed under the state lock so
+                # release() cannot drain the queue and then lose a late return.
+                if not self._released:
+                    self._q.put_nowait(item)
 
     def release(self):
-        items, self._items = self._items, []
-        try:
-            while True:
-                self._q.get_nowait()
-        except Exception:
-            pass
+        """Close the pool idempotently and discard every idle resource.
+
+        In-flight leases keep their local reference until inference returns;
+        they are deliberately not put back into the closed queue.  This avoids
+        destroying an active CUDA context while also guaranteeing it becomes
+        collectible immediately after the call completes.
+        """
+        with self._state_lock:
+            if self._released:
+                return
+            self._released = True
+            items, self._items = self._items, []
+            try:
+                while True:
+                    self._q.get_nowait()
+            except Empty:
+                pass
+            leased = self._leased
         items.clear()
+        if leased:
+            _LOGGER.info(
+                "Released SessionPool with %d active lease(s); resources will be "
+                "collected when those inference calls return", leased,
+            )

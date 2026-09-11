@@ -80,6 +80,13 @@ class _AlwaysFailsSession:
         raise RuntimeError('trt broken')
 
 
+class _MixedSourceSwapper(_Swapper):
+    def _compute_source_input(self, source_face):
+        if source_face == 'missing':
+            return None
+        return np.zeros((1, 512), dtype=np.float32)
+
+
 class _WorksSession:
     def __init__(self, image_input_name):
         self.image_input_name = image_input_name
@@ -112,6 +119,30 @@ class _TrtGateSwapper(FaceSwapInsightFace):
 
 
 class FallbackKeepsTheMaskContract(unittest.TestCase):
+
+    def test_empty_batches_are_valid_no_ops(self):
+        sw = _Swapper(batch_works=True, emits_mask=True)
+        self.assertEqual(sw.RunBatch(object(), object(), []), [])
+        self.assertIsNone(sw.take_masks())
+        self.assertEqual(sw.RunBatchMulti([]), [])
+        self.assertIsNone(sw.take_masks())
+
+    def test_one_missing_source_does_not_suppress_valid_batch_members(self):
+        sw = _MixedSourceSwapper(batch_works=True, emits_mask=True)
+        crops = _crops(3)
+        requests = [
+            ('valid-a', object(), crops[0]),
+            ('missing', object(), crops[1]),
+            ('valid-b', object(), crops[2]),
+        ]
+        outputs = sw.RunBatchMulti(requests)
+        self.assertEqual(sw.single_calls, 2,
+                         'both valid identities must still run inference')
+        np.testing.assert_array_equal(outputs[0], np.ones_like(outputs[0]))
+        np.testing.assert_array_equal(outputs[1], crops[1][0])
+        np.testing.assert_array_equal(outputs[2], np.ones_like(outputs[2]))
+        self.assertIsNone(sw.take_masks(),
+                          'a partial mask set must not be positionally misapplied')
 
     def test_batched_path_publishes_one_mask_per_crop(self):
         """The baseline the fallback has to match."""

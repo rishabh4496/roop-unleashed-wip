@@ -297,7 +297,9 @@ class CLIPDensePredT(CLIPDenseBase):
 
         if fix_shift:
             # self.shift_vector = nn.Parameter(torch.load(join(dirname(basename(__file__)), 'clip_text_shift_vector.pth')), requires_grad=False)
-            self.shift_vector = nn.Parameter(torch.load(join(dirname(basename(__file__)), 'shift_text_to_vis.pth')), requires_grad=False)
+            self.shift_vector = nn.Parameter(torch.load(
+                join(dirname(basename(__file__)), 'shift_text_to_vis.pth'),
+                map_location='cpu', weights_only=True), requires_grad=False)
             # self.shift_vector = nn.Parameter(-1*torch.load(join(dirname(basename(__file__)), 'shift2.pth')), requires_grad=False)
         else:
             self.shift_vector = None

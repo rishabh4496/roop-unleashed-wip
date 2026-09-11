@@ -208,7 +208,8 @@ class Enhance_DMDNet():
     def create(self, devicename):
         self.torchdevice = torch.device(devicename)
         model_dmdnet = DMDNet().to(self.torchdevice)
-        weights = torch.load('./models/DMDNet.pth') 
+        weights = torch.load(
+            './models/DMDNet.pth', map_location='cpu', weights_only=True)
         model_dmdnet.load_state_dict(weights, strict=True)
 
         model_dmdnet.eval()

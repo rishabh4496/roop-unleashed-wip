@@ -1,5 +1,6 @@
 import glob
 import json
+import logging
 import mimetypes
 import os
 import platform
@@ -27,6 +28,8 @@ import roop.globals
 
 TEMP_FILE = "temp.mp4"
 TEMP_DIRECTORY = "temp"
+
+_LOGGER = logging.getLogger(__name__)
 
 # monkey patch ssl for mac
 if platform.system().lower() == "darwin":
@@ -276,8 +279,14 @@ def clean_temp(target_path: str) -> None:
 
 
 def delete_temp_frames(filename: str) -> None:
-    dir = os.path.dirname(os.path.dirname(filename))
-    shutil.rmtree(dir)
+    frames_dir = os.path.abspath(os.path.dirname(filename))
+    temp_root = os.path.abspath(os.path.dirname(frames_dir))
+    if os.path.basename(temp_root) != TEMP_DIRECTORY:
+        raise ValueError(f"Refusing to delete non-temp frame directory: {frames_dir}")
+    if os.path.isdir(frames_dir):
+        shutil.rmtree(frames_dir)
+    if os.path.isdir(temp_root) and not os.listdir(temp_root):
+        os.rmdir(temp_root)
 
 
 def get_frames_output_path(target_path: str) -> str:
@@ -624,8 +633,8 @@ def get_platform() -> str:
             proc_version = open("/proc/version").read()
             if "Microsoft" in proc_version:
                 return "wsl"
-        except:
-            pass
+        except OSError as exc:
+            _LOGGER.debug("Could not inspect /proc/version: %s", exc)
     return sys.platform
 
 def open_with_default_app(filename:str):
@@ -711,7 +720,7 @@ def has_cuda_device():
 def print_cuda_info():
     try:
         print(f'Number of CUDA devices: {torch.cuda.device_count()} Currently used Id: {torch.cuda.current_device()} Device Name: {torch.cuda.get_device_name(torch.cuda.current_device())}')
-    except:
-       print('No CUDA device found!')
+    except (AssertionError, RuntimeError) as exc:
+        _LOGGER.info('No CUDA device found: %s', exc)
 
 print_cuda_info()

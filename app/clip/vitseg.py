@@ -212,7 +212,7 @@ class VITDensePredT(VITDenseBase):
 
             elif process_cond.endswith('.pth'):
                 
-                shift = torch.load(process_cond)
+                shift = torch.load(process_cond, map_location="cpu", weights_only=True)
                 def add_shift(x):
                     return x + shift.to(x.device)
 

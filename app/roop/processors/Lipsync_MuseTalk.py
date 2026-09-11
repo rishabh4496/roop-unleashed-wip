@@ -227,7 +227,8 @@ class Lipsync_MuseTalk:
         with open(config_path, 'r', encoding='utf-8') as f:
             unet_config = json.load(f)
         unet = UNet2DConditionModel(**unet_config)
-        state = torch.load(weights_path, map_location=self.device)
+        state = torch.load(
+            weights_path, map_location='cpu', weights_only=True)
         unet.load_state_dict(state)
         self.unet = unet.to(self.device, dtype=self.dtype).eval()
         self.unet.requires_grad_(False)

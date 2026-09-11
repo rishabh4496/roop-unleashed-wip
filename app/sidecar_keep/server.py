@@ -52,7 +52,7 @@ def _load_model():
         num_uncertainty_layers=3, cfa_list=["16", "32"], cfa_nhead=4, cfa_dim=256,
         cond=1,
     ).to(_device)
-    ckpt = torch.load(WEIGHT, map_location="cpu")
+    ckpt = torch.load(WEIGHT, map_location="cpu", weights_only=True)
     state = ckpt.get("params_ema") or ckpt.get("params") or ckpt
     model.load_state_dict(state, strict=False)
     model.eval()

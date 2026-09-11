@@ -9,7 +9,8 @@ Moved verbatim from api.py.
 """
 
 import os
-import shutil
+import tempfile
+import threading
 
 import cv2
 
@@ -26,6 +27,7 @@ from api_media import _rgb_to_dataurl
 # Never rebound in api.py, only read or mutated in place, so binding the same
 # object here keeps one shared value instead of two that drift apart.
 API_TEMP = None
+_SOURCE_LOCK = threading.RLock()
 
 
 def _mask_offsets_from_cfg():
@@ -90,30 +92,40 @@ def _get_source_faces_info():
     return source_faces_info
 
 def _sources_append(faceset, thumb_rgb):
-    roop_globals.INPUT_FACESETS.append(faceset)
-    ui_globals.ui_input_thumbs.append(thumb_rgb)
+    with _SOURCE_LOCK:
+        roop_globals.INPUT_FACESETS.append(faceset)
+        ui_globals.ui_input_thumbs.append(thumb_rgb)
 
 def _sources_pop(idx):
     """Remove one entry. Returns True when something was actually removed."""
-    if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
-        return False
-    roop_globals.INPUT_FACESETS.pop(idx)
-    if 0 <= idx < len(ui_globals.ui_input_thumbs):
-        ui_globals.ui_input_thumbs.pop(idx)
-    return True
+    with _SOURCE_LOCK:
+        if not (0 <= idx < len(roop_globals.INPUT_FACESETS)):
+            return False
+        roop_globals.INPUT_FACESETS.pop(idx)
+        if 0 <= idx < len(ui_globals.ui_input_thumbs):
+            ui_globals.ui_input_thumbs.pop(idx)
+        return True
 
 def _sources_move(idx, new_idx):
-    n = len(roop_globals.INPUT_FACESETS)
-    if not (0 <= idx < n and 0 <= new_idx < n):
-        return False
-    for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
-        if idx < len(arr) and new_idx < len(arr):
-            arr.insert(new_idx, arr.pop(idx))
-    return True
+    with _SOURCE_LOCK:
+        n = len(roop_globals.INPUT_FACESETS)
+        if not (0 <= idx < n and 0 <= new_idx < n):
+            return False
+        for arr in (roop_globals.INPUT_FACESETS, ui_globals.ui_input_thumbs):
+            if idx < len(arr) and new_idx < len(arr):
+                arr.insert(new_idx, arr.pop(idx))
+        return True
 
 def _sources_clear():
-    roop_globals.INPUT_FACESETS.clear()
-    ui_globals.ui_input_thumbs.clear()
+    with _SOURCE_LOCK:
+        roop_globals.INPUT_FACESETS.clear()
+        ui_globals.ui_input_thumbs.clear()
+
+
+def _sources_snapshot():
+    """Return a stable shallow copy for a job; FaceSet values are immutable in-run."""
+    with _SOURCE_LOCK:
+        return list(roop_globals.INPUT_FACESETS)
 
 def _sources_desync():
     """Non-empty message when the two lists have fallen out of step.
@@ -121,8 +133,9 @@ def _sources_desync():
     Checked on every gallery payload, so a divergence surfaces on the very next
     UI refresh instead of being discovered later as "that face didn't swap".
     """
-    nf = len(roop_globals.INPUT_FACESETS)
-    nt = len(ui_globals.ui_input_thumbs)
+    with _SOURCE_LOCK:
+        nf = len(roop_globals.INPUT_FACESETS)
+        nt = len(ui_globals.ui_input_thumbs)
     if nf == nt:
         return ""
     msg = (f"source gallery out of step: {nf} faceset(s) but {nt} thumbnail(s) — "
@@ -131,21 +144,26 @@ def _sources_desync():
     return msg
 
 def _source_faces_payload():
-    payload = {
-        "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
-        "source_faces_info": _get_source_faces_info(),
-        "faceset_count": len(roop_globals.INPUT_FACESETS),
-    }
-    desync = _sources_desync()
-    if desync:
-        payload["desync"] = desync
-    return payload
+    with _SOURCE_LOCK:
+        payload = {
+            "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
+            "source_faces_info": _get_source_faces_info(),
+            "faceset_count": len(roop_globals.INPUT_FACESETS),
+        }
+        desync = _sources_desync()
+        if desync:
+            payload["desync"] = desync
+        return payload
 
 def _ingest_faceset(path):
-    unzipfolder = os.path.join(os.environ.get("TEMP", API_TEMP), "faceset")
-    if os.path.isdir(unzipfolder):
-        shutil.rmtree(unzipfolder, ignore_errors=True)
-    os.makedirs(unzipfolder, exist_ok=True)
+    temp_root = os.environ.get("TEMP") or API_TEMP
+    os.makedirs(temp_root, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+            dir=temp_root, prefix='roop_faceset_') as unzipfolder:
+        return _ingest_faceset_in_dir(path, unzipfolder)
+
+
+def _ingest_faceset_in_dir(path, unzipfolder):
     util.unzip(path, unzipfolder)
     face_set = FaceSet()
     best_crop = None

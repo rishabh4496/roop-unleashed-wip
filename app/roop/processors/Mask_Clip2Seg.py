@@ -32,7 +32,9 @@ class Mask_Clip2Seg():
         if self.model_clip is None:
             self.model_clip = CLIPDensePredT(version='ViT-B/16', reduce_dim=64, complex_trans_conv=True)
             self.model_clip.eval();
-            self.model_clip.load_state_dict(torch.load(resolve_relative_path('../models/CLIP/rd64-uni-refined.pth'), map_location=torch.device('cpu')), strict=False)
+            self.model_clip.load_state_dict(torch.load(
+                resolve_relative_path('../models/CLIP/rd64-uni-refined.pth'),
+                map_location=torch.device('cpu'), weights_only=True), strict=False)
 
         device = torch.device(self.plugin_options["devicename"])
         self.model_clip.to(device)
