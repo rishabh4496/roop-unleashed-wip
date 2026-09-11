@@ -169,7 +169,12 @@ def _ensure_face_analyser():
             _ANALYSER_FORCE_CPU = cur_force_cpu
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
-            n = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1
+            # shared=True: this pool outlives the ProcessMgr that triggered the
+            # build and is leased N-wide by the render and the face-manager
+            # scans, so it keeps its configured size even when a preview built
+            # it — see session_pool.single_context.
+            n = (session_pool.detmask_pool_size(shared=True)
+                 if session_pool.detmask_pooling_enabled(shared=True) else 1)
             FACE_ANALYSER_POOL = [_build_face_analyser() for _ in range(n)]
             FACE_ANALYSER = FACE_ANALYSER_POOL[0]
             q = Queue()

@@ -331,7 +331,8 @@ class TrackingMixin:
         # in_flight queue below), so the tracking result is bit-identical to the
         # serial path — only the wall-clock schedule of the GPU calls changes. Falls
         # back to the exact original single-threaded call when pooling is off.
-        pool_workers = session_pool.detmask_pool_size() if session_pool.detmask_pooling_enabled() else 1
+        pool_workers = (session_pool.detmask_pool_size(shared=True)
+                        if session_pool.detmask_pooling_enabled(shared=True) else 1)
         det_executor = (ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix='track_det')
                         if pool_workers > 1 else None)
 

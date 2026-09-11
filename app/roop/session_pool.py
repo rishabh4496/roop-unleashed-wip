@@ -89,6 +89,51 @@ def _resolve(env_name, auto_value) -> int:
 _pool_cache = {}
 _pool_cache_lock = threading.Lock()
 
+# ── Single-context mode ───────────────────────────────────────────────────────
+# The pools exist so N worker threads can run one model concurrently. The live
+# preview has no such threads: core.live_swap runs one frame at a time under
+# _preview_lock, on a ProcessMgr of its own. Yet that ProcessMgr built every
+# processor through the same Initialize() code as the render's, so it held
+# ROOP_TRT_POOL copies of the swapper, the enhancer and each mask model — four
+# TensorRT engines apiece on a 12GB card — and could only ever drive one of
+# them. Measured on an RTX 4070 with hyperswap + Restore Ultra + BiSeNet + XSeg-3:
+# 8.6GB dedicated plus 2GB of the process's allocations demoted to system RAM
+# (WDDM oversubscription; the card is shared with the compositor and the
+# browser). The demoted engines ran over PCIe: with a FIFO pool one slot in
+# four was the slow one, so every fourth preview took 5-6s against ~0.8s, and
+# once the card started paging in earnest single previews reached 16-70s and
+# the UI's 15-minute preview deadline became reachable by scrubbing.
+#
+# Inside single_context() every per-ProcessMgr pool query answers 1, so the
+# processors build one session each and go through _gpu_guard's lock like an
+# unpooled install. It is thread-local: the render's worker threads never see
+# it, and a render cannot overlap a preview anyway (api.py's _swap_start_lock).
+#
+# The process-wide pools are deliberately NOT collapsed. The FaceAnalysis pool
+# (face_util) and the hybrid detectors (retinaface/yoloface/yunet) outlive any
+# one ProcessMgr and are shared with auto-angles, the clip advisor and the
+# render's tracking pre-pass, all of which lease from them N-wide. A preview is
+# the first thing to build them after boot, and _ensure_face_analyser does not
+# rebuild on a pool-size mismatch, so a 1-wide pool built here would serialise
+# every later consumer. Those callers pass shared=True and get the configured
+# size regardless.
+_override = threading.local()
+
+
+@contextlib.contextmanager
+def single_context():
+    """Make every per-ProcessMgr pool on this thread one session wide."""
+    previous = getattr(_override, 'single', False)
+    _override.single = True
+    try:
+        yield
+    finally:
+        _override.single = previous
+
+
+def _single_context() -> bool:
+    return bool(getattr(_override, 'single', False))
+
 
 def _resolve_pools():
     with _pool_cache_lock:
@@ -106,6 +151,8 @@ def _resolve_pools():
 
 
 def pool_size() -> int:
+    if _single_context():
+        return 1
     return _resolve_pools()['trt']
 
 
@@ -143,12 +190,16 @@ def pooling_enabled() -> bool:
 # scales with the pool size. The default is auto-tuned by VRAM (see
 # _auto_pool_defaults): 0 on small cards = original single-instance + global lock
 # behaviour, byte-for-byte. Set ROOP_DETMASK_POOL explicitly to override.
-def detmask_pool_size() -> int:
+def detmask_pool_size(shared: bool = False) -> int:
+    """`shared=True` is for the process-wide FaceAnalysis and detector pools,
+    which keep the configured size inside single_context() (see above)."""
+    if not shared and _single_context():
+        return 1
     return _resolve_pools()['detmask']
 
 
-def detmask_pooling_enabled() -> bool:
-    return detmask_pool_size() >= 2
+def detmask_pooling_enabled(shared: bool = False) -> bool:
+    return detmask_pool_size(shared) >= 2
 
 
 def detector_pool_size() -> int:
@@ -170,7 +221,7 @@ def detector_pool_size() -> int:
         except ValueError:
             pass
     try:
-        return max(1, detmask_pool_size())
+        return max(1, detmask_pool_size(shared=True))
     except Exception:
         return 1
 
@@ -226,6 +277,8 @@ def _auto_expression_pool() -> int:
 
 
 def expression_pool_size() -> int:
+    if _single_context():
+        return 1
     return _resolve('ROOP_EXPR_POOL', _auto_expression_pool())
 
 

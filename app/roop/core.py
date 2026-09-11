@@ -38,6 +38,7 @@ from roop.face_util import extract_face_images
 from roop.ProcessEntry import ProcessEntry
 from roop.ProcessMgr import ProcessMgr
 from roop.ProcessOptions import ProcessOptions
+from roop import session_pool
 from roop.capturer import get_video_frame_total, release_video
 
 
@@ -593,7 +594,13 @@ def live_swap(frame, options, input_facesets=None):
 
     facesets = roop.globals.INPUT_FACESETS if input_facesets is None else input_facesets
 
-    with _preview_lock:
+    # One frame at a time on this one lock means the session pools can only
+    # ever serve one caller here, so the preview builds its processors one
+    # session wide (see session_pool.single_context — the pooled copies were
+    # 4x the VRAM of every model for no concurrency, and on a shared 12GB card
+    # that oversubscription is what made scrubbing take seconds per frame).
+    # process_frame is under it too, for the processors that build lazily.
+    with _preview_lock, session_pool.single_context():
         if _preview_process_mgr is None:
             _preview_process_mgr = ProcessMgr(None)
             _preview_process_mgr.is_preview = True
