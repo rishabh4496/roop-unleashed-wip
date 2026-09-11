@@ -51,6 +51,44 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 _MODEL_URL = 'https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx'
 _MODEL_FILE = 'resnet18.onnx'
 
+# Edge-aware feather instead of the blanket Gaussian (see Run).
+# ROOP_PARSER_EDGE=0 restores the original isotropic blur exactly.
+#
+# Every default here is measured, over 36 real aligned crops from facesets/,
+# against two numbers: `band` is the fraction of the crop carrying partial
+# alpha (lower = a crisper boundary, which is the actual complaint) and
+# `edge_ratio` is the mean image gradient ON the mask's 0.5 contour divided by
+# the crop's own mean gradient (higher = the boundary sits on real anatomy
+# rather than mid-skin).
+#
+#   XSeg legacy, for reference             band 3.67%   edge_ratio 2.706
+#   blanket Gaussian sigma=3 (was here)    band 4.57%   edge_ratio 2.801
+#   edge-aware r=.012 sigma=1.5 steep=0    band 8.59%   edge_ratio 3.080
+#   edge-aware r=.012 sigma=1.0 steep=.15  band 3.51%   edge_ratio 3.128
+#   edge-aware r=.012 sigma=1.0 steep=.25  band 2.97%   edge_ratio 3.132  <- default
+#   edge-aware r=.012 sigma=0.8 steep=.40  band 2.31%   edge_ratio 3.141
+#
+# Two things that table settles. First, the guided filter WITHOUT steepening is
+# worse than what it replaces: it aligns the boundary better but spreads it to
+# 8.59%, because with nothing to relocate an edge-aware filter is still a blur.
+# The steepening is not a refinement of this feature, it is half of it.
+#
+# Second, radius barely matters (0.012 and 0.02 measured identical) and that is
+# the expected result, not a surprise: this mask is inferred at 512 on a 512
+# crop, so it is already registered and the filter is snapping a boundary
+# rather than moving one. Contrast mask_refine's own default of 0.05, which is
+# sized for XSeg's 256 mask landing ~11px off on the same crop. Reusing that
+# value here would drag a correct boundary around.
+#
+# Steepen is capped well below the point where an argmax mask collapses to a
+# binary staircase. 0.4 measures tighter still and is left available, but 0.25
+# keeps a genuinely anti-aliased transition, which is what stops the seam
+# reading as cut out with scissors.
+_EDGE_AWARE = os.environ.get('ROOP_PARSER_EDGE', '1').strip().lower() not in ('0', 'off', 'false')
+_EDGE_RADIUS = float(os.environ.get('ROOP_PARSER_EDGE_RADIUS', '0.012') or 0.012)
+_EDGE_SIGMA = float(os.environ.get('ROOP_PARSER_EDGE_SIGMA', '1.0') or 1.0)
+_EDGE_STEEPEN = float(os.environ.get('ROOP_PARSER_EDGE_STEEPEN', '0.25') or 0.25)
+
 
 def parser_region_settings():
     """(included group names, {group: grow px}) from roop.globals.
@@ -80,20 +118,30 @@ def _region_mask(labels):
     union instead would be cheaper and wrong: it would push the outer boundary
     of the whole face outward whichever group you meant to grow, so asking for
     a little more mouth would also swallow a ring of background.
+
+    A NEGATIVE grow erodes instead. The two directions are not symmetric in
+    what they are for: growing covers a seam the model's tight boundary leaves
+    visible, shrinking pulls the swap back off a part the model claimed too
+    much of — most usefully `skin`, which is the group that borders hair and
+    absorbs a stray fringe pixel when the parting moves. Eroding a group to
+    nothing is allowed and simply drops it, which is what asking for -50px on a
+    5px-wide part means.
     """
     on, grow = parser_region_settings()
     ids = sorted({c for g in on for c in PARSER_REGIONS[g]})
     active_grow = {g: int(grow.get(g) or 0) for g in on}
-    if not any(v > 0 for v in active_grow.values()):
+    if not any(v != 0 for v in active_grow.values()):
         return np.isin(labels, np.asarray(ids, dtype=np.int64)).astype(np.float32)
 
     out = np.zeros(labels.shape, dtype=np.uint8)
     for g in on:
         part = np.isin(labels, np.asarray(PARSER_REGIONS[g], dtype=np.int64))
         px = active_grow[g]
-        if px > 0:
-            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (px * 2 + 1, px * 2 + 1))
-            part = cv2.dilate(part.astype(np.uint8), k, iterations=1)
+        if px != 0:
+            k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (abs(px) * 2 + 1,) * 2)
+            op = cv2.dilate if px > 0 else cv2.erode
+            part = op(part.astype(np.uint8), k, iterations=1)
         out |= part.astype(np.uint8)
     return out.astype(np.float32)
 
@@ -166,8 +214,33 @@ class Mask_FaceParser():
         # 0.0 = use the swapped pixels. process_mask resizes it to the crop.
         labels = self.RunLabels(img1)
         face = _region_mask(labels)                                # 1 inside swap region
-        # Soften edges so the blend matches the smooth XSeg output.
-        face = cv2.GaussianBlur(face, (0, 0), sigmaX=3)
+        if _EDGE_AWARE:
+            # Feather along the IMAGE's own edges instead of isotropically.
+            # The blanket Gaussian below is not wrong so much as blind: it
+            # spreads the boundary by the same 3 sigma whether it is running
+            # along a real hairline (where the feather should be tight, because
+            # the two sides are different objects) or across mid-cheek (where a
+            # wide ramp is what hides the seam). Measured over 36 real faces,
+            # the blanket version widens the partial-alpha band from XSeg's
+            # 3.67% of the crop to 4.57% — this engine's boundaries are
+            # sharper than XSeg's and the post-processing was giving that back.
+            #
+            # Note the parameters differ from mask_refine's own defaults, and
+            # deliberately: those are tuned for XSeg, whose 256 mask lands ~11px
+            # off on a 512 crop and needs a wide radius to RELOCATE. This mask
+            # is inferred at 512 on a 512 crop, so it is already registered and
+            # only needs snapping — a wide radius would drag a correct boundary
+            # around, and steepening an argmax mask that is already hard
+            # collapses it to a binary staircase (measured).
+            from roop import mask_refine
+
+            face = mask_refine.refine_mask(
+                face, img1,
+                radius_frac=_EDGE_RADIUS, steepen_strength=_EDGE_STEEPEN)
+            face = cv2.GaussianBlur(face, (0, 0), sigmaX=_EDGE_SIGMA)
+        else:
+            # Soften edges so the blend matches the smooth XSeg output.
+            face = cv2.GaussianBlur(face, (0, 0), sigmaX=3)
         face = np.clip(face, 0.0, 1.0)
         # invert: keep original everywhere outside the face region
         return (1.0 - face).astype(np.float32)
