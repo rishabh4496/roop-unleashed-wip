@@ -135,12 +135,17 @@ class SegmentedVideoWriter:
     a resume manifest, and final lossless concatenation."""
 
     def __init__(self, target_video, size, fps, codec="libx264", crf=14,
-                 source_video="", frame_start=0, frame_end=0, signature=""):
+                 source_video="", frame_start=0, frame_end=0, signature="",
+                 color_tags=None, decode_matrix="bt601"):
         self.target_video = target_video
         self.size = size
         self.fps = float(fps)
         self.codec = codec
         self.crf = crf
+        # The source's colour tags, stamped on every segment (and so on the
+        # concat) — see ffmpeg_writer.color_filter_chain.
+        self.color_tags = dict(color_tags) if color_tags else None
+        self.decode_matrix = decode_matrix
         self._dir = os.path.dirname(target_video) or "."
         base, ext = os.path.splitext(os.path.basename(target_video))
         self._seg_prefix = f".{base}.seg"
@@ -233,7 +238,8 @@ class SegmentedVideoWriter:
         path = os.path.join(self._dir, self._cur_seg_file)
         self._writer = FFMPEG_VideoWriter(path, self.size, self.fps,
                                           codec=self.codec, crf=self.crf,
-                                          audiofile=None)
+                                          audiofile=None, color_tags=self.color_tags,
+                                          decode_matrix=self.decode_matrix)
         self._cur_frames = 0
         _current = {"index": len(self.segments) + 1, "file": self._cur_seg_file,
                     "first": self._next_first, "_written": 0, "bytes": 0,

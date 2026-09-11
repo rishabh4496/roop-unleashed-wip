@@ -16,12 +16,81 @@ import os
 import subprocess as sp
 import threading
 from collections import deque
+from typing import Optional
+
+import numpy as np
 
 PIPE = -1
 STDOUT = -2
 DEVNULL = -3
 
 FFMPEG_BINARY = "ffmpeg"
+
+
+# ── Colour handling ──────────────────────────────────────────────────────────
+# Every frame that reaches this writer was decoded by cv2.VideoCapture (or the
+# ffmpeg bgr24 pipe in nvdec_reader), and BOTH of those convert YUV -> RGB with
+# libswscale's default BT.601 matrix, whatever the file's own tag says. The
+# writer used to hand those frames back through
+#
+#     colorspace=bt709:iall=bt601-6-625
+#
+# which re-interprets them as 601 and CONVERTS them to 709 — a real change to
+# the pixel values, on top of the 601 assumption the decoder already made. On a
+# genuine BT.709 HD source that leaves the output a mean 6.1 / max 27 (8-bit)
+# away from the source in any tag-aware player, and every optional re-encode of
+# our own output (post_swap upscale / interpolation, which cv2-decode the
+# tagged file with 601 again and then convert again) stacks another ~6 on top.
+#
+# The identity round-trip is: encode with the SAME matrix the decoder used
+# (601, forced explicitly so a newer ffmpeg's auto-matrix logic cannot pick
+# something else), and copy the source's colour TAGS onto the output without
+# converting. Measured on a synthetic BT.709 source, tag-aware decode, mean
+# abs error vs the true source: convert path 6.09, tag-only path 0.91.
+_VALID_COLOR_TAGS = {
+    'colorspace': ('bt709', 'bt470bg', 'smpte170m', 'smpte240m', 'bt2020nc',
+                   'bt2020c', 'fcc', 'ycgco', 'gbr'),
+    'color_primaries': ('bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m',
+                        'film', 'bt2020', 'smpte428', 'smpte431', 'smpte432'),
+    'color_trc': ('bt709', 'gamma22', 'gamma28', 'smpte170m', 'smpte240m',
+                  'linear', 'log100', 'log316', 'iec61966-2-4', 'bt1361e',
+                  'iec61966-2-1', 'bt2020-10', 'bt2020-12', 'smpte2084',
+                  'smpte428', 'arib-std-b67'),
+}
+
+
+_SWS_MATRICES = ('bt601', 'bt709', 'smpte240m', 'bt2020', 'fcc')
+
+
+def color_filter_chain(width, height, color_tags: Optional[dict] = None,
+                       pix_fmt: str = 'yuv420p', decode_matrix: str = 'bt601') -> str:
+    """The -vf chain that turns the writer's bgr24 frames into *pix_fmt*
+    without changing what they look like.
+
+    width/height are the (even) OUTPUT dimensions. *color_tags* is the source
+    file's own tagging (see capturer.probe_color_tags) and is stamped as
+    metadata only; unknown / untagged sources stay untagged, exactly like the
+    file they came from, so players interpret the output the way they did the
+    input. *decode_matrix* is the YUV->RGB matrix the frames were DECODED
+    with — 'bt601' for anything cv2 read, or whatever nvdec_reader reports —
+    and is the matrix used to go back, which is what makes decode->encode an
+    identity on the YUV data. Public so util_ffmpeg's frame-directory encoders
+    share one rule.
+    """
+    if decode_matrix not in _SWS_MATRICES:
+        decode_matrix = 'bt601'
+    # width/height may be ints or ffmpeg expressions ('trunc(iw/2)*2').
+    parts = [f'scale={width}:{height}:out_color_matrix={decode_matrix}:out_range=tv',
+             f'format={pix_fmt}']
+    if color_tags:
+        kv = []
+        for key, allowed in _VALID_COLOR_TAGS.items():
+            val = str(color_tags.get(key) or '').strip().lower()
+            if val in allowed:
+                kv.append(f'{key}={val}')
+        if kv:
+            parts.append('setparams=' + ':'.join(kv))
+    return ','.join(parts)
 
 
 def probe_encoder(codec="libx265", crf=14, timeout=30):
@@ -139,7 +208,8 @@ class FFMPEG_VideoWriter:
 
     def __init__(self, filename, size, fps, codec="libx265", crf=14, audiofile=None,
                  preset="faster", bitrate=None,
-                 logfile=None, threads=None, ffmpeg_params=None):
+                 logfile=None, threads=None, ffmpeg_params=None,
+                 color_tags: Optional[dict] = None, decode_matrix: str = 'bt601'):
 
         if logfile is None:
             logfile = sp.PIPE
@@ -147,6 +217,11 @@ class FFMPEG_VideoWriter:
         self.filename = filename
         self.codec = codec
         self.ext = self.filename.split(".")[-1]
+        # What write_frame will accept. Checked per frame rather than trusted:
+        # rawvideo has no framing, so a frame of the wrong size shifts every
+        # byte that follows it and the encoder produces garbage with no error.
+        self._expect_shape = (int(size[1]), int(size[0]), 3)
+        self._frames_written = 0
         w = size[0] - 1 if size[0] % 2 != 0 else size[0]
         h = size[1] - 1 if size[1] % 2 != 0 else size[1]
 
@@ -213,8 +288,9 @@ class FFMPEG_VideoWriter:
                 '-b', bitrate
             ])
 
-        # scale to a resolution divisible by 2 if not even
-        cmd.extend(['-vf', f'scale={w}:{h}' if w != size[0] or h != size[1] else 'colorspace=bt709:iall=bt601-6-625:fast=1'])
+        # Even dimensions (yuv420p needs them), the decoder-matching 601 encode
+        # and the source's colour tags — see color_filter_chain.
+        cmd.extend(['-vf', color_filter_chain(w, h, color_tags, decode_matrix=decode_matrix)])
 
         if threads is not None:
             cmd.extend(["-threads", str(threads)])
@@ -315,11 +391,20 @@ class FFMPEG_VideoWriter:
                 "unsigned ffmpeg DLL (e.g. avdevice-62.dll). Re-run the job, or "
                 "turn off Smart App Control in Windows Security → App & "
                 "browser control.\n\nffmpeg said:\n" + ffmpeg_error)
+        if not isinstance(img_array, np.ndarray) or img_array.shape != self._expect_shape:
+            got = getattr(img_array, 'shape', type(img_array).__name__)
+            raise ValueError(
+                f"roop unleashed error: frame {self._frames_written} for "
+                f"{os.path.basename(self.filename)} has shape {got}, but the encoder "
+                f"was opened for {self._expect_shape} (HxWxC). A mis-sized frame "
+                f"cannot be written to a rawvideo pipe without corrupting every "
+                f"frame after it.")
+        if img_array.dtype != np.uint8:
+            img_array = np.clip(img_array, 0, 255).astype(np.uint8)
         try:
-            #if PY3:
-            self.proc.stdin.write(img_array.tobytes())
-            # else:
-            #    self.proc.stdin.write(img_array.tostring())
+            # tobytes() copies; a contiguous array lets it be a single memcpy.
+            self.proc.stdin.write(np.ascontiguousarray(img_array).tobytes())
+            self._frames_written += 1
         except IOError as err:
             # Was self.proc.communicate(): that both re-reads a pipe the drain
             # thread already owns (two readers on one fd) and blocks until the

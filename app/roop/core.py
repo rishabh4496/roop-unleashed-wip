@@ -3,6 +3,7 @@
 import os
 import sys
 import shutil
+import logging
 import threading as _threading
 import time as _time
 # single thread doubles cuda performance - needs to be set before torch import
@@ -10,7 +11,7 @@ if any(arg.startswith('--execution-provider') for arg in sys.argv):
     os.environ['OMP_NUM_THREADS'] = '1'
 
 import warnings
-from typing import List
+from typing import Any, Dict, List, Tuple, Union
 import platform
 import signal
 import torch
@@ -41,6 +42,11 @@ from roop.capturer import get_video_frame_total, release_video
 
 
 clip_text = None
+
+_LOGGER = logging.getLogger(__name__)
+
+ProviderOptions = Dict[str, Any]
+ExecutionProvider = Union[str, Tuple[str, ProviderOptions]]
 
 call_display_ui = None
 
@@ -110,29 +116,65 @@ def _trt_precision_options(precision):
     }
 
 
-def decode_execution_providers(execution_providers: List[str]) -> List[str]:
-    import onnxruntime
+def _provider_key(provider: str) -> str:
+    """Return the UI/config spelling used for an ORT provider name."""
+    key = str(provider).replace('ExecutionProvider', '').strip().lower()
+    return {'directml': 'dml', 'tensor_rt': 'tensorrt'}.get(key, key)
+
+
+def decode_execution_providers(execution_providers: List[str]) -> List[ExecutionProvider]:
+    """Resolve requested ONNX Runtime providers in explicit priority order.
+
+    ONNX Runtime treats the provider list as a precedence list.  Preserve the
+    caller's order, configure each provider independently, and always append
+    CPU as the deterministic final fallback.  A bad CUDA/TRT tuning value must
+    not silently discard the remaining providers.
+    """
     try:
         import cv2 as _cv2
         _cv2.setNumThreads(1)
-    except Exception:
-        pass
+    except (ImportError, AttributeError, RuntimeError) as exc:
+        _LOGGER.debug("Could not limit OpenCV worker threads: %s", exc)
 
-    list_providers = [provider for provider, encoded_execution_provider in zip(onnxruntime.get_available_providers(), encode_execution_providers(onnxruntime.get_available_providers()))
-            if any(execution_provider in encoded_execution_provider for execution_provider in execution_providers)]
-    
-    try:
-        for i in range(len(list_providers)):
-            if list_providers[i] == 'CUDAExecutionProvider':
+    available = list(ort.get_available_providers())
+    available_by_key = {_provider_key(provider): provider for provider in available}
+    requested = [_provider_key(provider) for provider in (execution_providers or [])]
+    list_providers: List[ExecutionProvider] = []
+
+    for key in requested:
+        provider = available_by_key.get(key)
+        if provider is None:
+            _LOGGER.warning(
+                "Requested ONNX Runtime provider '%s' is unavailable; available=%s",
+                key, available,
+            )
+            continue
+        if any((item[0] if isinstance(item, tuple) else item) == provider
+               for item in list_providers):
+            continue
+
+        configured: ExecutionProvider = provider
+        try:
+            if provider == 'CUDAExecutionProvider':
+                device_id = int(getattr(roop.globals, 'cuda_device_id', 0))
+                if torch.cuda.is_available():
+                    device_count = torch.cuda.device_count()
+                    if not 0 <= device_id < device_count:
+                        _LOGGER.warning(
+                            "CUDA device %s is invalid for %s visible device(s); using device 0",
+                            device_id, device_count,
+                        )
+                        device_id = 0
+                        roop.globals.cuda_device_id = 0
+                    torch.cuda.set_device(device_id)
                 cuda_opts = {
-                    'device_id': roop.globals.cuda_device_id,
+                    'device_id': device_id,
                     'cudnn_conv_algo_search': 'HEURISTIC',
                     'do_copy_in_default_stream': True,
                     'arena_extend_strategy': os.environ.get('ROOP_CUDA_ARENA_STRATEGY', 'kSameAsRequested'),
                 }
-                list_providers[i] = ('CUDAExecutionProvider', cuda_opts)
-                torch.cuda.set_device(roop.globals.cuda_device_id)
-            elif list_providers[i] == 'TensorrtExecutionProvider':
+                configured = ('CUDAExecutionProvider', cuda_opts)
+            elif provider == 'TensorrtExecutionProvider':
                 trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
                 os.makedirs(trt_cache, exist_ok=True)
                 trt_precision, precision_opts = _trt_precision_options(
@@ -143,8 +185,9 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
 
                 # ── Engine-build tuning, scaled to the GPU ──────────────────
                 try:
-                    total_vram = torch.cuda.get_device_properties(roop.globals.cuda_device_id).total_memory
-                except Exception:
+                    total_vram = torch.cuda.get_device_properties(
+                        int(getattr(roop.globals, 'cuda_device_id', 0))).total_memory
+                except (AssertionError, RuntimeError, ValueError):
                     total_vram = 0
                 total_gb = total_vram / (1024 ** 3) if total_vram else 0
                 
@@ -180,6 +223,7 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                         max_cap = int(os.environ.get('ROOP_TRT_MAX_WORKSPACE_BYTES', _default_cap))
                     except (TypeError, ValueError):
                         max_cap = _default_cap
+                    max_cap = max(0, max_cap)
                     workspace_size = min(calc_size, max_cap) if calc_size > 0 else calc_size
 
                 print(f"[TRT] device {total_gb:.1f}GB VRAM -> workspace limit "
@@ -188,9 +232,10 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                     partition_iters = int(os.environ.get('ROOP_TRT_PARTITION_ITERATIONS', '2000'))
                 except ValueError:
                     partition_iters = 2000
+                partition_iters = max(1, partition_iters)
 
                 trt_opts = {
-                    'device_id': roop.globals.cuda_device_id,
+                    'device_id': int(getattr(roop.globals, 'cuda_device_id', 0)),
                     'trt_engine_cache_enable': True,
                     'trt_engine_cache_path': precision_cache,
                     'trt_max_partition_iterations': partition_iters,
@@ -204,9 +249,24 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
                 print(f"[TRT] precision={trt_precision} "
                       f"fp16={precision_opts['trt_fp16_enable']} "
                       f"layer_norm_fp32={precision_opts['trt_layer_norm_fp32_fallback']}")
-                list_providers[i] = ('TensorrtExecutionProvider', trt_opts)
-    except:
-        pass
+                configured = ('TensorrtExecutionProvider', trt_opts)
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            # Keep the provider itself usable with ORT defaults and continue to
+            # later fallbacks.  Previously this exception silently aborted the
+            # entire loop and returned a partially configured list.
+            _LOGGER.warning("Could not configure %s; using ORT defaults: %s",
+                            provider, exc, exc_info=True)
+        list_providers.append(configured)
+
+    cpu_provider = available_by_key.get('cpu')
+    provider_names = [item[0] if isinstance(item, tuple) else item
+                      for item in list_providers]
+    if cpu_provider and cpu_provider not in provider_names:
+        list_providers.append(cpu_provider)
+    if not list_providers:
+        raise RuntimeError(
+            f"No requested ONNX Runtime execution provider is available; available={available}"
+        )
 
     return list_providers
     
@@ -655,7 +715,8 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                           frontalization_threshold=25.0, swap_model='inswapper',
                           stabilize_face=False, stabilize_method='one_euro', stabilize_min_cutoff=0.05, stabilize_beta=0.02,
                           stabilize_enhancer=False, stabilize_enhancer_strength=0.5,
-                          input_facesets=None) -> None:
+                          input_facesets=None, target_faces=None,
+                          target_face_groups=None) -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -668,6 +729,7 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
     # `input_facesets` lets the caller hand in a person-ordered remap of the
     # sources without mutating the global (see api.mapped_facesets).
     facesets = roop.globals.INPUT_FACESETS if input_facesets is None else input_facesets
+    targets = roop.globals.TARGET_FACES if target_faces is None else target_faces
     if len(facesets) <= selected_index:
         selected_index = 0
     options = ProcessOptions(get_processing_plugins(masking_engine, swap_model=swap_model),
@@ -685,7 +747,8 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               stabilize_beta=stabilize_beta,
                               stabilize_enhancer=stabilize_enhancer,
                               stabilize_enhancer_strength=stabilize_enhancer_strength)
-    process_mgr.initialize(facesets, roop.globals.TARGET_FACES, options)
+    process_mgr.initialize(
+        facesets, targets, options, target_face_groups=target_face_groups)
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them
     roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)
@@ -763,6 +826,8 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
     # (released in end_processing, which every exit path below goes through).
     from roop import keep_awake
     keep_awake.acquire()
+    active_temp_target = None
+    active_originals_dir = None
 
     try:
         # limit threads for some providers
@@ -838,6 +903,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
                 if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
                     util.create_temp(v.filename)
+                    active_temp_target = v.filename
                     # Indeterminate: ffmpeg reports nothing this side of the pipe
                     # and a long clip can sit here for minutes. On a terminal the
                     # spinner is erased on exit and the stage collapses to one
@@ -848,14 +914,18 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     with Spinner('Extract frames', os.path.basename(v.filename)):
                         extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
                     if not roop.globals.processing:
+                        util.clean_temp(v.filename)
+                        active_temp_target = None
                         end_processing('Processing stopped!')
                         return
 
                     temp_frame_paths = util.get_temp_frame_paths(v.filename)
-                    if not temp_frame_paths:
+                    if not extraction_ok or not temp_frame_paths:
                         # Frame extraction produced no output — ffmpeg likely failed above.
                         # Log and skip this video rather than crashing on temp_frame_paths[0].
                         update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...', ERR)
+                        util.clean_temp(v.filename)
+                        active_temp_target = None
                         continue
 
                     # Save unswapped originals BEFORE run_batch overwrites them in-place.
@@ -864,8 +934,15 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     needs_originals = roop.globals.keep_frames or bool(per_frame_masks)
                     if needs_originals:
                         util.save_original_frames(v.filename)
+                        active_originals_dir = util.get_frames_orig_path(v.filename)
                     process_mgr.run_batch(temp_frame_paths, temp_frame_paths, roop.globals.execution_threads)
                     if not roop.globals.processing:
+                        util.clean_temp(v.filename)
+                        active_temp_target = None
+                        if (active_originals_dir and not roop.globals.keep_frames
+                                and os.path.isdir(active_originals_dir)):
+                            shutil.rmtree(active_originals_dir, ignore_errors=True)
+                            active_originals_dir = None
                         end_processing('Processing stopped!')
                         return
 
@@ -890,15 +967,26 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     if roop.globals.wait_after_extraction and temp_frame_paths:
                         extract_path = os.path.dirname(temp_frame_paths[0])
                         util.open_folder(extract_path)
-                        input("Press any key to continue...")
+                        # Only a real terminal can answer; under the API server
+                        # (stdin closed / not a tty) input() raises EOFError and
+                        # took the whole render down after the frames were
+                        # already swapped.
+                        if sys.stdin is not None and sys.stdin.isatty():
+                            try:
+                                input("Press any key to continue...")
+                            except (EOFError, OSError):
+                                pass
+                        else:
+                            update_status('wait_after_extraction is set but there is no '
+                                          'interactive terminal — continuing without waiting.', WARN)
                         print("Resorting frames to create video")
                         util.sort_rename_frames(extract_path)                                    
                 
-                    ffmpeg.create_video(v.filename, v.finalname, fps)
+                    video_created = ffmpeg.create_video(v.filename, v.finalname, fps)
                     if roop.globals.keep_frames:
                         util.move_frames_to_output(v.filename, fps=fps)
                     else:
-                        util.delete_temp_frames(temp_frame_paths[0])
+                        util.clean_temp(v.filename)
                         # If we saved originals only for per-frame mask re-processing (not keep_frames),
                         # clean them up now that the video has been compiled.
                         if per_frame_masks and not roop.globals.keep_frames:
@@ -906,6 +994,15 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                             if os.path.isdir(orig_dir):
                                 import shutil as _shutil
                                 _shutil.rmtree(orig_dir, ignore_errors=True)
+                    active_temp_target = None
+                    active_originals_dir = None
+                    if not video_created or not os.path.isfile(v.finalname):
+                        _remove_file_retry(v.finalname)
+                        update_status(
+                            f'Video compilation failed for {os.path.basename(v.filename)}, skipping...',
+                            ERR,
+                        )
+                        continue
                 else:
                     if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
                         skip_audio = True
@@ -936,9 +1033,18 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         update_status('Creating final GIF', RUN)
                         # Pass fps explicitly so the GIF matches the original source
                         # timing — avoids a lossy re-detect from the intermediate MP4.
-                        ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
-                        if os.path.isfile(destination):
+                        gif_created = ffmpeg.create_gif_from_video(
+                            video_file_name, destination, target_fps=fps)
+                        if gif_created and os.path.isfile(destination):
                             _remove_file_retry(video_file_name)
+                        else:
+                            _remove_file_retry(destination)
+                            _remove_file_retry(video_file_name)
+                            update_status(
+                                f'Final GIF creation failed for {os.path.basename(v.filename)}!',
+                                ERR,
+                            )
+                            continue
                     else:
                         skip_audio = roop.globals.skip_audio
                         destination = util.replace_template(video_file_name, index=index)
@@ -953,9 +1059,21 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                                     and getattr(roop.globals, 'lipsync_audio_source', 'original') == 'upload'
                                     and getattr(roop.globals, 'lipsync_audio_path', None)):
                                 audio_source = roop.globals.lipsync_audio_path
-                            ffmpeg.restore_audio(video_file_name, audio_source, v.startframe, v.endframe, destination)
-                            if os.path.isfile(destination):
+                            audio_ok = ffmpeg.restore_audio(
+                                video_file_name, audio_source, v.startframe,
+                                v.endframe, destination, source_fps=fps)
+                            if audio_ok and os.path.isfile(destination):
                                 _remove_file_retry(video_file_name)
+                            else:
+                                # Preserve the expensive processed video even
+                                # when source audio cannot be muxed.
+                                _remove_file_retry(destination)
+                                shutil.move(video_file_name, destination)
+                                update_status(
+                                    f'Audio mux failed for {os.path.basename(v.filename)}; '
+                                    f'saved the processed video without audio.',
+                                    WARN,
+                                )
                         else:
                             shutil.move(video_file_name, destination)
 
@@ -1002,6 +1120,30 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 except Exception:
                     pass
         end_processing('Finished', OK)
+    except Exception as exc:
+        # Failed inference must not leave the run active, GPU sessions resident,
+        # or an extracted-frame tree behind. An explicit keep_frames request is
+        # the only case in which the intermediates are intentionally retained.
+        roop.globals.processing = False
+        # Say so where the user is looking (status line / React terminal feed),
+        # not only in the logger: a render that vanishes with no message is the
+        # report this handler exists to prevent.
+        try:
+            update_status(f'Processing failed: {type(exc).__name__}: {exc}', ERR)
+        except Exception:
+            pass
+        if not roop.globals.keep_frames:
+            if active_temp_target:
+                try:
+                    util.clean_temp(active_temp_target)
+                except OSError as cleanup_exc:
+                    _LOGGER.warning("Could not remove failed job temp frames for %s: %s",
+                                    active_temp_target, cleanup_exc)
+            if active_originals_dir and os.path.isdir(active_originals_dir):
+                shutil.rmtree(active_originals_dir, ignore_errors=True)
+        release_resources()
+        _LOGGER.exception("Batch processing failed")
+        raise
     finally:
         # Guarantee the run is marked finished even if an exception escaped
         # batch_process (e.g. the legacy Gradio caller has no finally), so a

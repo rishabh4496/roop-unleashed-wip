@@ -376,6 +376,60 @@ def _freeze_convtranspose_reshape(model):
     return changed
 
 
+def _with_trt_batch_profiles(providers, model, profile_max, cache_prefix):
+    """Add one explicit TensorRT optimization range for dynamic batch inputs.
+
+    ORT otherwise infers min/opt/max from the first request and rebuilds a
+    cached TensorRT engine when a later batch has a different range. Every
+    dimension except dim 0 is static in the supported swap models, so a single
+    1..profile_max range covers individual, coalesced, and tiled swaps.
+    """
+    try:
+        profile_max = max(1, min(64, int(profile_max)))
+    except (TypeError, ValueError):
+        profile_max = 1
+
+    minimum = []
+    optimum = []
+    maximum = []
+    initializer_names = {value.name for value in model.graph.initializer}
+    for value in model.graph.input:
+        if value.name in initializer_names:
+            continue
+        dims = value.type.tensor_type.shape.dim
+        if not dims:
+            continue
+        static_tail = []
+        for dim in dims[1:]:
+            if dim.dim_param or dim.dim_value <= 0:
+                return providers
+            static_tail.append(int(dim.dim_value))
+        minimum.append(f"{value.name}:{'x'.join(map(str, [1] + static_tail))}")
+        optimum.append(
+            f"{value.name}:{'x'.join(map(str, [min(4, profile_max)] + static_tail))}")
+        maximum.append(
+            f"{value.name}:{'x'.join(map(str, [profile_max] + static_tail))}")
+
+    if not minimum:
+        return providers
+
+    patched = []
+    for provider in providers:
+        name = provider[0] if isinstance(provider, (tuple, list)) else provider
+        if 'tensorrt' not in str(name).lower():
+            patched.append(provider)
+            continue
+        options = dict(provider[1]) if isinstance(provider, (tuple, list)) else {}
+        options.update({
+            'trt_profile_min_shapes': ','.join(minimum),
+            'trt_profile_opt_shapes': ','.join(optimum),
+            'trt_profile_max_shapes': ','.join(maximum),
+            'trt_engine_cache_prefix': f"{cache_prefix}_batch{profile_max}",
+        })
+        patched.append((name, options))
+    return patched
+
+
 def _swap_providers(providers):
     """Return a copy of `providers` with the TensorRT provider forced to FP32.
 
@@ -449,6 +503,13 @@ class FaceSwapInsightFace():
         # immediately after its own Run call, on the same thread.
         self.model_has_mask = False
         self._mask_tls = threading.local()
+        # _rebuild_without_trt is reached from N worker threads at once when a
+        # broken TensorRT engine fails on every one of them in the same
+        # millisecond. Unserialised, each thread built its own CUDA session set
+        # (N x the swapper's VRAM, and N pools racing to replace self.pool while
+        # other threads were mid-lease). One rebuild, then everyone else sees
+        # _trt_disabled and just re-runs.
+        self._rebuild_lock = threading.Lock()
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:
@@ -506,6 +567,25 @@ class FaceSwapInsightFace():
             if _BATCH_SWAP:
                 _relax_batch_dim(_model)
                 _changed = True
+                # Tell TensorRT the batch range up front. Left implicit, ORT
+                # builds the engine for whatever batch the FIRST call used and
+                # rebuilds (minutes, per size) when a coalesced or tiled call
+                # arrives with a different one — the "endless engine build"
+                # symptom. The largest batch this process can produce is one
+                # crop per worker thread times the pixel-boost tile count.
+                threads = max(1, int(getattr(roop.globals, 'execution_threads', 1) or 1))
+                tile_side = max(
+                    1,
+                    int(getattr(roop.globals, 'subsample_size', 128) or 128)
+                    // int(spec['output_size']),
+                )
+                try:
+                    profile_max = int(os.environ.get(
+                        'ROOP_BATCH_SWAP_MAX', str(threads * tile_side * tile_side)))
+                except ValueError:
+                    profile_max = threads * tile_side * tile_side
+                swap_providers = _with_trt_batch_profiles(
+                    swap_providers, _model, profile_max, spec['file'].rsplit('.', 1)[0])
             if _changed:
                 model_arg = _model.SerializeToString()
 
@@ -647,26 +727,47 @@ class FaceSwapInsightFace():
         Reshape → ConvTranspose. The swap net is tiny (128-256px), so CUDA EP
         costs almost nothing. Returns False (→ caller re-raises) when TRT was
         already gone, so a genuine non-TRT error is not swallowed."""
-        if self._trt_disabled or not self._swap_providers:
+        if not self._swap_providers:
             return False
-        providers = [p for p in self._swap_providers if not self._is_trt(p)]
-        if len(providers) == len(self._swap_providers):
-            return False   # no TRT provider to strip — can't help, re-raise
-        def _build(_i=0):
-            sess_options = onnxruntime.SessionOptions()
-            sess_options.enable_cpu_mem_arena = False
-            return onnxruntime.InferenceSession(
-                self._model_arg, sess_options, providers=providers)
-        self.model_swap_insightface = _build()
-        if self.pool is not None:
-            n = session_pool.pool_size()
-            extras = [_build(i) for i in range(n - 1)]
-            self.pool = session_pool.SessionPool(
-                lambda i, _e=([self.model_swap_insightface] + extras): _e[i], n)
-        self._trt_disabled = True
-        print(f"[swap] '{self.loaded_model_key}' failed under TensorRT "
-              f"(shape verification); rebuilt on CUDA/CPU for this model.")
-        return True
+        lock = getattr(self, '_rebuild_lock', None) or threading.Lock()
+        with lock:
+            if self._trt_disabled:
+                # Another worker already rebuilt while this one waited: its
+                # own failed call was against the OLD session, so a retry on
+                # the new one is the right outcome, not a re-raise.
+                return True
+            providers = [p for p in self._swap_providers if not self._is_trt(p)]
+            if len(providers) == len(self._swap_providers):
+                return False   # no TRT provider to strip — can't help, re-raise
+
+            def _build(_i=0):
+                sess_options = onnxruntime.SessionOptions()
+                sess_options.enable_cpu_mem_arena = False
+                return onnxruntime.InferenceSession(
+                    self._model_arg, sess_options, providers=providers)
+
+            primary = _build()
+            new_pool = None
+            if self.pool is not None:
+                n = session_pool.pool_size()
+                extras = [_build(i) for i in range(n - 1)]
+                new_pool = session_pool.SessionPool(
+                    lambda i, _e=([primary] + extras): _e[i], n)
+            # Publish only once everything is built, so a concurrent Run never
+            # sees a half-replaced (pool, session) pair. Threads still inside a
+            # lease on the old pool return their item to the OLD queue (they
+            # bound it at `with self.pool.lease()`), which is then dropped.
+            old_pool, self.pool = self.pool, new_pool
+            self.model_swap_insightface = primary
+            self._trt_disabled = True
+            if old_pool is not None:
+                try:
+                    old_pool.release()
+                except Exception:
+                    pass
+            print(f"[swap] '{self.loaded_model_key}' failed under TensorRT "
+                  f"(shape verification); rebuilt on CUDA/CPU for this model.")
+            return True
 
     def _stash_masks(self, ort_outs, count=1):
         """Keep this call's mask output(s) for the calling thread to collect.
@@ -782,6 +883,11 @@ class FaceSwapInsightFace():
         [3,H,W] outputs, one per crop — numerically identical to calling Run on
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
+        if not temp_frames:
+            # An empty batch is a valid no-op, and must leave no mask behind
+            # for the caller's take_masks() to misattribute.
+            self._mask_tls.masks = None
+            return []
         if self._batch_unsupported:
             return self._sequential_fallback(
                 [(source_face, target_face, t) for t in temp_frames])
@@ -789,6 +895,7 @@ class FaceSwapInsightFace():
         if latent is None:
             # Image-source model with no source crop → no-op (return the input
             # target crops unchanged), matching Run's fallback.
+            self._mask_tls.masks = None
             return [t[0] for t in temp_frames]
         img_batch = np.concatenate(temp_frames, axis=0).astype(np.float32)   # [B,3,H,W]
         latent_batch = np.repeat(latent, img_batch.shape[0], axis=0)         # [B,512] or [B,3,Hs,Ws]
@@ -821,12 +928,29 @@ class FaceSwapInsightFace():
         cross-frame coalescing where different faces batch together).
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
+        if not requests:
+            self._mask_tls.masks = None
+            return []
         if self._batch_unsupported:
             return self._sequential_fallback(requests)
         latents = [self._compute_source_input(src) for src, _tgt, _blob in requests]
         if any(l is None for l in latents):
-            # Image-source model with a crop-less source → no-op passthrough.
-            return [r[2][0] for r in requests]
+            # One crop-less source (image-source model) used to turn the WHOLE
+            # batch into a passthrough, so every other face in the same batch
+            # silently went unswapped. Only the crop-less members pass through;
+            # the rest are still swapped, one at a time so the results land
+            # back in request order. The mask set is then partial, and a
+            # partial set must publish as None rather than be paired to crops
+            # by position.
+            outs = []
+            for (src, tgt, blob), latent in zip(requests, latents):
+                if latent is None:
+                    outs.append(blob[0])
+                else:
+                    outs.append(self.Run(src, tgt, blob))
+                    self.take_masks()
+            self._mask_tls.masks = None
+            return outs
         latent_batch = np.concatenate(latents, axis=0)                       # [B,512]
         img_batch = np.concatenate([r[2] for r in requests], axis=0).astype(np.float32)  # [B,3,H,W]
         feed = {self.image_input_name: img_batch, self.embed_input_name: latent_batch}

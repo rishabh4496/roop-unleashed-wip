@@ -472,6 +472,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # renders must not be published to the batch live-view frame.
         self.is_preview = False
         self._psutil_proc = None       # cached psutil.Process for the progress bar
+        self._consecutive_frame_errors = 0   # see _frame_error_is_recoverable
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.output_to_file = None
@@ -531,7 +532,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return None
 
 
-    def initialize(self, input_faces, target_faces, options):
+    def initialize(self, input_faces, target_faces, options,
+                   target_face_groups=None):
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
         # Decide ONCE per run whether AdaFace drives identity matching, and warm
@@ -546,7 +548,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # Multi-angle target groups: person id per target face (default = each its
         # own person). Multiple angles of one person share an id; matching uses
         # the min distance across a person's angles → robust to pose (anti-flicker).
-        self.target_face_groups = list(roop.globals.TARGET_FACE_GROUP)
+        groups = (roop.globals.TARGET_FACE_GROUP
+                  if target_face_groups is None else target_face_groups)
+        self.target_face_groups = list(groups)
         if len(self.target_face_groups) != len(target_faces):
             self.target_face_groups = list(range(len(target_faces)))
         self.num_frames_no_face = 0
@@ -845,7 +849,67 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     future.result()
 
 
+    # Consecutive per-frame failures tolerated before the run is aborted. One
+    # bad frame (a transient CUDA hiccup, a degenerate crop the detector's
+    # preprocessing chokes on) is written through as the original; a STREAK of
+    # them is a dead context or a broken model, and writing the rest of the
+    # clip unswapped while reporting success is the worse outcome.
+    _MAX_CONSECUTIVE_FRAME_ERRORS = max(1, int(os.environ.get(
+        'ROOP_MAX_CONSECUTIVE_FRAME_ERRORS', '30') or 30))
+
+    def _frame_error_is_recoverable(self, exc: BaseException, where: str) -> bool:
+        """Decide whether a per-frame RuntimeError should cost the frame or the run.
+
+        GPU faults (CUDA / onnxruntime text) and detector failures — which
+        face_util.get_all_faces now RAISES instead of reporting as "no face",
+        so a dead provider cannot masquerade as an empty frame — are written
+        through as the original frame, up to _MAX_CONSECUTIVE_FRAME_ERRORS in
+        a row. Anything else is a programming error and propagates.
+        """
+        text = str(exc)
+        low = text.lower()
+        recoverable = ('cuda' in low or 'onnxruntime' in low
+                       or low.startswith('face detector failed')
+                       or low.startswith('high-resolution face detector failed'))
+        if not recoverable:
+            return False
+        with self.lock:
+            self._consecutive_frame_errors += 1
+            n = self._consecutive_frame_errors
+        if n > self._MAX_CONSECUTIVE_FRAME_ERRORS:
+            bar_write(f'[ProcessMgr] {n} consecutive frame failures ({where}) — the '
+                      f'provider or model is not recovering; aborting the run: {text[:200]}')
+            return False
+        bar_write(f'[ProcessMgr] GPU/detector error on {where} — writing original frame '
+                  f'({n}/{self._MAX_CONSECUTIVE_FRAME_ERRORS} in a row): {text[:200]}')
+        return True
+
+    def _frame_ok(self):
+        if self._consecutive_frame_errors:
+            with self.lock:
+                self._consecutive_frame_errors = 0
+
+    @staticmethod
+    def _write_image(path: str, image: np.ndarray) -> None:
+        """Write a frame the way process_frames READS one — through the codec,
+        not through cv2's own file layer.
+
+        cv2.imwrite cannot open a path with non-ASCII characters on Windows and
+        does not raise: it returns False, so a target under a user name like
+        "Zoë" or "Müller" produced an empty output folder and a run that
+        reported success. imencode + numpy's tofile round-trips the same paths
+        np.fromfile + imdecode already reads.
+        """
+        ext = os.path.splitext(path)[1] or '.png'
+        ok, buf = cv2.imencode(ext, image)
+        if not ok:
+            raise IOError(f'could not encode frame as {ext!r} for {path}')
+        buf.tofile(path)
+
     def process_frames(self, source_files: List[str], target_files: List[str], current_files, update: Callable[[], None]) -> None:
+        # list.index() per frame is O(n) — over a 48k-frame extraction that is
+        # ~1.2 billion string compares spread across the workers.
+        index_of = {f: i for i, f in enumerate(source_files)}
         for f in current_files:
             wait_while_paused()
             if not roop.globals.processing:
@@ -863,19 +927,21 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         # process_frame serialises only its GPU primitives (under
                         # TensorRT); CPU work overlaps across threads.
                         resimg = self.process_frame(temp_frame)
+                    self._frame_ok()
                 except RuntimeError as exc:
-                    # Catch per-frame GPU failures (CUDA error 999, OOM, etc.) so a
-                    # single bad frame does not abort the entire batch.  Write the
-                    # unprocessed original frame instead so the output is continuous.
-                    err_str = str(exc)
-                    if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
-                        bar_write(f'[ProcessMgr] GPU error on {f} — writing original frame: {err_str[:200]}')
+                    # Catch per-frame GPU/detector failures (CUDA error 999, OOM,
+                    # etc.) so a single bad frame does not abort the entire
+                    # batch. Write the unprocessed original frame instead so the
+                    # output is continuous — bounded, see _frame_error_is_recoverable.
+                    if self._frame_error_is_recoverable(exc, f):
                         resimg = temp_frame   # fall back to unmodified frame
                     else:
-                        raise   # non-GPU errors propagate normally
+                        raise   # non-GPU errors (or a streak) propagate normally
                 if resimg is not None:
-                    i = source_files.index(f)
-                    cv2.imwrite(target_files[i], resimg)
+                    i = index_of.get(f)
+                    if i is None:
+                        i = source_files.index(f)
+                    self._write_image(target_files[i], resimg)
             if update:
                 update()
 
@@ -972,7 +1038,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         as_completed behind it. The marker only matters to a writer that is still
         running, and a running writer drains within milliseconds.
         """
-        self.processing_threads -= 1
+        with self.lock:
+            self.processing_threads -= 1
         deadline = time.perf_counter() + 10.0
         while True:
             try:
@@ -1015,10 +1082,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             # process_frame serialises only its GPU primitives (under
                             # TensorRT), so CPU work overlaps across threads.
                             resimg = self.process_frame(frame, frame_idx=frame_idx)
+                    self._frame_ok()
                 except RuntimeError as exc:
-                    err_str = str(exc)
-                    if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
-                        bar_write(f'[ProcessMgr] GPU error on video frame {threadindex} — writing original: {err_str[:200]}')
+                    if self._frame_error_is_recoverable(exc, f'video frame {frame_idx} (worker {threadindex})'):
                         resimg = frame  # fall back to unmodified frame
                     else:
                         # Fatal non-GPU RuntimeError: drain our input queue and post
@@ -1239,14 +1305,21 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             frame_count = len(awebp_frames[frame_start:frame_end]) if frame_end > frame_start else len(awebp_frames[frame_start:])
         else:
             cap = cv2.VideoCapture(source_video)
-            frame_count = (frame_end - frame_start) + 1
+            # frame_end is EXCLUSIVE: read_frames_thread stops after
+            # frame_end - frame_start frames and ffmpeg's trim filter treats
+            # end_frame the same way. The old +1 made total_frames one too
+            # many, so the bar stopped at N/N+1, the resume check
+            # `skip >= frame_count` could never match a completed render, and
+            # every runtime-calibration density divided by the wrong count.
+            frame_count = max(0, int(frame_end) - int(frame_start))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             # NVDEC: swap the cv2 reader for a GPU-decode ffmpeg pipe when the
             # file probes OK (no-op otherwise; ROOP_NVDEC=0 disables). Must use
             # the SOURCE dims, before any processed_resolution override.
             from roop.nvdec_reader import wrap_capture
-            cap = wrap_capture(cap, source_video, width, height, fps, tag='swap decode')
+            cap = wrap_capture(cap, source_video, width, height, fps, tag='swap decode',
+                               tag_aware=True)
 
         processed_resolution = None
         for p in self.processors:
@@ -1290,6 +1363,21 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # pre-passes and the 2-pass stabilizer must then only scan the frames
         # that still need encoding.
         if self.output_to_file:
+            # The source's colour tags travel to the output unchanged — the
+            # frames in between were decoded with 601 and are encoded with 601,
+            # so the tags are the only thing that has to be carried. See
+            # ffmpeg_writer.color_filter_chain for the measurement behind this.
+            color_tags = None
+            if not is_awebp:
+                try:
+                    from roop.capturer import probe_color_tags
+                    color_tags = probe_color_tags(source_video)
+                except Exception as e:
+                    bar_write(f'[ProcessMgr] colour-tag probe failed ({e!r}); output stays untagged')
+            # What the reader above decoded with (cv2: 601; the pipe: the
+            # file's own matrix). Remembered on self because the stabilized
+            # path builds its own reader later, and that one must agree.
+            self._decode_matrix = getattr(cap, 'decode_matrix', 'bt601') if cap is not None else 'bt601'
             use_resume = (not is_awebp) and os.environ.get('ROOP_RESUME', '1') == '1'
             if use_resume:
                 from roop.segment_writer import SegmentedVideoWriter
@@ -1297,7 +1385,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     target_video, (width, height), fps,
                     codec=roop.globals.video_encoder, crf=roop.globals.video_quality,
                     source_video=source_video, frame_start=frame_start, frame_end=frame_end,
-                    signature=str(getattr(roop.globals, '_run_signature', '') or ''))
+                    signature=str(getattr(roop.globals, '_run_signature', '') or ''),
+                    color_tags=color_tags, decode_matrix=self._decode_matrix)
                 skip = self.videowriter.resume_frames
                 if skip >= frame_count > 0:
                     # Everything was already encoded by the interrupted run —
@@ -1317,7 +1406,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     frame_start += skip
                     frame_count -= skip
             else:
-                self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
+                self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps,
+                                                      codec=roop.globals.video_encoder,
+                                                      crf=roop.globals.video_quality,
+                                                      audiofile=None, color_tags=color_tags,
+                                                      decode_matrix=self._decode_matrix)
         if self.output_to_cam:
             self.streamwriter = StreamWriter((width, height), int(fps))
 
@@ -1628,7 +1721,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 cap = wrap_capture(cap, source_video,
                                    int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                                   cap.get(cv2.CAP_PROP_FPS), tag='stabilized decode')
+                                   cap.get(cv2.CAP_PROP_FPS), tag='stabilized decode',
+                                   tag_aware=True)
+                # Must be the same decision run_batch_inmem's reader made (it
+                # is: same NVDEC probe cache, same colour-tag probe cache, same
+                # file). Checked rather than assumed, because the writer is
+                # already open with the first answer.
+                _m = getattr(cap, 'decode_matrix', 'bt601')
+                if _m != getattr(self, '_decode_matrix', 'bt601'):
+                    bar_write(f"[Stabilize] WARNING: this reader decodes with {_m} but the "
+                              f"writer was opened for {self._decode_matrix}; the colours of "
+                              f"this clip will be shifted by the difference.")
                 if frame_start > 0:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
                 produced = 0
@@ -1772,6 +1875,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 n = max(1, min(stab_width, len(chunk)))
                 results = {}
                 _block_times = {}   # per WORKER wall time → imbalance (see dispatch note below)
+                _block_errors = []
+                _block_errors_lock = Lock()
 
                 # ── Closure-capture fix ──────────────────────────────────────
                 # _process_block is re-defined each loop iteration. Without default-arg
@@ -1793,8 +1898,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             # Pass the real frame index so the temporal-detection /
                             # SAM2 / identity-track caches stay usable in this path.
                             self.process_frame(_combined[ci], frame_idx=_base_global + ci)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            with _block_errors_lock:
+                                _block_errors.append(('warm-up', _base_global + ci, exc))
+                            roop.globals.processing = False
+                            return
                     for ci in range(ca, _base + b):
                         if not roop.globals.processing:
                             return
@@ -1802,8 +1910,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         self._tls.t = gi
                         try:
                             out = self.process_frame(_combined[ci], frame_idx=gi)
-                        except Exception:
-                            out = _combined[ci]
+                        except Exception as exc:
+                            with _block_errors_lock:
+                                _block_errors.append(('processing', gi, exc))
+                            roop.globals.processing = False
+                            return
                         _results[gi] = out if out is not None else _combined[ci]
                         progress_cb()
 
@@ -1851,6 +1962,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 for w in workers:
                     w.join()
                 _t_proc = time.perf_counter() - _t_proc0   # compute time (slowest worker gates this)
+                if _block_errors:
+                    stage, failed_frame, error = _block_errors[0]
+                    raise RuntimeError(
+                        f"Stabilized {stage} failed at frame {failed_frame}: {error}"
+                    ) from error
 
                 # Queue the chunk for the background write thread.
                 # Blocks only when FFMPEG is slower than frame processing

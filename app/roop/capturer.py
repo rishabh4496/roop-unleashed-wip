@@ -1,6 +1,7 @@
 from typing import Optional
 from collections import OrderedDict
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -8,6 +9,9 @@ import cv2
 import numpy as np
 
 from roop.typing import Frame
+
+
+_LOGGER = logging.getLogger(__name__)
 
 # ── HEVC / long-GOP fallback ─────────────────────────────────────────────────
 # cv2.VideoCapture is the fast path and stays the default, but on some long
@@ -229,7 +233,9 @@ def _probe_video(video_path: str):
     try:
         cmd = [_ffprobe_binary(), "-v", "error", "-select_streams", "v:0",
                "-show_entries",
-               "stream=width,height,avg_frame_rate,nb_frames,duration,codec_name,pix_fmt"
+               "stream=width,height,avg_frame_rate,nb_frames,duration,codec_name,pix_fmt,"
+               "color_space,color_primaries,color_transfer,color_range"
+               ":stream_side_data=rotation"
                ":format=duration",
                "-of", "json", video_path]
         proc = subprocess.run(cmd, capture_output=True, timeout=30, **_popen_kwargs())
@@ -240,6 +246,30 @@ def _probe_video(video_path: str):
         codec = str(st.get("codec_name") or "").lower()
         pix_fmt = str(st.get("pix_fmt") or "").lower()
         fps = _parse_rate(st.get("avg_frame_rate"))
+        # DISPLAY orientation. Phone footage is stored landscape with a
+        # rotation side-data tag; cv2.VideoCapture (CAP_PROP_ORIENTATION_AUTO
+        # defaults to on since 4.5) and ffmpeg's decoder (autorotate) both hand
+        # back the ROTATED picture, so a probe that reports the coded geometry
+        # disagrees with every frame anyone reads. Both the pipe fallback below
+        # and nvdec_reader size their raw pipe from these numbers, and a 90-deg
+        # tag then reshapes a 1920x1080 byte stream as 1080x1920 — a silently
+        # scrambled frame, since the byte count is identical either way.
+        rotation = 0
+        for sd in (st.get("side_data_list") or []):
+            try:
+                rotation = int(round(float(sd.get("rotation") or 0)))
+            except (TypeError, ValueError):
+                rotation = 0
+            if rotation:
+                break
+        if rotation % 180 != 0:
+            w, h = h, w
+        color = {
+            "colorspace": str(st.get("color_space") or "").lower(),
+            "color_primaries": str(st.get("color_primaries") or "").lower(),
+            "color_trc": str(st.get("color_transfer") or "").lower(),
+            "color_range": str(st.get("color_range") or "").lower(),
+        }
         frames = int(st.get("nb_frames") or 0)
         if frames <= 0:
             dur = 0.0
@@ -254,11 +284,31 @@ def _probe_video(video_path: str):
                 frames = int(round(dur * fps))
         if w > 0 and h > 0:
             info = {"w": w, "h": h, "fps": fps or 25.0, "frames": max(0, frames),
-                    "codec": codec, "pix_fmt": pix_fmt}
+                    "codec": codec, "pix_fmt": pix_fmt, "rotation": rotation,
+                    "color": color}
     except Exception:
         info = None
     _probe_cache[video_path] = info
     return info
+
+
+def probe_color_tags(video_path: str) -> Optional[dict]:
+    """The source's colour tags (colorspace / color_primaries / color_trc /
+    color_range), or None when the file is untagged or cannot be probed.
+
+    Handed to FFMPEG_VideoWriter so the output carries the SAME tags as its
+    source and no conversion in between — see ffmpeg_writer.color_filter_chain.
+    Empty / 'unknown' values are dropped so an untagged source produces an
+    untagged output rather than a guessed one."""
+    try:
+        info = _probe_video(video_path)
+    except Exception:
+        return None
+    if not info:
+        return None
+    tags = {k: v for k, v in (info.get("color") or {}).items()
+            if v and v not in ("unknown", "unspecified", "reserved")}
+    return tags or None
 
 
 def probe_media_dimensions(path: str):
@@ -377,9 +427,13 @@ def _read_via_pipe(video_path: str, target: int):
 
 def get_image_frame(filename: str):
     try:
-        return cv2.imdecode(np.fromfile(filename, dtype=np.uint8), cv2.IMREAD_COLOR)
-    except:
-        print(f"Exception reading {filename}")
+        frame = cv2.imdecode(
+            np.fromfile(filename, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            _LOGGER.warning("OpenCV could not decode image %s", filename)
+        return frame
+    except (OSError, ValueError, cv2.error) as exc:
+        _LOGGER.warning("Could not read image %s: %s", filename, exc)
     return None
 
 

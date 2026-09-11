@@ -2,8 +2,9 @@ import math
 import os
 import threading
 import contextlib
+import logging
 from queue import Queue
-from typing import Any
+from typing import Any, List, Optional
 import insightface
 
 import roop.globals
@@ -17,6 +18,9 @@ from roop.capturer import get_video_frame
 from roop.utilities import resolve_relative_path, conditional_download
 from roop.nms import bind_instance_nms
 from roop import face_contact
+
+
+_LOGGER = logging.getLogger(__name__)
 
 # Pool of independent insightface FaceAnalysis instances (opt-in, ROOP_DETMASK_POOL).
 #
@@ -211,14 +215,25 @@ def lease_face_analyser():
     out, capping concurrency at the pool size. Without a pool it yields the single
     shared instance (caller serialises via the global lock)."""
     _ensure_face_analyser()
-    if analysis_pooled():
-        fa = _ANALYSER_Q.get()
+    # Snapshot the queue THIS lease came from. The module globals are rebound
+    # by _ensure_face_analyser (a det_size / threshold / engine change from a
+    # preview request while a render is running) and cleared by
+    # release_face_analyser (end of a run, the upscale pass freeing VRAM).
+    # Re-reading them in `finally` either raised on a None queue or returned a
+    # retired instance into the NEW pool, which then had N+1 entries — one of
+    # them a set of TensorRT contexts that belonged to the pool just released.
+    q = _ANALYSER_Q
+    if q is not None and analysis_pooled():
+        fa = q.get()
         try:
             yield fa
         finally:
-            _ANALYSER_Q.put(fa)
+            q.put(fa)
     else:
-        yield FACE_ANALYSER
+        fa = FACE_ANALYSER
+        if fa is None:
+            raise RuntimeError('face analyser is not available (released or not built)')
+        yield fa
 
 
 def _refine_kps_from_68(face) -> None:
@@ -1026,27 +1041,28 @@ def _detect_faces(frame):
     return _enrich_detected_faces(frame, faces)
 
 
-def get_first_face(frame: Frame) -> Any:
-    try:
-        faces = get_all_faces(frame)
-        if faces:
-            return min(faces, key=lambda x: x.bbox[0])
-    except Exception:
-        pass
-    return None
+def get_first_face(frame: Frame) -> Optional[Face]:
+    """Return the left-most face, while preserving detector failures."""
+    faces = get_all_faces(frame)
+    return min(faces, key=lambda face: face.bbox[0]) if faces else None
 
 
-def get_all_faces(frame: Frame) -> Any:
+def get_all_faces(frame: Frame) -> List[Face]:
+    """Detect faces without disguising provider/model failures as "no face"."""
+    if not isinstance(frame, np.ndarray) or frame.size == 0:
+        _LOGGER.warning("Face detection skipped for an empty or invalid frame")
+        return []
     try:
         faces = _detect_faces(frame)
         if not faces:
             return []
         return sorted(faces, key=lambda x: x.bbox[0])
-    except Exception:
-        return []
+    except Exception as exc:
+        _LOGGER.exception("Face detector failed for frame shape=%s", frame.shape)
+        raise RuntimeError(f"Face detector failed: {exc}") from exc
 
 
-def get_all_faces_hires(frame: Frame, det_size: int) -> Any:
+def get_all_faces_hires(frame: Frame, det_size: int) -> List[Face]:
     """Like get_all_faces, but at an explicit (typically higher) detector
     resolution instead of the configured one, for a full-frame RETRY when the
     configured resolution already came back short of the number of faces
@@ -1064,14 +1080,23 @@ def get_all_faces_hires(frame: Frame, det_size: int) -> Any:
     detector's own NMS working across the whole image, telling two close
     faces apart the same way it already does at the configured resolution,
     just with more pixels to do it with."""
+    if not isinstance(frame, np.ndarray) or frame.size == 0:
+        _LOGGER.warning("High-resolution face detection skipped for an invalid frame")
+        return []
+    if int(det_size) <= 0:
+        raise ValueError(f"det_size must be positive, got {det_size!r}")
     try:
         faces = _detect_faces_raw(frame, det_size=det_size)
         faces = _enrich_detected_faces(frame, faces)
         if not faces:
             return []
         return sorted(faces, key=lambda x: x.bbox[0])
-    except Exception:
-        return []
+    except Exception as exc:
+        _LOGGER.exception(
+            "High-resolution face detector failed for frame shape=%s det_size=%s",
+            frame.shape, det_size,
+        )
+        raise RuntimeError(f"High-resolution face detector failed: {exc}") from exc
 
 
 def _attach_source_crops(face, img):

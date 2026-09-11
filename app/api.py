@@ -35,12 +35,13 @@ from source_gallery import (
     _sources_pop,
     _sources_move,
     _sources_clear,
+    _sources_snapshot,
     _sources_desync,
     _get_source_faces_info,
     _source_faces_payload,
     _ingest_faceset,
 )
-from api_media import (_save_upload, _rgb_to_dataurl, _bgr_to_dataurl,
+from api_media import (_delete_upload, _save_upload, _rgb_to_dataurl, _bgr_to_dataurl,
                        _bgr_to_preview_dataurl, _dataurl_to_bgr)
 import roop.globals as roop_globals
 from roop import utilities as util
@@ -119,7 +120,7 @@ async def _bad_payload_handler(request: Request, exc: Exception):
     )
 
 
-def mapped_facesets(mapping, swap_mode=""):
+def mapped_facesets(mapping, swap_mode="", facesets=None):
     """Reorder the loaded source facesets into person order for a swap.
 
     `mapping[rank]` is the source faceset index chosen for target person `rank`,
@@ -148,7 +149,7 @@ def mapped_facesets(mapping, swap_mode=""):
     """
     if not isinstance(mapping, list) or len(mapping) == 0 or swap_mode == "all_input":
         return None
-    facesets = list(roop_globals.INPUT_FACESETS)
+    facesets = list(roop_globals.INPUT_FACESETS if facesets is None else facesets)
     mapped = []
     for x in mapping:
         try:
@@ -542,6 +543,9 @@ def get_settings_defaults():
 
 @app.post("/api/settings")
 def save_settings(settings: dict = Body(...)):
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={
+            "message": "Settings cannot be changed while a render is active."})
     payload = dict(settings)
     if roop_globals.CFG:
         # Container and codec are one choice, not two independent strings. The
@@ -974,18 +978,15 @@ def _pose_bin(kps):
 def get_state():
     """Rehydrate the UI: current source/target galleries and target queue."""
     targets = [_target_entry_dict(entry) for entry in list_files_process]
-    desync = _sources_desync()
+    source_payload = _source_faces_payload()
     return {
-        **({"desync": desync} if desync else {}),
-        "source_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_input_thumbs],
-        "source_faces_info": _get_source_faces_info(),
+        **source_payload,
         "target_faces": [_rgb_to_dataurl(t) for t in ui_globals.ui_target_thumbs],
         "target_groups": _target_groups_ranked(),
         "target_faces_info": _target_faces_info(),
         "target_names": _target_names_ranked(),
         "targets": targets,
         "selected_target_index": state.selected_target_index,
-        "faceset_count": len(roop_globals.INPUT_FACESETS),
     }
 
 
@@ -1017,6 +1018,10 @@ def source_add(files: list[UploadFile] = File(...)):
                     _sources_append(fs, util.convert_to_gradio(fd[1]))
         except Exception:
             traceback.print_exc()
+        finally:
+            # Source images and .fsz archives are fully materialized as FaceSet
+            # data; retaining the upload only grows temp across a long session.
+            _delete_upload(path)
     return _source_faces_payload()
 
 
@@ -1291,10 +1296,24 @@ def target_select(payload: dict = Body(...)):
 
 @app.post("/api/target/remove")
 def target_remove(payload: dict = Body(...)):
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={
+            "message": "Target media cannot be removed during a render."})
     """Remove a single target media item from the queue."""
     idx = int(payload.get("index", -1))
     if 0 <= idx < len(list_files_process):
-        list_files_process.pop(idx)
+        removed = list_files_process.pop(idx)
+        # The removed target is very often the one the capturer still has open
+        # for the preview (Windows keeps the file locked while it is), so the
+        # delete below returned False and the upload lived on. Close it first.
+        try:
+            from roop import capturer as _cap
+            if getattr(_cap, 'current_video_path', None) == removed.filename:
+                with _cap._capture_lock:
+                    _cap.release_video()
+        except Exception:
+            pass
+        _delete_upload(removed.filename)
     if state.selected_target_index >= len(list_files_process):
         state.selected_target_index = max(0, len(list_files_process) - 1)
     if list_files_process:
@@ -1304,12 +1323,18 @@ def target_remove(payload: dict = Body(...)):
 
 @app.post("/api/target/clear")
 def target_clear():
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={
+            "message": "Target media cannot be cleared during a render."})
+    target_paths = [entry.filename for entry in list_files_process]
     list_files_process.clear()
     roop_globals.TARGET_FACES.clear()
     roop_globals.TARGET_FACE_GROUP.clear()
     if getattr(roop_globals, 'TARGET_FACE_NAMES', None):
         roop_globals.TARGET_FACE_NAMES.clear()
     ui_globals.ui_target_thumbs.clear()
+    for path in target_paths:
+        _delete_upload(path)
     state.selected_target_index = 0
     return _target_list_payload()
 
@@ -2436,14 +2461,54 @@ _preview_request_lock = threading.Lock()
 _swap_start_lock = threading.Lock()
 
 
+def _snapshot_job_state():
+    """Freeze mutable gallery and trim state for one background render.
+
+    Source/target endpoints run on independent FastAPI worker threads. A second
+    browser tab may therefore reorder or remove an entry while a render is in
+    progress. The inference job consumes this snapshot instead of observing
+    those process-wide lists changing underneath it.
+    """
+    files = []
+    for entry in list_files_process:
+        clone = ProcessEntry(
+            entry.filename, entry.startframe, entry.endframe, entry.fps)
+        if hasattr(entry, 'total_frames'):
+            clone.total_frames = entry.total_frames
+        files.append(clone)
+    return {
+        'files': files,
+        'input_facesets': _sources_snapshot(),
+        'target_faces': list(roop_globals.TARGET_FACES),
+        'target_face_groups': list(roop_globals.TARGET_FACE_GROUP),
+        'selected_input_face_index': int(state.selected_input_face_index),
+    }
+
+
 @app.post("/api/preview")
 def preview(payload: dict = Body(...)):
     """Render the selected target frame, optionally with a live face swap."""
-    with _preview_request_lock:
-        return _preview_locked(payload)
+    # Keep preview configuration atomic with the render's check-and-claim.
+    with _swap_start_lock:
+        if _progress["processing"]:
+            return JSONResponse(status_code=409, content={
+                "message": "Preview is unavailable while a render is active."})
+        with _preview_request_lock:
+            return _preview_locked(payload)
 
 
 def _preview_locked(payload: dict):
+    # A preview is not a read: it rewrites the detector globals
+    # (face_detector_size / threshold / engine ...) that the render's worker
+    # threads read on every frame — _ensure_face_analyser rebuilds the whole
+    # FaceAnalysis pool the moment one of them changes — and live_swap loads a
+    # second copy of the swap/enhancer models next to the render's. The React
+    # client defers previews while `processing` is set; a second tab, the
+    # legacy Gradio UI, or a click racing the progress poll does not, and the
+    # server is where that has to be refused.
+    if _progress["processing"]:
+        return JSONResponse(status_code=409, content={
+            "message": "A render is in progress — previews are disabled until it finishes."})
     _update_mask_offsets_from_payload(payload)
     idx = int(payload.get("index", state.selected_target_index))
     frame = int(payload.get("frame", 1))
@@ -2654,17 +2719,21 @@ def trigger_swap(payload: dict = Body(...)):
         if len(roop_globals.INPUT_FACESETS) < 1:
             return JSONResponse(status_code=400, content={"message": "no source faces"})
 
+        job_state = _snapshot_job_state()
         _progress.update({"processing": True, "paused": False, "progress": 0.0,
                           "desc": "Starting…", "error": ""})
 
-    threading.Thread(target=_run_swap, args=(payload,), daemon=True).start()
+    threading.Thread(
+        target=_run_swap, args=(dict(payload), job_state), daemon=True).start()
     return {"status": "started"}
 
 
-def _run_swap(payload):
+def _run_swap(payload, job_state=None):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
 
+    job_state = job_state or _snapshot_job_state()
+    job_files = job_state['files']
     roop_globals.pause = False
     _stop_requested["flag"] = False
     # Fresh terminal feed for this run.
@@ -2766,14 +2835,14 @@ def _run_swap(payload):
         if target_idx is not None:
             try:
                 target_idx = int(target_idx)
-                if 0 <= target_idx < len(list_files_process):
-                    files_to_process = [list_files_process[target_idx]]
+                if 0 <= target_idx < len(job_files):
+                    files_to_process = [job_files[target_idx]]
                 else:
-                    files_to_process = list_files_process
+                    files_to_process = job_files
             except Exception:
-                files_to_process = list_files_process
+                files_to_process = job_files
         else:
-            files_to_process = list_files_process
+            files_to_process = job_files
 
         # Flush VRAM and Python garbage collector before starting execution to ensure max headroom
         try:
@@ -2808,7 +2877,11 @@ def _run_swap(payload):
         print("[Stage 1/2] ANALYZE + SWAP (per-frame detection & swapping)…", flush=True)
 
         run_mapping = payload.get("face_mapping")
-        run_facesets = mapped_facesets(run_mapping, roop_globals.face_swap_mode)
+        source_facesets = job_state['input_facesets']
+        run_facesets = mapped_facesets(
+            run_mapping, roop_globals.face_swap_mode, source_facesets)
+        initialized_facesets = (source_facesets
+                                if run_facesets is None else run_facesets)
         batch_process_regular(
             output_method, files_to_process, mask_engine, clip_text,
             processing_method == "In-Memory processing",
@@ -2818,7 +2891,9 @@ def _run_swap(payload):
             bool(payload.get("restore_original_mouth", roop_globals.CFG.restore_original_mouth)),
             int(payload.get("num_swap_steps", roop_globals.CFG.num_swap_steps)),
             ApiProgress(),
-            mapped_selected_index(run_mapping, run_facesets, state.selected_input_face_index),
+            mapped_selected_index(
+                run_mapping, run_facesets,
+                job_state['selected_input_face_index']),
             use_3d_recon=bool(payload.get("use_3d_recon", roop_globals.CFG.use_3d_recon)),
             mask_per_frame_json="",
             use_source_bank=bool(payload.get("use_source_bank", roop_globals.CFG.use_source_bank)),
@@ -2831,7 +2906,9 @@ def _run_swap(payload):
             stabilize_beta=float(payload.get("stabilize_beta", roop_globals.CFG.stabilize_beta)),
             stabilize_enhancer=bool(payload.get("stabilize_enhancer", roop_globals.CFG.stabilize_enhancer)),
             stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)),
-            input_facesets=run_facesets)
+            input_facesets=initialized_facesets,
+            target_faces=job_state['target_faces'],
+            target_face_groups=job_state['target_face_groups'])
 
         # ── AI upscale second pass (opt-in) ─────────────────────────────────
         # Upscale each finished output in place so the final result is a single
@@ -3420,4 +3497,3 @@ def run_api():
     except ValueError:
         port = 8001
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
-

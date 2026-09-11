@@ -45,6 +45,16 @@ _make_frame_processor = None
 # and the main pipeline's FFMPEG_VideoWriter + restore_audio encode path, so it
 # never touches the (fragile, concurrent) swap pipeline itself.
 
+
+def _color_tags_of(path):
+    """Colour tags of the file about to be re-encoded, or None. Never raises —
+    a failed probe costs the tags, not the pass."""
+    try:
+        from roop.capturer import probe_color_tags
+        return probe_color_tags(path)
+    except Exception:
+        return None
+
 def _snapshot_output_mtimes():
     """path -> mtime for every file currently in the output dir."""
     out = roop_globals.output_path
@@ -254,9 +264,12 @@ def _upscale_video_inplace(proc, path):
               f"{n_sessions} session(s), enc={enc} ({os.path.basename(path)})", flush=True)
         pbar = ChunkedProgress(total=total or None, desc='Upscaling', unit='frame', dynamic_ncols=True)
         # audiofile=None → silent encode; audio muxed afterwards via restore_audio.
+        # Re-encoding OUR OWN tagged output: carry its tags, convert nothing
+        # (each conversion pass used to add ~6 levels of colour drift).
         writer = FFMPEG_VideoWriter(
             tmp_silent, (ow, oh), fps,
-            codec=enc, crf=roop_globals.video_quality, audiofile=None)
+            codec=enc, crf=roop_globals.video_quality, audiofile=None,
+            color_tags=_color_tags_of(path))
 
         def _do(frame):
             sess = pool.get()
@@ -656,7 +669,8 @@ def _interp_video_rife(path, factor):
     written = 0
     try:
         writer = FFMPEG_VideoWriter(tmp_silent, (w, h), fps * factor,
-                                    codec=enc, crf=roop_globals.video_quality, audiofile=None)
+                                    codec=enc, crf=roop_globals.video_quality, audiofile=None,
+                                    color_tags=_color_tags_of(path))
         pbar = ChunkedProgress(total=out_total or None, desc="Interpolating", unit="frame", dynamic_ncols=True)
 
         def _emit(fr):

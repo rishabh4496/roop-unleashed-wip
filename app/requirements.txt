@@ -1,7 +1,10 @@
 numpy>=1.26,<2.0
 gradio==5.50.0
 fastapi
-opencv-python==4.9.0.80
+# headless: albucore already requires opencv-python-headless, and two OpenCV wheels
+# in one env overwrite each other's cv2/ directory (whichever installed last wins).
+# Nothing here needs highgui — camera capture (videoio) is in the headless build.
+opencv-python-headless==4.9.0.80
 onnx==1.16.0
 insightface==0.7.3
 albucore==0.0.16
