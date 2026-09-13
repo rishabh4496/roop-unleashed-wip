@@ -91,8 +91,9 @@ OCCLUDER_EDGE_PX = float(os.environ.get('ROOP_OCCLUDER_EDGE_PX', '5') or 5)
 # correct mask should already cover. Only widens the swap region — where the
 # floor says face but the model disagreed — never narrows it, so a mask that
 # already covers the floor (the overwhelmingly common case) is untouched,
-# bit-identical. ROOP_MASK_RECOVER=0 disables it.
-_MASK_RECOVER = os.environ.get('ROOP_MASK_RECOVER', '1').strip().lower() not in ('0', 'off', 'false')
+# bit-identical. ROOP_MASK_RECOVER=1 enables it (defaults to 0 / off so foreground
+# occluders like hands, cups, and mics are never overwritten).
+_MASK_RECOVER = os.environ.get('ROOP_MASK_RECOVER', '0').strip().lower() not in ('0', 'off', 'false')
 
 # Trigger only when the model's own swap region is well below the floor's
 # area — a small gap is normal (eyes/mouth cutouts, minor under-coverage);
@@ -1050,7 +1051,11 @@ class MaskingMixin:
             img_mask = (cv2.GaussianBlur(binary_mask, (k, k), 0) if k > 1
                         else binary_mask)
 
-        if p_name in dense_maskers and kps is not None and M is not None:
+        # Dedicated occluder engines ('mask_occluder', 'mask_xseg3') exist specifically
+        # to segment foreground occluders (hands, mics, cups, faces). Never run
+        # undersized recovery on them, which would wipe out their detected occlusions.
+        recoverable_maskers = [m for m in dense_maskers if m not in ('mask_occluder', 'mask_xseg3')]
+        if _MASK_RECOVER and p_name in recoverable_maskers and kps is not None and M is not None:
             raw_mask = img_mask
             img_mask = _recover_undersized_mask(img_mask, kps, M)
             if img_mask is not raw_mask:

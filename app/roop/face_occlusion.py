@@ -313,6 +313,22 @@ def occlusion_verdict(restore_mask: Mask,
     if agreement >= agreement_thr:
         return OcclusionVerdict(True, shortfall_frac, interiority, agreement,
                                 blob_count, 'two engines agree on the same region')
+
+    # An interior shortfall blob (depth >= 0.15 reaching well into face
+    # features: cheeks, nose, mouth, chin) represents a foreground occluding
+    # object (hand, cup, phone, microphone, kissing partner, prop).
+    #
+    # An off-axis pose score cannot dismiss this: foreground objects in front of
+    # the mouth or jaw distort the 5-point landmark detector, artificially
+    # inflating the pose score even on a completely frontal head, and people
+    # turn their heads while drinking, gesturing, or speaking into a mic.
+    # The forehead under-segmentation the recovery path was measured against
+    # lives only on the peripheral crown/hairline rim (depth < 0.15).
+    if blob_count > 0 and interiority >= 0.15 and shortfall_frac >= 0.03:
+        return OcclusionVerdict(
+            True, shortfall_frac, interiority, agreement, blob_count,
+            f'interior shortfall (depth {interiority:.2f}) indicates foreground object')
+
     if pose_score is not None and float(pose_score) < pose_gate:
         return OcclusionVerdict(
             True, shortfall_frac, interiority, agreement, blob_count,
@@ -327,7 +343,8 @@ def occlusion_verdict(restore_mask: Mask,
                                 blob_count, 'no pose or second engine to judge with')
     return OcclusionVerdict(
         False, shortfall_frac, interiority, agreement, blob_count,
-        f'off-axis pose ({float(pose_score):.2f}) explains the shortfall')
+        f'off-axis pose ({float(pose_score):.2f}) explains peripheral shortfall')
+
 
 
 def guard_undersized_recovery(recovered: Mask,

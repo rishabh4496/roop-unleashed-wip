@@ -3313,6 +3313,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # second opinion (see roop.face_occlusion). Across faces it would be a
         # second opinion about someone else.
         self._tls.prev_engine_mask = None
+        self._tls.last_crop_mask = None
 
         rotation_action = None
         if roop.globals.autorotate_faces:
@@ -3769,6 +3770,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             elif p.type == 'mask':
                 with _prof('mask'), _gpu_guard(pooled=getattr(p, 'pool', None) is not None):  # mask: lock-free when pooled
                     fake_frame, _img_mask = self.process_mask(p, aligned_img, fake_frame, orig_frame=plate, target_face=target_face, M=M, tgt_pitch_deg=tgt_pitch_deg)
+                    self._tls.last_crop_mask = _img_mask
                     if enhanced_frame is not None:
                         # Same mask, different target — every input it is derived
                         # from is identical here, so recomputing it (engine call,
@@ -3876,6 +3878,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                         enhanced_frame, _B,
                         (enhanced_frame.shape[1], enhanced_frame.shape[0]),
                         borderMode=cv2.BORDER_REPLICATE)
+
+        # ── Occlusion preservation: restore original plate pixels on enhanced crop ──
+        # If a mask ran earlier in the processor pipeline, ensure foreground occluders
+        # (hands, cups, microphones, kissing partners) stay 100% original on enhanced_frame.
+        _last_crop_mask = getattr(self._tls, 'last_crop_mask', None)
+        if enhanced_frame is not None and _last_crop_mask is not None:
+            enhanced_frame = self._composite_mask(_last_crop_mask, aligned_img, enhanced_frame)
 
         # ── Anti-flicker: temporally smooth the enhanced aligned crop ─────────
         # enhanced_frame is registered to the canonical face template, so a
