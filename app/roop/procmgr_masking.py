@@ -477,8 +477,8 @@ class MaskingMixin:
         # Temporal boundary alpha smoothing to eliminate edge buzzing between frames
         try:
             from roop.temporal_stabilization import global_temporal_stabilizer
-            if global_temporal_stabilizer.strength > 0.0:
-                _f_idx = getattr(getattr(self, '_tls', None), 'frame_idx', 0)
+            _f_idx = getattr(getattr(self, '_tls', None), 'frame_idx', None)
+            if _f_idx is not None and global_temporal_stabilizer.strength > 0.0:
                 img_matte = global_temporal_stabilizer.smooth_mask(
                     img_matte, frame_idx=_f_idx, bbox=(_bx, _by, _bw, _bh))
         except Exception:

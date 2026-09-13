@@ -26,6 +26,7 @@ from roop.provider_fallback import (
     is_trt_error,
     safe_run_with_fallback,
 )
+from roop.processors.Enhance_GPEN import create_gpen_session
 
 
 class TestVFRAudioSync(unittest.TestCase):
@@ -203,6 +204,32 @@ class TestProviderFallback(unittest.TestCase):
         )
         self.assertTrue(fallback_called)
         self.assertEqual(res, ["recovered_output"])
+
+    def test_gpen_trt_fallback_remains_strictly_on_gpu(self):
+        """Removing TRT must not add CPU execution to GPEN's strict path."""
+        attempts = []
+        fallback_session = MagicMock()
+        fallback_session.get_providers.return_value = ["CUDAExecutionProvider"]
+
+        def fake_session(_model, _options=None, providers=None, **_kwargs):
+            attempts.append(providers)
+            if any("tensorrt" in str(p).lower() for p in providers):
+                raise RuntimeError("TensorRT engine creation failed")
+            return fallback_session
+
+        with patch("roop.processors.Enhance_GPEN.onnxruntime.InferenceSession",
+                   side_effect=fake_session):
+            session = create_gpen_session(
+                "dummy.onnx",
+                ["TensorrtExecutionProvider", "CUDAExecutionProvider"],
+                "cuda",
+            )
+
+        self.assertIs(session, fallback_session)
+        self.assertEqual(len(attempts), 2)
+        self.assertNotIn("CPUExecutionProvider",
+                         [p[0] if isinstance(p, tuple) else p for p in attempts[1]])
+        fallback_session.disable_fallback.assert_called_once_with()
 
 
 if __name__ == "__main__":

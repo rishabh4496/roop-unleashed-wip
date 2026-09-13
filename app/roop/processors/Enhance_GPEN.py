@@ -135,7 +135,12 @@ def create_gpen_session(
     except Exception as exc:
         if strict_gpu and is_trt_error(exc):
             print(f"[{label}] TensorRT engine creation failed ({exc}). Falling back to CUDAExecutionProvider...")
-            cuda_providers = build_cuda_fallback_providers()
+            # GPEN is deliberately strict-GPU: its fallback may remove TRT,
+            # but must not silently place unsupported nodes on CPU.
+            cuda_providers = [
+                provider for provider in build_cuda_fallback_providers()
+                if _provider_name(provider) in _GPU_PROVIDERS
+            ]
             try:
                 session = onnxruntime.InferenceSession(
                     model_path,
@@ -145,6 +150,9 @@ def create_gpen_session(
             except Exception as cuda_exc:
                 exc = cuda_exc
             else:
+                disable_runtime_fallback = getattr(session, "disable_fallback", None)
+                if callable(disable_runtime_fallback):
+                    disable_runtime_fallback()
                 return session
         mode = "strict GPU" if strict_gpu else "CPU"
         fallback_note = (

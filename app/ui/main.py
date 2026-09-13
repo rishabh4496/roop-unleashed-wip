@@ -536,7 +536,6 @@ def run():
                 # intentionally disabled; the React/Vite LAN endpoint remains
                 # available for devices on the local network.
                 share=False,
-                analytics_enabled=False,
                 enable_monitoring=False,
                 ssl_verify=ssl_verify,
                 prevent_thread_lock=True,

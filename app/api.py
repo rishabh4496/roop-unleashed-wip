@@ -3018,11 +3018,11 @@ def stop_swap():
     _stop_requested["flag"] = True
     _progress["paused"] = False
     _progress["desc"] = "Aborting…"
-    try:
-        from roop.process_lifecycle import process_lifecycle_manager
-        process_lifecycle_manager.terminate_all(reason="User clicked Stop")
-    except Exception as e:
-        print(f"[api/stop] Lifecycle cleanup error: {e}", flush=True)
+    # This is intentionally a signal, not an emergency teardown. The active
+    # batch owns the ffmpeg writer and needs to close it so the trailer/moov
+    # atom is written and the partial output remains playable. The worker's
+    # normal end_processing() path releases models after finalization; the
+    # lifecycle manager remains reserved for exceptions and process teardown.
     return {"status": "stopping"}
 
 

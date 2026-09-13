@@ -349,12 +349,14 @@ class FFMPEG_VideoWriter:
         self._drain = None
         if self.proc.stderr is not None:
             self._drain = threading.Thread(
-                target=self._drain_stderr, name='ffmpeg_stderr', daemon=True)
+                target=self._drain_stderr, args=(self.proc,),
+                name='ffmpeg_stderr', daemon=True)
             self._drain.start()
 
-    def _drain_stderr(self):
+    def _drain_stderr(self, proc=None):
         """Read ffmpeg's stderr to EOF so the pipe can never back-pressure."""
-        stream = self.proc.stderr if self.proc is not None else None
+        proc = proc if proc is not None else self.proc
+        stream = proc.stderr if proc is not None else None
         if stream is None:
             return
         try:
@@ -485,7 +487,9 @@ class FFMPEG_VideoWriter:
         """
         proc, self.proc = self.proc, None
         if proc is None:
-            return
+            return True
+
+        timed_out = False
 
         # 1. EOF on stdin tells ffmpeg to finalise the file.
         try:
@@ -499,6 +503,7 @@ class FFMPEG_VideoWriter:
         try:
             proc.wait(timeout=timeout)
         except sp.TimeoutExpired:
+            timed_out = True
             print(f"[ffmpeg] encoder did not exit within {timeout}s while closing "
                   f"{os.path.basename(self.filename)} — terminating it. The output "
                   f"may be truncated.")
@@ -527,11 +532,15 @@ class FFMPEG_VideoWriter:
 
         try:
             from roop.process_lifecycle import process_lifecycle_manager
-            if proc is not None:
-                process_lifecycle_manager.unregister_process(proc)
-            process_lifecycle_manager.unregister_incomplete_file(self.filename)
+            process_lifecycle_manager.unregister_process(proc)
+            # A non-zero exit or timeout means the file may have no trailer or
+            # may be truncated. Keep it registered so emergency cleanup can
+            # remove it instead of advertising a corrupt file as complete.
+            if not timed_out and proc.returncode == 0:
+                process_lifecycle_manager.unregister_incomplete_file(self.filename)
         except Exception:
             pass
+        return not timed_out and proc.returncode == 0
 
     # Support the Context Manager protocol, to ensure that resources are cleaned up.
 

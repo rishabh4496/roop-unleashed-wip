@@ -711,6 +711,20 @@ class FaceSwapInsightFace():
             self.model_has_mask = len(self.model_swap_insightface.get_outputs()) > 1
             self.loaded_model_key = swap_model
 
+    def _ensure_model_loaded(self):
+        """Reload this processor after the VRAM manager has offloaded it.
+
+        Other processors can trigger ``release_all()`` while a run is still
+        alive. FaceSwap is the hot path, so a later frame must not call the
+        cleared session (or use cleared model metadata) as if it were still
+        loaded. ``plugin_options`` is retained by ``Release`` for this lazy
+        reload. Test doubles and an uninitialised processor have no options,
+        so they keep their previous behaviour.
+        """
+        if (getattr(self, "model_swap_insightface", None) is None
+                and getattr(self, "plugin_options", None) is not None):
+            self.Initialize(dict(self.plugin_options))
+
     @staticmethod
     def _find_emap(graph):
         """Locate the 512x512 identity-projection matrix (emap) embedded in the onnx."""
@@ -890,6 +904,7 @@ class FaceSwapInsightFace():
         unpoisoned shot at TensorRT instead of inheriting a CUDA-only session
         that a batch-shape problem, not a real TRT failure, forced onto them.
         """
+        self._ensure_model_loaded()
         is_batch1 = feed[self.image_input_name].shape[0] <= 1
         from roop.model_lifecycle import model_lifecycle_manager
         with model_lifecycle_manager.execution_guard("faceswap", required_gb=1.5):
@@ -907,6 +922,7 @@ class FaceSwapInsightFace():
                 return self.model_swap_insightface.run(None, feed)
 
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+        self._ensure_model_loaded()
         latent = self._compute_source_input(source_face)
         if latent is None:
             # Image-source model but no source crop available → return the target
@@ -946,12 +962,14 @@ class FaceSwapInsightFace():
         self._republish_masks(masks)
         return results
 
-    def RunBatch(self, source_face: Face, target_face: Face, temp_frames: list) -> list:
+    def RunBatch(self, source_face: Face, target_face: Face, temp_frames: list,
+                 *, _allow_oom_fallback: bool = True) -> list:
         """Batched equivalent of Run: temp_frames is a list of [1,3,H,W]
         preprocessed crops sharing the same source identity. Returns a list of
         [3,H,W] outputs, one per crop — numerically identical to calling Run on
         each, but in a single inference (better GPU utilization). Requires the
         session to be batch-dynamic (ROOP_BATCH_SWAP=1)."""
+        self._ensure_model_loaded()
         if not temp_frames:
             # An empty batch is a valid no-op, and must leave no mask behind
             # for the caller's take_masks() to misattribute.
@@ -976,14 +994,23 @@ class FaceSwapInsightFace():
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
             from roop.model_lifecycle import model_lifecycle_manager
-            if model_lifecycle_manager._is_oom_exception(batch_err) and len(temp_frames) > 1:
+            if (model_lifecycle_manager._is_oom_exception(batch_err)
+                    and len(temp_frames) > 1 and _allow_oom_fallback):
                 print(f"[swap] OOM during batched swap ({len(temp_frames)} crops); automatically reducing batch size...")
                 return model_lifecycle_manager.run_with_batch_fallback(
                     temp_frames,
-                    lambda sub_batch: self.RunBatch(source_face, target_face, sub_batch),
+                    lambda sub_batch: self.RunBatch(
+                        source_face, target_face, sub_batch,
+                        _allow_oom_fallback=False),
                     lambda sub_batch: self._sequential_fallback([(source_face, target_face, t) for t in sub_batch]),
                     model_name=f"swap_{self.loaded_model_key}",
                 )
+
+            # The lifecycle manager owns recursive OOM splitting. Re-entering
+            # RunBatch with the OOM fallback enabled here would invoke the
+            # manager again for this same batch forever instead of splitting it.
+            if model_lifecycle_manager._is_oom_exception(batch_err):
+                raise
 
             # If batch inference fails (e.g. TRT shape restriction or a model
             # whose graph has an internal reshape baked to batch=1 — some
@@ -997,11 +1024,12 @@ class FaceSwapInsightFace():
             return self._sequential_fallback(
                 [(source_face, target_face, t) for t in temp_frames])
 
-    def RunBatchMulti(self, requests: list) -> list:
+    def RunBatchMulti(self, requests: list, *, _allow_oom_fallback: bool = True) -> list:
         """Like RunBatch but each crop carries its OWN source identity (for
         cross-frame coalescing where different faces batch together).
         requests = list of (source_face, target_face, blob[1,3,H,W]); the
         target_face is unused by the swap net. Returns a list of [3,H,W]."""
+        self._ensure_model_loaded()
         if not requests:
             self._mask_tls.masks = None
             return []
@@ -1028,14 +1056,21 @@ class FaceSwapInsightFace():
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
             from roop.model_lifecycle import model_lifecycle_manager
-            if model_lifecycle_manager._is_oom_exception(batch_err) and len(requests) > 1:
+            if (model_lifecycle_manager._is_oom_exception(batch_err)
+                    and len(requests) > 1 and _allow_oom_fallback):
                 print(f"[swap] OOM during multi-source batched swap ({len(requests)} crops); automatically reducing batch size...")
                 return model_lifecycle_manager.run_with_batch_fallback(
                     requests,
-                    lambda sub_requests: self.RunBatchMulti(sub_requests),
+                    lambda sub_requests: self.RunBatchMulti(
+                        sub_requests, _allow_oom_fallback=False),
                     lambda sub_requests: self._sequential_fallback(sub_requests),
                     model_name=f"swap_multi_{self.loaded_model_key}",
                 )
+
+            # See RunBatch: let the outer lifecycle manager split a retry rather
+            # than recursively starting another manager for this same batch.
+            if model_lifecycle_manager._is_oom_exception(batch_err):
+                raise
 
             # See RunBatch above: a model-level incompatibility, not transient.
             self._batch_unsupported = True

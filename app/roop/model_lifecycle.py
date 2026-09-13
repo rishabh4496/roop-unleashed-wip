@@ -176,7 +176,8 @@ class ModelLifecycleManager:
         """Unregister a model from tracking."""
         with self._registry_lock:
             self._registry.pop(name, None)
-            self._active_models.discard(name)
+            with self._state_lock:
+                self._active_models.discard(name)
 
     def set_unloaded(self, name: str) -> None:
         """Mark a model as unloaded."""
@@ -198,20 +199,25 @@ class ModelLifecycleManager:
             entry = self._registry.get(name)
             if entry is None:
                 return None
+            with self._state_lock:
+                is_active = name in self._active_models
             return ModelMetadata(
                 name=entry["name"],
                 category=entry["category"],
                 is_loaded=not entry.get("is_offloaded", False),
-                is_active=name in self._active_models,
+                is_active=is_active,
                 last_used=entry.get("last_active", 0.0),
                 device=entry.get("device", "cuda"),
             )
 
     def mark_active(self, name: str) -> None:
         """Mark a model as currently executing inference."""
-        with self._state_lock:
-            self._active_models.add(name)
-            with self._registry_lock:
+        # Keep the lock order identical to ensure_vram/get_model_meta
+        # (registry -> state); the previous state -> registry nesting could
+        # deadlock a worker entering execution_guard against a VRAM check.
+        with self._registry_lock:
+            with self._state_lock:
+                self._active_models.add(name)
                 entry = self._registry.get(name)
                 if entry:
                     entry["last_active"] = time.monotonic()
@@ -297,7 +303,7 @@ class ModelLifecycleManager:
             "[ModelLifecycleManager] VRAM offloading complete: %.2f GB free",
             final_free,
         )
-        return final_free >= threshold or final_free >= current_free
+        return final_free >= threshold
 
     def release_all(self) -> None:
         """Release all registered models and clear GPU memory."""
@@ -310,7 +316,8 @@ class ModelLifecycleManager:
                         entry["is_offloaded"] = True
                     except Exception as exc:
                         _LOGGER.debug("Error during release of '%s': %s", name, exc)
-        self._active_models.clear()
+        with self._state_lock:
+            self._active_models.clear()
         self._clear_gpu_caches()
 
     @staticmethod
@@ -339,14 +346,14 @@ class ModelLifecycleManager:
     ):
         """Context manager guarding inference runs:
 
-        1. Ensures VRAM headroom before execution by offloading inactive models.
-        2. Marks model active during execution.
+        1. Marks the model active so concurrent VRAM checks cannot offload it.
+        2. Ensures VRAM headroom by offloading other inactive models.
         3. Catches OutOfMemoryError and purges GPU caches.
         """
         req = required_gb if required_gb is not None else self._default_threshold_gb
-        self.ensure_vram(required_gb=req, exclude=name)
         self.mark_active(name)
         try:
+            self.ensure_vram(required_gb=req, exclude=name)
             yield
         except Exception as exc:
             if self._is_oom_exception(exc):

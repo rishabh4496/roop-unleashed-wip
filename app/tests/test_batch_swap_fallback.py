@@ -87,6 +87,21 @@ class _MixedSourceSwapper(_Swapper):
         return np.zeros((1, 512), dtype=np.float32)
 
 
+class _OomSwapper(_Swapper):
+    """A model that only fails when the requested batch has more than one item."""
+
+    def __init__(self):
+        super().__init__(batch_works=True, emits_mask=True)
+        self.infer_batch_sizes = []
+
+    def _infer(self, feed):
+        n = feed[self.image_input_name].shape[0]
+        self.infer_batch_sizes.append(n)
+        if n > 1:
+            raise RuntimeError('CUDA out of memory while testing batch fallback')
+        return super()._infer(feed)
+
+
 class _WorksSession:
     def __init__(self, image_input_name):
         self.image_input_name = image_input_name
@@ -241,6 +256,28 @@ class FallbackKeepsTheMaskContract(unittest.TestCase):
         outs = sw.RunBatchMulti([(object(), object(), c) for c in _crops(2)])
         self.assertEqual(sw.batch_attempts, 1, 'a known-broken model must not retry')
         self.assertEqual(len(outs), 2)
+
+    def test_oom_batch_fallback_splits_instead_of_reentering_forever(self):
+        sw = _OomSwapper()
+        outs = sw.RunBatch(object(), object(), _crops(4))
+
+        self.assertEqual(len(outs), 4)
+        self.assertIn(4, sw.infer_batch_sizes)
+        self.assertIn(2, sw.infer_batch_sizes)
+        self.assertEqual(sw.infer_batch_sizes.count(1), 4)
+        self.assertFalse(sw._batch_unsupported,
+                         'OOM is transient/capacity-related, not static batch incompatibility')
+
+    def test_oom_multi_batch_fallback_splits_instead_of_reentering_forever(self):
+        sw = _OomSwapper()
+        requests = [(object(), object(), crop) for crop in _crops(4)]
+        outs = sw.RunBatchMulti(requests)
+
+        self.assertEqual(len(outs), 4)
+        self.assertIn(4, sw.infer_batch_sizes)
+        self.assertIn(2, sw.infer_batch_sizes)
+        self.assertEqual(sw.infer_batch_sizes.count(1), 4)
+        self.assertFalse(sw._batch_unsupported)
 
 
 class BatchFailureMustNotDisableTrtForSingleFrames(unittest.TestCase):

@@ -261,10 +261,10 @@ class SegmentedVideoWriter:
         global _current
         if self._writer is None:
             return
-        self._writer.close()
+        writer_ok = self._writer.close()
         self._writer = None
         _current = None
-        if self._cur_frames > 0:
+        if writer_ok and self._cur_frames > 0:
             self.segments.append({"file": self._cur_seg_file, "frames": self._cur_frames})
             self._seg_index += 1
             self._register(len(self.segments), self._cur_seg_file, self._cur_frames,
@@ -276,8 +276,17 @@ class SegmentedVideoWriter:
                   f"{last['first']}-{last['last']} · {last['bytes'] / 1048576:.0f} MB")
             self._write_manifest()
         else:
+            # A failed ffmpeg close means this part is not known to have a
+            # trailer. Do not commit it to the resume manifest or concat it
+            # into the final video.
+            part_path = os.path.join(self._dir, self._cur_seg_file)
             try:
-                os.remove(os.path.join(self._dir, self._cur_seg_file))
+                os.remove(part_path)
+                try:
+                    from roop.process_lifecycle import process_lifecycle_manager
+                    process_lifecycle_manager.unregister_incomplete_file(part_path)
+                except Exception:
+                    pass
             except OSError:
                 pass
         self._cur_seg_file = None

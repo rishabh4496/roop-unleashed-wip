@@ -2289,7 +2289,7 @@ export default function FaceSwap({
           {p.stabilize_enhancer && (
             <Slider label="Flicker reduction strength" info="higher = smoother" min={0} max={1} step={0.05} value={num(p.stabilize_enhancer_strength, 0.5)} onChange={(v) => set('stabilize_enhancer_strength', v)} />
           )}
-          <Slider label="Temporal Smooth Strength" info="EMA smoothing for landmarks, ArcFace embeddings, and mask boundaries (0.0 = raw, 1.0 = maximum smoothing)" min={0} max={1} step={0.05} value={num(p.temporal_smooth_strength, 0.3)} onChange={(v) => set('temporal_smooth_strength', v)} />
+          <Slider label="Temporal Smooth Strength" info="EMA smoothing for landmarks and mask boundaries (0.0 = raw, 1.0 = maximum smoothing)" min={0} max={1} step={0.05} value={num(p.temporal_smooth_strength, 0.3)} onChange={(v) => set('temporal_smooth_strength', v)} />
         </Section>
 
         <div>
