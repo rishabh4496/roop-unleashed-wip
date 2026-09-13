@@ -5,7 +5,7 @@ import os
 import roop.globals
 import threading
 
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.typing import Frame
 
 
@@ -96,6 +96,7 @@ class Frame_Upscale():
                 model_path = resolve_relative_path('../models/Frame/real_esrgan_x2.onnx')
                 self.scale = 2
 
+            require_local_model(model_path, f"Frame upscaler '{self.prev_type}'", only_when_offline=True)
             self.model_upscale = onnxruntime.InferenceSession(model_path, None, providers=_upscale_providers())
             self.model_inputs = self.model_upscale.get_inputs()
             model_outputs = self.model_upscale.get_outputs()

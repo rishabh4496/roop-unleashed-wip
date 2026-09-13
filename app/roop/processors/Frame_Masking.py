@@ -3,7 +3,7 @@ import numpy as np
 import onnxruntime
 import roop.globals
 
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.typing import Frame
 
 class Frame_Masking():
@@ -27,6 +27,7 @@ class Frame_Masking():
             self.devicename = self.plugin_options["devicename"]
             self.devicename = self.devicename.replace('mps', 'cpu')
             model_path = resolve_relative_path('../models/Frame/isnet-general-use.onnx')
+            require_local_model(model_path, 'IS-Net frame masking', only_when_offline=True)
             self.model_masking = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
             self.model_inputs = self.model_masking.get_inputs()
             model_outputs = self.model_masking.get_outputs()

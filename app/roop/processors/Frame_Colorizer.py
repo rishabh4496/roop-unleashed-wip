@@ -3,7 +3,7 @@ import numpy as np
 import onnxruntime
 import roop.globals
 
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.typing import Frame
 
 class Frame_Colorizer():
@@ -34,6 +34,9 @@ class Frame_Colorizer():
                 model_path = resolve_relative_path('../models/Frame/deoldify_artistic.onnx')
             elif self.prev_type == "deoldify_stable":
                 model_path = resolve_relative_path('../models/Frame/deoldify_stable.onnx')
+            else:
+                raise ValueError(f"Unknown colorizer model '{self.prev_type}'")
+            require_local_model(model_path, f"Frame colorizer '{self.prev_type}'", only_when_offline=True)
 
             onnxruntime.set_default_logger_severity(3)
             self.model_colorizer = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)

@@ -8,7 +8,11 @@ import shutil
 import ssl
 import subprocess
 import sys
-import urllib
+import socket
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import torch
 import gradio
 import tempfile
@@ -25,6 +29,7 @@ from datetime import datetime
 import roop.template_parser as template_parser
 
 import roop.globals
+from roop.offline import offline_enabled, mark_offline
 
 TEMP_FILE = "temp.mp4"
 TEMP_DIRECTORY = "temp"
@@ -464,32 +469,90 @@ def is_video(video_path: str) -> bool:
     return False
 
 
+DOWNLOAD_SOCKET_TIMEOUT = 3.0
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 _ONLINE_STATE = None
+_ONLINE_STATE_AT = 0.0
+_ONLINE_CACHE_SECONDS = 5.0
+_RUNTIME_DOWNLOADS_LOCKED = False
+
+
+class OfflineModelError(RuntimeError):
+    """Actionable model/cache error shown by the API instead of a traceback."""
+
+
+def network_downloads_allowed() -> bool:
+    """Return whether a model loader may initiate a remote download."""
+
+    return not _RUNTIME_DOWNLOADS_LOCKED and not offline_enabled()
+
+
+def lock_runtime_downloads() -> None:
+    """Prevent new model downloads after a processing job begins."""
+
+    global _RUNTIME_DOWNLOADS_LOCKED
+    _RUNTIME_DOWNLOADS_LOCKED = True
+
+
+def unlock_runtime_downloads() -> None:
+    """Allow model preflight for the next job while the app is idle."""
+
+    global _RUNTIME_DOWNLOADS_LOCKED
+    _RUNTIME_DOWNLOADS_LOCKED = False
+
+
+def runtime_downloads_locked() -> bool:
+    return _RUNTIME_DOWNLOADS_LOCKED
+
+
+def require_local_model(path: str, feature: str, *, only_when_offline: bool = False) -> str:
+    """Require one concrete local model file and explain how to fix a miss.
+
+    Direct ONNX/PyTorch consumers use ``only_when_offline=True`` because they do
+    not own a downloader; their normal online startup path may still be filling
+    the cache. The processing lock makes that check strict before a render.
+    Download-owning callers leave it false so they are always local-first.
+    """
+
+    path = os.path.abspath(path)
+    if only_when_offline and network_downloads_allowed():
+        return path
+    if os.path.isfile(path):
+        return path
+    if os.path.exists(path):
+        detail = "The path exists but is not a regular file."
+    else:
+        detail = "The file is missing."
+    raise OfflineModelError(
+        f"{feature} cannot start because its local model is unavailable. "
+        f"{detail} Place the exact model file at '{path}', then retry."
+    )
 
 
 def is_online(timeout: float = 2.5) -> bool:
-    """Best-effort, cached connectivity probe (auto offline mode).
+    """Best-effort connectivity probe used only before runtime processing.
 
-    Every model download happens over the network, so before we attempt one we
-    check — once per process — whether the machine can actually reach the model
-    hosts. When there is no connection we skip the network entirely instead of
-    blocking on a socket timeout, and callers fall back to whatever models are
-    already present on disk. The result is cached because it is queried on every
-    ``conditional_download`` call and connectivity does not meaningfully change
-    within a single run.
+    A short cache avoids probing once per pre-warm asset, while the expiry is
+    important for an online -> offline transition. Runtime processing does not
+    call this helper; it is protected by ``lock_runtime_downloads`` instead.
     """
-    global _ONLINE_STATE
-    if _ONLINE_STATE is not None:
+    global _ONLINE_STATE, _ONLINE_STATE_AT
+    if offline_enabled():
+        return False
+    now = time.monotonic()
+    if (_ONLINE_STATE is not None
+            and now - _ONLINE_STATE_AT < _ONLINE_CACHE_SECONDS):
         return _ONLINE_STATE
-    import socket
     for host in ("huggingface.co", "github.com"):
         try:
             with socket.create_connection((host, 443), timeout=timeout):
                 _ONLINE_STATE = True
+                _ONLINE_STATE_AT = now
                 return True
         except OSError:
             continue
     _ONLINE_STATE = False
+    _ONLINE_STATE_AT = now
     return False
 
 
@@ -510,7 +573,7 @@ def _handle_missing_model(download_file_path: str, download_directory_path: str,
         f"feature offline."
     )
     if required:
-        raise RuntimeError(msg)
+        raise OfflineModelError(msg)
     try:
         print(f"\033[93m[OFFLINE] {msg}\033[0m")
     except Exception:
@@ -518,23 +581,47 @@ def _handle_missing_model(download_file_path: str, download_directory_path: str,
 
 
 def conditional_download(download_directory_path: str, urls: List[str], required: bool = True) -> None:
-    if not os.path.exists(download_directory_path):
-        os.makedirs(download_directory_path)
+    os.makedirs(download_directory_path, exist_ok=True)
 
     if hasattr(ssl, '_create_unverified_context'):
         ssl._create_default_https_context = ssl._create_unverified_context
 
     for url in urls:
+        # URL query strings are not part of the filename on disk.
+        filename = os.path.basename(urllib.parse.urlparse(url).path)
+        if not filename:
+            _handle_missing_model(
+                os.path.join(download_directory_path, "<unknown>"),
+                download_directory_path,
+                required,
+                reason="the download URL has no filename",
+            )
+            continue
         download_file_path = os.path.join(
-            download_directory_path, os.path.basename(url)
+            download_directory_path, filename
         )
+        if os.path.isfile(download_file_path):
+            continue
         if os.path.exists(download_file_path):
+            _handle_missing_model(
+                download_file_path,
+                download_directory_path,
+                required,
+                reason="the existing path is not a regular file",
+            )
             continue
 
-        # Auto offline mode: with no connectivity, don't block on a socket
-        # timeout — the model simply isn't downloadable right now. Fall back to
-        # local files and let _handle_missing_model apply the required policy.
-        if not is_online():
+        # Offline mode and the runtime lock must never enter urllib. This is the
+        # key boundary that keeps an internet loss from stalling a render.
+        if not network_downloads_allowed():
+            reason = "offline" if offline_enabled() else "runtime downloads are disabled"
+            _handle_missing_model(download_file_path, download_directory_path, required, reason=reason)
+            continue
+
+        # Auto offline mode: with no connectivity, don't block on repeated socket
+        # timeouts. Fall back to local files and let the required policy decide.
+        if not is_online(timeout=DOWNLOAD_SOCKET_TIMEOUT):
+            mark_offline("model host is unreachable")
             _handle_missing_model(download_file_path, download_directory_path, required, reason="offline")
             continue
 
@@ -545,24 +632,34 @@ def conditional_download(download_directory_path: str, urls: List[str], required
         # deletes it by hand).
         partial_path = download_file_path + ".part"
         try:
-            total = 0
-            try:
-                with urllib.request.urlopen(url) as response:
-                    total = int(response.headers.get("Content-Length", 0))
-            except Exception:
-                pass
-            with tqdm(
-                total=total,
-                desc=f"Downloading {url}",
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as progress:
-                urllib.request.urlretrieve(url, partial_path, reporthook=lambda count, block_size, total_size: progress.update(block_size))  # type: ignore[attr-defined]
-            if total and os.path.getsize(partial_path) < total:
-                raise IOError(f"Incomplete download: got {os.path.getsize(partial_path)} of {total} bytes")
+            # urlretrieve has no timeout parameter and can leave a truncated
+            # final file. Read through urlopen with a bounded socket timeout and
+            # rename the .part file only after the response closes successfully.
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_SOCKET_TIMEOUT) as response:
+                try:
+                    total = int(response.headers.get("Content-Length", 0) or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                with tqdm(
+                    total=total,
+                    desc=f"Downloading {filename}",
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                ) as progress, open(partial_path, "wb") as output:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        progress.update(len(chunk))
+            size = os.path.getsize(partial_path)
+            if size == 0:
+                raise IOError("empty response")
+            if total and size < total:
+                raise IOError(f"incomplete download: got {size} of {total} bytes")
             os.replace(partial_path, download_file_path)
-        except Exception as exc:
+        except (urllib.error.URLError, OSError, socket.timeout, TimeoutError, ssl.SSLError) as exc:
             if os.path.exists(partial_path):
                 try:
                     os.remove(partial_path)
@@ -571,6 +668,15 @@ def conditional_download(download_directory_path: str, urls: List[str], required
             # A failed download (transient network error, host down, partial
             # transfer) is handled the same way as offline: clear error if the
             # model is required now, otherwise warn and move on.
+            if not isinstance(exc, urllib.error.HTTPError):
+                mark_offline(str(exc))
+            _handle_missing_model(download_file_path, download_directory_path, required, reason=str(exc))
+        except Exception as exc:
+            if os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                except OSError:
+                    pass
             _handle_missing_model(download_file_path, download_directory_path, required, reason=str(exc))
 
 

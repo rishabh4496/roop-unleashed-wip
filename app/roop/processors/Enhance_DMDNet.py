@@ -14,6 +14,7 @@ from torchvision.transforms.functional import normalize
 
 from roop.typing import Face, Frame, FaceSet
 from roop.processors.enhance_common import is_usable, sized
+from roop.utilities import resolve_relative_path, require_local_model
 
 
 THREAD_LOCK_DMDNET = threading.Lock()
@@ -208,8 +209,11 @@ class Enhance_DMDNet():
     def create(self, devicename):
         self.torchdevice = torch.device(devicename)
         model_dmdnet = DMDNet().to(self.torchdevice)
+        weights_path = require_local_model(
+            resolve_relative_path('../models/DMDNet.pth'), 'DMDNet face enhancer',
+            only_when_offline=True)
         weights = torch.load(
-            './models/DMDNet.pth', map_location='cpu', weights_only=True)
+            weights_path, map_location='cpu', weights_only=True)
         model_dmdnet.load_state_dict(weights, strict=True)
 
         model_dmdnet.eval()

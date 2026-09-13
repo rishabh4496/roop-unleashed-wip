@@ -3,6 +3,13 @@
 import os
 import sys
 
+# This import is deliberately before torch/InsightFace/Gradio.  It performs a
+# bounded startup probe and sets the offline flags before any ML dependency can
+# initialize a remote model client.
+from roop.offline import configure_startup_environment
+
+STARTUP_OFFLINE = configure_startup_environment(sys.argv)
+
 # Force UTF-8 encoding for standard streams to avoid UnicodeEncodeError on Windows terminals with non-UTF-8 locale
 if sys.platform == 'win32':
     try:
@@ -90,6 +97,8 @@ from roop import core
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--execution-provider', default='cuda', help='Execution provider: cpu or cuda')
+parser.add_argument('--offline', action='store_true',
+                    help='Disable all remote model downloads and checks')
 args = parser.parse_args()
 from roop import globals
 # Normalize to onnxruntime's exact provider names — naive concatenation makes

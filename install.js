@@ -3,21 +3,10 @@ module.exports = {
     bundle: "ai",
   },
   run: [
-    // Keep fresh installs on the canonical main branch used by update.js.
-    {
-      method: "shell.run",
-      params: {
-        message: [
-          "git remote set-url origin https://github.com/rishabh4496/roop-unleashed-wip.git",
-          "git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"",
-          "git fetch origin --prune",
-          "git show-ref --verify --quiet refs/heads/main || git switch --track -c main origin/main",
-          "git switch main",
-          "git branch --set-upstream-to=origin/main main",
-          "git pull --ff-only"
-        ]
-      }
-    },
+    // Pinokio has already downloaded this launcher repository. Do not fetch or
+    // pull from origin during installation: dependency installation can use
+    // locally cached packages in an air-gapped environment. Use update.js
+    // explicitly when an online source update is wanted.
     // Install Python dependencies for the backend (app/ is already in the repo)
     {
       method: "shell.run",

@@ -1,6 +1,7 @@
 import hashlib
 import os
-import urllib
+import urllib.parse
+import urllib.request
 import warnings
 from typing import Any, Union, List
 
@@ -8,6 +9,8 @@ import torch
 from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from tqdm import tqdm
+
+from roop import utilities as roop_util
 
 from .model import build_model
 from .simple_tokenizer import SimpleTokenizer as _Tokenizer
@@ -36,9 +39,13 @@ _MODELS = {
 }
 
 
-def _download(url: str, root: str):
+def _download(url: str, root: str = None):
+    # Keep CLIP weights inside the project cache by default.  The old default
+    # (~/.cache/clip) made an air-gapped install look empty even when the app
+    # already had its model library under app/models.
+    root = root or roop_util.resolve_relative_path('../models/CLIP')
     os.makedirs(root, exist_ok=True)
-    filename = os.path.basename(url)
+    filename = os.path.basename(urllib.parse.urlparse(url).path)
 
     expected_sha256 = url.split("/")[-2]
     download_target = os.path.join(root, filename)
@@ -47,22 +54,53 @@ def _download(url: str, root: str):
         raise RuntimeError(f"{download_target} exists and is not a regular file")
 
     if os.path.isfile(download_target):
-        if hashlib.sha256(open(download_target, "rb").read()).hexdigest() == expected_sha256:
+        with open(download_target, "rb") as existing:
+            actual_sha256 = hashlib.sha256(existing.read()).hexdigest()
+        if actual_sha256 == expected_sha256:
             return download_target
-        else:
-            warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
+        if not roop_util.network_downloads_allowed():
+            raise roop_util.OfflineModelError(
+                f"CLIP model '{download_target}' failed its SHA256 check and "
+                "cannot be replaced while offline. Copy a verified checkpoint "
+                "to that exact path, then retry."
+            )
+        warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
 
-    with urllib.request.urlopen(url) as source, open(download_target, "wb") as output:
-        with tqdm(total=int(source.info().get("Content-Length")), ncols=80, unit='iB', unit_scale=True, unit_divisor=1024) as loop:
-            while True:
-                buffer = source.read(8192)
-                if not buffer:
-                    break
+    if not roop_util.network_downloads_allowed():
+        raise roop_util.OfflineModelError(
+            f"CLIP model '{filename}' is missing. Place the verified file at "
+            f"'{download_target}' to use CLIP segmentation offline."
+        )
 
-                output.write(buffer)
-                loop.update(len(buffer))
+    partial = download_target + '.part'
+    try:
+        # urlretrieve has no timeout and writes directly to the final path.
+        # Use a .part file so a lost connection cannot poison the cache.
+        with urllib.request.urlopen(url, timeout=roop_util.DOWNLOAD_SOCKET_TIMEOUT) as source:
+            try:
+                total = int(source.info().get('Content-Length', 0) or 0)
+            except (TypeError, ValueError):
+                total = 0
+            with tqdm(total=total, ncols=80, unit='iB', unit_scale=True, unit_divisor=1024) as loop, open(partial, 'wb') as output:
+                while True:
+                    buffer = source.read(roop_util.DOWNLOAD_CHUNK_SIZE)
+                    if not buffer:
+                        break
+                    output.write(buffer)
+                    loop.update(len(buffer))
+        os.replace(partial, download_target)
+    except Exception as exc:
+        if os.path.exists(partial):
+            try:
+                os.remove(partial)
+            except OSError:
+                pass
+        roop_util.mark_offline(str(exc))
+        raise RuntimeError(f"CLIP model download failed for '{filename}': {exc}") from exc
 
-    if hashlib.sha256(open(download_target, "rb").read()).hexdigest() != expected_sha256:
+    with open(download_target, "rb") as downloaded:
+        actual_sha256 = hashlib.sha256(downloaded.read()).hexdigest()
+    if actual_sha256 != expected_sha256:
         raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match")
 
     return download_target

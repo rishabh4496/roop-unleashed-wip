@@ -15,6 +15,12 @@ from typing import Mapping, Optional, Sequence
 APP_DIR = Path("roop-unleashed")
 
 
+def offline_requested(arguments: Sequence[str]) -> bool:
+    values = {"1", "true", "yes", "on"}
+    return ("--offline" in arguments
+            or os.environ.get("ROOP_OFFLINE", "").strip().lower() in values)
+
+
 def run_cmd(
     cmd: Sequence[str],
     *,
@@ -75,12 +81,19 @@ def start_app(arguments: Sequence[str]) -> int:
 
 
 def main() -> int:
+    arguments = sys.argv[1:]
+    offline = offline_requested(arguments)
     check_env()
     if not APP_DIR.exists():
+        if offline:
+            raise RuntimeError(
+                "Offline installer cannot clone the application. Place the "
+                f"repository at '{APP_DIR}' first, then rerun with --offline."
+            )
         install_dependencies()
-    elif input("Check for Updates? [y/n]").strip().lower() == "y":
+    elif not offline and input("Check for Updates? [y/n]").strip().lower() == "y":
         update_dependencies()
-    return start_app(sys.argv[1:])
+    return start_app(arguments)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 from skimage import transform as trans
 from roop.capturer import get_video_frame
-from roop.utilities import resolve_relative_path, conditional_download
+from roop.utilities import resolve_relative_path, conditional_download, require_local_model
 from roop.nms import bind_instance_nms
 from roop import face_contact
 
@@ -43,6 +43,18 @@ _ANALYSER_FORCE_CPU = None        # force_cpu the pool was built with (rebuild o
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
+
+# InsightFace's FaceAnalysis constructor calls ensure_available(), which can
+# silently download buffalo_l.zip from GitHub when this directory is incomplete.
+# Check the exact files first so a disconnected machine never reaches that
+# downloader and the API can report an actionable path to the user.
+_BUFFALO_L_FILES = {
+    "detection": "det_10g.onnx",
+    "landmark_2d_106": "2d106det.onnx",
+    "landmark_3d_68": "1k3d68.onnx",
+    "genderage": "genderage.onnx",
+    "recognition": "w600k_r50.onnx",
+}
 
 
 def _desired_det_size():
@@ -78,6 +90,15 @@ def analysis_pooled() -> bool:
 def _build_face_analyser():
     model_path = resolve_relative_path('..')
     allowed_modules = roop.globals.g_desired_face_analysis
+    requested_modules = set(allowed_modules or _BUFFALO_L_FILES)
+    buffalo_dir = os.path.join(model_path, 'models', 'buffalo_l')
+    for module in sorted(requested_modules):
+        filename = _BUFFALO_L_FILES.get(module)
+        if filename:
+            require_local_model(
+                os.path.join(buffalo_dir, filename),
+                f"InsightFace buffalo_l ({module})",
+            )
     if roop.globals.CFG.force_cpu:
         providers = ["CPUExecutionProvider"]
     else:

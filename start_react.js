@@ -87,6 +87,11 @@ module.exports = async (kernel) => {
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",
             NUMEXPR_NUM_THREADS: "1",
+            // Local-only UI: prevent Gradio/Albumentations from contacting
+            // analytics or update endpoints during an air-gapped launch.
+            GRADIO_ANALYTICS_ENABLED: "False",
+            GRADIO_TELEMETRY_ENABLED: "False",
+            NO_ALBUMENTATIONS_UPDATE: "1",
             ROOP_API_PORT: String(API_PORT),
             ROOP_GRADIO_PORT: String(GRADIO_PORT)
           },

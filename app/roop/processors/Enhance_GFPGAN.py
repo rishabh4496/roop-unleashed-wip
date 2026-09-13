@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.processors.enhance_common import is_usable, sized
 
 
@@ -34,6 +34,7 @@ class Enhance_GFPGAN():
         self.plugin_options = plugin_options
         if self.model_gfpgan is None:
             model_path = resolve_relative_path('../models/GFPGANv1.4.onnx')
+            require_local_model(model_path, 'GFPGAN face enhancer', only_when_offline=True)
             self.model_gfpgan = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')

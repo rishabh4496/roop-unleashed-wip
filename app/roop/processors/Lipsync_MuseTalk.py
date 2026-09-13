@@ -77,6 +77,7 @@ import torch.nn as nn
 
 from roop.lipsync_audio import AudioFeatureCache
 from roop.typing import Frame
+from roop import utilities as util
 from roop.utilities import resolve_relative_path
 
 INPUT_SIZE = 256  # cv2.resize(crop, (256, 256), interpolation=cv2.INTER_LANCZOS4)
@@ -216,31 +217,57 @@ class Lipsync_MuseTalk:
         self.device = torch.device(devicename)
         cache_dir = resolve_relative_path('../models/musetalk_hf_cache')
         os.makedirs(cache_dir, exist_ok=True)
+        local_only = not util.network_downloads_allowed()
+        try:
+            # ``local_files_only`` is essential even when the Hugging Face cache
+            # directory exists: from_pretrained otherwise contacts the Hub for a
+            # missing config/etag. Runtime jobs have already locked downloads.
+            load_kwargs = {
+                'cache_dir': cache_dir,
+                'local_files_only': local_only,
+            }
+            vae = AutoencoderKL.from_pretrained(_VAE_REPO, **load_kwargs)
+            self.vae = vae.to(self.device, dtype=self.dtype).eval()
+            self.vae.requires_grad_(False)
+            self.scaling_factor = self.vae.config.scaling_factor
 
-        vae = AutoencoderKL.from_pretrained(_VAE_REPO, cache_dir=cache_dir)
-        self.vae = vae.to(self.device, dtype=self.dtype).eval()
-        self.vae.requires_grad_(False)
-        self.scaling_factor = self.vae.config.scaling_factor
+            config_path = hf_hub_download(
+                _MUSETALK_REPO, _UNET_CONFIG_FILE,
+                cache_dir=cache_dir, local_files_only=local_only)
+            weights_path = hf_hub_download(
+                _MUSETALK_REPO, _UNET_WEIGHTS_FILE,
+                cache_dir=cache_dir, local_files_only=local_only)
+            with open(config_path, 'r', encoding='utf-8') as f:
+                unet_config = json.load(f)
+            unet = UNet2DConditionModel(**unet_config)
+            state = torch.load(
+                weights_path, map_location='cpu', weights_only=True)
+            unet.load_state_dict(state)
+            self.unet = unet.to(self.device, dtype=self.dtype).eval()
+            self.unet.requires_grad_(False)
 
-        config_path = hf_hub_download(_MUSETALK_REPO, _UNET_CONFIG_FILE, cache_dir=cache_dir)
-        weights_path = hf_hub_download(_MUSETALK_REPO, _UNET_WEIGHTS_FILE, cache_dir=cache_dir)
-        with open(config_path, 'r', encoding='utf-8') as f:
-            unet_config = json.load(f)
-        unet = UNet2DConditionModel(**unet_config)
-        state = torch.load(
-            weights_path, map_location='cpu', weights_only=True)
-        unet.load_state_dict(state)
-        self.unet = unet.to(self.device, dtype=self.dtype).eval()
-        self.unet.requires_grad_(False)
+            self.feature_extractor = AutoFeatureExtractor.from_pretrained(
+                _WHISPER_REPO, **load_kwargs)
+            whisper = WhisperModel.from_pretrained(_WHISPER_REPO, **load_kwargs)
+            self.whisper = whisper.to(self.device, dtype=self.dtype).eval()
+            self.whisper.requires_grad_(False)
 
-        self.feature_extractor = AutoFeatureExtractor.from_pretrained(_WHISPER_REPO, cache_dir=cache_dir)
-        whisper = WhisperModel.from_pretrained(_WHISPER_REPO, cache_dir=cache_dir)
-        self.whisper = whisper.to(self.device, dtype=self.dtype).eval()
-        self.whisper.requires_grad_(False)
-
-        self.pe = _PositionalEncoding(d_model=_AUDIO_FEATURE_DIM).to(self.device, dtype=self.dtype)
-
-        self._ready = True
+            self.pe = _PositionalEncoding(d_model=_AUDIO_FEATURE_DIM).to(
+                self.device, dtype=self.dtype)
+            self._ready = True
+        except Exception as exc:
+            # Do not leave half-loaded GPU modules alive after a missing cache or
+            # a failed transition to offline mode.  The API catches this error
+            # and displays the exact cache directory and repository names.
+            self.Release()
+            if local_only:
+                raise util.OfflineModelError(
+                    "MuseTalk cannot start without its local Hugging Face cache. "
+                    f"Populate '{cache_dir}' with the cached snapshots for "
+                    f"'{_VAE_REPO}', '{_MUSETALK_REPO}', and '{_WHISPER_REPO}', "
+                    "then retry. The original cache error was: " + str(exc)
+                ) from exc
+            raise
 
     def Release(self):
         self.vae = self.unet = self.pe = self.whisper = self.feature_extractor = None

@@ -7,7 +7,7 @@ from clip.clipseg import CLIPDensePredT
 import numpy as np
 
 from roop.typing import Frame
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 
 THREAD_LOCK_CLIP = threading.Lock()
 
@@ -30,10 +30,15 @@ class Mask_Clip2Seg():
 
         self.plugin_options = plugin_options
         if self.model_clip is None:
+            weights_path = require_local_model(
+                resolve_relative_path('../models/CLIP/rd64-uni-refined.pth'),
+                'CLIPSeg mask engine',
+                only_when_offline=True,
+            )
             self.model_clip = CLIPDensePredT(version='ViT-B/16', reduce_dim=64, complex_trans_conv=True)
             self.model_clip.eval();
             self.model_clip.load_state_dict(torch.load(
-                resolve_relative_path('../models/CLIP/rd64-uni-refined.pth'),
+                weights_path,
                 map_location=torch.device('cpu'), weights_only=True), strict=False)
 
         device = torch.device(self.plugin_options["devicename"])

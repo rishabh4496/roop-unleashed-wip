@@ -150,6 +150,51 @@ Models are downloaded automatically on first launch via the InsightFace model do
 Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded from the
 **Settings** tab inside the app.
 
+### Offline and air-gapped operation
+
+The launcher performs a bounded DNS/HTTPS probe at startup. If it cannot reach
+the model host, it automatically enables offline mode and continues with the
+assets already on disk. You can force the same behavior explicitly:
+
+```bash
+cd app
+python run.py --offline
+```
+
+Offline mode sets `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and
+`HF_DATASETS_OFFLINE=1`. Gradio analytics/monitoring and Albumentations update
+checks are disabled for every launch. The legacy Gradio server is loopback-only;
+LAN clients should use the React/Vite URL printed by Pinokio.
+
+Models are never downloaded after a render begins. If a selected optional model
+is absent, the UI reports the exact local path to populate instead of waiting on
+the network. The default InsightFace cache must contain these files:
+
+```text
+app/models/buffalo_l/det_10g.onnx
+app/models/buffalo_l/2d106det.onnx
+app/models/buffalo_l/1k3d68.onnx
+app/models/buffalo_l/w600k_r50.onnx
+app/models/buffalo_l/genderage.onnx       # only needed for gender filters
+```
+
+Other model families use their existing local directories (`app/models/Frame`,
+`app/models/CLIP`, `app/models/CodeFormer`, and `app/models/musetalk_hf_cache`).
+For MuseTalk, copy complete Hugging Face snapshots for
+`stabilityai/sd-vae-ft-mse`, `TMElyralab/MuseTalk`, and `openai/whisper-tiny`
+into `app/models/musetalk_hf_cache` before starting offline. The optional KEEP
+sidecar likewise requires its checkout, isolated environment, and checkpoint in
+`app/sidecar_keep/` before running its installer offline.
+
+Offline verification:
+
+1. Disable Wi-Fi/Ethernet, run `python run.py --offline`, and confirm the UI
+   loads without DNS/HTTP errors. Use a cached model and process an image.
+2. Start online, wait for the startup model pre-warm to finish, and begin a
+   batch render. Disable networking after several frames. The progress endpoint
+   and render must remain responsive and the output must complete; any missing
+   model must be reported as a local path, never as a network timeout.
+
 ---
 
 ## Usage

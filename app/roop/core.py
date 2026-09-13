@@ -11,6 +11,7 @@ if any(arg.startswith('--execution-provider') for arg in sys.argv):
     os.environ['OMP_NUM_THREADS'] = '1'
 
 import warnings
+import zipfile
 from typing import Any, Dict, List, Tuple, Union
 import platform
 import signal
@@ -48,6 +49,43 @@ _LOGGER = logging.getLogger(__name__)
 
 ProviderOptions = Dict[str, Any]
 ExecutionProvider = Union[str, Tuple[str, ProviderOptions]]
+
+
+_BUFFALO_L_URL = 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip'
+_BUFFALO_L_FILES = (
+    'det_10g.onnx', '2d106det.onnx', '1k3d68.onnx',
+    'genderage.onnx', 'w600k_r50.onnx',
+)
+
+
+def _prepare_local_insightface_cache() -> None:
+    """Download/extract buffalo_l during startup, never at render time."""
+
+    models_root = util.resolve_relative_path('../models')
+    model_dir = os.path.join(models_root, 'buffalo_l')
+    if all(os.path.isfile(os.path.join(model_dir, name)) for name in _BUFFALO_L_FILES):
+        return
+
+    archive = os.path.join(models_root, 'buffalo_l.zip')
+    if not os.path.isfile(archive):
+        if not util.network_downloads_allowed():
+            return
+        util.conditional_download(models_root, [_BUFFALO_L_URL], required=False)
+    if not os.path.isfile(archive):
+        return
+
+    try:
+        root = os.path.abspath(models_root)
+        with zipfile.ZipFile(archive) as bundle:
+            # Reject path traversal from a corrupt/untrusted archive before
+            # extraction. The official archive contains buffalo_l/*.onnx.
+            for member in bundle.infolist():
+                destination = os.path.abspath(os.path.join(root, member.filename))
+                if os.path.commonpath((root, destination)) != root:
+                    raise RuntimeError(f'unsafe archive member: {member.filename}')
+            bundle.extractall(root)
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        update_status(f'InsightFace local cache could not be extracted: {exc}', WARN)
 
 call_display_ui = None
 
@@ -91,7 +129,14 @@ def parse_args() -> None:
     program = argparse.ArgumentParser(formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=100))
     program.add_argument('--server_share', help='Public server', dest='server_share', action='store_true', default=False)
     program.add_argument('--cuda_device_id', help='Index of the cuda gpu to use', dest='cuda_device_id', type=int, default=0)
+    program.add_argument('--offline', help='Disable all remote model downloads and checks',
+                         dest='offline', action='store_true', default=False)
     roop.globals.startup_args = program.parse_args()
+    if roop.globals.startup_args.offline:
+        # Keep core.run() safe when called by a non-standard wrapper that did
+        # not execute run.py's early startup policy first.
+        from roop.offline import mark_offline
+        mark_offline('--offline')
     # Always enable all processors when using GUI
     roop.globals.frame_processors = ['face_swapper', 'face_enhancer']
 
@@ -373,6 +418,11 @@ def pre_check() -> bool:
         update_status('Python version is not supported - please upgrade to 3.9 or higher.', ERR)
         return False
     
+    # InsightFace itself has an internal GitHub downloader. Complete that cache
+    # during startup (and extract an already-present zip) so it can never run
+    # from a processing worker.
+    _prepare_local_insightface_cache()
+
     # Pre-warm the model cache while online. Offline (auto-detected), we skip
     # this entirely and fall back to whatever is already on disk — the app still
     # boots, and a missing model is only reported when its feature is actually
@@ -726,6 +776,11 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                           target_face_groups=None) -> None:
     global clip_text, process_mgr
 
+    # Model caches are a startup/idle concern. Once a render enters this
+    # function, every selected model must be local so a network transition can
+    # never insert an HTTP wait into the worker path.
+    # A previous job leaves the lock set; clear it only for this preflight.
+    util.unlock_runtime_downloads()
     release_resources()
     limit_resources()
     if process_mgr is None:
@@ -756,6 +811,10 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               stabilize_enhancer_strength=stabilize_enhancer_strength)
     process_mgr.initialize(
         facesets, targets, options, target_face_groups=target_face_groups)
+    # Model preflight is complete. From the first frame onward every selected
+    # model must be local; conditional_download/Hugging Face/CLIP loaders will
+    # return a clear local-file error instead of opening a request mid-render.
+    util.lock_runtime_downloads()
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them
     roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)
@@ -779,7 +838,9 @@ def batch_process_with_options(files:list[ProcessEntry], options, progress):
     limit_resources()
     if process_mgr is None:
         process_mgr = ProcessMgr(progress)
+    util.unlock_runtime_downloads()
     process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+    util.lock_runtime_downloads()
     roop.globals.keep_frames = False
     roop.globals.wait_after_extraction = False
     roop.globals.skip_audio = False

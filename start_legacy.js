@@ -22,6 +22,9 @@ module.exports = async (kernel) => {
             OPENBLAS_NUM_THREADS: "1",
             MKL_NUM_THREADS: "1",
             NUMEXPR_NUM_THREADS: "1",
+            GRADIO_ANALYTICS_ENABLED: "False",
+            GRADIO_TELEMETRY_ENABLED: "False",
+            NO_ALBUMENTATIONS_UPDATE: "1",
             ROOP_GRADIO_PORT: String(GRADIO_PORT),
             ROOP_API_PORT: String(API_PORT)
           },

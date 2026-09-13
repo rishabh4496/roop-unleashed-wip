@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.processors.enhance_common import is_usable, sized
 from roop import session_pool
 
@@ -32,6 +32,7 @@ class Enhance_RestoreFormerPPlus():
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             model_path = resolve_relative_path('../models/restoreformer_plus_plus.onnx')
+            require_local_model(model_path, 'RestoreFormer++ face enhancer', only_when_offline=True)
 
             def _build(_i=0):
                 sess = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
@@ -109,4 +110,3 @@ class Enhance_RestoreFormerPPlus():
         self.model_restoreformerpplus = None
         del self.io_binding
         self.io_binding = None
-

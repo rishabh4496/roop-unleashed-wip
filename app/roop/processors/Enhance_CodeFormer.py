@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, require_local_model
 from roop.processors.enhance_common import is_usable, sized
 from roop import session_pool
 
@@ -66,6 +66,7 @@ class Enhance_CodeFormer():
             # to be the name as published, dots and all.
             name = 'codeformer.fp16.onnx' if want_fp16 else 'CodeFormerv0.1.onnx'
             model_path = resolve_relative_path(f'../models/CodeFormer/{name}')
+            require_local_model(model_path, f"CodeFormer ({name})", only_when_offline=True)
             opts = None
             if want_fp16:
                 # This export trips ORT's SimplifiedLayerNormFusion at the

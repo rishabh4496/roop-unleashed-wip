@@ -13,6 +13,8 @@ import os
 import shutil
 import subprocess
 import sys
+import socket
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +29,12 @@ WEIGHT_URLS = [
 TORCH_INDEX = "https://download.pytorch.org/whl/cu121"
 
 
+def _offline_enabled():
+    values = {"1", "true", "yes", "on"}
+    return (str(os.environ.get("ROOP_OFFLINE", "")).strip().lower() in values
+            or str(os.environ.get("HF_HUB_OFFLINE", "")).strip().lower() in values)
+
+
 def run(cmd, **kw):
     print("+", " ".join(str(c) for c in cmd), flush=True)
     subprocess.run([str(c) for c in cmd], check=True, **kw)
@@ -39,6 +47,26 @@ def venv_python():
 
 
 def main():
+    if _offline_enabled():
+        missing = []
+        if not os.path.isdir(os.path.join(REPO, ".git")):
+            missing.append(f"the KEEP source checkout at '{REPO}'")
+        if not os.path.exists(venv_python()):
+            missing.append(f"the sidecar virtual environment at '{VENV}'")
+        for url in WEIGHT_URLS:
+            dest = os.path.join(WEIGHTS, os.path.basename(url))
+            if not os.path.isfile(dest):
+                missing.append(f"the checkpoint '{dest}'")
+        if missing:
+            raise RuntimeError(
+                "KEEP sidecar setup needs online downloads, but offline mode is "
+                "enabled. Supply these local assets first: " + "; ".join(missing)
+            )
+        py = venv_python()
+        run([py, "-c", "import torch, basicsr; print('sidecar env OK — torch', torch.__version__, 'cuda', torch.cuda.is_available())"])
+        print("\nKEEP sidecar is already installed and usable offline.")
+        return
+
     # 1. Isolated venv (uv is faster and ships with Pinokio; stdlib fallback).
     if not os.path.exists(venv_python()):
         uv = shutil.which("uv")
@@ -70,12 +98,25 @@ def main():
     os.makedirs(WEIGHTS, exist_ok=True)
     for url in WEIGHT_URLS:
         dest = os.path.join(WEIGHTS, os.path.basename(url))
-        if os.path.exists(dest):
+        if os.path.isfile(dest):
             print(f"weights: {os.path.basename(dest)} already present")
             continue
         print(f"downloading {url} ...", flush=True)
         part = dest + ".part"
-        urllib.request.urlretrieve(url, part)
+        try:
+            with urllib.request.urlopen(url, timeout=3.0) as source, open(part, "wb") as output:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+        except (urllib.error.URLError, OSError, socket.timeout, TimeoutError) as exc:
+            if os.path.exists(part):
+                os.remove(part)
+            raise RuntimeError(
+                f"Could not download KEEP checkpoint '{url}'. "
+                f"Retry while online or place it at '{dest}'. Error: {exc}"
+            ) from exc
         os.replace(part, dest)
 
     # 5. Smoke check: can the sidecar env import its stack?

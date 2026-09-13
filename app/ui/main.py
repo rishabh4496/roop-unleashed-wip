@@ -26,7 +26,15 @@ def prepare_environment():
         os.environ["TEMP"] = os.environ["TMP"] = os.path.abspath(os.path.join(os.getcwd(), "temp"))
     os.makedirs(os.environ["TEMP"], exist_ok=True)
     os.environ["GRADIO_TEMP_DIR"] = os.environ["TEMP"]
-    os.environ['GRADIO_ANALYTICS_ENABLED'] = '0'
+    # The UI is local and must not wait on analytics/update endpoints. These
+    # values are also set in run.py before Gradio imports, but keep this helper
+    # safe for callers that launch the legacy UI directly.
+    os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
+    os.environ['GRADIO_TELEMETRY_ENABLED'] = 'False'
+    os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
+    os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+    os.environ['HF_HUB_ETAG_TIMEOUT'] = '3'
+    os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '3'
 
 def run():
     from roop.core import decode_execution_providers, set_display_ui
@@ -475,8 +483,12 @@ def run():
         except Exception:
             pass
         server_name = roop.globals.CFG.server_name
-        if server_name is None or len(server_name) < 1:
-            server_name = None
+        # FastAPI and Vite provide the LAN-facing UI. Keep the legacy Gradio
+        # server loopback-only so a saved setting cannot expose the ML service
+        # or make Gradio open a public share tunnel.
+        if server_name not in (None, '', '127.0.0.1', 'localhost'):
+            print(f"Ignoring non-local Gradio server_name={server_name!r}; using 127.0.0.1")
+        server_name = '127.0.0.1'
         try:
             server_port = int(os.environ.get("ROOP_GRADIO_PORT", roop.globals.CFG.server_port))
         except ValueError:
@@ -516,7 +528,20 @@ def run():
             pass  # no running loop yet; Gradio will create one
 
         try:
-            ui.queue().launch(inbrowser=launch_browser, server_name=server_name, server_port=server_port, share=roop.globals.CFG.server_share, ssl_verify=ssl_verify, prevent_thread_lock=True, show_error=True)
+            ui.queue().launch(
+                inbrowser=launch_browser,
+                server_name=server_name,
+                server_port=server_port,
+                # Gradio share uses a remote tunnel. Public sharing is
+                # intentionally disabled; the React/Vite LAN endpoint remains
+                # available for devices on the local network.
+                share=False,
+                analytics_enabled=False,
+                enable_monitoring=False,
+                ssl_verify=ssl_verify,
+                prevent_thread_lock=True,
+                show_error=True,
+            )
         except Exception as e:
             print(f'Exception {e} when launching Gradio Server!')
             uii.ui_restart_server = True
