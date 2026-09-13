@@ -10,7 +10,9 @@ import psutil
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, rotate_image_180, analysis_pooled
+from roop.face_util import (get_first_face, get_all_faces, get_all_faces_in_roi,
+                            rotate_anticlockwise, rotate_clockwise,
+                            rotate_image_180, analysis_pooled)
 from roop.face_util import face_rotation_action, rotation_improves_upright
 from roop.face_util import swap_moved_the_face
 from roop import face_util
@@ -332,72 +334,30 @@ def pick_queue(queue: Queue[str], queue_per_future: int) -> List[str]:
 def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
     """When full-frame detection misses, crop last-known face region and retry.
 
-    Remaps the detected face's 2-D coordinates back to full-frame space so the
-    result can be used in process_face() without any special casing.
-    Returns a Face object in full-frame coords, or None.
+    ``get_all_faces_in_roi`` owns the crop coordinate remap and calls the
+    selected detector engine. Using it here is important for hybrid engines
+    (RetinaFace/YOLO-face/ YuNet), whose ``FaceAnalysis`` detection model is
+    intentionally absent and therefore cannot be called through ``fa.get``.
+    Choose the candidate nearest the predicted box, not the left-most face in
+    the crop, so a nearby bystander cannot steal a recovery.
     """
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = last_bbox.astype(int)
-    face_w = max(1, x2 - x1)
-    face_h = max(1, y2 - y1)
-    pad = int(max(face_w, face_h) * 0.5)          # 50 % padding on each side
-
-    rx1 = max(0, x1 - pad)
-    ry1 = max(0, y1 - pad)
-    rx2 = min(w, x2 + pad)
-    ry2 = min(h, y2 + pad)
-
-    crop = frame[ry1:ry2, rx1:rx2]
-    if crop.size == 0 or crop.shape[0] < 32 or crop.shape[1] < 32:
-        return None
-
-    # Upscale small crops so the detector can resolve them
-    crop_size = max(rx2 - rx1, ry2 - ry1)
-    scale = max(1.0, 320.0 / crop_size)
-    if scale > 1.1:
-        new_w = int((rx2 - rx1) * scale)
-        new_h = int((ry2 - ry1) * scale)
-        crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    else:
-        scale = 1.0
-
     try:
-        from roop.face_util import lease_face_analyser
-        with lease_face_analyser() as fa:
-            faces = fa.get(crop)
-        if not faces:
-            return None
-        face = min(faces, key=lambda f: f.bbox[0])
+        faces = get_all_faces_in_roi(frame, last_bbox, pad_ratio=0.5, min_crop=160,
+                                     upscale_to=320)
     except Exception:
+        faces = []
+    if not faces:
         return None
-
-    # Remap all 2-D coordinates from (scaled) crop space to full-frame space
-    def _remap2d(pts):
-        if pts is None:
-            return None
-        pts = pts.copy().astype(np.float32)
-        pts[:, 0] = pts[:, 0] / scale + rx1
-        pts[:, 1] = pts[:, 1] / scale + ry1
-        return pts
-
-    face.bbox = face.bbox.copy().astype(np.float32)
-    face.bbox[0] = face.bbox[0] / scale + rx1
-    face.bbox[1] = face.bbox[1] / scale + ry1
-    face.bbox[2] = face.bbox[2] / scale + rx1
-    face.bbox[3] = face.bbox[3] / scale + ry1
-
-    if face.kps is not None:
-        face.kps = _remap2d(face.kps)
-    if getattr(face, 'landmark_2d_106', None) is not None:
-        face.landmark_2d_106 = _remap2d(face.landmark_2d_106)
-    if getattr(face, 'landmark_3d_68', None) is not None:
-        lm3d = face.landmark_3d_68.copy().astype(np.float32)
-        lm3d[:, 0] = lm3d[:, 0] / scale + rx1
-        lm3d[:, 1] = lm3d[:, 1] / scale + ry1
-        lm3d[:, 2] = lm3d[:, 2] / scale          # depth scales with image scale
-        face.landmark_3d_68 = lm3d
-
-    return face
+    target = np.asarray(last_bbox, dtype=np.float32)
+    target_center = np.array([(target[0] + target[2]) * 0.5,
+                              (target[1] + target[3]) * 0.5], dtype=np.float32)
+    return min(
+        faces,
+        key=lambda face: float(np.linalg.norm(
+            np.array([(face.bbox[0] + face.bbox[2]) * 0.5,
+                      (face.bbox[1] + face.bbox[3]) * 0.5], dtype=np.float32)
+            - target_center)),
+    )
 
 
 def _invert_affine(M):
@@ -2409,7 +2369,12 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 kept = []
                 for f in faces:
                     why = _GEOMETRY_FILTER.reject_reason(f, frame.shape)
-                    if why is None or (_tfaces is not None and 'aspect' in why):
+                    is_temporal_prediction = (
+                        _tfaces is not None and isinstance(f, dict)
+                        and f.get('_interpolated'))
+                    if (why is None or
+                            (is_temporal_prediction and
+                             ('aspect' in why or 'interocular' in why))):
                         kept.append(f)
                     else:
                         _audit_hit(f'refused: not a plausible face ({why.split()[0]})')

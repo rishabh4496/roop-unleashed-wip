@@ -350,20 +350,38 @@ def _roi_window(frame, bbox, pad_ratio=1.0, min_crop=160):
     return frame[cy1:cy2, cx1:cx2], cx1, cy1
 
 
-def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
+def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160,
+                         det_size=None, det_thresh=None, upscale_to=None):
     """Detect faces within a padded crop around `bbox` (a tracked face's
     previous/predicted location) instead of the full frame. The detector's
     input canvas size is unchanged, so a small tracked face fills far more of
     it — improving recall on rotated/angled faces at no extra compute versus
     a full-frame detect. Returns faces in full-frame coordinates, or an empty
     list if none were found in the crop (caller decides whether to fall back
-    to a full-frame detect on a miss)."""
+    to a full-frame detect on a miss). ``det_size`` and ``det_thresh`` are
+    optional per-call overrides for active-track rescue; they flow through the
+    selected raw detector so hybrid engines receive them too. ``upscale_to``
+    preserves the small-ROI rescue used by the swap-time fallback and maps all
+    returned geometry back to full-frame coordinates."""
     win = _roi_window(frame, bbox, pad_ratio, min_crop)
     if win is None:
         return []
     crop, cx1, cy1 = win
-    faces = get_all_faces(crop) or []
+    scale = 1.0
+    if upscale_to is not None and int(upscale_to) > 0:
+        longest = max(crop.shape[:2])
+        if longest < int(upscale_to):
+            scale = float(upscale_to) / float(longest)
+            crop = cv2.resize(crop, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_LINEAR)
+    if det_size is None and det_thresh is None:
+        faces = get_all_faces(crop) or []
+    else:
+        faces = _detect_faces_raw(crop, det_size=det_size, det_thresh=det_thresh)
+        faces = _enrich_detected_faces(crop, faces)
     for face in faces:
+        if scale != 1.0:
+            _scale_face_coords(face, 1.0 / scale)
         _offset_face_coords(face, cx1, cy1)
     return faces
 

@@ -21,6 +21,8 @@ from roop.procmgr_runtime import (_DEBUG_MATCH, _TRACK_EMB_MAX, _TRACK_ASSIGN_MA
                                   _TRACK_ASSIGN_MARGIN, _TRACK_ASSIGN_FLOOR,
                                   _TRACK_ASSIGN_MIN_OBS, _TRACK_MIN_FRAMES,
                                   _TRACK_REID_MAX,
+                                  _TEMPORAL_HOLD_FRAMES, _TRACK_ROI_RESCUE,
+                                  _TRACK_ROI_THRESHOLD,
                                   _TRACK_STITCH, _TRACK_STITCH_GAP,
                                   _TRACK_STITCH_DIST, _TRACK_STITCH_SIZE,
                                   _TRACK_STITCH_EMB, _TRACK_STITCH_AMBIG,
@@ -213,36 +215,23 @@ class TrackingMixin:
         # Skip-frames step (N=3 runs detection on 33% of frames; N=1 scans all)
         TRACK_STEP = max(1, int(step))
 
-        # Opt-in: when exactly one track is active, detect within a padded crop
-        # around its predicted bbox instead of the full frame. Same detector
-        # canvas size -> same compute, but the tracked face fills much more of
-        # it, improving recall on rotated/angled faces. Falls back to a
-        # full-frame detect on a miss (occlusion, fast motion, re-entry), so it
-        # never loses a face the old full-frame path would have found. Skipped
-        # entirely with 0 or >1 active tracks to avoid extra detector calls in
-        # multi-face scenes (kept identical to today's full-frame behaviour there).
+        # Opt-in single-track crop: detect within a padded crop around the
+        # predicted bbox instead of the full frame. Same detector canvas size,
+        # plus an optional small-ROI upscale, makes a rotated/angled face fill
+        # more of it. It falls back to a full-frame detect on a crop miss.
         #
-        # A >1-track version (ROI-redetect only the track(s) the full-frame
-        # pass came back short of) was tried and MEASURED to regress: on d9's
-        # touching-faces stress test it turned 9.0% not-swapped into 13.0% and
-        # stripped a 90%-of-clip track of its source entirely. Root cause:
-        # get_all_faces_in_roi's crop around the MISSING track's predicted box
-        # is wide enough that for two people standing close/touching it can
-        # also re-see the ALREADY-found person, at a slightly different
-        # scale/offset than the full-frame pass gave it — the IoU dedup check
-        # doesn't recognise it as the same face, so a phantom duplicate gets
-        # appended and corrupts track association. Reverted; see the swap-time
-        # partial-miss rescue in ProcessMgr.py for the version of this fix that
-        # held up (it recovers a missing face for THIS frame's swap without
-        # feeding a duplicate observation back into track-building).
+        # A historical >1-track version (ROI-redetect only the track(s) the
+        # full-frame pass came back short of) was tried and MEASURED to regress:
+        # the conservative implementation below keeps those lessons in place:
+        # candidates are spatially and appearance gated, then globally
+        # deduplicated before they enter track association.
         ROI_CROP = os.environ.get('ROOP_TRACK_ROI_CROP', '0') == '1'
 
-        # Second and third attempts at the >1-track miss case, after the
-        # crop-based one above regressed (d9: 9.0% -> 13.0% not-swapped).
-        # BOTH ALSO MEASURED WORSE. Kept OFF by default (opt-in only, for
-        # anyone who wants to pick this investigation back up) — do not
-        # default this on without a new mechanism, not just a new variant of
-        # "detect the missing face again and feed it back into track-building":
+        # Historical second and third attempts at the >1-track miss case,
+        # retained as rationale for why the conservative rescue below merges
+        # only spatially plausible, deduplicated candidates.
+        # Those historical variants remain off. The current rescue is a new
+        # mechanism, not another whole-frame retry or unchecked crop merge:
         #
         #   v2 (REPLACE): when the base pass at the configured resolution
         #   comes back short of the active-track count, redo the WHOLE frame
@@ -268,15 +257,9 @@ class TrackingMixin:
         #   destabilises the tracker's embedding-consistency assumptions
         #   enough to cost more than the miss it recovers.
         #
-        # Read together, three attempts got progressively WORSE, not closer:
-        # this is evidence against "add another detection pass" as a family
-        # of fixes for this problem, not just against any one implementation
-        # of it. A future attempt should look at whether the EXISTING
-        # gap-fill/interpolation mechanism (see the "INTERPOLATED landmarks"
-        # line in the SWAP AUDIT report — faces filled in from neighbours
-        # rather than detected) can be leaned on harder for a track that is
-        # still active and briefly missing, instead of trying to detect the
-        # miss away with a second pass.
+        # The old whole-frame retries are still available only through their
+        # explicit HIRES_MISS opt-in; the default path below uses the bounded
+        # ROI rescue plus temporal holdout.
         HIRES_MISS = os.environ.get('ROOP_TRACK_HIRES_MISS', '0') == '1'
         HIRES_DET_SIZE = int(os.environ.get('ROOP_TRACK_HIRES_DETSIZE', '960'))
 
@@ -336,12 +319,109 @@ class TrackingMixin:
         det_executor = (ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix='track_det')
                         if pool_workers > 1 else None)
 
-        def _run_detect(fr, crop_bbox, expected_count=None):
+        def _box_center(box):
+            box = np.asarray(box, dtype=np.float32)
+            return np.array([(box[0] + box[2]) * 0.5,
+                             (box[1] + box[3]) * 0.5], dtype=np.float32)
+
+        def _box_size(box):
+            box = np.asarray(box, dtype=np.float32)
+            return max(1.0, float(box[2] - box[0]), float(box[3] - box[1]))
+
+        def _already_seen(predicted, face):
+            """Whether a full-frame detection covers this active track."""
+            try:
+                iou = self._bbox_iou(predicted, face.bbox)
+                d = float(np.linalg.norm(_box_center(predicted) - _box_center(face.bbox)))
+                return iou >= 0.20 or d <= 0.40 * _box_size(predicted)
+            except Exception:
+                return False
+
+        def _same_detection(a, b):
+            """Conservative duplicate test for the ROI rescue merge."""
+            try:
+                iou = self._bbox_iou(a.bbox, b.bbox)
+                d = float(np.linalg.norm(_box_center(a.bbox) - _box_center(b.bbox)))
+                return iou >= 0.15 or d <= 0.25 * max(_box_size(a.bbox), _box_size(b.bbox))
+            except Exception:
+                return False
+
+        def _rescue_unmatched_tracks(fr, faces, rescue_boxes):
+            """Recover only active tracks absent from the full-frame result.
+
+            The old experimental multi-face ROI pass appended every crop result
+            and could add a second, slightly shifted copy of a neighbour. This
+            version first identifies unmatched predicted boxes, gathers at most
+            one candidate per box, then performs a second global deduplication
+            before any candidate reaches track association.
+            """
+            if not _TRACK_ROI_RESCUE or not rescue_boxes:
+                return faces
+            missing = [(tid, pred, emb) for tid, pred, emb in rescue_boxes
+                       if not any(_already_seen(pred, f) for f in faces)]
+            if not missing:
+                return faces
+
+            configured = float(getattr(roop.globals, 'face_detector_threshold', 0.50))
+            rescue_thresh = min(configured, max(0.20, float(_TRACK_ROI_THRESHOLD)))
+            candidates = []
+            for tid, predicted, track_emb in missing:
+                try:
+                    roi_faces = get_all_faces_in_roi(
+                        fr, predicted, pad_ratio=0.35, min_crop=192,
+                        det_thresh=rescue_thresh, upscale_to=320) or []
+                except Exception:
+                    roi_faces = []
+                best = None
+                best_score = -float('inf')
+                pcenter = _box_center(predicted)
+                psize = _box_size(predicted)
+                for face in roi_faces:
+                    try:
+                        if face_contact.unreliable(face):
+                            # The embedding crop is shared with another face;
+                            # retaining the last-known track geometry is safer
+                            # than letting a low-confidence crop create a new
+                            # identity observation.
+                            continue
+                        if (_TRACK_EMB_MAX > 0 and track_emb is not None
+                                and getattr(face, 'embedding', None) is not None
+                                and compute_cosine_distance(track_emb, face.embedding)
+                                > _TRACK_EMB_MAX):
+                            # A low-score ROI candidate is useful only if it is
+                            # still appearance-compatible with the track. If it
+                            # is not, coast the old track instead of feeding a
+                            # likely bystander into its ID.
+                            continue
+                        iou = self._bbox_iou(predicted, face.bbox)
+                        distance = float(np.linalg.norm(pcenter - _box_center(face.bbox)))
+                        if iou < 0.05 and distance > 0.65 * psize:
+                            continue
+                        score = iou + max(0.0, 1.0 - distance / psize) * 0.25
+                        if score > best_score:
+                            best_score, best = score, face
+                    except Exception:
+                        continue
+                if best is not None:
+                    candidates.append((best_score, tid, best))
+
+            # When two predicted boxes surround the same weak detection, the
+            # best spatial explanation wins and the other track coasts.
+            for _score, _tid, face in sorted(candidates, reverse=True, key=lambda x: x[0]):
+                if any(_same_detection(face, existing) for existing in faces):
+                    continue
+                face['_roi_rescue'] = True
+                faces.append(face)
+            return faces
+
+        def _run_detect(fr, crop_bbox, expected_count=None, rescue_boxes=None):
             if crop_bbox is not None:
                 faces = get_all_faces_in_roi(fr, crop_bbox)
                 if faces:
                     return faces
             faces = get_all_faces(fr) or []
+            if rescue_boxes and len(faces) < len(rescue_boxes):
+                faces = _rescue_unmatched_tracks(fr, faces, rescue_boxes)
             if HIRES_MISS and expected_count and len(faces) < expected_count:
                 hi_faces = get_all_faces_hires(fr, HIRES_DET_SIZE)
                 # MERGE, do not replace: the already-found face(s) keep the
@@ -360,14 +440,14 @@ class TrackingMixin:
                     faces.append(hf)
             return faces
 
-        def _detect_one(fr, crop_bbox=None, expected_count=None):
+        def _detect_one(fr, crop_bbox=None, expected_count=None, rescue_boxes=None):
             # Runs inside a pool worker, one at a time per worker (ThreadPoolExecutor
             # caps concurrency at pool_workers == the analyser pool size), so this is
             # real GPU/model time, not queue-wait — lease_face_analyser() should never
             # actually block here. Tagged 'track_detect' (not 'detect') so it shows up
             # as its own STAGE TIMING line, separate from the swap phase's detect stage.
             with _prof('track_detect'), _gpu_guard(pooled=True):
-                return _run_detect(fr, crop_bbox, expected_count)
+                return _run_detect(fr, crop_bbox, expected_count, rescue_boxes)
 
         def _consume(f_idx, faces):
             nonlocal active, retired, next_id, reid_refused, contam_seen, contam_reid
@@ -504,6 +584,12 @@ class TrackingMixin:
                         # the rest of the clip, which is what left a person
                         # over the assignment gate and un-swapped.
                         'emb_dirty': dirty,
+                        # `observed_frames` excludes temporal hold faces. It is
+                        # used by source-assignment concurrency so a coast never
+                        # masquerades as a detector observation when deciding
+                        # whether two tracklets are two bodies.
+                        'observed_frames': {f_idx},
+                        'coast': {},
                         'first_seen': f_idx,
                         'last_seen': f_idx
                     }
@@ -519,6 +605,8 @@ class TrackingMixin:
                         best['prev_bbox'] = None
                     best['bbox'] = bbox
                     best['last_seen'] = f_idx
+                    best.setdefault('observed_frames', set()).add(f_idx)
+                    best.setdefault('coast', {}).pop(f_idx, None)
 
                     # A contaminated observation contributes position and
                     # nothing else. The existing 0.5 outlier filter does not
@@ -553,6 +641,30 @@ class TrackingMixin:
                 centroid = np.array([(bbox[0] + bbox[2]) * 0.5,
                                      (bbox[1] + bbox[3]) * 0.5], np.float32)
                 entries.append((centroid, best['id']))
+
+            # A confirmed track that was not claimed on this detector frame is
+            # allowed to coast for a small, explicit holdout. The predicted Face
+            # carries the latest landmarks and embedding, so the swap phase can
+            # keep the same warp and source while a profile/occlusion recovers.
+            # It is deliberately not added to `obs` or the embedding mean: a
+            # prediction is geometry continuity, not identity evidence.
+            if collect_obs and _TEMPORAL_HOLD_FRAMES > 0:
+                for t in active:
+                    if t['id'] in used:
+                        continue
+                    if len(t.get('obs') or {}) < 2:
+                        # Do not let a one-frame background false positive
+                        # become a persistent temporal face.
+                        continue
+                    gap = f_idx - int(t.get('last_seen', f_idx))
+                    if not (1 <= gap <= _TEMPORAL_HOLD_FRAMES):
+                        continue
+                    held = self._coast_face(t, f_idx)
+                    if held is None:
+                        continue
+                    t.setdefault('coast', {})[f_idx] = held
+                    c = _box_center(held.bbox)
+                    entries.append((c, t['id']))
             per_frame[f_idx] = entries
 
         cap = None
@@ -696,9 +808,13 @@ class TrackingMixin:
 
                 crop_bbox = _predict_bbox(active[0], idx) if ROI_CROP and len(active) == 1 else None
                 expected_count = len(active) if HIRES_MISS and len(active) > 1 else None
+                rescue_boxes = ([(t['id'], _predict_bbox(t, idx), t.get('emb_mean'))
+                                 for t in active]
+                                if _TRACK_ROI_RESCUE and active else None)
 
                 if det_executor is not None:
-                    in_flight.append((idx, det_executor.submit(_detect_one, frame, crop_bbox, expected_count)))
+                    in_flight.append((idx, det_executor.submit(
+                        _detect_one, frame, crop_bbox, expected_count, rescue_boxes)))
                     max_in_flight = pool_workers + 2
                     if len(in_flight) >= max_in_flight:
                         done_idx, done_fut = in_flight.popleft()
@@ -712,7 +828,7 @@ class TrackingMixin:
                             _consume(done_idx, result)
                 else:
                     with _prof('track_detect'), _gpu_guard(pooled=analysis_pooled()):
-                        faces = _run_detect(frame, crop_bbox, expected_count)
+                        faces = _run_detect(frame, crop_bbox, expected_count, rescue_boxes)
                     with _prof('track_consume'):
                         _consume(idx, faces)
 
@@ -915,6 +1031,91 @@ class TrackingMixin:
                  f'denied Re-ID' if contam_seen else ''))
         return tracks
 
+    @staticmethod
+    def _coast_face(track, frame_idx):
+        """Predict one short detector-miss frame from the last real observation.
+
+        Bbox, 5-point keypoints, and optional 106/68-point landmarks use the
+        most recent two *real* observations when available. Keeping this helper
+        separate from ``_interp_face`` is important: interpolation has two
+        anchors, while a holdout has only the confirmed track state and must
+        never become identity evidence. The returned face is explicitly marked
+        as interpolated so the swap claim order still gives real detections
+        priority over predictions.
+        """
+        obs = track.get('obs') or {}
+        if not obs:
+            return None
+        idxs = sorted(int(i) for i in obs)
+        last_idx = idxs[-1]
+        dt = int(frame_idx) - last_idx
+        if dt <= 0:
+            return None
+        last = obs[last_idx]
+        try:
+            # InsightFace Face is dict-like and supports this cheap shallow
+            # clone; it also avoids Face.__getattr__ confusing copy.copy().
+            face = type(last)(last)
+        except Exception:
+            # Lightweight test doubles and provider-specific Face wrappers may
+            # require constructor arguments. They are safe to shallow-copy.
+            import copy
+            face = copy.copy(last)
+        prev = obs[idxs[-2]] if len(idxs) > 1 else None
+        prev_idx = idxs[-2] if len(idxs) > 1 else None
+
+        def _value(item, key):
+            try:
+                return item.get(key)
+            except Exception:
+                return getattr(item, key, None)
+
+        def _set_value(item, key, value):
+            try:
+                item[key] = value
+            except Exception:
+                setattr(item, key, value)
+
+        def _predict(key):
+            current = _value(last, key)
+            if current is None:
+                return None
+            current = np.asarray(current, dtype=np.float64)
+            if prev is None or prev_idx is None:
+                return current
+            previous = _value(prev, key)
+            if previous is None or np.shape(previous) != np.shape(current):
+                return current
+            span = float(last_idx - prev_idx)
+            if span <= 0:
+                return current
+            velocity = (current - np.asarray(previous, dtype=np.float64)) / span
+            return current + velocity * float(dt)
+
+        bbox = _predict('bbox')
+        if bbox is None or np.size(bbox) < 4:
+            return None
+        bbox = np.asarray(bbox, dtype=np.float32).reshape(-1)[:4]
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            return None
+        _set_value(face, 'bbox', bbox)
+        for key in ('kps', 'landmark_2d_106', 'landmark_3d_68'):
+            value = _predict(key)
+            if value is not None:
+                _set_value(face, key, np.asarray(value, dtype=np.float32))
+        emb = track.get('emb_mean')
+        if emb is not None:
+            # Raw embedding is intentional; Face.normed_embedding derives from
+            # it and the rest of the app expects the original Face contract.
+            _set_value(face, 'embedding', np.asarray(emb, dtype=np.float32))
+        score = _value(last, 'det_score')
+        if score is not None:
+            _set_value(face, 'det_score', np.float32(score))
+        _set_value(face, '_interpolated', True)
+        _set_value(face, '_temporal_hold', True)
+        _set_value(face, '_hold_frames', dt)
+        return face
+
     def _person_angle_indices(self):
         """person group id -> the indices of its captured target angles."""
         groups = self.target_face_groups
@@ -1038,6 +1239,10 @@ class TrackingMixin:
                 dst['emb_n'] = int(dst.get('emb_n') or 0) + int(src.get('emb_n') or 0)
             if src.get('obs'):
                 dst.setdefault('obs', {}).update(src['obs'])
+            if src.get('observed_frames'):
+                dst.setdefault('observed_frames', set()).update(src['observed_frames'])
+            if src.get('coast'):
+                dst.setdefault('coast', {}).update(src['coast'])
             dst['first_seen'] = min(int(dst.get('first_seen', 0)), int(src.get('first_seen', 0)))
             if int(src.get('last_seen', 0)) >= int(dst.get('last_seen', 0)):
                 dst['last_seen'] = int(src.get('last_seen', 0))
@@ -1491,8 +1696,14 @@ class TrackingMixin:
         `frames_of` comes from the scan and is always populated; `obs` only when
         the caller asked for the Face objects. Preferring the scan's record is
         what makes the concurrency gate exact in the standalone identity pass,
-        where obs is empty and the fallback was a span comparison.
+        where obs is empty and the fallback was a span comparison. Temporal
+        holdout frames are predictions, not observations, so a temporal track's
+        explicit `observed_frames` set takes precedence over the merged frame
+        map when it is available.
         """
+        observed = t.get('observed_frames')
+        if observed:
+            return set(observed)
         seen = frames_of.get(t['id']) if frames_of else None
         if seen:
             return seen
@@ -1506,6 +1717,9 @@ class TrackingMixin:
           - gap-fill: linearly interpolate bbox/kps/landmarks across detection
             misses of up to ROOP_TEMPORAL_GAP frames (default 10), so a face
             that blinks out of detection for a few frames keeps being swapped;
+          - holdout: coast a confirmed track for ROOP_TEMPORAL_HOLD frames
+            (default 3) after its last real observation, including the last
+            known/predicted landmarks when no later anchor exists;
           - smoothing: when "Stabilize face" is on, run kps/lm106/bbox through
             the configured One Euro/EMA filter sequentially over the track
             (subsumes the kps-only 2-pass, and additionally covers the mask
@@ -1559,9 +1773,12 @@ class TrackingMixin:
         n_faces = sum(len(v) for v in self._temporal_faces.values())
         n_interp = sum(1 for v in self._temporal_faces.values()
                        for f in v if f.get('_interpolated'))
+        n_hold = sum(1 for v in self._temporal_faces.values()
+                     for f in v if f.get('_temporal_hold'))
         n_refused = int(getattr(self, '_interp_refused', 0) or 0)
         print(f'[Temporal] {len(tracks or [])} track(s); faces on {n_frames} frames '
-              f'({n_faces} total, {n_interp} gap-filled, gap limit {gap_max}'
+              f'({n_faces} total, {n_interp} gap-filled, {n_hold} holdout, '
+              f'gap limit {gap_max}, hold { _TEMPORAL_HOLD_FRAMES}'
               + (f', {n_refused} refused as unbridgeable' if n_refused else '') + ').')
 
         # ── Coverage guard ───────────────────────────────────────────────────
@@ -1650,13 +1867,18 @@ class TrackingMixin:
         out = {}
         self._interp_refused = 0
         total_coasts = 0
+        scan_end = int(getattr(self, '_track_scanned', 0) or 0)
         for t in tracks:
             obs = t.get('obs') or {}
             if not obs:
                 continue
             emb_mean = np.asarray(t['emb_mean'], dtype=np.float32)
             idxs = sorted(obs)
-            merged = dict(obs)
+            # Real observations win over a previously-created holdout at the
+            # same frame. Coast entries are kept separate from `obs` so they
+            # cannot alter the running identity mean or the track's evidence.
+            merged = dict(t.get('coast') or {})
+            merged.update(obs)
             prev = None
             for i in idxs:
                 if prev is not None and 1 < (i - prev) <= gap_max:
@@ -1673,6 +1895,20 @@ class TrackingMixin:
                     for g in range(prev + 1, i):
                         merged[g] = self._interp_face(a, b, (g - prev) / span, emb_mean)
                 prev = i
+
+            # A scan can end while the last confirmed face is in a short
+            # detector dropout. Fill the tail too; without this, the forward
+            # hold worked only when a later real detection existed to provide a
+            # second interpolation anchor.
+            if (len(idxs) >= 2 and _TEMPORAL_HOLD_FRAMES > 0
+                    and scan_end > idxs[-1] + 1):
+                tail_end = min(scan_end, idxs[-1] + 1 + _TEMPORAL_HOLD_FRAMES)
+                for g in range(idxs[-1] + 1, tail_end):
+                    if g in merged:
+                        continue
+                    held = self._coast_face(t, g)
+                    if held is not None:
+                        merged[g] = held
 
             if os.environ.get('ROOP_DEBUG_GAPS') == '1':
                 # One-off diagnostic (2026-08-16, interacting-faces investigation):

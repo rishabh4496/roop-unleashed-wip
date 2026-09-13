@@ -178,6 +178,25 @@ _TRACK_VETO_MARGIN = env_float('ROOP_TRACK_VETO_MARGIN', '0.15')
 _TRACK_REID_MAX = env_float('ROOP_TRACK_REID_MAX', '0.5')
 
 
+# Temporal holdout / active-track rescue.
+# A detector miss is not evidence that a confirmed face left the scene. Keep
+# the last known geometry for a short, bounded number of frames while the
+# tracking pre-pass tries to reacquire it. This is deliberately capped: a long
+# hold paints a face onto the background after a real exit, while a short hold
+# removes the 2-5 frame detector dropouts that read as flicker.
+# 0 disables the forward hold (between-anchor interpolation remains available).
+_TEMPORAL_HOLD_FRAMES = max(0, min(5, env_int('ROOP_TEMPORAL_HOLD', '3')))
+
+# When a full-frame pass returns fewer faces than active tracks, retry only the
+# unmatched predicted boxes. The retry uses a close-up ROI and a lower floor
+# because a profile/occluded face often has a weaker detector score once it is
+# small in the full-frame canvas. Candidates are deduplicated and kept only
+# when spatially plausible.
+_TRACK_ROI_RESCUE = os.environ.get('ROOP_TRACK_ROI_RESCUE', '1').strip().lower() not in (
+    '0', 'false', 'off')
+_TRACK_ROI_THRESHOLD = env_float('ROOP_TRACK_ROI_THRESHOLD', '0.35')
+
+
 # ── Gap-fill continuity ──────────────────────────────────────────────────────
 # The temporal pre-pass fills a track's detection misses by LINEARLY
 # INTERPOLATING between the two observations either side of the gap, and the

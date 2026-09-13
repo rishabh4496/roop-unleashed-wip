@@ -165,6 +165,48 @@ The **Editor** tab also offers AI post-processing on any image/video: Real-ESRGA
 For strict GPEN provider validation and repeatable GPU latency measurements,
 see [GPEN GPU diagnostics](docs/GPEN_GPU_DIAGNOSTICS.md).
 
+### Profile angles, temporal tracking, and flicker control
+
+For video, enable **Temporal detection**, **Track identities**, and **Stabilize face**. In
+selected-face mode the pre-pass assigns one source to a spatial track, compares each
+track against the closest embedding in the source bank, and keeps a confirmed track
+for a short detector dropout. Add multiple reference images of the same person (frontal,
+roughly 45 degrees, and profile) to the same faceset/person; matching uses the closest
+angle, not an average that can resemble none of the captured poses. **Use source bank**
+enables pose-aware source selection when the faceset contains multiple angles.
+
+The detector threshold is a confidence floor, not an identity score. Start with
+`0.50`; for small or lateral faces try `0.35-0.45`, preferably with `retinaface_r50`,
+`retinaface`, or `yoloface`. Lower thresholds increase false positives, so keep identity
+tracking enabled in multi-person footage. The **Max Face Similarity Threshold** is
+actually an ArcFace cosine *distance* (`0` is identical); start at `0.65-0.75` after
+capturing profile references and tighten it if a stranger is accepted.
+
+Advanced runtime knobs are read when the Python process starts:
+
+| Variable | Default | Effect |
+|---|---:|---|
+| `ROOP_TEMPORAL_HOLD` | `3` | Hold a confirmed track for `0-5` missed frames; `2-4` is the useful tuning range. |
+| `ROOP_TRACK_ROI_RESCUE` | `1` | Retry only active tracks missing from a full-frame pass. Set `0` for an A/B test. |
+| `ROOP_TRACK_ROI_THRESHOLD` | `0.35` | Confidence floor for that close-up ROI retry. |
+| `ROOP_TEMPORAL_GAP` | `10` | Maximum gap eligible for two-sided landmark interpolation. |
+| `ROOP_TRACK_EMB_MAX` | `0.70` | Appearance distance allowed when associating a detection to an active track. |
+| `ROOP_TRACK_ASSIGN_MAX` | `0.60` | Tighter distance gate for durable track-to-source assignment. |
+| `ROOP_TRACK_VETO` | `0.85` | Multi-person source veto for clear identity mismatches. |
+| `ROOP_TRACK_VETO_SINGLE` | `0` | Optional absolute veto for a single selected person; leave off for difficult profiles. |
+
+For example, before starting the app on Windows PowerShell:
+
+```powershell
+$env:ROOP_TEMPORAL_HOLD = "4"
+$env:ROOP_TRACK_ROI_THRESHOLD = "0.35"
+```
+
+The same video controls are available to API callers through the `/api/swap` JSON
+payload (`temporal_detection`, `track_identities`, `stabilize_face`, `detector_engine`,
+`face_detector_threshold`, `face_distance`, and `use_source_bank`). The ROI/holdout
+variables are process-level safeguards and require an app restart after changing.
+
 ---
 
 ## Updating
