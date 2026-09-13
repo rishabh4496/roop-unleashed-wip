@@ -4498,3 +4498,19 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self.num_frames_no_face = 0
         if hasattr(self, 'temporal_hold_buffer') and self.temporal_hold_buffer is not None:
             self.temporal_hold_buffer.reset()
+        try:
+            from roop.buffer_pool import release_frame_buffer_pools
+            release_frame_buffer_pools()
+        except Exception:
+            pass
+        try:
+            from roop.telemetry import clear_telemetry_history
+            clear_telemetry_history()
+        except Exception:
+            pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

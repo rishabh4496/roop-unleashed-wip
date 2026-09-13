@@ -9,6 +9,9 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from collections import deque
+import threading
+
 # Actions
 ACTION_SWAPPED = "SWAPPED"
 ACTION_ROI_RETRY = "ROI_RETRY"
@@ -21,7 +24,8 @@ FAIL_SIMILARITY = "FAIL_SIMILARITY"
 FAIL_LANDMARKS = "FAIL_LANDMARKS"
 
 _TELEMETRY_LOG_ENABLED = os.environ.get("ROOP_TELEMETRY_LOG", "1") != "0"
-_TELEMETRY_HISTORY: List[Dict[str, Any]] = []
+_TELEMETRY_HISTORY: deque = deque(maxlen=1000)
+_TELEMETRY_LOCK = threading.Lock()
 
 
 def format_telemetry(
@@ -92,18 +96,19 @@ def log_frame_telemetry(
         "msg": msg,
     }
 
-    if len(_TELEMETRY_HISTORY) > 1000:
-        _TELEMETRY_HISTORY.pop(0)
-    _TELEMETRY_HISTORY.append(record)
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_HISTORY.append(record)
 
     return msg
 
 
 def get_telemetry_history() -> List[Dict[str, Any]]:
     """Return in-memory telemetry records."""
-    return list(_TELEMETRY_HISTORY)
+    with _TELEMETRY_LOCK:
+        return list(_TELEMETRY_HISTORY)
 
 
 def clear_telemetry_history() -> None:
     """Clear in-memory telemetry records."""
-    _TELEMETRY_HISTORY.clear()
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_HISTORY.clear()

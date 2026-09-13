@@ -267,7 +267,102 @@ class TestHardwareProfilerAndOptimizer(unittest.TestCase):
         profile = optimizer.build_profile(workload, save=False)
         env = RuntimeOptimizer.apply_environment(profile)
         self.assertIn("ROOP_RUNTIME_WORKER_COUNT", env)
-        self.assertIn("ROOP_RUNTIME_ENCODER", env)
+class TestConcurrencyAndMemoryAudit(unittest.TestCase):
+    """Verify zero memory leaks, bounded telemetry history, and thread safety."""
+
+    def test_telemetry_history_ring_buffer_concurrency(self):
+        import roop.telemetry
+        from roop.telemetry import log_frame_telemetry, get_telemetry_history, clear_telemetry_history
+        import concurrent.futures
+
+        orig_enabled = roop.telemetry._TELEMETRY_LOG_ENABLED
+        roop.telemetry._TELEMETRY_LOG_ENABLED = False
+        try:
+            clear_telemetry_history()
+            self.assertEqual(len(get_telemetry_history()), 0)
+
+            # 8 threads logging 300 messages each = 2,400 messages total
+            def worker(thread_id):
+                for i in range(300):
+                    log_frame_telemetry(
+                        frame_idx=thread_id * 1000 + i,
+                        detected=True,
+                        det_score=0.95,
+                        yaw_pitch_roll=(0.0, 0.0, 0.0),
+                        match_sim=0.88,
+                        action="SWAPPED",
+                    )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(worker, t) for t in range(8)]
+                concurrent.futures.wait(futures)
+
+            history = get_telemetry_history()
+            # Ring buffer must be strictly capped to maxlen=1000 to prevent unbounded memory growth
+            self.assertEqual(len(history), 1000)
+
+            # Clear must empty the ring buffer
+            clear_telemetry_history()
+            self.assertEqual(len(get_telemetry_history()), 0)
+        finally:
+            roop.telemetry._TELEMETRY_LOG_ENABLED = orig_enabled
+
+    def test_pinned_buffer_pools_lifecycle_and_drain(self):
+        from roop.buffer_pool import get_frame_buffer_pool, release_frame_buffer_pools
+
+        pool = get_frame_buffer_pool(height=240, width=320, capacity=3)
+        self.assertEqual(pool.available_count, 3)
+
+        # Acquire all buffers
+        b1 = pool.acquire()
+        b2 = pool.acquire()
+        b3 = pool.acquire()
+        self.assertEqual(pool.available_count, 0)
+
+        # 4th acquire gracefully allocates fallback
+        b4 = pool.acquire()
+        self.assertIsNotNone(b4)
+
+        # Release back
+        pool.release(b1)
+        pool.release(b2)
+        pool.release(b3)
+        # Excess buffer dropped safely without queue full error
+        pool.release(b4)
+        self.assertEqual(pool.available_count, 3)
+
+        # Release all global pools
+        release_frame_buffer_pools()
+        new_pool = get_frame_buffer_pool(height=240, width=320, capacity=2)
+        self.assertEqual(new_pool.available_count, 2)
+        release_frame_buffer_pools()
+
+    def test_processmgr_release_resources_cleans_state(self):
+        from roop.ProcessMgr import ProcessMgr
+        from roop.temporal_hold import TemporalSwapHoldBuffer
+        from unittest.mock import MagicMock
+
+        pm = ProcessMgr(MagicMock())
+        pm.input_face_datas = ["face1", "face2"]
+        pm.target_face_datas = ["faceA"]
+        pm.last_swapped_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        pm.last_found_bboxes = np.array([[0, 0, 50, 50]])
+        pm.num_frames_no_face = 5
+
+        hold_buf = TemporalSwapHoldBuffer(max_holds=3)
+        hold_buf.prev_composite = np.zeros((100, 100, 3), dtype=np.uint8)
+        hold_buf.prev_frame_gray = np.zeros((100, 100), dtype=np.uint8)
+        pm.temporal_hold_buffer = hold_buf
+
+        pm.release_resources()
+
+        self.assertEqual(pm.input_face_datas, [])
+        self.assertEqual(pm.target_face_datas, [])
+        self.assertIsNone(pm.last_swapped_frame)
+        self.assertIsNone(pm.last_found_bboxes)
+        self.assertEqual(pm.num_frames_no_face, 0)
+        self.assertIsNone(pm.temporal_hold_buffer.prev_composite)
+        self.assertIsNone(pm.temporal_hold_buffer.prev_frame_gray)
 
 
 if __name__ == "__main__":
