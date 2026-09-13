@@ -1229,6 +1229,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # Frame indices restart per clip, so a latch carried over from the last
         # one would match a new face by position and hand it a stale verdict.
         self._nonfrontal_router.reset()
+        if hasattr(self, 'temporal_hold_buffer') and self.temporal_hold_buffer is not None:
+            self.temporal_hold_buffer.reset()
+        self.last_found_bboxes = None
+        self.num_frames_no_face = 0
         # Swap-audit counters. Reset HERE, not in initialize(): core.py calls
         # initialize() once and then hands batch_process a whole LIST of files,
         # while the audit is reported at the end of each one — so resetting there
@@ -3361,6 +3365,9 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         """
         from roop.face_util import align_crop
 
+        if target_face is None or getattr(target_face, 'kps', None) is None:
+            return frame
+
         if plate is None:
             plate = frame
 
@@ -3399,7 +3406,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         if roop.globals.autorotate_faces:
             rotation_action = self.rotation_action(target_face, frame)
             if rotation_action is not None:
-                (startX, startY, endX, endY) = target_face["bbox"].astype("int")
+                tb = target_face["bbox"] if (isinstance(target_face, dict) or hasattr(target_face, '__getitem__')) else getattr(target_face, 'bbox', None)
+                if tb is None:
+                    return frame
+                (startX, startY, endX, endY) = np.asarray(tb).astype(int)
                 width = endX - startX
                 height = endY - startY
                 offs = int(max(width, height) * 0.25)
@@ -4469,3 +4479,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self.target_face_datas = []
         self.target_face_groups = []
         self.last_swapped_frame = None
+        self.last_found_bboxes = None
+        self.num_frames_no_face = 0
+        if hasattr(self, 'temporal_hold_buffer') and self.temporal_hold_buffer is not None:
+            self.temporal_hold_buffer.reset()

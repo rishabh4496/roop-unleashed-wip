@@ -201,7 +201,14 @@ class TemporalSwapHoldBuffer:
         """Create a feathered elliptical mask matching bbox bounds."""
         h, w = shape[:2]
         mask = np.zeros((h, w), dtype=np.float32)
-        x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+        if bbox is None or len(bbox) < 4:
+            return mask
+        x1 = max(0, min(w, int(round(float(bbox[0])))))
+        y1 = max(0, min(h, int(round(float(bbox[1])))))
+        x2 = max(0, min(w, int(round(float(bbox[2])))))
+        y2 = max(0, min(h, int(round(float(bbox[3])))))
+        if x2 <= x1 or y2 <= y1:
+            return mask
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
         ax, ay = max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2)
         cv2.ellipse(mask, (cx, cy), (ax, ay), 0, 0, 360, 1.0, -1)
