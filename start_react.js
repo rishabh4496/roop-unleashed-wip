@@ -112,7 +112,9 @@ module.exports = async (kernel) => {
             "npm run dev"
           ],
           on: [{
-            "event": "/(http:\\/\\/[a-zA-Z0-9.:]+)/",
+            // With Vite's LAN host enabled, skip its localhost URL and capture
+            // the numeric network URL for Pinokio's Open React UI menu item.
+            "event": "/(http:\\/\\/[0-9.:]+)/",
             "done": true
           }]
         }

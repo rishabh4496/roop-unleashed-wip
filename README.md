@@ -24,6 +24,21 @@ Pinokio will automatically detect your GPU and install the correct PyTorch and O
 
 ---
 
+### Open the UI from another device
+
+The Pinokio React UI is exposed on the host's local network, while the FastAPI
+processing service remains private on `127.0.0.1` and is reached through the
+Vite proxy. Start the app in Pinokio, then open the numeric **Network** URL
+printed by Vite (or the same UI port at the host computer's LAN IP) on a phone
+or another computer connected to the same network. Do not use the API port
+directly; it is intentionally loopback-only.
+
+If Windows Firewall prompts for access, allow Pinokio/Node.js on **Private
+networks**. The app's dynamically assigned UI port is shown in the launcher
+terminal, so do not assume a fixed port.
+
+---
+
 ## Installation — Option 2: Manual (GitHub)
 
 ### Prerequisites

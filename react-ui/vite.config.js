@@ -7,6 +7,10 @@ const apiPort = process.env.ROOP_API_PORT || '8001'
 export default defineConfig({
   plugins: [react()],
   server: {
+    // The Vite server is the LAN-facing gateway for the React UI. Keep the
+    // FastAPI target on 127.0.0.1 below; Vite proxies API requests locally on
+    // the host, so the processing API itself does not need to be exposed.
+    host: true,
     // The Pinokio launcher (start_react.js) assigns a dedicated dev-server port
     // via PORT; Vite doesn't read PORT on its own, so wire it up here (falls
     // back to Vite's default 5173 when unset).
