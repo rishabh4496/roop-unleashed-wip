@@ -1,5 +1,9 @@
 import numpy as np
 
+from roop.faceset_v2 import (FORMAT_NAME, FORMAT_VERSION, measure_lighting,
+                              parse_pose_matrix_key, pose_matrix_cell,
+                              select_reference_index)
+
 class FaceSet:
     faces = []
     ref_images = []
@@ -18,6 +22,22 @@ class FaceSet:
         # Multi-angle source bank: list of (yaw_deg, pitch_deg) or None per face in self.faces
         # Populated by ProcessMgr.initialize() when use_source_bank is enabled.
         self.face_poses = None  # type: list[tuple[float, float] | None] | None
+        # V2 is an additive metadata/index layer for cached embeddings & poses
+        self.format_name = FORMAT_NAME
+        self.format_version = 1
+        self.faceset_metadata = None
+        self.face_metadata = []
+        self.pose_bank = None
+        self.pose_bins = {}
+        self.dermal_patch = None
+        self.identity_embedding = None
+        self.normalized_embedding = None
+        self.reference_embeddings = []
+        self.reference_weights = []
+        self.reference_paths = []
+        self.reference_rejected = []
+        self.faceset_valid = True
+        self.faceset_migration = None
 
     def AverageEmbeddings(self):
         if len(self.faces) > 1 and self.embeddings_backup is None:
@@ -103,3 +123,123 @@ class FaceSet:
         if min_dist < float('inf'):
             return min_dist, min_i
         return None, 0
+
+    def attach_v2_metadata(self, metadata):
+        """Attach validated V2 metadata without replacing detector Face objects."""
+        self.faceset_metadata = metadata
+        self.format_name = metadata.get('schema', FORMAT_NAME)
+        self.format_version = int(metadata.get('version', FORMAT_VERSION))
+        self.face_metadata = list(metadata.get('sources') or [])
+        self.pose_bank = metadata.get('pose_bank') or {}
+        self.dermal_patch = metadata.get('dermal_patch') or None
+        self.pose_bins = {}
+        for key, cell in (metadata.get('pose_bins') or {}).items():
+            parsed = parse_pose_matrix_key(key)
+            if parsed is None or not isinstance(cell, dict):
+                continue
+            vector = self._unit_vector(cell.get('embedding'))
+            if vector is not None:
+                self.pose_bins[parsed] = vector
+        identity = metadata.get('identity') or {}
+        value = (metadata.get('default_embedding')
+                 or identity.get('embedding')
+                 or identity.get('normalized_embedding'))
+        if value is not None:
+            arr = np.asarray(value, dtype=np.float32).reshape(-1)
+            norm = float(np.linalg.norm(arr))
+            if norm > 1e-8 and np.isfinite(arr).all():
+                self.identity_embedding = (arr / norm).astype(np.float32)
+                self.normalized_embedding = self.identity_embedding.copy()
+        poses = []
+        for entry in self.face_metadata:
+            geo = entry.get('geometry') or {}
+            poses.append((geo.get('yaw'), geo.get('pitch')))
+        self.face_poses = poses if poses else None
+        for index, face in enumerate(self.faces):
+            try:
+                face['faceset_v2_index'] = index
+            except Exception:
+                try:
+                    setattr(face, 'faceset_v2_index', index)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _unit_vector(value):
+        if value is None:
+            return None
+        try:
+            arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if arr.size == 0 or not np.isfinite(arr).all():
+            return None
+        norm = float(np.linalg.norm(arr))
+        if norm <= 1e-8:
+            return None
+        return (arr / norm).astype(np.float32)
+
+    @property
+    def default_embedding(self):
+        """The global normalized centroid, for both V2 and legacy FaceSets."""
+        if self.identity_embedding is not None:
+            return self.identity_embedding
+        vectors = []
+        for index, face in enumerate(self.faces or []):
+            if index == 0 and self.embeddings_backup is not None:
+                value = self.embeddings_backup
+            elif isinstance(face, dict):
+                value = face.get('embedding')
+            else:
+                value = getattr(face, 'embedding', None)
+            vector = self._unit_vector(value)
+            if vector is not None:
+                vectors.append(vector)
+        if not vectors or len({v.shape for v in vectors}) != 1:
+            return None
+        return self._unit_vector(np.mean(np.asarray(vectors), axis=0))
+
+    def pose_bin_embedding(self, pose=None, fallback=True):
+        """Return the 3x3 pose-cell centroid for `pose`."""
+        cell = pose_matrix_cell(pose) if pose is not None else ("center", "center")
+        vector = self.pose_bins.get(cell)
+        if vector is not None:
+            return vector
+        if not fallback:
+            return None
+        return self.default_embedding
+
+    def select_reference_index(self, pose=None, appearance=None, embedding=None):
+        """Fast V2 lookup with legacy pose-bank fallback."""
+        if self.format_version >= 2 and self.faceset_metadata:
+            index = select_reference_index(self.faceset_metadata, pose=pose,
+                                           appearance=appearance, embedding=embedding)
+            return max(0, min(int(index), max(0, len(self.faces) - 1)))
+        if pose is not None and self.face_poses:
+            yaw, pitch = float(pose[0]), float(pose[1])
+            valid = [(i, (yaw - float(y or 0.0)) ** 2 + (pitch - float(p or 0.0)) ** 2)
+                     for i, (y, p) in enumerate(self.face_poses) if y is not None]
+            if valid:
+                return min(valid, key=lambda item: item[1])[0]
+        return 0
+
+    def identity_detail_for(self, source_index=0):
+        """Return the persistent V2 detail map, or a safe per-source fallback."""
+        if self.format_version < 2 or not self.faceset_metadata:
+            return None
+        details = self.faceset_metadata.get('identity_details') or {}
+        persistent = details.get('high_frequency')
+        if isinstance(persistent, dict) and persistent.get('residual_q'):
+            return persistent
+        try:
+            index = int(source_index)
+        except (TypeError, ValueError):
+            index = 0
+        if 0 <= index < len(self.face_metadata):
+            return ((self.face_metadata[index].get('identity_details') or {})
+                    .get('high_frequency'))
+        return None
+
+    @staticmethod
+    def lighting_for_frame(image, bbox=None):
+        return measure_lighting(image, bbox)

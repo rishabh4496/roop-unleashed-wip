@@ -480,6 +480,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self._tls = local()
         self._kps_stab_factory = None
         self._enh_stab_factory = None
+        self.runtime_profile = None
         # Latches the non-frontal mask-routing verdict per face across frames so
         # it cannot chatter on detector noise. Unlike the stabilizers above this
         # is NOT opt-in and NOT per-thread: the routing decision has to agree
@@ -1348,6 +1349,52 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     self.kps_stabilizer.reset()
                 if self.enh_stabilizer is not None:
                     self.enh_stabilizer.reset()
+
+        # Runtime Optimizer: hardware-aware profiling, NVENC encoder selection, and worker policy
+        try:
+            from roop.runtime_optimizer import RuntimeOptimizer
+            _runtime_optimizer = RuntimeOptimizer(settings=getattr(roop.globals, 'CFG', None))
+            self.runtime_profile = _runtime_optimizer.profile_video(
+                source_video,
+                frame_count=frame_count,
+                resolution=(width, height),
+                output_resolution=(width, height),
+                faces_per_frame=max(1, len(getattr(self, 'target_face_datas', []) or [])),
+                face_count=len(getattr(self, 'target_face_datas', []) or []),
+                save=True)
+            roop.globals.runtime_hardware_profile = self.runtime_profile.hardware
+            RuntimeOptimizer.apply_environment(
+                self.runtime_profile, getattr(roop.globals, 'CFG', None))
+            cfg_codec = str(getattr(getattr(roop.globals, 'CFG', None),
+                                   'output_video_codec', 'auto') or 'auto').strip().lower()
+            if (cfg_codec in ('', 'auto', 'default', 'none') or
+                getattr(roop.globals, 'video_encoder', None) in ('', 'auto', 'default', 'none', None)):
+                roop.globals.video_encoder = self.runtime_profile.tuning.encoder
+            cfg = getattr(roop.globals, 'CFG', None)
+            auto_threads = bool(getattr(cfg, 'auto_thread_selection', False)) and bool(
+                getattr(cfg, '_threads_auto', False))
+            if (auto_threads and threads > 1
+                    and self.runtime_profile.tuning.worker_count != threads):
+                print(f"[RuntimeOptimizer] workload worker policy: execution threads "
+                      f"{threads} -> {self.runtime_profile.tuning.worker_count}; "
+                      "bounded by CPU topology, workload complexity, and GPU tier.",
+                      flush=True)
+                threads = self.runtime_profile.tuning.worker_count
+                roop.globals.execution_threads = threads
+            print("[RuntimeOptimizer] workload profile: "
+                  f"{self.runtime_profile.workload.input_width}x"
+                  f"{self.runtime_profile.workload.input_height}, "
+                  f"complexity={self.runtime_profile.workload.estimated_complexity:.2f}, "
+                  f"workers(recommended)={self.runtime_profile.tuning.worker_count}, "
+                  f"queue={self.runtime_profile.tuning.queue_depth}, "
+                  f"swap_batch={self.runtime_profile.tuning.batch_size}, "
+                  f"swap_tile_batch={self.runtime_profile.tuning.tile_batch_size}, "
+                  f"face_concurrency={self.runtime_profile.tuning.face_concurrency}, "
+                  f"in_flight={self.runtime_profile.tuning.in_flight_frames}, "
+                  f"stab_chunk={self.runtime_profile.tuning.stabilization_chunk_size}, "
+                  f"profile={self.runtime_profile.cache_key}", flush=True)
+        except Exception as exc:
+            print(f"[RuntimeOptimizer] workload profile unavailable: {exc}", flush=True)
 
         self.output_to_file = output_method != "Virtual Camera"
         self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
