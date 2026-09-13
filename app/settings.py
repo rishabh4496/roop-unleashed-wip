@@ -237,6 +237,7 @@ class Settings:
         self.stabilize_beta = self.default_get(data, 'stabilize_beta', 0.02)
         self.stabilize_enhancer = self.default_get(data, 'stabilize_enhancer', False)
         self.stabilize_enhancer_strength = self.default_get(data, 'stabilize_enhancer_strength', 0.5)
+        self.temporal_smooth_strength = float(self.default_get(data, 'temporal_smooth_strength', 0.3))
         # Skin-tone / lighting match of swapped crop → original: none|rct|lct|mkl
         self.color_transfer_mode = self.default_get(data, 'color_transfer_mode', 'rct')
         # Detection refinements
@@ -416,6 +417,7 @@ class Settings:
             'stabilize_beta': self.stabilize_beta,
             'stabilize_enhancer': self.stabilize_enhancer,
             'stabilize_enhancer_strength': self.stabilize_enhancer_strength,
+            'temporal_smooth_strength': self.temporal_smooth_strength,
             'color_transfer_mode': self.color_transfer_mode,
             'refine_landmarks': self.refine_landmarks,
             'swap_model_mask_strength': self.swap_model_mask_strength,

@@ -9,7 +9,7 @@ from collections import deque
 import roop.globals
 import roop.utilities as util
 
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ def run_ffmpeg(args: Sequence[str]) -> bool:
     _LOGGER.info("Running ffmpeg")
     process = None
     try:
+        from roop.process_lifecycle import process_lifecycle_manager
+    except Exception:
+        process_lifecycle_manager = None
+    try:
         kwargs = {
             'stdout': subprocess.PIPE,
             'stderr': subprocess.STDOUT,
@@ -34,6 +38,8 @@ def run_ffmpeg(args: Sequence[str]) -> bool:
         if os.name == 'nt':
             kwargs['creationflags'] = 0x08000000
         process = subprocess.Popen(commands, **kwargs)
+        if process_lifecycle_manager is not None:
+            process_lifecycle_manager.register_process(process, "ffmpeg")
         output_tail = deque(maxlen=_FFMPEG_TAIL_LINES)
         if process.stdout is not None:
             for line in iter(process.stdout.readline, b''):
@@ -57,6 +63,9 @@ def run_ffmpeg(args: Sequence[str]) -> bool:
         _LOGGER.error("Could not launch FFmpeg. Command: %s; error: %s",
                       subprocess.list2cmdline(commands), exc, exc_info=True)
         return False
+    finally:
+        if process_lifecycle_manager is not None and process is not None:
+            process_lifecycle_manager.unregister_process(process)
 
 
 
@@ -176,8 +185,15 @@ def join_videos(videos: List[str], dest_filename: str, simple: bool) -> bool:
 
 
 
+def _get_output_image_format() -> str:
+    cfg = getattr(roop.globals, 'CFG', None)
+    if cfg is not None and getattr(cfg, 'output_image_format', None):
+        return str(cfg.output_image_format)
+    return 'png'
+
+
 def _extract_frames_from_animated_webp(target_path: str, trim_frame_start, trim_frame_end, temp_directory_path: str) -> bool:
-    """Extract frames from animated WebP using PIL/Pillow.
+    """Extract individual frames from an animated WebP file using Pillow.
 
     FFmpeg's native webp_pipe demuxer skips ANIM/ANMF chunks and cannot decode
     animated WebP files, producing zero frames.  Pillow handles them correctly.
@@ -194,6 +210,7 @@ def _extract_frames_from_animated_webp(target_path: str, trim_frame_start, trim_
             end   = int(trim_frame_end)   if trim_frame_end   is not None else n_frames
             end   = min(end, n_frames)
 
+            fmt = _get_output_image_format()
             frame_num = 1
             for i in range(start, end):
                 img.seek(i)
@@ -201,7 +218,7 @@ def _extract_frames_from_animated_webp(target_path: str, trim_frame_start, trim_
                 frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                 out_path = os.path.join(
                     temp_directory_path,
-                    f'{frame_num:06d}.{roop.globals.CFG.output_image_format}',
+                    f'{frame_num:06d}.{fmt}',
                 )
                 cv2.imwrite(out_path, frame_bgr)
                 frame_num += 1
@@ -214,20 +231,96 @@ def _extract_frames_from_animated_webp(target_path: str, trim_frame_start, trim_
         return False
 
 
-def extract_frames(target_path : str, trim_frame_start, trim_frame_end, fps : float) -> bool:
+def _parse_fps_fraction(val: Any) -> float:
+    """Safely parse an FFmpeg frame rate string like '30000/1001' or '29.97' to a float."""
+    try:
+        s = str(val or '').strip()
+        if '/' in s:
+            num, den = s.split('/', 1)
+            den_f = float(den)
+            return float(num) / den_f if den_f != 0 else 0.0
+        return float(s)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_variable_frame_rate(video_path: str) -> bool:
+    """Pre-check whether input media has a Variable Frame Rate (VFR).
+
+    Compares the nominal container rate (r_frame_rate) against the calculated
+    average stream frame rate (avg_frame_rate). A non-trivial difference indicates
+    variable frame timing (common in smartphone recordings and screen captures).
+    """
+    if not video_path or not os.path.isfile(video_path):
+        return False
+    try:
+        from roop.capturer import _ffprobe_binary, _popen_kwargs
+        cmd = [
+            _ffprobe_binary(), '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=r_frame_rate,avg_frame_rate',
+            '-of', 'json', video_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, timeout=10, **_popen_kwargs())
+        import json
+        blob = json.loads((proc.stdout or b'{}').decode('utf-8', 'replace'))
+        streams = blob.get('streams') or []
+        if not streams:
+            return False
+        st = streams[0]
+        r_fps = _parse_fps_fraction(st.get('r_frame_rate', '0'))
+        avg_fps = _parse_fps_fraction(st.get('avg_frame_rate', '0'))
+        if r_fps > 0 and avg_fps > 0 and abs(r_fps - avg_fps) > 0.05:
+            return True
+    except Exception as exc:
+        _LOGGER.debug("VFR pre-check error for %s: %s", video_path, exc)
+    return False
+
+
+def extract_frames(
+    target_path: str,
+    trim_frame_start: Any = None,
+    trim_frame_end: Any = None,
+    fps: float = 24.0,
+    **kwargs: Any,
+) -> bool:
     util.create_temp(target_path)
     temp_directory_path = util.get_temp_directory_path(target_path)
+
+    try:
+        from roop.process_lifecycle import process_lifecycle_manager
+        process_lifecycle_manager.register_temp_dir(temp_directory_path)
+    except Exception:
+        pass
 
     # FFmpeg's native webp_pipe demuxer cannot decode animated WebP (ANIM/ANMF chunks).
     # Detect animated webp and fall back to PIL-based extraction.
     if target_path.lower().endswith('.webp') and util.is_animated_webp(target_path):
         return _extract_frames_from_animated_webp(target_path, trim_frame_start, trim_frame_end, temp_directory_path)
 
-    commands = ['-i', target_path, '-q:v', '1', '-pix_fmt', 'rgb24', ]
+    vfr_detected = is_variable_frame_rate(target_path)
+    if vfr_detected:
+        _LOGGER.info(
+            "Target media '%s' has Variable Frame Rate (VFR); conforming to Constant Frame Rate (CFR: %.3f fps)",
+            os.path.basename(target_path), fps
+        )
+        print(f"[FFmpeg] Conforming VFR input '{os.path.basename(target_path)}' to CFR ({fps:.2f} fps) via -fps_mode cfr")
+
+    commands = ['-i', target_path, '-q:v', '1', '-pix_fmt', 'rgb24']
     if trim_frame_start is not None and trim_frame_end is not None:
-        commands.extend([ '-vf', 'trim=start_frame=' + str(trim_frame_start) + ':end_frame=' + str(trim_frame_end) + ',fps=' + str(fps) ])
-    commands.extend(['-vsync', '0', os.path.join(temp_directory_path, '%06d.' + roop.globals.CFG.output_image_format)])
+        commands.extend(['-vf', f'trim=start_frame={trim_frame_start}:end_frame={trim_frame_end},fps={fps}'])
+    else:
+        commands.extend(['-vf', f'fps={fps}'])
+
+    # Conforming to CFR with -fps_mode cfr guarantees exact constant interval frame extraction
+    fmt = _get_output_image_format()
+    commands.extend(['-fps_mode', 'cfr', os.path.join(temp_directory_path, f'%06d.{fmt}')])
     return run_ffmpeg(commands)
+
+
+# Aliases for directory resolution
+get_temp_frame_path = util.get_temp_directory_path
+get_temp_directory_path = util.get_temp_directory_path
+get_temp_frame_paths = util.get_temp_frame_paths
 
 
 def _frames_dir_vf(source_video: Optional[str] = None) -> str:
@@ -255,10 +348,11 @@ def create_video(target_path: str, dest_filename: str, fps: float = 24.0,
     if temp_directory_path is None:
         temp_directory_path = util.get_temp_directory_path(target_path)
     vf = _frames_dir_vf(target_path)
+    fmt = _get_output_image_format()
     return run_ffmpeg([
         '-framerate', format(float(fps), '.12g'),
         '-i', os.path.join(temp_directory_path,
-                           f'%06d.{roop.globals.CFG.output_image_format}'),
+                           f'%06d.{fmt}'),
         '-c:v', roop.globals.video_encoder,
         *_rate_control(roop.globals.video_encoder, roop.globals.video_quality),
         '-pix_fmt', 'yuv420p', '-vf', vf, '-y', dest_filename,
@@ -610,75 +704,164 @@ def create_gif_from_frames_dir(frames_dir: str, output_path: str, fps: float,
     ])
 
 
-def restore_audio(intermediate_video: str, original_video: str, trim_frame_start,
-                  trim_frame_end, final_video: str,
-                  source_fps: Optional[float] = None) -> bool:
-    """Mux audio from *original_video* into *intermediate_video*, writing *final_video*.
+def _probe_audio_properties(video_path: str) -> dict:
+    """Probe audio sample rate, channels, and bitrate from source media."""
+    props = {'sample_rate': None, 'bit_rate': None, 'has_subtitles': False}
+    try:
+        from roop.capturer import _ffprobe_binary, _popen_kwargs
+        cmd = [
+            _ffprobe_binary(), '-v', 'error',
+            '-show_entries', 'stream=index,codec_type,sample_rate,bit_rate',
+            '-of', 'json', video_path
+        ]
+        proc = subprocess.run(cmd, capture_output=True, timeout=10, **_popen_kwargs())
+        import json
+        blob = json.loads((proc.stdout or b'{}').decode('utf-8', 'replace'))
+        for st in blob.get('streams') or []:
+            ctype = st.get('codec_type')
+            if ctype == 'audio' and props['sample_rate'] is None:
+                sr = st.get('sample_rate')
+                if sr:
+                    props['sample_rate'] = str(sr)
+                br = st.get('bit_rate')
+                if br:
+                    props['bit_rate'] = str(br)
+            elif ctype == 'subtitle':
+                props['has_subtitles'] = True
+    except Exception as exc:
+        _LOGGER.debug("Audio probe error for %s: %s", video_path, exc)
+    return props
 
-    Uses -map 0:v:0 (video from the processed clip) and -map 1:a:0? (audio from
-    the original source, optional so it silently succeeds on source-less files).
-    trim_frame_start / trim_frame_end are used to seek the audio source to the
-    correct position when the original was trimmed before processing.
-    Returns True on success, False on failure.
+
+def restore_audio(
+    intermediate_video: Optional[str] = None,
+    original_video: Optional[str] = None,
+    trim_frame_start: Any = None,
+    trim_frame_end: Any = None,
+    final_video: Optional[str] = None,
+    source_fps: Optional[float] = None,
+    *,
+    source_path: Optional[str] = None,
+    target_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    fps: Optional[float] = None,
+    **kwargs: Any,
+) -> bool:
+    """Mux audio, subtitles, and metadata from *original_video* into *intermediate_video*, writing *final_video*.
+
+    Retains:
+    1. ALL original audio streams (-map 1:a?)
+    2. Original audio sample rates and bitrates without desync or quality loss
+    3. Subtitle tracks (-map 1:s?) with stream copy
+    4. All global and stream metadata tags (-map_metadata 1)
+    5. Conforms output to constant frame rate (-fps_mode cfr) to eliminate drift
     """
-    # An uploaded dubbing track has no video frame rate. The caller can supply
-    # the target clip's already-probed rate so trim-frame timestamps stay tied
-    # to the video rather than falling back to the audio file's synthetic 24fps.
-    fps = float(source_fps if source_fps is not None
-                else util.detect_fps(original_video))
-    if not math.isfinite(fps) or fps <= 0:
-        _LOGGER.error("Cannot restore audio with invalid source fps %r", fps)
+    # Map keyword aliases if passed
+    if intermediate_video is None and target_path is not None:
+        intermediate_video = target_path
+    if original_video is None and source_path is not None:
+        original_video = source_path
+    if final_video is None and output_path is not None:
+        final_video = output_path
+    if source_fps is None and fps is not None:
+        source_fps = fps
+
+    if not intermediate_video or not original_video or not final_video:
+        _LOGGER.error("restore_audio missing required paths: intermediate=%r, original=%r, final=%r",
+                      intermediate_video, original_video, final_video)
         return False
 
-    # Seek the audio source to match any trim that was applied before processing.
+    try:
+        from roop.process_lifecycle import process_lifecycle_manager
+        process_lifecycle_manager.register_incomplete_file(final_video)
+    except Exception:
+        process_lifecycle_manager = None
+
+    effective_fps = float(source_fps if source_fps is not None
+                          else util.detect_fps(original_video))
+    if not math.isfinite(effective_fps) or effective_fps <= 0:
+        _LOGGER.error("Cannot restore audio with invalid source fps %r", effective_fps)
+        return False
+
+    # Seek the audio source to match any trim applied before processing
     start_frame = int(trim_frame_start or 0)
-    audio_seek = ['-ss', format(start_frame / fps, '.9f')]
+    audio_seek = ['-ss', format(start_frame / effective_fps, '.9f')]
     if trim_frame_end is not None:
         duration_frames = int(trim_frame_end) - start_frame
         if duration_frames <= 0:
             _LOGGER.error("Cannot restore audio for empty frame range %s..%s",
                           start_frame, trim_frame_end)
             return False
-        # -t is a duration. Using absolute -to after an input-side -ss made a
-        # trimmed clip too short by the seek offset; two-decimal rounding also
-        # introduced avoidable drift for fractional frame rates.
-        audio_seek += ['-t', format(duration_frames / fps, '.9f')]
+        audio_seek += ['-t', format(duration_frames / effective_fps, '.9f')]
 
     extension = os.path.splitext(final_video)[1].lower()
+    audio_props = _probe_audio_properties(original_video)
+
+    transcode = []
     if extension in ('.mp4', '.m4v', '.mov'):
-        transcode = ['-c:a', 'aac', '-b:a', '192k']
+        transcode = ['-c:a', 'aac', '-b:a', '256k']
+        sub_codec = ['-c:s', 'mov_text']
     elif extension == '.webm':
         transcode = ['-c:a', 'libopus', '-b:a', '160k']
+        sub_codec = ['-c:s', 'copy']
     else:
-        transcode = None
+        transcode = ['-c:a', 'copy']
+        sub_codec = ['-c:s', 'copy']
 
-    def _mux(audio_codec: List[str]) -> bool:
-        return run_ffmpeg(
+    if audio_props.get('sample_rate'):
+        transcode.extend(['-ar', audio_props['sample_rate']])
+
+    def _mux(audio_codec: List[str], subtitle_opts: Optional[List[str]] = None) -> bool:
+        cmd = (
             ['-i', intermediate_video]
             + audio_seek
             + ['-i', original_video,
                '-c:v', 'copy']
             + audio_codec
             + ['-map', '0:v:0',
-               '-map', '1:a:0?',
-               '-shortest',
-               final_video])
+               '-map', '1:a?',
+               '-map_metadata', '1']
+        )
+        if subtitle_opts:
+            cmd.extend(subtitle_opts)
+        cmd.extend(['-fps_mode', 'cfr', '-shortest', final_video])
+        return run_ffmpeg(cmd)
 
-    # Stream copy first: lossless and instant, and the common case (AAC in an
-    # MP4 source going back into an MP4). It only fails when the source's
-    # codec is not allowed in the output container — Opus/Vorbis/PCM/FLAC out
-    # of a WebM/MKV/MOV into MP4 — and THEN the audio is re-encoded to the
-    # container's codec. Unconditionally transcoding cost every ordinary render
-    # a generation of AAC loss for a problem it did not have.
-    if _mux(['-c:a', 'copy']):
+    has_subtitles = audio_props.get('has_subtitles', False)
+    sub_opts = ['-map', '1:s?', '-c:s', 'copy'] if has_subtitles else None
+
+    # Stream copy first: lossless and instant, and the common case.
+    if _mux(['-c:a', 'copy'], sub_opts):
+        if process_lifecycle_manager is not None:
+            process_lifecycle_manager.unregister_incomplete_file(final_video)
         return True
-    if transcode is None:
+
+    # If stream copy failed with subtitles, retry stream copy without subtitles only if subtitles were present
+    if has_subtitles and _mux(['-c:a', 'copy']):
+        if process_lifecycle_manager is not None:
+            process_lifecycle_manager.unregister_incomplete_file(final_video)
+        return True
+
+    if not transcode:
         return False
-    _LOGGER.warning("audio stream copy into %s failed; re-encoding the audio to %s",
+
+    _LOGGER.warning("Audio stream copy failed for %s; re-encoding audio to %s",
                     os.path.basename(final_video), transcode[1])
     try:
         if os.path.isfile(final_video):
             os.remove(final_video)
     except OSError:
         pass
-    return _mux(transcode)
+
+    sub_transcode = ['-map', '1:s?'] + sub_codec if (has_subtitles and sub_codec) else None
+    if _mux(transcode, sub_transcode):
+        if process_lifecycle_manager is not None:
+            process_lifecycle_manager.unregister_incomplete_file(final_video)
+        return True
+
+    if has_subtitles and _mux(transcode):
+        if process_lifecycle_manager is not None:
+            process_lifecycle_manager.unregister_incomplete_file(final_video)
+        return True
+
+    return False

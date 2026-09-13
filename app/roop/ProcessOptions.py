@@ -3,7 +3,7 @@ class ProcessOptions:
     def __init__(self, processordefines:dict, face_distance,  blend_ratio, swap_mode, selected_index, masking_text, imagemask, num_steps, subsample_size, show_face_area, restore_original_mouth, show_mask=False, use_3d_recon=False,
                  use_source_bank=False, use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper',
                  stabilize_face=None, stabilize_method=None, stabilize_min_cutoff=None, stabilize_beta=None,
-                 stabilize_enhancer=None, stabilize_enhancer_strength=None):
+                 stabilize_enhancer=None, stabilize_enhancer_strength=None, temporal_smooth_strength=None):
         self.processors = processordefines
         self.face_distance_threshold = face_distance
         self.blend_ratio = blend_ratio
@@ -37,3 +37,5 @@ class ProcessOptions:
         # One Euro temporal smoothing of the enhancer output (anti-flicker)
         self.stabilize_enhancer = (getattr(cfg, 'stabilize_enhancer', True) if cfg is not None else True) if stabilize_enhancer is None else stabilize_enhancer
         self.stabilize_enhancer_strength = (getattr(cfg, 'stabilize_enhancer_strength', 0.5) if cfg is not None else 0.5) if stabilize_enhancer_strength is None else stabilize_enhancer_strength
+        # Temporal smoothing & anti-flickering strength (0.0 to 1.0, default 0.3)
+        self.temporal_smooth_strength = (getattr(cfg, 'temporal_smooth_strength', 0.3) if cfg is not None else 0.3) if temporal_smooth_strength is None else temporal_smooth_strength

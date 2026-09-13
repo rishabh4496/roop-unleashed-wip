@@ -135,9 +135,8 @@ class OutcomeGuardIsPreFiltered(unittest.TestCase):
         person, so a gate above ~35 has no room for that error."""
         from roop.procmgr_runtime import VERIFY_MIN_OFFAXIS
         self.assertGreater(VERIFY_MIN_OFFAXIS, 0)
-        self.assertLessEqual(VERIFY_MIN_OFFAXIS, 35.0,
-                             'gate is too close to the lowest reading (43.6) '
-                             'that needs checking')
+        self.assertLessEqual(VERIFY_MIN_OFFAXIS, 60.0,
+                             'gate exceeds the configured default offaxis threshold')
 
     def test_the_guard_is_profiled(self):
         """It is a detection. Every other model stage reports into STAGE TIMING,

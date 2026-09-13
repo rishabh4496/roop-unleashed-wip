@@ -27,6 +27,8 @@ from roop.processors.enhance_common import (
 )
 from roop.typing import Face, FaceSet, Frame
 from roop.utilities import conditional_download, resolve_relative_path
+from roop.model_lifecycle import model_lifecycle_manager
+from roop.provider_fallback import is_trt_error, build_cuda_fallback_providers
 
 _GPU_PROVIDERS = frozenset({
     "TensorrtExecutionProvider",
@@ -131,6 +133,19 @@ def create_gpen_session(
             providers=selected,
         )
     except Exception as exc:
+        if strict_gpu and is_trt_error(exc):
+            print(f"[{label}] TensorRT engine creation failed ({exc}). Falling back to CUDAExecutionProvider...")
+            cuda_providers = build_cuda_fallback_providers()
+            try:
+                session = onnxruntime.InferenceSession(
+                    model_path,
+                    options,
+                    providers=cuda_providers,
+                )
+            except Exception as cuda_exc:
+                exc = cuda_exc
+            else:
+                return session
         mode = "strict GPU" if strict_gpu else "CPU"
         fallback_note = (
             "No CPU fallback was allowed."
@@ -453,6 +468,13 @@ class Enhance_GPEN:
         self.name = primary.input_name
         self.output_name = primary.output_name
 
+        # Register with ModelLifecycleManager for VRAM guard & offloading
+        model_lifecycle_manager.register_model(
+            name=f"gpen_{size}",
+            unload_cb=self.Release,
+            device="cuda" if self.devicename == "cuda" or _has_gpu_provider(model_providers) else "cpu"
+        )
+
         # The fixed batch=1 model scales through independent TRT contexts.
         # Keep 1024/2048 single-context: their activation footprint is too large
         # for safe automatic multiplication on typical cards.
@@ -531,10 +553,14 @@ class Enhance_GPEN:
 
     def Infer(self, prepared: dict[str, Any]) -> np.ndarray:
         """GPU-only portion; a pool lease isolates each TensorRT context."""
-        if self.pool is not None:
-            with self.pool.lease() as slot:
-                return slot.run(prepared["tensor"])
-        return self._slots[self.model_size].run(prepared["tensor"])
+        if self.model_size not in self._slots or self._slots[self.model_size] is None:
+            self.Initialize(self.plugin_options or {"devicename": self.devicename or "cuda", "size": self.model_size})
+
+        with model_lifecycle_manager.execution_guard(f"gpen_{self.model_size}", required_gb=1.5):
+            if self.pool is not None:
+                with self.pool.lease() as slot:
+                    return slot.run(prepared["tensor"])
+            return self._slots[self.model_size].run(prepared["tensor"])
 
     def Finish(
         self,
@@ -596,4 +622,5 @@ class Enhance_GPEN:
         self._slots.clear()
         self.sessions.clear()
         self.model_gpen = None
+        model_lifecycle_manager.set_unloaded(f"gpen_{self.model_size}")
         gc.collect()

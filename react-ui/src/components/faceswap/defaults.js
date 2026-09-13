@@ -85,6 +85,7 @@ export const FACESWAP_DEFAULTS = {
   vr_mode: false,
   stabilize_enhancer: true,
   stabilize_enhancer_strength: 0.5,
+  temporal_smooth_strength: 0.3,
 
   // System options
   autorotate_faces: true,

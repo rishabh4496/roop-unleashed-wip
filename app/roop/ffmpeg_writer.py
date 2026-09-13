@@ -316,6 +316,12 @@ class FFMPEG_VideoWriter:
             popen_params["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         
         self.proc = sp.Popen(cmd, **popen_params)
+        try:
+            from roop.process_lifecycle import process_lifecycle_manager
+            process_lifecycle_manager.register_process(self.proc, f"video_writer {os.path.basename(filename)}")
+            process_lifecycle_manager.register_incomplete_file(filename)
+        except Exception:
+            pass
 
         # Drain stderr continuously, in a thread, for as long as the encoder
         # lives.
@@ -516,6 +522,14 @@ class FFMPEG_VideoWriter:
         try:
             if proc.stderr is not None:
                 proc.stderr.close()
+        except Exception:
+            pass
+
+        try:
+            from roop.process_lifecycle import process_lifecycle_manager
+            if proc is not None:
+                process_lifecycle_manager.unregister_process(proc)
+            process_lifecycle_manager.unregister_incomplete_file(self.filename)
         except Exception:
             pass
 

@@ -645,13 +645,30 @@ class FaceSwapInsightFace():
             self._trt_disabled = False
             self._batch_unsupported = False
 
+            from roop.provider_fallback import create_fallback_session, build_cuda_fallback_providers
+            from roop.model_lifecycle import model_lifecycle_manager
+
             def _build(_i=0):
                 sess_options = onnxruntime.SessionOptions()
                 sess_options.enable_cpu_mem_arena = False
-                return onnxruntime.InferenceSession(
-                    model_arg, sess_options, providers=swap_providers)
+                sess, downgraded = create_fallback_session(
+                    model_arg, sess_options, providers=swap_providers, label=f"swap_{swap_model}"
+                )
+                if downgraded:
+                    self._trt_disabled = True
+                return sess
 
             self.model_swap_insightface = _build()
+
+            try:
+                model_lifecycle_manager.register_model(
+                    "faceswap",
+                    "swap",
+                    offload_fn=self.Release,
+                    reload_fn=lambda: self.Initialize(plugin_options),
+                )
+            except Exception:
+                pass
 
             # Resolve input tensor names by rank instead of assuming names:
             # rank-4 = the image (NCHW), rank-2 = the identity embedding.
@@ -785,8 +802,9 @@ class FaceSwapInsightFace():
                 # own failed call was against the OLD session, so a retry on
                 # the new one is the right outcome, not a re-raise.
                 return True
-            providers = [p for p in self._swap_providers if not self._is_trt(p)]
-            if len(providers) == len(self._swap_providers):
+            from roop.provider_fallback import build_cuda_fallback_providers
+            providers = build_cuda_fallback_providers(self._swap_providers)
+            if not any(self._is_trt(p) for p in self._swap_providers):
                 return False   # no TRT provider to strip — can't help, re-raise
 
             def _build(_i=0):
@@ -873,18 +891,20 @@ class FaceSwapInsightFace():
         that a batch-shape problem, not a real TRT failure, forced onto them.
         """
         is_batch1 = feed[self.image_input_name].shape[0] <= 1
-        try:
-            if self.pool is not None:
-                with self.pool.lease() as sess:
-                    return sess.run(None, feed)
-            return self.model_swap_insightface.run(None, feed)
-        except Exception:
-            if not is_batch1 or not self._rebuild_without_trt():
-                raise
-            if self.pool is not None:
-                with self.pool.lease() as sess:
-                    return sess.run(None, feed)
-            return self.model_swap_insightface.run(None, feed)
+        from roop.model_lifecycle import model_lifecycle_manager
+        with model_lifecycle_manager.execution_guard("faceswap", required_gb=1.5):
+            try:
+                if self.pool is not None:
+                    with self.pool.lease() as sess:
+                        return sess.run(None, feed)
+                return self.model_swap_insightface.run(None, feed)
+            except Exception:
+                if not is_batch1 or not self._rebuild_without_trt():
+                    raise
+                if self.pool is not None:
+                    with self.pool.lease() as sess:
+                        return sess.run(None, feed)
+                return self.model_swap_insightface.run(None, feed)
 
     def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         latent = self._compute_source_input(source_face)
@@ -955,16 +975,21 @@ class FaceSwapInsightFace():
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
+            from roop.model_lifecycle import model_lifecycle_manager
+            if model_lifecycle_manager._is_oom_exception(batch_err) and len(temp_frames) > 1:
+                print(f"[swap] OOM during batched swap ({len(temp_frames)} crops); automatically reducing batch size...")
+                return model_lifecycle_manager.run_with_batch_fallback(
+                    temp_frames,
+                    lambda sub_batch: self.RunBatch(source_face, target_face, sub_batch),
+                    lambda sub_batch: self._sequential_fallback([(source_face, target_face, t) for t in sub_batch]),
+                    model_name=f"swap_{self.loaded_model_key}",
+                )
+
             # If batch inference fails (e.g. TRT shape restriction or a model
             # whose graph has an internal reshape baked to batch=1 — some
             # exports can't be made batch-dynamic just by relaxing the graph's
             # declared input/output shapes), fall back gracefully to running
-            # single face swaps sequentially. This is a property of the loaded
-            # MODEL, not a transient condition, so remember it and stop
-            # attempting the batched path for the rest of this model's
-            # lifetime — otherwise every remaining frame pays for a doomed
-            # inference call (and a matching TensorRT/CUDA error) before
-            # falling back anyway.
+            # single face swaps sequentially.
             self._batch_unsupported = True
             print(f"[swap] '{self.loaded_model_key}' does not support batched inference "
                   f"({batch_err!r}); disabling batching for the rest of this run "
@@ -984,13 +1009,6 @@ class FaceSwapInsightFace():
             return self._sequential_fallback(requests)
         latents = [self._compute_source_input(src) for src, _tgt, _blob in requests]
         if any(l is None for l in latents):
-            # One crop-less source (image-source model) used to turn the WHOLE
-            # batch into a passthrough, so every other face in the same batch
-            # silently went unswapped. Only the crop-less members pass through;
-            # the rest are still swapped, one at a time so the results land
-            # back in request order. The mask set is then partial, and a
-            # partial set must publish as None rather than be paired to crops
-            # by position.
             outs = []
             for (src, tgt, blob), latent in zip(requests, latents):
                 if latent is None:
@@ -1009,6 +1027,16 @@ class FaceSwapInsightFace():
             self._stash_masks(ort_outs, out.shape[0])
             return [out[i] for i in range(out.shape[0])]
         except Exception as batch_err:
+            from roop.model_lifecycle import model_lifecycle_manager
+            if model_lifecycle_manager._is_oom_exception(batch_err) and len(requests) > 1:
+                print(f"[swap] OOM during multi-source batched swap ({len(requests)} crops); automatically reducing batch size...")
+                return model_lifecycle_manager.run_with_batch_fallback(
+                    requests,
+                    lambda sub_requests: self.RunBatchMulti(sub_requests),
+                    lambda sub_requests: self._sequential_fallback(sub_requests),
+                    model_name=f"swap_multi_{self.loaded_model_key}",
+                )
+
             # See RunBatch above: a model-level incompatibility, not transient.
             self._batch_unsupported = True
             print(f"[swap] '{self.loaded_model_key}' does not support batched inference "

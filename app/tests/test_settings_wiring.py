@@ -133,7 +133,7 @@ PREVIEW_ONLY = {"index", "frame", "fake_preview", "show_mask_offsets"}
 RUN_ONLY_TEMPORAL = {
     "stabilize_enhancer", "stabilize_enhancer_strength", "stabilize_beta",
     "stabilize_min_cutoff", "track_identities", "temporal_detection",
-    "lipsync_enabled",
+    "lipsync_enabled", "temporal_smooth_strength",
 }
 RUN_ONLY_OUTPUT = {
     "keep_frames", "skip_audio", "output_method", "video_method",

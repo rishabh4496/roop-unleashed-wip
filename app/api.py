@@ -2908,7 +2908,8 @@ def _run_swap(payload, job_state=None):
             stabilize_enhancer_strength=float(payload.get("stabilize_enhancer_strength", roop_globals.CFG.stabilize_enhancer_strength)),
             input_facesets=initialized_facesets,
             target_faces=job_state['target_faces'],
-            target_face_groups=job_state['target_face_groups'])
+            target_face_groups=job_state['target_face_groups'],
+            temporal_smooth_strength=float(payload.get("temporal_smooth_strength", getattr(roop_globals.CFG, "temporal_smooth_strength", 0.3))))
 
         # ── AI upscale second pass (opt-in) ─────────────────────────────────
         # Upscale each finished output in place so the final result is a single
@@ -2974,6 +2975,11 @@ def _run_swap(payload, job_state=None):
         traceback.print_exc()
         _progress["error"] = str(e)
         _push_log("⚠ " + str(e), force=True)
+        try:
+            from roop.process_lifecycle import process_lifecycle_manager
+            process_lifecycle_manager.terminate_all(reason=f"Pipeline exception: {e}")
+        except Exception:
+            pass
     finally:
         roop_globals.pause = False
         # Safety net: normally end_processing() clears this, but if batch_process
@@ -3012,6 +3018,11 @@ def stop_swap():
     _stop_requested["flag"] = True
     _progress["paused"] = False
     _progress["desc"] = "Aborting…"
+    try:
+        from roop.process_lifecycle import process_lifecycle_manager
+        process_lifecycle_manager.terminate_all(reason="User clicked Stop")
+    except Exception as e:
+        print(f"[api/stop] Lifecycle cleanup error: {e}", flush=True)
     return {"status": "stopping"}
 
 

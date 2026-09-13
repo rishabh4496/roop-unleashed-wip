@@ -401,6 +401,11 @@ def release_resources() -> None:
             except Exception as e:
                 print(f"[release] preview release_resources() failed: {e!r}")
             _preview_process_mgr = None
+    try:
+        from roop.model_lifecycle import model_lifecycle_manager
+        model_lifecycle_manager.release_all()
+    except Exception as e:
+        print(f"[release] model_lifecycle_manager.release_all() failed: {e!r}")
 
     gc.collect()
     if torch is not None:
@@ -773,7 +778,7 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                           stabilize_face=None, stabilize_method=None, stabilize_min_cutoff=None, stabilize_beta=None,
                           stabilize_enhancer=None, stabilize_enhancer_strength=None,
                           input_facesets=None, target_faces=None,
-                          target_face_groups=None) -> None:
+                          target_face_groups=None, temporal_smooth_strength=None) -> None:
     global clip_text, process_mgr
 
     # Model caches are a startup/idle concern. Once a render enters this
@@ -808,7 +813,8 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               stabilize_min_cutoff=stabilize_min_cutoff,
                               stabilize_beta=stabilize_beta,
                               stabilize_enhancer=stabilize_enhancer,
-                              stabilize_enhancer_strength=stabilize_enhancer_strength)
+                              stabilize_enhancer_strength=stabilize_enhancer_strength,
+                              temporal_smooth_strength=temporal_smooth_strength)
     process_mgr.initialize(
         facesets, targets, options, target_face_groups=target_face_groups)
     # Model preflight is complete. From the first frame onward every selected
@@ -1269,6 +1275,11 @@ def destroy() -> None:
             print('Timed out waiting for finalize; exiting anyway.')
     if roop.globals.target_path:
         util.clean_temp(roop.globals.target_path)
+    try:
+        from roop.process_lifecycle import process_lifecycle_manager
+        process_lifecycle_manager.terminate_all(reason="destroy")
+    except Exception as e:
+        print(f"[destroy] process_lifecycle_manager.terminate_all() failed: {e!r}")
     release_resources()
     sys.exit()
 

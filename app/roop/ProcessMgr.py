@@ -519,6 +519,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self.options = options
         devicename = get_device()
 
+        # Temporal smoothing & anti-flickering module
+        from roop.temporal_stabilization import TemporalStabilizer, global_temporal_stabilizer
+        stab_strength = float(getattr(options, 'temporal_smooth_strength', 0.3) or 0.3)
+        self.temporal_stabilizer = TemporalStabilizer(strength=stab_strength)
+        global_temporal_stabilizer.set_strength(stab_strength)
+        global_temporal_stabilizer.reset()
+
         # Build the One Euro stabilizers when requested. They only take effect in
         # the sequential video path (run_batch_inmem sets _stab_active).
         # Factories rebuild fresh, independent stabilizer instances (used to give
@@ -3378,6 +3385,15 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         # M is carried through masks/paste/mouth-restore generically, so the
         # rest of the pipeline is template-agnostic.
         swap_template = getattr(swap_p, 'model_template', 'arcface')
+
+        # Temporal smoothing & anti-flickering for keypoints and landmarks
+        cur_frame_idx = getattr(self._tls, 'frame_idx', 0)
+        stab = getattr(self, 'temporal_stabilizer', None)
+        if stab is not None and stab.strength > 0.0 and getattr(target_face, 'kps', None) is not None:
+            target_face.kps = stab.smooth_landmarks_5pt(target_face.kps, frame_idx=cur_frame_idx)
+            if hasattr(target_face, 'landmark_3d_68') and target_face.landmark_3d_68 is not None:
+                target_face.landmark_3d_68 = stab.smooth_landmarks_68pt(target_face.landmark_3d_68, frame_idx=cur_frame_idx)
+
         aligned_img, M = align_crop(plate, target_face.kps, subsample_size, mode=swap_template)
         fake_frame = aligned_img
         target_face.matrix = M
@@ -3520,6 +3536,20 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
         if inputface is None:
             return frame
+
+        # Temporal smoothing for ArcFace identity embedding
+        if stab is not None and stab.strength > 0.0 and inputface is not None:
+            if hasattr(inputface, 'normed_embedding') and inputface.normed_embedding is not None:
+                inputface.normed_embedding = stab.smooth_embedding(inputface.normed_embedding, frame_idx=cur_frame_idx)
+            elif hasattr(inputface, 'embedding') and inputface.embedding is not None:
+                inputface.embedding = stab.smooth_embedding(inputface.embedding, frame_idx=cur_frame_idx)
+
+        # Dynamic VRAM Guard: ensure 1.5GB headroom before model execution
+        try:
+            from roop.model_lifecycle import model_lifecycle_manager
+            model_lifecycle_manager.ensure_vram(required_gb=1.5)
+        except Exception:
+            pass
 
         # ── 3D source pose matching ───────────────────────────────────────────
         # Warp the crop of the source-bank-SELECTED face (selected_src_idx) toward

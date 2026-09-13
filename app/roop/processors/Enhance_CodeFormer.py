@@ -8,6 +8,8 @@ from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path, require_local_model
 from roop.processors.enhance_common import is_usable, sized
 from roop import session_pool
+from roop.model_lifecycle import model_lifecycle_manager
+from roop.provider_fallback import create_fallback_session
 
 
 # THREAD_LOCK = threading.Lock()
@@ -78,13 +80,20 @@ class Enhance_CodeFormer():
                 opts = onnxruntime.SessionOptions()
                 opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
             def _build(_i=0):
-                return onnxruntime.InferenceSession(
-                    model_path, opts, providers=roop.globals.execution_providers)
+                return create_fallback_session(
+                    model_path, opts, providers=roop.globals.execution_providers, session_name=f"CodeFormer_{_i}")
 
-            self.model_codeformer = _build()
+            self.model_codeformer = _build(0)
             self.model_inputs = self.model_codeformer.get_inputs()
             self.model_outputs = self.model_codeformer.get_outputs()
             self.in_dtype = np.float16 if 'float16' in self.model_inputs[0].type else np.float32
+
+            # Register with ModelLifecycleManager for VRAM guard & offloading
+            model_lifecycle_manager.register_model(
+                name="codeformer",
+                unload_cb=self.Release,
+                device="cuda" if any("CUDA" in str(p) or "Tensorrt" in str(p) for p in roop.globals.execution_providers) else "cpu"
+            )
 
             # Optional TensorRT multi-context pool: the primary session plus
             # (N-1) independent extras, so N workers can enhance concurrently.
@@ -180,15 +189,20 @@ class Enhance_CodeFormer():
             sess.run_with_iobinding(iob)
             return iob.copy_outputs_to_cpu()
 
-        if self.pool is not None:
-            # Lease an independent session so this thread runs on its own
-            # TensorRT context concurrently with the other workers. Input and
-            # output NAMES are identical across sessions built from one ONNX,
-            # so the cached self.model_inputs/outputs stay valid for any lease.
-            with self.pool.lease() as sess:
-                ort_outs = _infer(sess)
-        else:
-            ort_outs = _infer(self.model_codeformer)
+        if self.model_codeformer is None:
+            self.Initialize(self.plugin_options or {"devicename": "cuda"})
+
+        with model_lifecycle_manager.execution_guard("codeformer", required_gb=1.5):
+            if self.pool is not None:
+                # Lease an independent session so this thread runs on its own
+                # TensorRT context concurrently with the other workers. Input and
+                # output NAMES are identical across sessions built from one ONNX,
+                # so the cached self.model_inputs/outputs stay valid for any lease.
+                with self.pool.lease() as sess:
+                    ort_outs = _infer(sess)
+            else:
+                ort_outs = _infer(self.model_codeformer)
+
         # float32 regardless of the model's precision — every step below
         # (clip, rescale, cvtColor) is written for it, and cv2 rejects float16.
         result = np.asarray(ort_outs[0][0], dtype=np.float32)
@@ -223,6 +237,7 @@ class Enhance_CodeFormer():
         if self.pool is not None:
             self.pool.release()
             self.pool = None
-        del self.model_codeformer
-        self.model_codeformer = None
-
+        if self.model_codeformer is not None:
+            del self.model_codeformer
+            self.model_codeformer = None
+        model_lifecycle_manager.set_unloaded("codeformer")

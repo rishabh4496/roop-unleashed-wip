@@ -7,6 +7,8 @@ import roop.globals
 from roop.typing import Face, Frame, FaceSet
 from roop.utilities import resolve_relative_path, require_local_model
 from roop.processors.enhance_common import is_usable, sized
+from roop.model_lifecycle import model_lifecycle_manager
+from roop.provider_fallback import create_fallback_session
 
 
 # THREAD_LOCK = threading.Lock()
@@ -35,9 +37,17 @@ class Enhance_GFPGAN():
         if self.model_gfpgan is None:
             model_path = resolve_relative_path('../models/GFPGANv1.4.onnx')
             require_local_model(model_path, 'GFPGAN face enhancer', only_when_offline=True)
-            self.model_gfpgan = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_gfpgan = create_fallback_session(
+                model_path, None, providers=roop.globals.execution_providers, session_name="GFPGAN")
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
+
+            # Register with ModelLifecycleManager for VRAM guard & offloading
+            model_lifecycle_manager.register_model(
+                name="gfpgan",
+                unload_cb=self.Release,
+                device="cuda" if any("CUDA" in str(p) or "Tensorrt" in str(p) for p in roop.globals.execution_providers) else "cpu"
+            )
 
         self.name = self.model_gfpgan.get_inputs()[0].name
         self.output_name = self.model_gfpgan.get_outputs()[0].name
@@ -53,12 +63,16 @@ class Enhance_GFPGAN():
         temp_frame = (temp_frame - 0.5) / 0.5
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
 
-        io_binding = self.model_gfpgan.io_binding()
-        io_binding.bind_cpu_input(self.name, temp_frame)
-        io_binding.bind_output(self.output_name, self.devicename)
-        self.model_gfpgan.run_with_iobinding(io_binding)
-        ort_outs = io_binding.copy_outputs_to_cpu()
-        result = ort_outs[0][0]
+        if self.model_gfpgan is None:
+            self.Initialize(self.plugin_options or {"devicename": "cuda"})
+
+        with model_lifecycle_manager.execution_guard("gfpgan", required_gb=1.5):
+            io_binding = self.model_gfpgan.io_binding()
+            io_binding.bind_cpu_input(self.name, temp_frame)
+            io_binding.bind_output(self.output_name, self.devicename)
+            self.model_gfpgan.run_with_iobinding(io_binding)
+            ort_outs = io_binding.copy_outputs_to_cpu()
+            result = ort_outs[0][0]
 
         # np.clip does not remove NaN and uint8(NaN) is 0, so a single
         # overflowed value paints black and a saturated graph paints a black
@@ -77,16 +91,7 @@ class Enhance_GFPGAN():
 
 
     def Release(self):
-        del self.model_gfpgan
-        self.model_gfpgan = None
-
-
-
-
-
-
-
-
-
-
-
+        if self.model_gfpgan is not None:
+            del self.model_gfpgan
+            self.model_gfpgan = None
+        model_lifecycle_manager.set_unloaded("gfpgan")

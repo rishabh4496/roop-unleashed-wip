@@ -185,6 +185,11 @@ class FFmpegVideoReader:
                                      stderr=subprocess.DEVNULL,
                                      bufsize=self._frame_bytes * 4,
                                      **_popen_kwargs())
+        try:
+            from roop.process_lifecycle import process_lifecycle_manager
+            process_lifecycle_manager.register_process(self.proc, f"nvdec_reader {os.path.basename(self.path)}")
+        except Exception:
+            pass
 
     def read(self):
         if self.proc is None:
@@ -230,6 +235,11 @@ class FFmpegVideoReader:
                     self.proc.kill()
                 except Exception:
                     pass
+            try:
+                from roop.process_lifecycle import process_lifecycle_manager
+                process_lifecycle_manager.unregister_process(self.proc)
+            except Exception:
+                pass
             self.proc = None
 
 
