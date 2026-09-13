@@ -1381,7 +1381,9 @@ def print_startup_banner() -> None:
     print(f"   - Memory Cap Limit (GB) : {cfg.memory_limit if cfg.memory_limit > 0 else 'Unlimited'}")
     print(f"   - Default Swap Model     : {cfg.swap_model}")
     print(f"   - Face Detection Grid    : {getattr(cfg, 'face_detector_size', '640')}px")
-    print(f"   - Face Detector Threshold: {getattr(cfg, 'face_detector_threshold', 0.60):.2f}")
+    print(f"   - Face Detector Threshold: {getattr(cfg, 'face_detector_threshold', 0.50):.2f}")
+    print(f"   - Temporal ROI Hint      : {'Enabled' if getattr(cfg, 'temporal_roi_hint', True) else 'Disabled'}")
+    print(f"   - No-face Action         : {getattr(cfg, 'no_face_action', 'Retry rotated')}")
     print(f"   - Temp Folder Location   : {'System OS Temp' if cfg.use_os_temp_folder else 'Local Project Root'}")
     print("=" * 75)
     print("  Booting local FastAPI Swapping Gateway daemon thread...")
@@ -1398,6 +1400,14 @@ def run() -> None:
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
+    roop.globals.face_detector_threshold = float(getattr(roop.globals.CFG, 'face_detector_threshold', 0.50))
+    roop.globals.temporal_roi_hint = bool(getattr(roop.globals.CFG, 'temporal_roi_hint', True))
+    _nfa_choices = ["Use untouched original frame", "Retry rotated", "Skip Frame", "Skip Frame if no similar face", "Use last swapped"]
+    _cfg_nfa = getattr(roop.globals.CFG, 'no_face_action', 'Retry rotated')
+    if isinstance(_cfg_nfa, str) and _cfg_nfa in _nfa_choices:
+        roop.globals.no_face_action = _nfa_choices.index(_cfg_nfa)
+    elif isinstance(_cfg_nfa, int):
+        roop.globals.no_face_action = _cfg_nfa
     if roop.globals.startup_args.server_share:
         roop.globals.CFG.server_share = True
     print_startup_banner()

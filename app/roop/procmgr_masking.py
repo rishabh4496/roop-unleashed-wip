@@ -647,7 +647,7 @@ class MaskingMixin:
             face_landmarks = (np.asarray(face_landmarks, dtype=np.float32) - f_c) * s + f_c
         return IM, face_landmarks
 
-    def blur_area(self, img_matte, face_mask_blend):
+    def blur_area(self, img_matte, face_mask_blend, yaw=None):
         # Always apply minimal anti-aliasing after the affine warp
         img_matte = cv2.GaussianBlur(img_matte, (3, 3), 0)
         if face_mask_blend <= 0:
@@ -667,12 +667,20 @@ class MaskingMixin:
         
         # Calculate blend radius (feather size)
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
-        blur_size = blend_px * 2 + 1
-        
-        # Improved Blending: Erode the mask before blurring (inner feathering).
-        # This keeps the transition zone inside the face skin and prevents the swap
-        # from bleeding / haloing onto background regions, hair, or ears.
         erosion_px = max(1, blend_px // 2)
+
+        # Dynamic mask erosion & Gaussian feathering when yaw > 45 deg to prevent boundary tearing
+        y_val = yaw
+        if y_val is None and hasattr(self, '_tls'):
+            y_val = getattr(self._tls, 'tgt_yaw_deg', None)
+        if y_val is not None:
+            abs_y = abs(float(y_val))
+            if abs_y > 45.0:
+                yaw_scale = 1.0 + min(1.0, (abs_y - 45.0) / 45.0)
+                blend_px = max(1, int(round(blend_px * yaw_scale)))
+                erosion_px = max(1, int(round(erosion_px * yaw_scale)))
+
+        blur_size = blend_px * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_px * 2 + 1, erosion_px * 2 + 1))
 
         # Both of these run over the whole frame to feather a matte that is zero

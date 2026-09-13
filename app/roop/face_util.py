@@ -407,6 +407,63 @@ def get_all_faces_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160,
     return faces
 
 
+def get_all_faces_in_roi_with_rotations(frame, bbox, pad_ratio=0.20, min_crop=160,
+                                       det_size=None, det_thresh=None, upscale_to=320):
+    """Detect faces within a padded crop around bbox (expanded by 20% by default)
+    with lower threshold and 30/90/180 degree rotation retries on miss.
+    """
+    win = _roi_window(frame, bbox, pad_ratio, min_crop)
+    if win is None:
+        return []
+    crop, cx1, cy1 = win
+    scale = 1.0
+    if upscale_to is not None and int(upscale_to) > 0:
+        longest = max(crop.shape[:2])
+        if longest < int(upscale_to):
+            scale = float(upscale_to) / float(longest)
+            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+    # 1. Upright detection
+    if det_size is None and det_thresh is None:
+        faces = get_all_faces(crop) or []
+    else:
+        faces = _detect_faces_raw(crop, det_size=det_size, det_thresh=det_thresh) or []
+        if faces:
+            faces = _enrich_detected_faces(crop, faces)
+
+    # 2. Angle retries (90 CW, 90 CCW, 180 inverted, +30 deg, -30 deg) if upright miss
+    if not faces:
+        ch, cw = crop.shape[:2]
+        # Orthogonal turns
+        for angle_name, rot_fn in (('clockwise', rotate_clockwise),
+                                   ('anticlockwise', rotate_anticlockwise),
+                                   ('180', rotate_image_180)):
+            r_crop = rot_fn(crop)
+            r_faces = _detect_faces_raw(r_crop, det_size=det_size, det_thresh=det_thresh) or []
+            if r_faces:
+                for f in r_faces:
+                    _unrotate_face_coords(f, cw, ch, angle_name)
+                faces = _enrich_detected_faces(crop, r_faces)
+                break
+
+        # 30-degree affine retries
+        if not faces:
+            for angle_deg in (30.0, -30.0):
+                r_crop, M = _rotate_affine(crop, angle_deg)
+                r_faces = _detect_faces_raw(r_crop, det_size=det_size, det_thresh=det_thresh) or []
+                if r_faces:
+                    for f in r_faces:
+                        _unrotate_affine_face(f, M)
+                    faces = _enrich_detected_faces(crop, r_faces)
+                    break
+
+    for face in faces:
+        if scale != 1.0:
+            _scale_face_coords(face, 1.0 / scale)
+        _offset_face_coords(face, cx1, cy1)
+    return faces
+
+
 def detect_boxes_in_roi(frame, bbox, pad_ratio=1.0, min_crop=160):
     """Like `get_all_faces_in_roi`, but the DETECTOR ONLY — no aux models.
 
@@ -682,25 +739,62 @@ def _unrotate_face_coords(face, orig_w, orig_h, angle):
         face.landmark_3d_68 = lm
 
 
-def _rescue_rotated(frame: Frame):
-    """Retry detection on rotated frame variants when the upright pass finds nothing.
+def _rotate_affine(img, angle_deg):
+    """Rotate image around center by angle_deg in degrees."""
+    h, w = img.shape[:2]
+    cx, cy = w / 2.0, h / 2.0
+    M = cv2.getRotationMatrix2D((cx, cy), float(angle_deg), 1.0)
+    rotated = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+    return rotated, M
 
-    All THREE turns are tried, not just the quarter ones. A detector that misses
-    a face on its side misses an inverted one too, and neither quarter turn
-    reaches it — both leave an upside-down face lying sideways, which is the
-    orientation the pass already failed on. The half turn is the only one that
-    presents it upright, so leaving it out means an inverted face in an
-    otherwise empty frame is simply never found.
+
+def _unrotate_affine_face(face, M):
+    """Unrotate face geometry using the forward 2x3 affine matrix M."""
+    M_inv = cv2.invertAffineTransform(M)
+    x1, y1, x2, y2 = face.bbox
+    corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    unrot_corners = cv2.transform(corners.reshape(1, -1, 2), M_inv).reshape(-1, 2)
+    face.bbox = np.array([
+        unrot_corners[:, 0].min(),
+        unrot_corners[:, 1].min(),
+        unrot_corners[:, 0].max(),
+        unrot_corners[:, 1].max()
+    ], dtype=np.float32)
+    if getattr(face, 'kps', None) is not None:
+        face.kps = cv2.transform(face.kps.reshape(1, -1, 2).astype(np.float32), M_inv).reshape(-1, 2)
+    if getattr(face, 'landmark_2d_106', None) is not None:
+        face.landmark_2d_106 = cv2.transform(face.landmark_2d_106.reshape(1, -1, 2).astype(np.float32), M_inv).reshape(-1, 2)
+    if getattr(face, 'landmark_3d_68', None) is not None:
+        lm = np.asarray(face.landmark_3d_68, dtype=np.float32)
+        lm[:, :2] = cv2.transform(lm[:, :2].reshape(1, -1, 2), M_inv).reshape(-1, 2)
+        face.landmark_3d_68 = lm
+
+
+def _rescue_rotated(frame: Frame, det_thresh=None):
+    """Retry detection on rotated frame variants (30/90/180 deg) when upright pass finds nothing.
+
+    Orthogonal 90/180 turns and 30-degree lateral tilts are tried to recover
+    profiles or rolled faces where the detector's upright priors fail.
     """
     try:
         h, w = frame.shape[:2]
+        # 1. 90/180 orthogonal turns
         for angle, rotated in (("clockwise", rotate_clockwise),
                                ("anticlockwise", rotate_anticlockwise),
                                ("180", rotate_image_180)):
-            faces = _detect_faces_raw(rotated(frame))
+            faces = _detect_faces_raw(rotated(frame), det_thresh=det_thresh)
             if faces:
                 for f in faces:
                     _unrotate_face_coords(f, w, h, angle)
+                return faces
+
+        # 2. 30-degree lateral tilts
+        for angle_deg in (30.0, -30.0):
+            rot_img, M = _rotate_affine(frame, angle_deg)
+            faces = _detect_faces_raw(rot_img, det_thresh=det_thresh)
+            if faces:
+                for f in faces:
+                    _unrotate_affine_face(f, M)
                 return faces
     except Exception:
         pass

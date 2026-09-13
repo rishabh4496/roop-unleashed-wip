@@ -14,6 +14,18 @@ from roop.face_util import (get_first_face, get_all_faces, get_all_faces_in_roi,
                             rotate_anticlockwise, rotate_clockwise,
                             rotate_image_180, analysis_pooled)
 from roop.face_util import face_rotation_action, rotation_improves_upright
+from roop.face_util import _rotate_affine, _unrotate_affine_face, get_all_faces_in_roi_with_rotations
+from roop.telemetry import (
+    log_frame_telemetry,
+    ACTION_SWAPPED,
+    ACTION_ROI_RETRY,
+    ACTION_LAST_SWAP_HOLD,
+    ACTION_RAW_FALLBACK,
+    FAIL_SCRFD,
+    FAIL_SIMILARITY,
+    FAIL_LANDMARKS,
+)
+from roop.temporal_hold import TemporalSwapHoldBuffer
 from roop.face_util import swap_moved_the_face
 from roop import face_util
 from roop.processors.FaceSwapInsightFace import verify_tol_for as _swap_verify_tol_for
@@ -331,19 +343,19 @@ def pick_queue(queue: Queue[str], queue_per_future: int) -> List[str]:
     return queues
 
 
-def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
-    """When full-frame detection misses, crop last-known face region and retry.
-
-    ``get_all_faces_in_roi`` owns the crop coordinate remap and calls the
-    selected detector engine. Using it here is important for hybrid engines
-    (RetinaFace/YOLO-face/ YuNet), whose ``FaceAnalysis`` detection model is
-    intentionally absent and therefore cannot be called through ``fa.get``.
-    Choose the candidate nearest the predicted box, not the left-most face in
-    the crop, so a nearby bystander cannot steal a recovery.
+def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray, pad_ratio: float = 0.20, det_thresh: float = None):
+    """Crop around bounding box of frame N-1 expanded by 20%, lower det_thresh by 25%,
+    and run localized re-detection with 30/90/180 angle retries before declaring a miss.
     """
+    if det_thresh is None:
+        base_thresh = float(getattr(roop.globals, 'face_detector_threshold', 0.50))
+        det_thresh = base_thresh * 0.75  # 25% lower threshold
+
     try:
-        faces = get_all_faces_in_roi(frame, last_bbox, pad_ratio=0.5, min_crop=160,
-                                     upscale_to=320)
+        faces = get_all_faces_in_roi_with_rotations(
+            frame, last_bbox, pad_ratio=pad_ratio, det_thresh=det_thresh,
+            min_crop=160, upscale_to=320
+        )
     except Exception:
         faces = []
     if not faces:
@@ -351,13 +363,21 @@ def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
     target = np.asarray(last_bbox, dtype=np.float32)
     target_center = np.array([(target[0] + target[2]) * 0.5,
                               (target[1] + target[3]) * 0.5], dtype=np.float32)
-    return min(
+    best_face = min(
         faces,
         key=lambda face: float(np.linalg.norm(
             np.array([(face.bbox[0] + face.bbox[2]) * 0.5,
                       (face.bbox[1] + face.bbox[3]) * 0.5], dtype=np.float32)
             - target_center)),
     )
+    if isinstance(best_face, dict):
+        best_face['_roi_recovered'] = True
+    else:
+        try:
+            setattr(best_face, '_roi_recovered', True)
+        except Exception:
+            pass
+    return best_face
 
 
 def _invert_affine(M):
@@ -527,6 +547,11 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         self.temporal_stabilizer = TemporalStabilizer(strength=stab_strength)
         global_temporal_stabilizer.set_strength(stab_strength)
         global_temporal_stabilizer.reset()
+        max_holds = getattr(options, 'max_num_reuse_frame', 3)
+        self.temporal_hold_buffer = TemporalSwapHoldBuffer(max_holds=max_holds)
+        for fs in (self.input_face_datas or []):
+            if hasattr(fs, 'compute_face_poses'):
+                fs.compute_face_poses()
 
         # Build the One Euro stabilizers when requested. They only take effect in
         # the sequential video path (run_batch_inmem sets _stab_active).
@@ -2082,8 +2107,6 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
 
     def process_frame(self, frame:Frame, frame_idx=None):
         # ── Pause support ────────────────────────────────────────────────────
-        # Spin-wait while the user has paused. Checks every 50 ms so the UI
-        # stays responsive. Exits immediately if processing is cancelled.
         while getattr(roop.globals, 'pause', False) and roop.globals.processing:
             time.sleep(0.05)
 
@@ -2091,69 +2114,64 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             return frame
         temp_frame = frame.copy()
         num_swapped, temp_frame = self.swap_faces(frame, temp_frame, stabilize=True, frame_idx=frame_idx)
+
+        tls_detected = getattr(self._tls, 'frame_detected', num_swapped > 0)
+        tls_det_score = getattr(self._tls, 'frame_det_score', 0.0)
+        tls_pose = getattr(self._tls, 'frame_pose', (0.0, 0.0, 0.0))
+        tls_sim = getattr(self._tls, 'frame_match_sim', 0.0)
+        tls_fail_reason = getattr(self._tls, 'frame_fail_reason', None)
+        tls_action = getattr(self._tls, 'frame_action', None)
+
         if num_swapped > 0:
             if roop.globals.no_face_action == eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR:
                 if len(self.input_face_datas) > num_swapped:
                     return None
-            # Copy OUTSIDE the lock (a 1080p copy is ~6 MB and every worker
-            # takes this path on a good frame); publish the pair together so a
-            # reader can never see a fresh frame beside a stale counter.
             snapshot = temp_frame.copy()
             with self.lock:
                 self.num_frames_no_face = 0
                 self.last_swapped_frame = snapshot
+
+            # Record into temporal optical-flow hold buffer
+            if hasattr(self, 'temporal_hold_buffer'):
+                last_mask = getattr(self._tls, 'last_crop_mask', None)
+                last_bbox = getattr(self._tls, 'last_swapped_bbox', None)
+                self.temporal_hold_buffer.record_swap(frame, temp_frame, last_mask, last_bbox)
+
+            action = tls_action or ACTION_SWAPPED
+            log_frame_telemetry(frame_idx, detected=True, det_score=tls_det_score,
+                                yaw_pitch_roll=tls_pose, match_sim=tls_sim,
+                                action=action)
             self._publish_live(temp_frame)
             return temp_frame
+
         if roop.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
-            # `self.lock` has existed since __init__ and was never taken; this is
-            # the state it is for. num_frames_no_face is not a statistic like
-            # total_swaps (whose lost increments are explicitly accepted) — it is
-            # the control variable capping how many consecutive frames may be
-            # reused, and check-then-increment across N worker threads is a
-            # textbook TOCTOU.
-            #
-            # Scope, honestly: this is HARDENING, not a fix for a measured
-            # failure. The window is about three bytecodes and only frames where
-            # nothing was detected reach it, so contention is low — 8 threads
-            # hammering the unlocked form never overran the cap, including at
-            # sys.setswitchinterval(1e-9). What the lock buys is that the cap and
-            # the stored frame are now provably consistent, for the cost of an
-            # uncontended acquire on an already-rare path.
-            #
-            # The reference is grabbed here and copied outside, which is safe
-            # because last_swapped_frame is only ever REBOUND to a fresh array,
-            # never mutated in place.
-            #
-            # What a lock cannot fix, and what this deliberately does not pretend
-            # to: "last swapped frame" is a sequential idea. Frames are handed to
-            # workers round-robin, so the most recently STORED frame is not the
-            # preceding one — under threads>1 this policy reuses a nearby frame,
-            # not the previous frame. Correct ordering would need this policy to
-            # force threads=1; that is a behaviour change for a user-visible
-            # setting, so it is flagged rather than taken unilaterally.
-            with self.lock:
-                reuse = (self.last_swapped_frame is not None
-                         and self.num_frames_no_face < self.options.max_num_reuse_frame)
-                if reuse:
+            held_frame = None
+            if hasattr(self, 'temporal_hold_buffer'):
+                held_frame = self.temporal_hold_buffer.hold_and_warp(frame)
+            if held_frame is not None:
+                with self.lock:
                     self.num_frames_no_face += 1
-                    snapshot = self.last_swapped_frame
-            if reuse:
-                ret = snapshot.copy()
-                self._publish_live(ret)
-                return ret
-            self._publish_live(frame)
-            return frame
+                log_frame_telemetry(frame_idx, detected=tls_detected, det_score=tls_det_score,
+                                    yaw_pitch_roll=tls_pose, match_sim=tls_sim,
+                                    action=ACTION_LAST_SWAP_HOLD)
+                self._publish_live(held_frame)
+                return held_frame
+            else:
+                fail_flag = tls_fail_reason or (FAIL_SIMILARITY if tls_detected else FAIL_SCRFD)
+                log_frame_telemetry(frame_idx, detected=tls_detected, det_score=tls_det_score,
+                                    yaw_pitch_roll=tls_pose, match_sim=tls_sim,
+                                    action=ACTION_RAW_FALLBACK, failure_flag=fail_flag)
+                self._publish_live(frame)
+                return frame
+
         elif roop.globals.no_face_action == eNoFaceAction.USE_ORIGINAL_FRAME:
+            fail_flag = tls_fail_reason or (FAIL_SIMILARITY if tls_detected else FAIL_SCRFD)
+            log_frame_telemetry(frame_idx, detected=tls_detected, det_score=tls_det_score,
+                                yaw_pitch_roll=tls_pose, match_sim=tls_sim,
+                                action=ACTION_RAW_FALLBACK, failure_flag=fail_flag)
             self._publish_live(frame)
             return frame
-        # Both skip policies drop the frame. SKIP_FRAME_IF_DISSIMILAR had no
-        # branch of its own here, so it fell through to the retry below: picking
-        # "Skip Frame if no similar face" silently behaved as "Retry rotated" on
-        # every frame where NOTHING was swapped — which is precisely the case
-        # the setting exists to decide, and it paid a second full detection pass
-        # per frame to do the opposite of what was asked. (The partially swapped
-        # case — some sources matched, some did not — is handled above, under
-        # num_swapped > 0.)
+
         if roop.globals.no_face_action in (eNoFaceAction.SKIP_FRAME,
                                            eNoFaceAction.SKIP_FRAME_IF_DISSIMILAR):
             return None
@@ -2162,20 +2180,45 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         return ret
 
     def retry_rotated(self, frame):
-        copyframe = frame.copy()
-        copyframe = rotate_clockwise(copyframe)
+        # 1. Clockwise (90 deg)
+        copyframe = rotate_clockwise(frame)
         temp_frame = copyframe.copy()
         num_swapped, temp_frame = self.swap_faces(copyframe, temp_frame)
         if num_swapped > 0:
             return rotate_anticlockwise(temp_frame)
-        
-        copyframe = frame.copy()
-        copyframe = rotate_anticlockwise(copyframe)
+
+        # 2. Anticlockwise (-90 deg)
+        copyframe = rotate_anticlockwise(frame)
         temp_frame = copyframe.copy()
         num_swapped, temp_frame = self.swap_faces(copyframe, temp_frame)
         if num_swapped > 0:
             return rotate_clockwise(temp_frame)
-        del copyframe
+
+        # 3. 180 deg inverted
+        copyframe = rotate_image_180(frame)
+        temp_frame = copyframe.copy()
+        num_swapped, temp_frame = self.swap_faces(copyframe, temp_frame)
+        if num_swapped > 0:
+            return rotate_image_180(temp_frame)
+
+        # 4. +30 degree lateral tilt
+        copyframe, M_30 = _rotate_affine(frame, 30.0)
+        temp_frame = copyframe.copy()
+        num_swapped, temp_frame = self.swap_faces(copyframe, temp_frame)
+        if num_swapped > 0:
+            h, w = frame.shape[:2]
+            M_inv = cv2.invertAffineTransform(M_30)
+            return cv2.warpAffine(temp_frame, M_inv, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
+        # 5. -30 degree lateral tilt
+        copyframe, M_neg30 = _rotate_affine(frame, -30.0)
+        temp_frame = copyframe.copy()
+        num_swapped, temp_frame = self.swap_faces(copyframe, temp_frame)
+        if num_swapped > 0:
+            h, w = frame.shape[:2]
+            M_inv = cv2.invertAffineTransform(M_neg30)
+            return cv2.warpAffine(temp_frame, M_inv, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
         return frame
 
 
@@ -2294,8 +2337,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             else:
                 with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
                     face = get_first_face(frame)
-                    if face is None and self.last_found_bboxes is not None:
-                        face = _detect_face_in_roi(frame, self.last_found_bboxes[0])
+                    base_thresh = float(getattr(roop.globals, 'face_detector_threshold', 0.50))
+                    use_roi = getattr(roop.globals, 'temporal_roi_hint', True)
+                    if (face is None or (use_roi and getattr(face, 'det_score', 1.0) < base_thresh)) and self.last_found_bboxes is not None:
+                        f_roi = _detect_face_in_roi(frame, self.last_found_bboxes[0], pad_ratio=0.20)
+                        if f_roi is not None:
+                            face = f_roi
+                            self._tls.frame_action = ACTION_ROI_RETRY
             if face is None:
                 return num_faces_found, frame
             self.last_found_bboxes = np.array([face.bbox])   # cache for next frame
@@ -2320,15 +2368,25 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             else:
                 with _prof('detect'), _gpu_guard(pooled=analysis_pooled()):  # detect: lock-free when pooled
                     faces = get_all_faces(frame)
-                    if not faces and self.last_found_bboxes is not None:
+                    base_thresh = float(getattr(roop.globals, 'face_detector_threshold', 0.50))
+                    use_roi = getattr(roop.globals, 'temporal_roi_hint', True)
+                    if (not faces or (use_roi and max((getattr(f, 'det_score', 1.0) for f in faces), default=0.0) < base_thresh)) and self.last_found_bboxes is not None:
                         recovered = []
                         for bbox in self.last_found_bboxes:
-                            f = _detect_face_in_roi(frame, bbox)
+                            f = _detect_face_in_roi(frame, bbox, pad_ratio=0.20)
                             if f is not None:
                                 recovered.append(f)
                         if recovered:
                             faces = recovered
+                            self._tls.frame_action = ACTION_ROI_RETRY
                     elif (_PARTIAL_MISS_RESCUE and faces and self.last_found_bboxes is not None):
+                        for bbox in self.last_found_bboxes:
+                            if max((self._bbox_iou(bbox, f.bbox) for f in faces), default=0.0) >= 0.2:
+                                continue
+                            f = _detect_face_in_roi(frame, bbox, pad_ratio=0.20)
+                            if f is not None:
+                                faces.append(f)
+                                self._tls.frame_action = ACTION_ROI_RETRY
                         # Check unmatched boxes even when the count is unchanged:
                         # a new person can enter as the target is lost. One
                         # person is small/lateral/partly occluded (by
@@ -2351,13 +2409,19 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                             faces.append(f)
                             _audit_hit('recovered via ROI redetect (partial miss)')
             if not faces:
-                # Counted, because a frame where the detector found NOTHING is
-                # the other half of the flicker and is invisible from the
-                # per-face buckets below — nothing reaches them to be refused.
-                # An object crossing a turned face is exactly the case that can
-                # take the detection out for a few frames at a time.
+                self._tls.frame_detected = False
+                self._tls.frame_det_score = 0.0
+                self._tls.frame_pose = (0.0, 0.0, 0.0)
+                self._tls.frame_match_sim = 0.0
+                self._tls.frame_fail_reason = FAIL_SCRFD
                 _audit_hit('frames with no face detected at all')
                 return num_faces_found, frame
+
+            self._tls.frame_detected = True
+            self._tls.frame_det_score = float(max((getattr(f, 'det_score', 0.99) or 0.99 for f in faces), default=0.99))
+            first_pose = solve_pose_5pt(getattr(faces[0], 'kps', None))
+            self._tls.frame_pose = first_pose if first_pose is not None else (0.0, 0.0, 0.0)
+            self._tls.tgt_yaw_deg = float(self._tls.frame_pose[0])
 
             # ── Structural rejection, before any identity decision ────────────
             # Answers "could this detection plausibly be the subject of a
@@ -2387,6 +2451,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                     # Every detection failed. Distinguished from "the detector
                     # found nothing" because the two have different causes and
                     # different fixes, and they are indistinguishable on screen.
+                    self._tls.frame_fail_reason = FAIL_LANDMARKS
                     _audit_hit('frames where every detection failed geometry')
                     return num_faces_found, frame
 
@@ -3514,22 +3579,13 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             fs = self.input_face_datas[face_index]
             if len(fs.faces) > 0:
                 inputface = fs.faces[0]   # default
-            if (getattr(self.options, 'use_source_bank', False)
-                    and len(fs.faces) > 1
-                    and fs.face_poses is not None):
-                best_idx  = 0
-                best_dist = float('inf')
-                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
-                    if yaw_d is None:
-                        continue
-                    # bank_*, not tgt_* — see the pose block above for why these
-                    # two comparands have to stay in the same convention.
-                    dist = (bank_yaw_deg - yaw_d) ** 2 + (bank_pitch_deg - pitch_d) ** 2
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx  = i
-                selected_src_idx = best_idx
-                inputface = fs.faces[best_idx]
+            if len(fs.faces) > 1:
+                # Multi-angle source bank: select source face whose pose best matches target (tgt_yaw_deg, tgt_pitch_deg)
+                best_face, best_idx = fs.select_best_pose_face(tgt_yaw_deg, tgt_pitch_deg)
+                if best_face is not None:
+                    inputface = best_face
+                    selected_src_idx = best_idx
+            self._tls.last_swapped_bbox = target_face.bbox
 
         if inputface is None:
             return frame

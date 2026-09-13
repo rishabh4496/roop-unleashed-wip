@@ -182,6 +182,7 @@ class Settings:
         self.default_det_size = self.default_get(data, 'default_det_size', True)
         self.face_detector_size = str(self.default_get(data, 'face_detector_size', '640' if self.default_det_size else '320'))
         self.face_detector_threshold = float(self.default_get(data, 'face_detector_threshold', 0.50))
+        self.temporal_roi_hint = bool(self.default_get(data, 'temporal_roi_hint', True))
         self.face_detector_nms = float(self.default_get(data, 'face_detector_nms', 0.40))
         self.sam2_model_size = self.default_get(data, 'sam2_model_size', 'tiny')
         self.track_identities = self.default_get(data, 'track_identities', False)
@@ -368,6 +369,7 @@ class Settings:
             'default_det_size': self.default_det_size,
             'face_detector_size': self.face_detector_size,
             'face_detector_threshold': self.face_detector_threshold,
+            'temporal_roi_hint': self.temporal_roi_hint,
             'num_swap_steps': self.num_swap_steps,
             'selected_enhancer': self.selected_enhancer,
             'codeformer_fidelity': self.codeformer_fidelity,

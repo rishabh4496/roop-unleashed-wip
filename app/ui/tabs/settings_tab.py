@@ -8,6 +8,7 @@ import json
 image_formats = ['jpg','png', 'webp']
 video_formats = ['avi','mkv', 'mp4', 'webm']
 video_codecs = ['libx264', 'libx265', 'libvpx-vp9', 'h264_nvenc', 'hevc_nvenc']
+no_face_choices = ['Use untouched original frame', 'Retry rotated', 'Skip Frame', 'Skip Frame if no similar face', 'Use last swapped']
 providerlist = None
 CONFIG_SAVE_DIR = "saved_configs"
 
@@ -56,6 +57,20 @@ def settings_tab():
                 button_apply_restart = gr.Button("Restart Server", variant='primary')
                 button_clean_temp = gr.Button("Clean temp folder")
                 button_apply_settings = gr.Button("Apply Settings")
+        with gr.Row():
+            with gr.Column():
+                det_thresh = gr.Slider(0.10, 1.00, value=float(getattr(roop.globals.CFG, 'face_detector_threshold', 0.50)), label="Detection Score Threshold", info="Confidence threshold for face detector (default: 0.50)", step=0.01, interactive=True)
+            with gr.Column():
+                temporal_roi = gr.Checkbox(label="Temporal ROI Hint", value=bool(getattr(roop.globals.CFG, 'temporal_roi_hint', True)), info="Retry detection in previous face ROI at 25% lower threshold", elem_id='temporal_roi_hint', interactive=True)
+                settings_controls.append(temporal_roi)
+            with gr.Column():
+                cfg_nfa = getattr(roop.globals.CFG, 'no_face_action', 'Retry rotated')
+                if isinstance(cfg_nfa, int):
+                    nfa_val = no_face_choices[cfg_nfa] if 0 <= cfg_nfa < len(no_face_choices) else no_face_choices[1]
+                else:
+                    nfa_val = cfg_nfa if cfg_nfa in no_face_choices else "Retry rotated"
+                no_face_action_ctrl = gr.Dropdown(no_face_choices, label="No-face Action", info="Action when no face is detected in frame", value=nfa_val, elem_id='no_face_action', interactive=True)
+                settings_controls.append(no_face_action_ctrl)
 
     chk_det_size.select(fn=on_option_changed)
 
@@ -65,6 +80,7 @@ def settings_tab():
     max_threads.input(fn=lambda a,b='max_threads':on_settings_changed_misc(a,b), inputs=[max_threads])
     memory_limit.input(fn=lambda a,b='memory_limit':on_settings_changed_misc(a,b), inputs=[memory_limit])
     video_quality.input(fn=lambda a,b='video_quality':on_settings_changed_misc(a,b), inputs=[video_quality])
+    det_thresh.input(fn=lambda a,b='face_detector_threshold':on_settings_changed_misc(a,b), inputs=[det_thresh])
 
     button_clean_temp.click(fn=clean_temp)
     button_apply_settings.click(apply_settings, inputs=[input_server_name, input_server_port, output_template])
@@ -115,9 +131,8 @@ def on_option_changed(evt: gr.SelectData):
 def on_settings_changed_misc(new_val, attribname):
     if hasattr(roop.globals.CFG, attribname):
         setattr(roop.globals.CFG, attribname, new_val)
-    else:
-        print("Didn't find attrib!")
-        
+    if hasattr(roop.globals, attribname):
+        setattr(roop.globals, attribname, new_val)
 
 
 def on_settings_changed(evt: gr.SelectData):
@@ -125,11 +140,18 @@ def on_settings_changed(evt: gr.SelectData):
     if isinstance(evt.target, gr.Checkbox):
         if hasattr(roop.globals.CFG, attribname):
             setattr(roop.globals.CFG, attribname, evt.selected)
-            return
+        if hasattr(roop.globals, attribname):
+            setattr(roop.globals, attribname, evt.selected)
+        return
     elif isinstance(evt.target, gr.Dropdown):
         if hasattr(roop.globals.CFG, attribname):
             setattr(roop.globals.CFG, attribname, evt.value)
-            return
+        if hasattr(roop.globals, attribname):
+            if attribname == 'no_face_action' and evt.value in no_face_choices:
+                setattr(roop.globals, attribname, no_face_choices.index(evt.value))
+            else:
+                setattr(roop.globals, attribname, evt.value)
+        return
             
     raise gr.Error(f'Unhandled Setting for {evt.target}')
 
