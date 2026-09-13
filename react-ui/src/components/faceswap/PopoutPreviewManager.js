@@ -29,7 +29,7 @@ class PopoutPreviewManager {
       <html lang="en" class="dark">
       <head>
         <meta charset="UTF-8">
-        <title>Roop Unleashed - External Monitor Preview</title>
+        <title>RoopX - External Monitor Preview</title>
         <style>
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body {
@@ -85,7 +85,7 @@ class PopoutPreviewManager {
       </head>
       <body>
         <div class="header">
-          <div class="title">ROOP UNLEASHED — DEDICATED PREVIEW MONITOR</div>
+          <div class="title">ROOPX — DEDICATED PREVIEW MONITOR</div>
           <div class="status" id="statusBadge">Connected</div>
         </div>
         <div class="stage">

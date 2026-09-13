@@ -1,5 +1,5 @@
 {
-  "title": "roop-unleashed-wip",
+  "title": "roopx",
   "description": "Swap faces in photos and videos in seconds — no training required. Powered by InsightFace and ONNX, with optional TensorRT acceleration, multi-face targeting, enhancement pipelines, and a clean one-click interface.",
   "plugin": {
     "menu": []

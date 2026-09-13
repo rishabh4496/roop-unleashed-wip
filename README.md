@@ -1,6 +1,7 @@
-# roop-unleashed
 
-A deepfake face-swap application for images and videos with an easy-to-use Gradio web UI.
+# roopx
+
+Next-generation deepfake face-swap and identity synthesis studio for images and videos.
 Supports NVIDIA (CUDA / TensorRT), AMD (DirectML / ROCm), Apple Silicon, and CPU.
 
 This repository contains both the Pinokio launcher scripts and the full application code.

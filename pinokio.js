@@ -1,7 +1,7 @@
 const path = require('path')
 module.exports = {
   version: "3.7",
-  title: "roop-unleashed",
+  title: "roopx",
   description: "Swap faces in photos and videos in seconds — no training required. Powered by InsightFace and ONNX, with optional TensorRT acceleration, multi-face targeting, enhancement pipelines, and a clean one-click interface.",
   icon: "icon.png",
   menu: async (kernel, info) => {
