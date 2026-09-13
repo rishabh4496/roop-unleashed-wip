@@ -37,7 +37,17 @@ class TemporalSwapHoldBuffer:
         """Record a successful swap to maintain the persistence cache."""
         with self.lock:
             self.consecutive_holds = 0
-            self.prev_frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Smooth velocity projection across successive swaps
+            if bbox is not None and self.prev_bbox is not None and self.prev_frame_gray is not None:
+                dx = float((bbox[0] + bbox[2]) - (self.prev_bbox[0] + self.prev_bbox[2])) / 2.0
+                dy = float((bbox[1] + bbox[3]) - (self.prev_bbox[1] + self.prev_bbox[3])) / 2.0
+                h, w = frame.shape[:2]
+                if abs(dx) <= 0.25 * w and abs(dy) <= 0.25 * h:
+                    self.prev_velocity = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
+
+            self.prev_frame_gray = curr_gray
             self.prev_composite = composite.copy()
 
             if mask is not None:
@@ -52,16 +62,95 @@ class TemporalSwapHoldBuffer:
                 self.prev_mask = None
 
             self.prev_bbox = np.asarray(bbox, dtype=np.float32).copy() if bbox is not None else None
-            self.prev_velocity = None
 
     def can_hold(self) -> bool:
         """Check if buffer has a valid cached swap within the hold limit."""
         with self.lock:
-            return (
+            if not (
                 self.prev_composite is not None
                 and self.prev_frame_gray is not None
                 and self.consecutive_holds < self.max_holds
-            )
+            ):
+                return False
+
+            # Check if previous face bounding box has already moved out of the frame
+            if self.prev_bbox is not None and self.prev_frame_gray is not None:
+                h, w = self.prev_frame_gray.shape[:2]
+                bx1, by1, bx2, by2 = self.prev_bbox
+                if bx2 <= 5.0 or bx1 >= (w - 5.0) or by2 <= 5.0 or by1 >= (h - 5.0):
+                    return False
+
+            return True
+
+    def estimate_motion(self, curr_frame_gray: np.ndarray) -> Tuple[Optional[np.ndarray], float]:
+        """Estimate inter-frame motion matrix M and return (M, latency_ms)."""
+        import time
+        t0 = time.perf_counter_ns()
+        h, w = curr_frame_gray.shape[:2]
+
+        # Scene-cut / camera transition check (zero-overhead 32x32 thumbnail MAD)
+        prev_small = cv2.resize(self.prev_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
+        curr_small = cv2.resize(curr_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
+        frame_diff = float(np.mean(np.abs(curr_small.astype(np.float32) - prev_small.astype(np.float32))))
+
+        if frame_diff > 45.0:
+            self.reset()
+            t1 = time.perf_counter_ns()
+            return None, (t1 - t0) / 1_000_000.0
+
+        M = None
+        # Fast path: smooth inter-frame velocity extrapolation (<0.3 ms)
+        if self.prev_velocity is not None and frame_diff < 30.0:
+            M = self.prev_velocity.copy()
+        elif self.prev_bbox is not None:
+            # Fallback: cropped ROI optical flow tracking
+            bw = float(self.prev_bbox[2] - self.prev_bbox[0])
+            bh = float(self.prev_bbox[3] - self.prev_bbox[1])
+            x1 = max(0, int(round(self.prev_bbox[0] - bw * 0.15)))
+            y1 = max(0, int(round(self.prev_bbox[1] - bh * 0.15)))
+            x2 = min(w, int(round(self.prev_bbox[2] + bw * 0.15)))
+            y2 = min(h, int(round(self.prev_bbox[3] + bh * 0.15)))
+
+            if x2 > x1 and y2 > y1:
+                roi_prev = self.prev_frame_gray[y1:y2, x1:x2]
+                roi_curr = curr_frame_gray[y1:y2, x1:x2]
+                p0 = cv2.goodFeaturesToTrack(roi_prev, maxCorners=30, qualityLevel=0.02, minDistance=6)
+                if p0 is not None and len(p0) >= 4:
+                    p1, st, _ = cv2.calcOpticalFlowPyrLK(
+                        roi_prev, roi_curr, p0, None,
+                        winSize=(15, 15), maxLevel=1,
+                        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
+                    )
+                    v_p0 = p0[st.ravel() == 1]
+                    v_p1 = p1[st.ravel() == 1]
+                    if len(v_p0) >= 4:
+                        M_roi, _ = cv2.estimateAffinePartial2D(v_p0, v_p1)
+                        if M_roi is not None and np.isfinite(M_roi).all():
+                            M = M_roi.copy()
+
+        # Validate affine transformation plausibility (scale & translation bounds)
+        is_valid_M = False
+        if M is not None and np.isfinite(M).all():
+            det = float(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])
+            tx = abs(float(M[0, 2]))
+            ty = abs(float(M[1, 2]))
+            if 0.25 <= det <= 4.0 and tx <= 0.40 * w and ty <= 0.40 * h:
+                is_valid_M = True
+
+        if is_valid_M:
+            self.prev_velocity = M.copy()
+        else:
+            if self.prev_velocity is not None and frame_diff < 30.0:
+                M = self.prev_velocity.copy()
+            elif frame_diff < 25.0:
+                M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+            else:
+                self.reset()
+                M = None
+
+        t1 = time.perf_counter_ns()
+        latency_ms = (t1 - t0) / 1_000_000.0
+        return M, latency_ms
 
     def hold_and_warp(self, curr_frame: np.ndarray) -> Optional[np.ndarray]:
         """Track motion from previous frame to curr_frame and composite warped swap.
@@ -75,87 +164,10 @@ class TemporalSwapHoldBuffer:
             curr_frame_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
             h, w = curr_frame.shape[:2]
 
-            # Scene-cut / camera transition check (zero-overhead 32x32 thumbnail MAD)
-            prev_small = cv2.resize(self.prev_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
-            curr_small = cv2.resize(curr_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
-            frame_diff = float(np.mean(np.abs(curr_small.astype(np.float32) - prev_small.astype(np.float32))))
-
-            # Hard scene cut threshold: if frames differ radically, reset and abort hold
-            if frame_diff > 45.0:
-                self.reset()
+            M, tracking_ms = self.estimate_motion(curr_frame_gray)
+            self.last_tracking_latency_ms = tracking_ms
+            if M is None:
                 return None
-
-            # 1. Feature tracking inside previous face ROI
-            M = None
-            valid_count = 0
-            if self.prev_bbox is not None:
-                bw = float(self.prev_bbox[2] - self.prev_bbox[0])
-                bh = float(self.prev_bbox[3] - self.prev_bbox[1])
-                x1 = max(0, int(round(self.prev_bbox[0] - bw * 0.15)))
-                y1 = max(0, int(round(self.prev_bbox[1] - bh * 0.15)))
-                x2 = min(w, int(round(self.prev_bbox[2] + bw * 0.15)))
-                y2 = min(h, int(round(self.prev_bbox[3] + bh * 0.15)))
-
-                if x2 > x1 and y2 > y1:
-                    roi_mask = np.zeros_like(self.prev_frame_gray)
-                    roi_mask[y1:y2, x1:x2] = 255
-
-                    p0 = cv2.goodFeaturesToTrack(
-                        self.prev_frame_gray,
-                        maxCorners=120,
-                        qualityLevel=0.01,
-                        minDistance=5,
-                        mask=roi_mask,
-                    )
-
-                    if p0 is not None and len(p0) >= 4:
-                        p1, st, _ = cv2.calcOpticalFlowPyrLK(
-                            self.prev_frame_gray,
-                            curr_frame_gray,
-                            p0,
-                            None,
-                            winSize=(21, 21),
-                            maxLevel=3,
-                            criteria=(
-                                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
-                                30,
-                                0.01,
-                            ),
-                        )
-                        valid_p0 = p0[st.ravel() == 1]
-                        valid_p1 = p1[st.ravel() == 1]
-                        valid_count = len(valid_p0)
-
-                        if valid_count >= 4:
-                            M, _ = cv2.estimateAffinePartial2D(valid_p0, valid_p1)
-
-            # Check if tracking completely failed on a significantly changed scene
-            if valid_count < 4 and frame_diff > 30.0:
-                self.reset()
-                return None
-
-            # Validate affine transformation plausibility (scale & translation bounds)
-            is_valid_M = False
-            if M is not None and np.isfinite(M).all():
-                det = float(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])
-                tx = abs(float(M[0, 2]))
-                ty = abs(float(M[1, 2]))
-                # Determinant must be positive and within reasonable scale range [0.25, 4.0]
-                # Translation must be within 40% of frame dimensions
-                if 0.25 <= det <= 4.0 and tx <= 0.40 * w and ty <= 0.40 * h:
-                    is_valid_M = True
-
-            if is_valid_M:
-                self.prev_velocity = M.copy()
-            else:
-                # If M is degenerate or tracking failed, fallback to prev_velocity only if frame_diff < 30.0
-                if self.prev_velocity is not None and frame_diff < 30.0:
-                    M = self.prev_velocity.copy()
-                elif frame_diff < 25.0:
-                    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-                else:
-                    self.reset()
-                    return None
 
             # 2. Warp previous swap composite & mask
             warped_composite = cv2.warpAffine(
@@ -181,6 +193,11 @@ class TemporalSwapHoldBuffer:
                     self.prev_bbox if self.prev_bbox is not None else np.array([0, 0, w, h]),
                 )
 
+            # If the warped mask has negligible coverage, the face has exited the frame
+            if warped_mask is not None and float(warped_mask.max()) < 0.02:
+                self.reset()
+                return None
+
             # 3. Composite onto current frame
             if warped_mask.ndim == 2:
                 alpha = np.repeat(warped_mask[:, :, np.newaxis], 3, axis=2)
@@ -194,26 +211,40 @@ class TemporalSwapHoldBuffer:
             ).clip(0, 255).astype(np.uint8)
 
             # 4. Update state for chained multi-frame holds
-            self.consecutive_holds += 1
-            self.prev_frame_gray = curr_frame_gray
-            self.prev_composite = held_composite
-            self.prev_mask = warped_mask
-
             if self.prev_bbox is not None:
                 bx1, by1, bx2, by2 = self.prev_bbox
                 box_pts = np.array(
                     [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]], dtype=np.float32
                 )
                 warped_pts = cv2.transform(box_pts.reshape(1, -1, 2), M).reshape(-1, 2)
+                min_x = float(warped_pts[:, 0].min())
+                max_x = float(warped_pts[:, 0].max())
+                min_y = float(warped_pts[:, 1].min())
+                max_y = float(warped_pts[:, 1].max())
+
+                # If face bounding box has completely left the frame, terminate hold and reset
+                if max_x <= 5.0 or min_x >= float(w - 5.0) or max_y <= 5.0 or min_y >= float(h - 5.0):
+                    self.reset()
+                    return None
+
+                clamped_x1 = max(0.0, min(float(w), min_x))
+                clamped_y1 = max(0.0, min(float(h), min_y))
+                clamped_x2 = max(0.0, min(float(w), max_x))
+                clamped_y2 = max(0.0, min(float(h), max_y))
+
+                if (clamped_x2 - clamped_x1) < 5.0 or (clamped_y2 - clamped_y1) < 5.0:
+                    self.reset()
+                    return None
+
                 self.prev_bbox = np.array(
-                    [
-                        max(0.0, float(warped_pts[:, 0].min())),
-                        max(0.0, float(warped_pts[:, 1].min())),
-                        min(float(w), float(warped_pts[:, 0].max())),
-                        min(float(h), float(warped_pts[:, 1].max())),
-                    ],
+                    [clamped_x1, clamped_y1, clamped_x2, clamped_y2],
                     dtype=np.float32,
                 )
+
+            self.consecutive_holds += 1
+            self.prev_frame_gray = curr_frame_gray
+            self.prev_composite = held_composite
+            self.prev_mask = warped_mask
 
             return held_composite
 
