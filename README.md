@@ -228,6 +228,22 @@ see [GPEN GPU diagnostics](docs/GPEN_GPU_DIAGNOSTICS.md).
 
 ### Profile angles, temporal tracking, and flicker control
 
+The geometry filter measures both eye spacing and eye-to-mouth height, so a
+large side-view face is not rejected just because its projected eyes are close
+together. Real detections and interpolated faces follow the same rule. Tiny
+faces, invalid landmarks, and identity mismatches can still be rejected.
+
+In adaptive temporal mode, profiles, adjacent faces, and known detection misses
+force fresh detection even when the motion thumbnail looks quiet. Recovery
+checks each missing track, including when another person enters and the total
+face count stays unchanged. These cases can take longer to analyze because they
+now receive more detector work. Restart the app and render a new output to use
+the fix; existing output and completed resume segments are not reprocessed.
+
+These changes address specific dropout and interpolation causes of flicker.
+They do not guarantee artifact-free swaps through complete occlusion or every
+extreme pose; the detector, alignment, and swap model still limit the result.
+
 For video, enable **Temporal detection**, **Track identities**, and **Stabilize face**. In
 selected-face mode the pre-pass assigns one source to a spatial track, compares each
 track against the closest embedding in the source bank, and keeps a confirmed track

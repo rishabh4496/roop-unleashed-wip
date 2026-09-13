@@ -2328,10 +2328,10 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 recovered.append(f)
                         if recovered:
                             faces = recovered
-                    elif (_PARTIAL_MISS_RESCUE and faces and self.last_found_bboxes is not None
-                          and len(faces) < len(self.last_found_bboxes)):
-                        # Full-frame pass found SOME faces but fewer than last frame
-                        # had — one person is small/lateral/partly occluded (by
+                    elif (_PARTIAL_MISS_RESCUE and faces and self.last_found_bboxes is not None):
+                        # Check unmatched boxes even when the count is unchanged:
+                        # a new person can enter as the target is lost. One
+                        # person is small/lateral/partly occluded (by
                         # another tracked face or a moving object), exactly the
                         # case a global "if not faces" gate can never see because
                         # something WAS found. ROI-redetect only the unmatched
@@ -2368,22 +2368,16 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             # this is the ONLY thing standing between them and a swapped
             # background extra.
             #
-            # It is also what makes a strict identity threshold safe to set: at
-            # 20 px interocular an ArcFace embedding is noise, and noise lands
-            # wherever the threshold happens to be, so most of the scores that
-            # used to sit near the boundary came from detections whose embeddings
-            # meant nothing. Removing them first is why the threshold can be
-            # tightened without eating real matches. ROOP_GEOMETRY_FILTER=0 off.
+            # Judge facial scale with both eye separation and eye-to-mouth
+            # height: a profile's eyes converge without the face becoming small.
+            # Real and predicted faces must pass the SAME rule; exempting only
+            # predictions causes alternating swapped/unswapped frames when a
+            # real profile is detected between gap-filled frames.
             if _GEOMETRY_FILTER is not None:
                 kept = []
                 for f in faces:
                     why = _GEOMETRY_FILTER.reject_reason(f, frame.shape)
-                    is_temporal_prediction = (
-                        _tfaces is not None and isinstance(f, dict)
-                        and f.get('_interpolated'))
-                    if (why is None or
-                            (is_temporal_prediction and
-                             ('aspect' in why or 'interocular' in why))):
+                    if why is None:
                         kept.append(f)
                     else:
                         _audit_hit(f'refused: not a plausible face ({why.split()[0]})')

@@ -4,10 +4,10 @@ Three filters, applied in cost order, because the cheap ones remove most of
 what the expensive one would have to adjudicate:
 
 1. :class:`GeometryFilter` - detector score, box area, aspect ratio, and
-   interocular distance. Free (it reads numbers the detector already produced)
-   and it removes the background extras that no recognition model can judge
-   anyway: at 20 px interocular an ArcFace embedding is noise, and noise lands
-   wherever the threshold happens to be.
+   facial feature scale. Uses numbers the detector already produced. Eye-to-mouth
+   height complements interocular distance, which collapses on a side view even
+   when a face has enough resolution. This is a geometry check, not identity
+   evidence; recognition still has to establish who the face belongs to.
 2. :class:`IdentityGate` - cosine similarity of the 512-d ArcFace embedding
    against the selected reference(s). One dot product per (face, reference).
 3. :class:`FaceTracker` - temporal hysteresis over IoU/centroid-matched
@@ -57,8 +57,8 @@ DEFAULT_MIN_SIMILARITY = float(os.environ.get('ROOP_MIN_SIMILARITY', '0.65') or 
 # gate in the first place.
 DEFAULT_MIN_DET_SCORE = float(os.environ.get('ROOP_MIN_DET_SCORE', '0.60') or 0.60)
 
-# Below roughly this interocular distance the embedding is not informative
-# enough to gate on, whatever the threshold.
+# Minimum facial feature scale. Eye separation alone is foreshortened by yaw;
+# the geometry filter also uses the eye-to-mouth span for profile views.
 DEFAULT_MIN_INTEROCULAR_PX = float(os.environ.get('ROOP_MIN_INTEROCULAR', '24') or 24)
 
 DEFAULT_MIN_BOX_PX = float(os.environ.get('ROOP_MIN_BOX_PX', '48') or 48)
@@ -181,7 +181,13 @@ class GeometryFilter:
         box = getattr(face, 'bbox', None)
         if box is None:
             return 'no bbox'
-        x0, y0, x1, y1 = (float(v) for v in np.asarray(box).ravel()[:4])
+        try:
+            box = np.asarray(box, dtype=np.float64).ravel()
+        except (TypeError, ValueError):
+            return 'invalid bbox'
+        if box.size != 4 or not np.isfinite(box).all():
+            return 'invalid bbox'
+        x0, y0, x1, y1 = box
         w, h = x1 - x0, y1 - y0
         if w <= 0.0 or h <= 0.0:
             return 'degenerate bbox'
@@ -203,9 +209,30 @@ class GeometryFilter:
         if not (lo <= aspect <= hi):
             return f'aspect {aspect:.2f} outside [{lo:.2f}, {hi:.2f}]'
 
-        iod = _interocular(face)
-        if iod is not None and iod < self.min_interocular_px:
-            return f'interocular {iod:.0f}px < {self.min_interocular_px:.0f}px'
+        kps = getattr(face, 'kps', None)
+        if kps is not None:
+            try:
+                kps = np.asarray(kps, dtype=np.float64)
+            except (TypeError, ValueError):
+                return 'invalid keypoints'
+            if kps.shape != (5, 2) or not np.isfinite(kps).all():
+                return 'invalid keypoints'
+            # Do not let a stray mouth point make a tiny or broken detection
+            # pass the profile scale check. Allow modest detector box jitter.
+            pad = np.array([w, h]) * 0.25
+            if np.any(kps < box[:2] - pad) or np.any(kps > box[2:] + pad):
+                return 'keypoints outside bbox'
+            iod = float(np.linalg.norm(kps[1] - kps[0]))
+            eye_mouth = float(np.linalg.norm(kps[:2].mean(axis=0)
+                                             - kps[3:5].mean(axis=0)))
+            # On a side view the projected eyes coincide even for a large,
+            # sharp face. Eye-to-mouth height survives yaw and is invariant to
+            # in-plane roll. 0.7 expresses it in approximate interocular units;
+            # taking the maximum leaves ordinary frontal admissions unchanged.
+            feature_scale = max(iod, 0.7 * eye_mouth)
+            if feature_scale < self.min_interocular_px:
+                return (f'interocular/profile span {feature_scale:.0f}px '
+                        f'< {self.min_interocular_px:.0f}px')
 
         return None
 

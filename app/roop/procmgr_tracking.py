@@ -139,6 +139,47 @@ def _adaptive_motion_is_stable(previous, current, boxes, frame_shape):
     return True
 
 
+def _adaptive_tracks_allow_skip(tracks, last_detected_frame):
+    """Profiles, adjacent faces and known dropouts need a real observation.
+
+    A tiny motion thumbnail can hide a turning eye or moving contact boundary.
+    Use the latest real observations to veto interpolation in those cases.
+    """
+    if not tracks:
+        return False
+    boxes = []
+    for track in tracks:
+        if track['last_seen'] != last_detected_frame:
+            return False
+        face = (track.get('obs') or {}).get(track['last_seen'])
+        if face is None or face_contact.unreliable(face):
+            return False
+        try:
+            kps = np.asarray(face.kps, dtype=np.float64)
+            box = np.asarray(face.bbox, dtype=np.float64)
+            if (kps.shape != (5, 2) or box.shape != (4,)
+                    or not np.isfinite(kps).all() or not np.isfinite(box).all()):
+                return False
+            height = float(np.linalg.norm(kps[:2].mean(axis=0) - kps[3:5].mean(axis=0)))
+            eyes = float(np.linalg.norm(kps[1] - kps[0]))
+            if height <= 1e-6 or eyes < 0.6 * height:
+                return False
+            size = box[2:] - box[:2]
+            if np.any(size <= 0):
+                return False
+            # Include the area where recognition crops can share a neighbour.
+            expanded = np.concatenate((box[:2] - 0.25 * size,
+                                       box[2:] + 0.25 * size))
+            for other in boxes:
+                if np.all(np.minimum(expanded[2:], other[2:])
+                          > np.maximum(expanded[:2], other[:2])):
+                    return False
+            boxes.append(expanded)
+        except (AttributeError, TypeError, ValueError):
+            return False
+    return True
+
+
 class TrackingMixin:
     def _precompute_sam2(self, sam2_p, source_video, frame_start, frame_end, frame_count):
         """SAM2 pre-pass: dump the trimmed frames to a temp JPEG dir (0-based,
@@ -270,6 +311,7 @@ class TrackingMixin:
         active, retired = [], []
         next_id = 0
         per_frame = {}       # frame_idx -> [(centroid(2,), track_id)]
+        last_detected_frame = -1
         # Detections the appearance-only fallback was not allowed to claim.
         reid_refused = 0
         # Observations whose embedding was disbelieved because the recognition
@@ -420,7 +462,10 @@ class TrackingMixin:
                 if faces:
                     return faces
             faces = get_all_faces(fr) or []
-            if rescue_boxes and len(faces) < len(rescue_boxes):
+            # Count equality does not prove coverage: another person can enter
+            # while the tracked profile disappears. The rescue helper already
+            # checks each predicted box and deduplicates recovered detections.
+            if rescue_boxes:
                 faces = _rescue_unmatched_tracks(fr, faces, rescue_boxes)
             if HIRES_MISS and expected_count and len(faces) < expected_count:
                 hi_faces = get_all_faces_hires(fr, HIRES_DET_SIZE)
@@ -451,6 +496,8 @@ class TrackingMixin:
 
         def _consume(f_idx, faces):
             nonlocal active, retired, next_id, reid_refused, contam_seen, contam_reid
+            nonlocal last_detected_frame
+            last_detected_frame = f_idx
             # Retire tracks not seen for STALE frames so matching stays O(active).
             if active:
                 fresh = []
@@ -791,8 +838,9 @@ class TrackingMixin:
                 current_motion = (_motion_signature(frame) if adaptive else None)
                 if adaptive and idx > 0 and idx % TRACK_STEP != 0:
                     boxes = [_predict_bbox(t, idx) for t in active]
-                    detect_this_frame = not _adaptive_motion_is_stable(
-                        previous_motion, current_motion, boxes, frame.shape)
+                    detect_this_frame = (not _adaptive_tracks_allow_skip(active, last_detected_frame)
+                        or not _adaptive_motion_is_stable(
+                            previous_motion, current_motion, boxes, frame.shape))
                     if detect_this_frame:
                         adaptive_motion_detects += 1
                     else:
@@ -851,7 +899,7 @@ class TrackingMixin:
                 _consume(done_idx, done_fut.result())
             if adaptive:
                 print(f'[Track] adaptive motion gate: skipped {adaptive_skipped} frame(s); '
-                      f'forced detection for {adaptive_motion_detects} moving frame(s).')
+                      f'forced detection for {adaptive_motion_detects} moving or uncertain frame(s).')
         finally:
             pbar.close()
             if det_executor is not None:
