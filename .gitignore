@@ -28,6 +28,7 @@ app/saved_configs
 app/facesets
 
 # app/output and app/temp are already ignored above as directories
+/output/
 
 # Local snapshot of the v1 React UI (canonical backup is the react-ui-v1 git tag)
 react-ui-v1-backup/

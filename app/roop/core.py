@@ -720,8 +720,8 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
 def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
                           use_source_bank=False, use_frontalization=False,
                           frontalization_threshold=25.0, swap_model='inswapper',
-                          stabilize_face=False, stabilize_method='one_euro', stabilize_min_cutoff=0.05, stabilize_beta=0.02,
-                          stabilize_enhancer=False, stabilize_enhancer_strength=0.5,
+                          stabilize_face=None, stabilize_method=None, stabilize_min_cutoff=None, stabilize_beta=None,
+                          stabilize_enhancer=None, stabilize_enhancer_strength=None,
                           input_facesets=None, target_faces=None,
                           target_face_groups=None) -> None:
     global clip_text, process_mgr

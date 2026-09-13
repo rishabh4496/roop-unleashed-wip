@@ -64,9 +64,12 @@ DEFAULT_MIN_INTEROCULAR_PX = float(os.environ.get('ROOP_MIN_INTEROCULAR', '24') 
 DEFAULT_MIN_BOX_PX = float(os.environ.get('ROOP_MIN_BOX_PX', '48') or 48)
 DEFAULT_MIN_BOX_FRAC = float(os.environ.get('ROOP_MIN_BOX_FRAC', '0.0008') or 0.0008)
 
-# A face box is roughly 0.7-1.0 in w/h. Anything far outside that is a torso, a
-# reflection, or a detector artefact on a patterned background.
-DEFAULT_ASPECT_RANGE: Tuple[float, float] = (0.55, 1.60)
+# A face box is roughly 0.7-1.0 in w/h for upright faces, but rolled/tilted faces
+# (e.g. lying down or inverted) can have aspect ratio up to ~2.2 or down to ~0.4.
+DEFAULT_ASPECT_RANGE: Tuple[float, float] = (
+    float(os.environ.get('ROOP_ASPECT_MIN', '0.40') or 0.40),
+    float(os.environ.get('ROOP_ASPECT_MAX', '2.50') or 2.50)
+)
 
 DEFAULT_CONFIRM_FRAMES = int(os.environ.get('ROOP_CONFIRM_FRAMES', '3') or 3)
 DEFAULT_GRACE_FRAMES = int(os.environ.get('ROOP_GRACE_FRAMES', '8') or 8)

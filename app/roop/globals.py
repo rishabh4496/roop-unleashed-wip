@@ -68,8 +68,8 @@ swap_model_mask_strength = 0.0
 # enough for the failure to be reachable — as shipped it was a full face
 # analysis on every swapped face, which is 11.7 ms of an ~210 ms per-face budget
 # spent mostly on an embedding nothing reads. See ProcessMgr._verify_worth_it
-# and ROOP_VERIFY_MIN_OFFAXIS. ROOP_VERIFY_SWAP=0 turns the guard off entirely.
-verify_swap = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
+# and ROOP_VERIFY_MIN_OFFAXIS. ROOP_VERIFY_SWAP=1 turns the guard on (default off to prevent motion flickers).
+verify_swap = os.environ.get('ROOP_VERIFY_SWAP', '0') == '1'
 # Jaw / chin reshape: warp the target's lower-face silhouette toward the SOURCE
 # person's jaw/chin shape after the swap (identity swappers keep the target's
 # geometry). strength 0..1 = amount of the shape difference applied.

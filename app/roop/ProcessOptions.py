@@ -2,8 +2,8 @@ class ProcessOptions:
 
     def __init__(self, processordefines:dict, face_distance,  blend_ratio, swap_mode, selected_index, masking_text, imagemask, num_steps, subsample_size, show_face_area, restore_original_mouth, show_mask=False, use_3d_recon=False,
                  use_source_bank=False, use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper',
-                 stabilize_face=False, stabilize_method='one_euro', stabilize_min_cutoff=0.05, stabilize_beta=0.02,
-                 stabilize_enhancer=False, stabilize_enhancer_strength=0.5):
+                 stabilize_face=None, stabilize_method=None, stabilize_min_cutoff=None, stabilize_beta=None,
+                 stabilize_enhancer=None, stabilize_enhancer_strength=None):
         self.processors = processordefines
         self.face_distance_threshold = face_distance
         self.blend_ratio = blend_ratio
@@ -25,11 +25,15 @@ class ProcessOptions:
         self.use_frontalization = use_frontalization
         self.frontalization_threshold = frontalization_threshold
         self.swap_model = swap_model
+
+        import roop.globals
+        cfg = getattr(roop.globals, 'CFG', None)
+
         # One Euro temporal stabilization of face keypoints (video only)
-        self.stabilize_face = stabilize_face
-        self.stabilize_method = stabilize_method
-        self.stabilize_min_cutoff = stabilize_min_cutoff
-        self.stabilize_beta = stabilize_beta
+        self.stabilize_face = (getattr(cfg, 'stabilize_face', True) if cfg is not None else True) if stabilize_face is None else stabilize_face
+        self.stabilize_method = (getattr(cfg, 'stabilize_method', 'one_euro') if cfg is not None else 'one_euro') if stabilize_method is None else stabilize_method
+        self.stabilize_min_cutoff = (getattr(cfg, 'stabilize_min_cutoff', 0.05) if cfg is not None else 0.05) if stabilize_min_cutoff is None else stabilize_min_cutoff
+        self.stabilize_beta = (getattr(cfg, 'stabilize_beta', 0.02) if cfg is not None else 0.02) if stabilize_beta is None else stabilize_beta
         # One Euro temporal smoothing of the enhancer output (anti-flicker)
-        self.stabilize_enhancer = stabilize_enhancer
-        self.stabilize_enhancer_strength = stabilize_enhancer_strength
+        self.stabilize_enhancer = (getattr(cfg, 'stabilize_enhancer', True) if cfg is not None else True) if stabilize_enhancer is None else stabilize_enhancer
+        self.stabilize_enhancer_strength = (getattr(cfg, 'stabilize_enhancer_strength', 0.5) if cfg is not None else 0.5) if stabilize_enhancer_strength is None else stabilize_enhancer_strength

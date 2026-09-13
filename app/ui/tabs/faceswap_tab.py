@@ -2357,7 +2357,13 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
                               use_source_bank=use_source_bank,
                               use_frontalization=use_frontalization,
                               frontalization_threshold=frontalization_threshold,
-                              swap_model=swap_model)
+                              swap_model=swap_model,
+                              stabilize_face=getattr(roop.globals.CFG, 'stabilize_face', True),
+                              stabilize_method=getattr(roop.globals.CFG, 'stabilize_method', 'one_euro'),
+                              stabilize_min_cutoff=getattr(roop.globals.CFG, 'stabilize_min_cutoff', 0.05),
+                              stabilize_beta=getattr(roop.globals.CFG, 'stabilize_beta', 0.02),
+                              stabilize_enhancer=getattr(roop.globals.CFG, 'stabilize_enhancer', True),
+                              stabilize_enhancer_strength=getattr(roop.globals.CFG, 'stabilize_enhancer_strength', 0.5))
     except Exception as exc:
         _LOGGER.exception("Face-swap job failed")
         gr.Error(f"Processing failed: {exc}")

@@ -2409,7 +2409,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 kept = []
                 for f in faces:
                     why = _GEOMETRY_FILTER.reject_reason(f, frame.shape)
-                    if why is None:
+                    if why is None or (_tfaces is not None and 'aspect' in why):
                         kept.append(f)
                     else:
                         _audit_hit(f'refused: not a plausible face ({why.split()[0]})')
@@ -2725,8 +2725,7 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                                 # BEFORE clearing src_index, so the per-frame
                                 # fallback below can be confined to them — see
                                 # vetoed_track_src for why.
-                                if veto_kind != VETO_OTHER_FITS:
-                                    vetoed_track_src = src_index
+                                vetoed_track_src = src_index
                                 src_index = None
                                 _audit_hit(veto_kind)
                         # Claim the entry even when its source is unresolved, so a
@@ -3329,7 +3328,38 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 # original pixels once `frame` is rebound to the rotated cut.
                 rotcutplate, _, _, _, _ = self.cutout(plate, startX, startY, endX, endY)
                 rotcutplate = self.apply_rotation(rotcutplate, rotation_action)
-                rotface = get_first_face(rotcutplate)
+                all_rotfaces = get_all_faces(rotcutplate) or []
+                if not all_rotfaces:
+                    rotface = None
+                elif len(all_rotfaces) == 1:
+                    rotface = all_rotfaces[0]
+                else:
+                    # When multiple faces are present in the cutout (e.g. interacting people),
+                    # pick the face matching target_face rather than blindly taking the leftmost face.
+                    _cx = (float(target_face.bbox[0]) + float(target_face.bbox[2])) * 0.5 - startX
+                    _cy = (float(target_face.bbox[1]) + float(target_face.bbox[3])) * 0.5 - startY
+                    _orig_w = endX - startX
+                    _orig_h = endY - startY
+                    if rotation_action == "rotate_clockwise":
+                        _rot_cx = _orig_h - 1 - _cy
+                        _rot_cy = _cx
+                    elif rotation_action == "rotate_anticlockwise":
+                        _rot_cx = _cy
+                        _rot_cy = _orig_w - 1 - _cx
+                    elif rotation_action == "rotate_180":
+                        _rot_cx = _orig_w - 1 - _cx
+                        _rot_cy = _orig_h - 1 - _cy
+                    else:
+                        _rot_cx, _rot_cy = _cx, _cy
+
+                    def _rot_face_score(rf):
+                        _rfcx = (float(rf.bbox[0]) + float(rf.bbox[2])) * 0.5
+                        _rfcy = (float(rf.bbox[1]) + float(rf.bbox[3])) * 0.5
+                        _dist = np.hypot(_rfcx - _rot_cx, _rfcy - _rot_cy)
+                        _det_s = float(getattr(rf, 'det_score', 1.0) or 1.0)
+                        return _dist - 50.0 * _det_s
+
+                    rotface = min(all_rotfaces, key=_rot_face_score)
                 # Only commit to the rotation if re-detection confirms it left
                 # the face MORE upright. Without this the orientation heuristic
                 # gets the last word, and a wrong call feeds the swapper an

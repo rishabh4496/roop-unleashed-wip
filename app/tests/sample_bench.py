@@ -226,6 +226,11 @@ def main():
     g.stabilize_face = bool(g.CFG.stabilize_face)
     options = ab.build_options(g, swap_model, mask_engine, bool(g.CFG.use_source_bank))
     options.stabilize_face = g.stabilize_face
+    options.stabilize_method = str(getattr(g.CFG, 'stabilize_method', 'one_euro'))
+    options.stabilize_min_cutoff = float(getattr(g.CFG, 'stabilize_min_cutoff', 0.05))
+    options.stabilize_beta = float(getattr(g.CFG, 'stabilize_beta', 0.02))
+    options.stabilize_enhancer = bool(getattr(g.CFG, 'stabilize_enhancer', False))
+    options.stabilize_enhancer_strength = float(getattr(g.CFG, 'stabilize_enhancer_strength', 0.5))
 
     names = [s.strip() for s in args.sources.split(",") if s.strip()]
     if len(names) not in (1, 2):

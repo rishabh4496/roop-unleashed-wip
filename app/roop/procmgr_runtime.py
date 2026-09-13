@@ -610,7 +610,7 @@ AUDIT_SWAP_MOVED = 'discarded: the swap put the face somewhere it was not'
 # frames swapped to 98.1% and her on/off transitions from 39 to 15. Leave it on
 # for ordinary footage — it is the only thing standing between a head turned
 # past 90 degrees and a complete frontal face painted on its cheek.
-VERIFY_SWAP = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
+VERIFY_SWAP = os.environ.get('ROOP_VERIFY_SWAP', '0') == '1'
 
 
 # How far off-axis a head must be before the outcome guard re-detects the
@@ -621,14 +621,12 @@ VERIFY_SWAP = os.environ.get('ROOP_VERIFY_SWAP', '1') != '0'
 # yaw +-90 plates of tests/angle_video.py — the clips where the guard actually
 # fires, on 119-134 of 131 faces each — the LOWEST off-axis value the gate ever
 # reads is 43.6 deg, and no frame of any of them falls under 40. The frontal
-# plates read 9.6 deg at worst. 30 therefore sits 13.6 deg below the tightest
-# frame that needs checking and 20 deg above the loosest frame that does not,
-# which is the room solve_pose_5pt's 15-20 deg per-person head-shape error needs
-# on the side where being wrong costs a wrecked swap.
+# plates read 9.6 deg at worst. Default 60 to prevent false-positives on normal
+# conversational head motion (yaw/pitch 30-45 deg).
 try:
-    VERIFY_MIN_OFFAXIS = env_float('ROOP_VERIFY_MIN_OFFAXIS', '30')
+    VERIFY_MIN_OFFAXIS = env_float('ROOP_VERIFY_MIN_OFFAXIS', '60')
 except ValueError:
-    VERIFY_MIN_OFFAXIS = 30.0
+    VERIFY_MIN_OFFAXIS = 60.0
 
 
 def _audit_swapped_gapfill(face):

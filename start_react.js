@@ -22,6 +22,9 @@ module.exports = async (kernel) => {
             // thread recovers most of the idle-thread imbalance (25-59% of chunk
             // time on static splits) for ~+19% warm-up recompute. See ProcessMgr.
             ROOP_STAB_BLOCKS_PER_THREAD: "2",
+            // Outcome guard: disabled by default ("0") to prevent false-positive
+            // face reverts and on/off flickering during normal movement/gesturing.
+            ROOP_VERIFY_SWAP: "0",
             // Scan stride for the "Analyzing faces" pre-pass. "auto" keeps the
             // speed benefit of a two-frame stride on quiet footage, but runs the
             // detector on a would-be skipped frame when the whole image or any
