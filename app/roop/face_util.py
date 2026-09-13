@@ -293,19 +293,27 @@ def _refine_kps_from_68(face) -> None:
 def _scale_face_coords(face, inv_scale: float) -> None:
     """Scale a Face's spatial fields by inv_scale in place (used to map faces
     detected on an upscaled frame back to original-frame coordinates)."""
+    is_dict = isinstance(face, dict)
     for attr in ('bbox', 'kps', 'landmark_2d_106'):
-        v = getattr(face, attr, None)
+        v = face.get(attr) if is_dict else getattr(face, attr, None)
         if v is not None:
             try:
-                setattr(face, attr, np.asarray(v, dtype=np.float32) * inv_scale)
+                scaled = np.asarray(v, dtype=np.float32) * inv_scale
+                if is_dict:
+                    face[attr] = scaled
+                else:
+                    setattr(face, attr, scaled)
             except Exception:
                 pass
-    lm68 = getattr(face, 'landmark_3d_68', None)
+    lm68 = face.get('landmark_3d_68') if is_dict else getattr(face, 'landmark_3d_68', None)
     if lm68 is not None:
         try:
             lm68 = np.asarray(lm68, dtype=np.float32).copy()
             lm68[:, :2] *= inv_scale   # only x,y are pixel coords; z is depth
-            face.landmark_3d_68 = lm68
+            if is_dict:
+                face['landmark_3d_68'] = lm68
+            else:
+                face.landmark_3d_68 = lm68
         except Exception:
             pass
 
@@ -313,32 +321,42 @@ def _scale_face_coords(face, inv_scale: float) -> None:
 def _offset_face_coords(face, ox: float, oy: float) -> None:
     """Shift a Face's spatial fields by (ox, oy) in place (used to map faces
     detected in a cropped ROI back to full-frame coordinates)."""
-    bbox = getattr(face, 'bbox', None)
+    is_dict = isinstance(face, dict)
+    bbox = face.get('bbox') if is_dict else getattr(face, 'bbox', None)
     if bbox is not None:
         try:
             b = np.asarray(bbox, dtype=np.float32).copy()
             b[0::2] += ox
             b[1::2] += oy
-            face.bbox = b
+            if is_dict:
+                face['bbox'] = b
+            else:
+                face.bbox = b
         except Exception:
             pass
     for attr in ('kps', 'landmark_2d_106'):
-        v = getattr(face, attr, None)
+        v = face.get(attr) if is_dict else getattr(face, attr, None)
         if v is not None:
             try:
                 a = np.asarray(v, dtype=np.float32).copy()
                 a[:, 0] += ox
                 a[:, 1] += oy
-                setattr(face, attr, a)
+                if is_dict:
+                    face[attr] = a
+                else:
+                    setattr(face, attr, a)
             except Exception:
                 pass
-    lm68 = getattr(face, 'landmark_3d_68', None)
+    lm68 = face.get('landmark_3d_68') if is_dict else getattr(face, 'landmark_3d_68', None)
     if lm68 is not None:
         try:
             lm68 = np.asarray(lm68, dtype=np.float32).copy()
             lm68[:, 0] += ox   # only x,y are pixel coords; z is depth
             lm68[:, 1] += oy
-            face.landmark_3d_68 = lm68
+            if is_dict:
+                face['landmark_3d_68'] = lm68
+            else:
+                face.landmark_3d_68 = lm68
         except Exception:
             pass
 
@@ -349,10 +367,21 @@ def _roi_window(frame, bbox, pad_ratio=1.0, min_crop=160):
     Returns (crop, x0, y0) or None when the box is degenerate or falls outside
     the frame entirely.
     """
+    if frame is None or bbox is None or not hasattr(frame, 'shape') or frame.ndim < 2:
+        return None
+    try:
+        arr = np.asarray(bbox, dtype=np.float64).reshape(-1)
+        if arr.size < 4 or not np.isfinite(arr[:4]).all():
+            return None
+        x1, y1, x2, y2 = float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3])
+    except Exception:
+        return None
+
     h, w = frame.shape[:2]
-    x1, y1, x2, y2 = [float(v) for v in bbox]
     bw, bh = x2 - x1, y2 - y1
     if bw <= 0 or bh <= 0:
+        return None
+    if x2 <= 0 or y2 <= 0 or x1 >= w or y1 >= h:
         return None
     mx, my = bw * pad_ratio, bh * pad_ratio
     cx1, cy1, cx2, cy2 = x1 - mx, y1 - my, x2 + mx, y2 + my

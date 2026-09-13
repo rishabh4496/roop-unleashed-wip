@@ -75,8 +75,19 @@ class TemporalSwapHoldBuffer:
             curr_frame_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
             h, w = curr_frame.shape[:2]
 
+            # Scene-cut / camera transition check (zero-overhead 32x32 thumbnail MAD)
+            prev_small = cv2.resize(self.prev_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
+            curr_small = cv2.resize(curr_frame_gray, (32, 32), interpolation=cv2.INTER_AREA)
+            frame_diff = float(np.mean(np.abs(curr_small.astype(np.float32) - prev_small.astype(np.float32))))
+
+            # Hard scene cut threshold: if frames differ radically, reset and abort hold
+            if frame_diff > 45.0:
+                self.reset()
+                return None
+
             # 1. Feature tracking inside previous face ROI
             M = None
+            valid_count = 0
             if self.prev_bbox is not None:
                 bw = float(self.prev_bbox[2] - self.prev_bbox[0])
                 bh = float(self.prev_bbox[3] - self.prev_bbox[1])
@@ -113,18 +124,38 @@ class TemporalSwapHoldBuffer:
                         )
                         valid_p0 = p0[st.ravel() == 1]
                         valid_p1 = p1[st.ravel() == 1]
+                        valid_count = len(valid_p0)
 
-                        if len(valid_p0) >= 4:
+                        if valid_count >= 4:
                             M, _ = cv2.estimateAffinePartial2D(valid_p0, valid_p1)
 
-            # Fallback to last known velocity or identity
-            if M is None or not np.isfinite(M).all():
-                if self.prev_velocity is not None:
-                    M = self.prev_velocity.copy()
-                else:
-                    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-            else:
+            # Check if tracking completely failed on a significantly changed scene
+            if valid_count < 4 and frame_diff > 30.0:
+                self.reset()
+                return None
+
+            # Validate affine transformation plausibility (scale & translation bounds)
+            is_valid_M = False
+            if M is not None and np.isfinite(M).all():
+                det = float(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])
+                tx = abs(float(M[0, 2]))
+                ty = abs(float(M[1, 2]))
+                # Determinant must be positive and within reasonable scale range [0.25, 4.0]
+                # Translation must be within 40% of frame dimensions
+                if 0.25 <= det <= 4.0 and tx <= 0.40 * w and ty <= 0.40 * h:
+                    is_valid_M = True
+
+            if is_valid_M:
                 self.prev_velocity = M.copy()
+            else:
+                # If M is degenerate or tracking failed, fallback to prev_velocity only if frame_diff < 30.0
+                if self.prev_velocity is not None and frame_diff < 30.0:
+                    M = self.prev_velocity.copy()
+                elif frame_diff < 25.0:
+                    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+                else:
+                    self.reset()
+                    return None
 
             # 2. Warp previous swap composite & mask
             warped_composite = cv2.warpAffine(

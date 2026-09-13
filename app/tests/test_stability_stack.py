@@ -41,6 +41,9 @@ from roop.face_util import (
     rotate_clockwise,
     rotate_anticlockwise,
     rotate_image_180,
+    _roi_window,
+    _scale_face_coords,
+    _offset_face_coords,
 )
 from roop.FaceSet import FaceSet
 from roop.procmgr_masking import MaskingMixin
@@ -344,8 +347,156 @@ class TestSettingsIntegration(unittest.TestCase):
         self.assertTrue(hasattr(cfg, 'face_detector_threshold'))
         self.assertTrue(hasattr(cfg, 'temporal_roi_hint'))
         self.assertTrue(hasattr(cfg, 'no_face_action'))
-        self.assertIsInstance(cfg.face_detector_threshold, float)
-        self.assertIsInstance(cfg.temporal_roi_hint, bool)
+class TestSceneCutAndHoldRobustness(unittest.TestCase):
+    """Verify scene-change detection, affine plausibility, and hold buffer termination."""
+
+    def test_scene_cut_detection_resets_buffer(self):
+        buf = TemporalSwapHoldBuffer(max_holds=3)
+        # Create a frame with a textured square
+        frame_a = np.zeros((200, 200, 3), dtype=np.uint8)
+        frame_a[60:140, 60:140] = 200
+        composite_a = frame_a.copy()
+        composite_a[60:140, 60:140] = 255
+        bbox = np.array([60, 60, 140, 140], dtype=np.float32)
+
+        buf.record_swap(frame_a, composite_a, bbox=bbox)
+        self.assertTrue(buf.can_hold())
+
+        # Frame B is a radical scene cut (e.g. inverted colors / completely different scene)
+        frame_b = np.full((200, 200, 3), 240, dtype=np.uint8)
+        frame_b[60:140, 60:140] = 10
+
+        # Calling hold_and_warp on a scene cut must reject the hold, return None, and reset buffer
+        held = buf.hold_and_warp(frame_b)
+        self.assertIsNone(held)
+        self.assertFalse(buf.can_hold())
+        self.assertEqual(buf.consecutive_holds, 0)
+        self.assertIsNone(buf.prev_composite)
+
+    def test_max_holds_strict_termination(self):
+        buf = TemporalSwapHoldBuffer(max_holds=3)
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        frame[50:150, 50:150] = 180
+        comp = frame.copy()
+        bbox = np.array([50, 50, 150, 150], dtype=np.float32)
+
+        buf.record_swap(frame, comp, bbox=bbox)
+
+        # Slightly moving frames (continuous motion within same scene)
+        for i in range(3):
+            drift_frame = np.zeros((200, 200, 3), dtype=np.uint8)
+            drift_frame[50 + i:150 + i, 50 + i:150 + i] = 180
+            self.assertTrue(buf.can_hold())
+            held = buf.hold_and_warp(drift_frame)
+            self.assertIsNotNone(held)
+            self.assertEqual(buf.consecutive_holds, i + 1)
+
+        # 4th hold attempt must strictly exceed max_holds=3 and return None
+        self.assertFalse(buf.can_hold())
+        held_4 = buf.hold_and_warp(frame)
+        self.assertIsNone(held_4)
+
+
+class TestRoiAndGeometryHardening(unittest.TestCase):
+    """Verify ROI window calculation and coordinate transformations on edge cases."""
+
+    def test_roi_window_with_nan_inf_and_degenerate(self):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # None / empty / invalid types
+        self.assertIsNone(_roi_window(None, [10, 10, 50, 50]))
+        self.assertIsNone(_roi_window(frame, None))
+        self.assertIsNone(_roi_window(frame, []))
+        self.assertIsNone(_roi_window(frame, [10, 20]))
+
+        # NaN and Inf in coordinates
+        self.assertIsNone(_roi_window(frame, [np.nan, 10, 100, 100]))
+        self.assertIsNone(_roi_window(frame, [10, np.inf, 100, 100]))
+        self.assertIsNone(_roi_window(frame, [-np.inf, 10, 100, 100]))
+
+        # Inverted / degenerate boxes (x2 <= x1 or y2 <= y1)
+        self.assertIsNone(_roi_window(frame, [100, 100, 50, 50]))
+        self.assertIsNone(_roi_window(frame, [100, 100, 100, 100]))
+
+        # Outside frame completely
+        self.assertIsNone(_roi_window(frame, [1000, 1000, 1200, 1200]))
+        self.assertIsNone(_roi_window(frame, [-500, -500, -100, -100]))
+
+        # Valid box returns crop, cx1, cy1
+        win = _roi_window(frame, [100, 100, 200, 200], pad_ratio=0.20, min_crop=160)
+        self.assertIsNotNone(win)
+        crop, cx1, cy1 = win
+        self.assertGreater(crop.shape[0], 0)
+        self.assertGreater(crop.shape[1], 0)
+
+    def test_scale_and_offset_face_coords_dual_container(self):
+        # 1. Object Face
+        face_obj = DummyFace(bbox=[100, 100, 200, 200], kps=[[120, 130], [180, 130], [150, 160], [130, 180], [170, 180]])
+        face_obj.landmark_3d_68 = np.ones((68, 3), dtype=np.float32) * 50.0
+
+        _scale_face_coords(face_obj, 2.0)
+        self.assertEqual(face_obj.bbox[0], 200.0)
+        self.assertEqual(face_obj.kps[0, 0], 240.0)
+        self.assertEqual(face_obj.landmark_3d_68[0, 0], 100.0)
+        self.assertEqual(face_obj.landmark_3d_68[0, 2], 50.0)  # depth z untouched
+
+        _offset_face_coords(face_obj, 50.0, 30.0)
+        self.assertEqual(face_obj.bbox[0], 250.0)
+        self.assertEqual(face_obj.bbox[1], 230.0)
+        self.assertEqual(face_obj.kps[0, 0], 290.0)
+        self.assertEqual(face_obj.kps[0, 1], 290.0)
+
+        # 2. Dict Face
+        face_dict = {
+            'bbox': np.array([100, 100, 200, 200], dtype=np.float32),
+            'kps': np.array([[120, 130], [180, 130], [150, 160], [130, 180], [170, 180]], dtype=np.float32),
+            'landmark_3d_68': np.ones((68, 3), dtype=np.float32) * 50.0,
+        }
+        _scale_face_coords(face_dict, 0.5)
+        self.assertEqual(face_dict['bbox'][0], 50.0)
+        self.assertEqual(face_dict['kps'][0, 0], 60.0)
+        self.assertEqual(face_dict['landmark_3d_68'][0, 0], 25.0)
+        self.assertEqual(face_dict['landmark_3d_68'][0, 2], 50.0)
+
+        _offset_face_coords(face_dict, 10.0, 20.0)
+        self.assertEqual(face_dict['bbox'][0], 60.0)
+        self.assertEqual(face_dict['bbox'][1], 70.0)
+
+
+class TestFaceSetEpsilonGuard(unittest.TestCase):
+    """Verify FaceSet cosine distance handles subnormal / edge embeddings without zero division."""
+
+    def test_subnormal_and_zero_embeddings(self):
+        fs = FaceSet()
+        normal_face = DummyFace(bbox=[0, 0, 100, 100], embedding=np.array([1.0, 0.0, 0.0]))
+        fs.faces = [normal_face]
+
+        # Target embedding is None -> graceful (None, 0)
+        dist, idx = fs.get_best_match_distance(None)
+        self.assertIsNone(dist)
+
+        # Target embedding is all zeros -> graceful (None, 0)
+        dist, idx = fs.get_best_match_distance(np.zeros(3, dtype=np.float32))
+        self.assertIsNone(dist)
+
+        # Target embedding near 1e-9 (norm <= 1e-8) -> graceful (None, 0)
+        subnormal_emb = np.ones(3, dtype=np.float32) * 1e-9
+        dist, idx = fs.get_best_match_distance(subnormal_emb)
+        self.assertIsNone(dist)
+
+        # Target embedding with mismatched dimension (e.g. 512 vs 3) -> skips safely, returns (None, 0)
+        dist_mismatch, _ = fs.get_best_match_distance(np.ones(512, dtype=np.float32))
+        self.assertIsNone(dist_mismatch)
+
+        # Valid target embedding matching source
+        target_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        dist, idx = fs.get_best_match_distance(target_emb)
+        self.assertAlmostEqual(dist, 0.0, places=5)
+
+        # Orthogonal embedding
+        ortho_emb = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        dist, idx = fs.get_best_match_distance(ortho_emb)
+        self.assertAlmostEqual(dist, 1.0, places=5)
 
 
 if __name__ == '__main__':

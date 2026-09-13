@@ -3636,9 +3636,24 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             fs = self.input_face_datas[face_index]
             if len(fs.faces) > 0:
                 inputface = fs.faces[0]   # default
-            if len(fs.faces) > 1:
-                # Multi-angle source bank: select source face whose pose best matches target (tgt_yaw_deg, tgt_pitch_deg)
-                best_face, best_idx = fs.select_best_pose_face(tgt_yaw_deg, tgt_pitch_deg)
+            if (getattr(self.options, 'use_source_bank', False)
+                    and len(fs.faces) > 1
+                    and fs.face_poses is not None):
+                best_idx  = 0
+                best_dist = float('inf')
+                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
+                    if yaw_d is None:
+                        continue
+                    # bank_*, not tgt_* — see the pose block above for why these
+                    # two comparands have to stay in the same convention.
+                    dist = (bank_yaw_deg - yaw_d) ** 2 + (bank_pitch_deg - pitch_d) ** 2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx  = i
+                selected_src_idx = best_idx
+                inputface = fs.faces[best_idx]
+            elif len(fs.faces) > 1:
+                best_face, best_idx = fs.select_best_pose_face(bank_yaw_deg, bank_pitch_deg)
                 if best_face is not None:
                     inputface = best_face
                     selected_src_idx = best_idx

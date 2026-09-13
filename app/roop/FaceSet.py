@@ -94,6 +94,7 @@ class FaceSet:
         if not self.faces or target_embedding is None:
             return None, 0
         
+        target_embedding = np.asarray(target_embedding, dtype=np.float32).reshape(-1)
         target_norm = float(np.linalg.norm(target_embedding))
         if target_norm <= 1e-8:
             return None, 0
@@ -103,20 +104,27 @@ class FaceSet:
             best_face, best_i = self.select_best_pose_face(target_yaw, target_pitch)
             src_emb = best_face.get('embedding') if isinstance(best_face, dict) else getattr(best_face, 'embedding', None)
             if src_emb is not None:
-                src_norm = float(np.linalg.norm(src_emb))
-                if src_norm > 1e-8:
-                    sim = float(np.dot(target_embedding, src_emb) / (target_norm * src_norm))
-                    return 1.0 - sim, best_i
+                src_emb = np.asarray(src_emb, dtype=np.float32).reshape(-1)
+                if src_emb.shape == target_embedding.shape:
+                    src_norm = float(np.linalg.norm(src_emb))
+                    if src_norm > 1e-8:
+                        denom = max(target_norm * src_norm, 1e-6)
+                        sim = float(np.clip(np.dot(target_embedding, src_emb) / denom, -1.0, 1.0))
+                        return max(0.0, 1.0 - sim), best_i
 
         min_dist = float('inf')
         min_i = 0
         for i, f in enumerate(self.faces):
             src_emb = f.get('embedding') if isinstance(f, dict) else getattr(f, 'embedding', None)
             if src_emb is not None:
+                src_emb = np.asarray(src_emb, dtype=np.float32).reshape(-1)
+                if src_emb.shape != target_embedding.shape:
+                    continue
                 src_norm = float(np.linalg.norm(src_emb))
                 if src_norm > 1e-8:
-                    sim = float(np.dot(target_embedding, src_emb) / (target_norm * src_norm))
-                    dist = 1.0 - sim
+                    denom = max(target_norm * src_norm, 1e-6)
+                    sim = float(np.clip(np.dot(target_embedding, src_emb) / denom, -1.0, 1.0))
+                    dist = max(0.0, 1.0 - sim)
                     if dist < min_dist:
                         min_dist = dist
                         min_i = i
