@@ -35,6 +35,7 @@ from roop.face_util import offaxis_deg, swap_template_points
 from roop.lipsync_audio import frame_time
 import roop.util_ffmpeg as util_ffmpeg
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
+from roop.FaceSet import _pose_yaw_pitch
 import roop.vr_util as vr
 
 from typing import Any, List, Callable
@@ -75,6 +76,28 @@ from roop.one_euro import _MAX_WARMUP as _MAX_STAB_WARMUP
 # recognition crop, so re-detecting the result reports each of them as the other
 # (see roop/face_contact.py). The decision is the only trustworthy witness.
 _SWAP_LOG = None
+
+
+def _select_source_bank_index(face_poses, bank_yaw_deg, bank_pitch_deg,
+                              face_count):
+    """Select the closest source pose without assuming a fixed tuple width."""
+    best_idx = 0
+    best_dist = float('inf')
+    if not face_poses or face_count <= 0:
+        return best_idx
+
+    for i, pose_entry in enumerate(face_poses):
+        if i >= face_count:
+            break
+        pose = _pose_yaw_pitch(pose_entry)
+        if pose is None:
+            continue
+        yaw_d, pitch_d = pose
+        dist = (bank_yaw_deg - yaw_d) ** 2 + (bank_pitch_deg - pitch_d) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+    return best_idx
 
 
 # Per-frame diagnostic pose logging. Computing source yaw/pitch (estimate_pose)
@@ -550,8 +573,14 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
         global_temporal_stabilizer.reset()
         max_holds = getattr(options, 'max_num_reuse_frame', 3)
         self.temporal_hold_buffer = TemporalSwapHoldBuffer(max_holds=max_holds)
+        use_source_bank = getattr(options, 'use_source_bank', False)
         for fs in (self.input_face_datas or []):
-            if hasattr(fs, 'compute_face_poses'):
+            # The source-bank path below computes poses from 3D landmarks. Do not
+            # populate the fallback five-point cache first, or that cache makes
+            # the source-bank precompute believe the work is already complete.
+            if (hasattr(fs, 'compute_face_poses') and not use_source_bank
+                    and (getattr(fs, 'face_poses', None) is None
+                         or len(fs.face_poses) != len(fs.faces))):
                 fs.compute_face_poses()
 
         # Build the One Euro stabilizers when requested. They only take effect in
@@ -786,8 +815,17 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
                 import math as _math
                 from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
                 for fs in self.input_face_datas:
-                    if fs.face_poses is not None:
-                        continue   # already computed from a previous initialize() call
+                    existing_poses = getattr(fs, 'face_poses', None)
+                    if existing_poses is not None:
+                        # Preserve validated two-value metadata, but replace a
+                        # stale three-value fallback cache from a prior initialize.
+                        has_roll = any(
+                            isinstance(entry, (tuple, list, np.ndarray))
+                            and len(entry) >= 3
+                            for entry in existing_poses if entry is not None
+                        )
+                        if not has_roll:
+                            continue   # already computed from a previous initialize
                     if len(fs.faces) < 2:
                         # Single-face facesets don't need pose selection
                         fs.face_poses = None
@@ -3639,17 +3677,8 @@ class ProcessMgr(MaskingMixin, ColorTransferMixin, MergerMixin, PixelBoostMixin,
             if (getattr(self.options, 'use_source_bank', False)
                     and len(fs.faces) > 1
                     and fs.face_poses is not None):
-                best_idx  = 0
-                best_dist = float('inf')
-                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
-                    if yaw_d is None:
-                        continue
-                    # bank_*, not tgt_* — see the pose block above for why these
-                    # two comparands have to stay in the same convention.
-                    dist = (bank_yaw_deg - yaw_d) ** 2 + (bank_pitch_deg - pitch_d) ** 2
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx  = i
+                best_idx = _select_source_bank_index(
+                    fs.face_poses, bank_yaw_deg, bank_pitch_deg, len(fs.faces))
                 selected_src_idx = best_idx
                 inputface = fs.faces[best_idx]
             elif len(fs.faces) > 1:

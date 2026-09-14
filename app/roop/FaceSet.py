@@ -4,6 +4,21 @@ from roop.faceset_v2 import (FORMAT_NAME, FORMAT_VERSION, measure_lighting,
                               parse_pose_matrix_key, pose_matrix_cell,
                               select_reference_index)
 
+
+def _pose_yaw_pitch(pose_entry):
+    """Return yaw/pitch from a legacy two-value or full three-value pose."""
+    if pose_entry is None:
+        return None
+    try:
+        yaw = float(pose_entry[0])
+        pitch = float(pose_entry[1])
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return None
+    if not np.isfinite(yaw) or not np.isfinite(pitch):
+        return None
+    return yaw, pitch
+
+
 class FaceSet:
     faces = []
     ref_images = []
@@ -19,9 +34,11 @@ class FaceSet:
         # {'src_crop','src_M','src_lm68'} dict or None. Lets 3D recon warp the
         # source-bank-SELECTED face (not just face[0]) so the two features compose.
         self.face_3d_bank = None  # type: list[dict | None] | None
-        # Multi-angle source bank: list of (yaw_deg, pitch_deg) or None per face in self.faces
+        # Multi-angle source bank: (yaw_deg, pitch_deg[, roll_deg]) or None per face
+        # in self.faces. Consumers only use yaw/pitch; the optional roll is retained
+        # for callers that compute all three values from the five-point solver.
         # Populated by ProcessMgr.initialize() when use_source_bank is enabled.
-        self.face_poses = None  # type: list[tuple[float, float] | None] | None
+        self.face_poses = None  # type: list[tuple[float, ...] | None] | None
         # V2 is an additive metadata/index layer for cached embeddings & poses
         self.format_name = FORMAT_NAME
         self.format_version = 1
@@ -52,7 +69,7 @@ class FaceSet:
                 first_face['embedding'] = np.mean(embeddings, axis=0)
 
     def compute_face_poses(self):
-        """Compute (yaw, pitch, roll) for all faces in this FaceSet using solve_pose_5pt."""
+        """Compute (yaw, pitch, roll) for all faces using solve_pose_5pt."""
         from roop.face_util import solve_pose_5pt
         poses = []
         for face in self.faces:
@@ -80,9 +97,10 @@ class FaceSet:
         best_i = 0
         best_dist = float('inf')
         for i, pose_entry in enumerate(self.face_poses):
-            if pose_entry is None:
+            pose = _pose_yaw_pitch(pose_entry)
+            if pose is None:
                 continue
-            src_yaw, src_pitch = pose_entry[0], pose_entry[1]
+            src_yaw, src_pitch = pose
             dist = (target_yaw - src_yaw) ** 2 + (target_pitch - src_pitch) ** 2
             if dist < best_dist:
                 best_dist = dist
@@ -225,8 +243,16 @@ class FaceSet:
             return max(0, min(int(index), max(0, len(self.faces) - 1)))
         if pose is not None and self.face_poses:
             yaw, pitch = float(pose[0]), float(pose[1])
-            valid = [(i, (yaw - float(y or 0.0)) ** 2 + (pitch - float(p or 0.0)) ** 2)
-                     for i, (y, p) in enumerate(self.face_poses) if y is not None]
+            valid = []
+            for i, pose_entry in enumerate(self.face_poses):
+                if i >= len(self.faces):
+                    break
+                source_pose = _pose_yaw_pitch(pose_entry)
+                if source_pose is None:
+                    continue
+                source_yaw, source_pitch = source_pose
+                valid.append((i, (yaw - source_yaw) ** 2 +
+                              (pitch - source_pitch) ** 2))
             if valid:
                 return min(valid, key=lambda item: item[1])[0]
         return 0

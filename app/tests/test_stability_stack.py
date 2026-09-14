@@ -47,7 +47,7 @@ from roop.face_util import (
 )
 from roop.FaceSet import FaceSet
 from roop.procmgr_masking import MaskingMixin
-from roop.ProcessMgr import eNoFaceAction
+from roop.ProcessMgr import eNoFaceAction, _select_source_bank_index
 
 
 class DummyFace:
@@ -306,6 +306,21 @@ class TestFaceSetMultiAngleMatching(unittest.TestCase):
         dist, idx = fs.get_best_match_distance(target_emb, target_yaw=50.0, target_pitch=0.0)
         self.assertEqual(idx, 1)
         self.assertAlmostEqual(dist, 0.0, places=4)
+
+    def test_source_bank_accepts_two_and_three_value_pose_records(self):
+        poses = [
+            (None, None),
+            (50.0, 5.0, 1.0),  # solve_pose_5pt includes roll
+            (-45.0, -8.0),     # source-bank metadata omits roll
+        ]
+
+        self.assertEqual(
+            _select_source_bank_index(poses, 48.0, 3.0, face_count=3), 1)
+        self.assertEqual(
+            _select_source_bank_index(poses, -40.0, -5.0, face_count=3), 2)
+        self.assertEqual(
+            _select_source_bank_index([(None, None), (1.0, np.nan, 0.0)],
+                                      0.0, 0.0, face_count=2), 0)
 
 
 class TestDynamicMaskFeathering(unittest.TestCase):
