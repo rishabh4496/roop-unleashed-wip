@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
-import { getJSON, postJSON } from './api';
+import { getJSON, postJSON, connectEventSocket } from './api';
 import { Toasts, Confetti, MotionIcon } from './components/ui';
 import QualityProfilesModal, { BUILTIN_PROFILES } from './components/QualityProfilesModal';
 import CommandPalette from './components/CommandPalette';
@@ -111,6 +111,8 @@ export default function App() {
   const [progress, setProgress] = useState({ processing: false, progress: 0, desc: '', output: null });
   const [startTime, setStartTime] = useState(null);
   const [confetti, setConfetti] = useState(false);
+  const [compilationEvent, setCompilationEvent] = useState(null);
+  const compilationToastShownRef = useRef(false);
   const pollRef = useRef(null);      // pending setTimeout id (null while in flight)
   const pollingRef = useRef(false);  // is the poll loop alive? survives the await
   const pollSeqRef = useRef(0);      // monotonic id, so a stale reply is dropped
@@ -132,6 +134,40 @@ export default function App() {
       setOffline(true);
     }
   }, []);
+
+  // Intercept TensorRT engine compilation events from WebSocket or REST polling
+  const handleCompilationEvent = useCallback((event) => {
+    if (!event) return;
+    if (event.status === 'compiling_engine') {
+      reportNet(true); // Worker is compiling; prevent disconnected/frozen offline state!
+      setCompilationEvent(event);
+      if (!compilationToastShownRef.current) {
+        compilationToastShownRef.current = true;
+        notify(
+          `⚡ Building TensorRT engine for ${event.model || 'model'} (${event.estimated_time || '2-4 minutes'}). UI remains responsive.`,
+          'info'
+        );
+      }
+    } else if (event.status === 'engine_ready') {
+      if (compilationToastShownRef.current) {
+        notify(`✓ TensorRT engine ready for ${event.model || 'model'}!`, 'success');
+        compilationToastShownRef.current = false;
+      }
+      setCompilationEvent(null);
+    } else if (event.status === 'compilation_failed') {
+      if (compilationToastShownRef.current) {
+        notify(`⚠ TensorRT build failed for ${event.model || 'model'}. Falling back to CUDA.`, 'info');
+        compilationToastShownRef.current = false;
+      }
+      setCompilationEvent(null);
+    }
+  }, [reportNet, notify]);
+
+  // Real-time WebSocket connection for compilation & telemetry events
+  useEffect(() => {
+    const unsub = connectEventSocket(handleCompilationEvent);
+    return unsub;
+  }, [handleCompilationEvent]);
 
   // Self-scheduling poll: one request in flight, ever.
   //
@@ -175,7 +211,12 @@ export default function App() {
         if (seq === pollSeqRef.current) {
           reportNet(true);
           setProgress(pr);
-          if (!pr.processing) { stopPolling(); return; }
+          if (pr.compilation) {
+            handleCompilationEvent(pr.compilation);
+          } else if (compilationEvent && !pr.compiling_engine) {
+            handleCompilationEvent({ status: 'engine_ready', model: compilationEvent.model });
+          }
+          if (!pr.processing && !pr.compilation && !pr.compiling_engine) { stopPolling(); return; }
         }
       } catch {
         // Keep polling: a job can outlive a transient backend stall, and the
@@ -187,7 +228,7 @@ export default function App() {
     };
 
     pollRef.current = setTimeout(tick, 1000);
-  }, [reportNet, stopPolling]);
+  }, [reportNet, stopPolling, handleCompilationEvent, compilationEvent]);
 
   // ── Catch up the moment this view is looked at again ─────────────────────
   // Switching to the Terminal (or another Pinokio tab) either reloads this
@@ -208,7 +249,8 @@ export default function App() {
         const pr = await getJSON('/api/progress', { timeout: 8000 });
         reportNet(true);
         setProgress(pr);
-        if (pr.processing) startPolling();
+        if (pr.compilation) handleCompilationEvent(pr.compilation);
+        if (pr.processing || pr.compilation || pr.compiling_engine) startPolling();
       } catch {
         reportNet(false);
       }
@@ -221,7 +263,7 @@ export default function App() {
       window.removeEventListener('focus', catchUp);
       window.removeEventListener('pageshow', catchUp);
     };
-  }, [startPolling, reportNet]);
+  }, [startPolling, reportNet, handleCompilationEvent]);
 
   // Heartbeat while offline — reconnects and refreshes core state on recovery.
   useEffect(() => {
@@ -242,17 +284,9 @@ export default function App() {
   useEffect(() => {
     // startPolling is idempotent (it returns early if the loop is alive), so
     // this is a plain "poll iff processing" statement in both directions.
-    //
-    // The previous cleanup — `if (!progress.processing && pollRef.current)` —
-    // could never fire on the transition it was written for. An effect cleanup
-    // closes over the render it was created in, so the cleanup that runs on a
-    // true -> false change still sees processing === true; `!true` is false and
-    // the interval was never cleared there. It only ever stopped because the
-    // interval callback happened to clear itself. Unmount teardown lives in the
-    // loadCore effect below.
-    if (progress.processing) startPolling();
+    if (progress.processing || compilationEvent) startPolling();
     else stopPolling();
-  }, [progress.processing, startPolling, stopPolling]);
+  }, [progress.processing, compilationEvent, startPolling, stopPolling]);
 
   // ── The Processing tab ───────────────────────────────────────────────────
   // A run no longer takes the Face Swap tab over. It gets a tab of its own,
@@ -1207,6 +1241,39 @@ export default function App() {
           </AnimatePresence>
         )}
       </main>
+
+      {/* Non-blocking TensorRT engine compilation indicator banner */}
+      <AnimatePresence>
+        {compilationEvent && compilationEvent.status === 'compiling_engine' && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            transition={spring.snappy}
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-2xl bg-[#0E0F15]/95 backdrop-blur-2xl border border-emerald-500/40 shadow-2xl flex items-center gap-3.5 max-w-sm"
+          >
+            <div className="relative flex items-center justify-center shrink-0">
+              <span className="w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 font-bold text-xs text-emerald-400">
+                <span>Compiling TensorRT Engine</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                  {compilationEvent.model || 'GPEN-Realistic'}
+                </span>
+              </div>
+              <div className="text-[11px] text-white/50 truncate mt-0.5">
+                First-time build takes ~{compilationEvent.estimated_time || '2-4 minutes'}. UI remains responsive.
+                {typeof compilationEvent.elapsed_sec === 'number' && compilationEvent.elapsed_sec > 0
+                  ? ` (${compilationEvent.elapsed_sec}s elapsed)`
+                  : ''}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />
 

@@ -141,6 +141,12 @@ export default function Processing({ progress, settings, notify, setTab,
                 <div className="text-sm font-bold text-white truncate max-w-[340px]">
                   {progress.desc || 'Swapping faces…'}
                 </div>
+                {progress.compilation && progress.compilation.status === 'compiling_engine' && (
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-300 font-mono">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span>TensorRT Compiling: {progress.compilation.model || 'GPEN-Realistic'} (~{progress.compilation.estimated_time || '2-4m'})</span>
+                  </div>
+                )}
                 {progress.error && <div className="text-xs text-red-400 font-semibold">{progress.error}</div>}
               </div>
             </div>

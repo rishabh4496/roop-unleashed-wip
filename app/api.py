@@ -23,7 +23,7 @@ import traceback
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Body, Request
+from fastapi import FastAPI, UploadFile, File, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
@@ -259,6 +259,45 @@ fm_selected_index = -1
 # Live progress, polled by the React UI
 _progress = {"processing": False, "paused": False, "progress": 0.0, "desc": "", "error": ""}
 _last_output = {"path": "", "kind": ""}
+_compilation_state: dict = {}
+_active_ws_clients: list = []
+
+
+def _update_compilation_state(event: dict) -> None:
+    """Safely update active TensorRT compilation state and forward to WebSocket subscribers."""
+    global _compilation_state
+    _compilation_state = dict(event)
+    if isinstance(_progress, dict):
+        _progress["compilation"] = _compilation_state
+        if event.get("status") == "compiling_engine":
+            _progress["compiling_engine"] = True
+        elif event.get("status") in ("engine_ready", "compilation_failed"):
+            _progress.pop("compiling_engine", None)
+    _broadcast_ws_event(_compilation_state)
+
+
+def _broadcast_ws_event(event: dict) -> None:
+    """Broadcast JSON event payload to all connected WebSocket subscribers."""
+    if not _active_ws_clients:
+        return
+    import asyncio
+    msg = json.dumps(event)
+    for ws in list(_active_ws_clients):
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(ws.send_text(msg))
+            except RuntimeError:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.run_coroutine_threadsafe(ws.send_text(msg), loop)
+                    else:
+                        loop.run_until_complete(ws.send_text(msg))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 # Per-run accumulator, reset at the start of every swap and read back when the
 # run is recorded into history. Wall time + the highest "done / total" frame
@@ -3339,7 +3378,7 @@ def get_progress():
     # uses it as /api/live_frame's cache key, so the image refetches exactly
     # when there is something new and never per poll. live_frame stays empty —
     # inlining a base64 still into every poll is what made this expensive.
-    return {**_progress, "output": _last_output, "live_frame": "",
+    res = {**_progress, "output": _last_output, "live_frame": "",
             "live_seq": live_preview.seq(),
             # Seconds remaining as the TERMINAL's progress bar is showing them.
             # None between stages (nothing is counting frames during encode/mux)
@@ -3354,6 +3393,42 @@ def get_progress():
             # The counter the console pins and rewrites in place instead of
             # scrolling — `desc` when it IS a counter, else the last one seen.
             "status_line": _log_state.get("status", "")}
+    if _compilation_state:
+        res["compilation"] = _compilation_state
+        if _compilation_state.get("status") == "compiling_engine":
+            res["compiling_engine"] = True
+    return res
+
+
+@app.websocket("/ws/events")
+@app.websocket("/api/ws/events")
+async def ws_compilation_events(websocket: WebSocket):
+    """WebSocket endpoint for real-time compilation and telemetry events."""
+    await websocket.accept()
+    _active_ws_clients.append(websocket)
+    try:
+        if _compilation_state:
+            await websocket.send_text(json.dumps(_compilation_state))
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if websocket in _active_ws_clients:
+            _active_ws_clients.remove(websocket)
+
+
+@app.get("/api/compilation/status")
+@app.get("/api/trt/compilation_status")
+def get_trt_compilation_status():
+    """Direct REST endpoint to retrieve live TensorRT engine compilation status."""
+    if _compilation_state:
+        return _compilation_state
+    return {"status": "idle", "provider": "TensorRT"}
 
 
 @app.get("/api/live_frame")

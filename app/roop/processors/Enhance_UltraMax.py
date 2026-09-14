@@ -327,17 +327,32 @@ class Enhance_UltraMax:
 
     def Release(self) -> None:
         if self._pool is not None:
-            self._pool.release()
+            try:
+                self._pool.release()
+            except Exception:
+                pass
             self._pool = None
+        for s in self._sessions:
+            try:
+                del s
+            except Exception:
+                pass
         self._sessions.clear()
         self._bindings.clear()
         self._device_buffers.clear()
         self._slot_locks.clear()
         self._lut = None
+        if self._detail_session is not None:
+            try:
+                del self._detail_session
+            except Exception:
+                pass
         self._detail_session = None
         self._detail_iob = None
         self._detail_lut = None
         model_lifecycle_manager.set_unloaded('ultramax')
+        from roop.face_enhancer import clear_cuda_cache
+        clear_cuda_cache()
         gc.collect()
 
     # ── inference ─────────────────────────────────────────────────────────────

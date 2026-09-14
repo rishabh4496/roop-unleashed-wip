@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import threading
@@ -113,6 +114,48 @@ def is_cuda_oom(exc: BaseException) -> bool:
 
 
 # ── ONNX Session Initialization with Multi-Tier EP Fallback ──────────────────
+
+def log_enhancer_telemetry(
+    model_name: str,
+    active_providers: Sequence[Any],
+    fp16: bool = True,
+    cache_hit: bool = False,
+) -> str:
+    """Format and log active execution provider in the exact console format:
+    [INFO] Enhancer session active: GPEN Realistic | Provider: TensorrtExecutionProvider (FP16: True, Engine Cache: HIT)
+    """
+    first_prov = "CPUExecutionProvider"
+    if active_providers:
+        p0 = active_providers[0]
+        first_prov = p0[0] if isinstance(p0, (tuple, list)) else str(p0)
+
+    # Determine canonical model name for console display
+    m_lower = (model_name or "").lower()
+    if "gpen" in m_lower:
+        name = "GPEN Realistic"
+    elif "ultra" in m_lower:
+        name = "UltraMax"
+    elif "codeformer" in m_lower:
+        name = "CodeFormer"
+    elif "gfpgan" in m_lower:
+        name = "GFPGAN"
+    elif "restoreformer" in m_lower:
+        name = "RestoreFormer++"
+    else:
+        name = model_name or "Face Enhancer"
+
+    is_trt = "tensorrt" in first_prov.lower()
+    cache_str = "HIT" if (is_trt and cache_hit) else ("MISS" if is_trt else "HIT")
+
+    line = f"[INFO] Enhancer session active: {name} | Provider: {first_prov} (FP16: {bool(fp16)}, Engine Cache: {cache_str})"
+    print(line, flush=True)
+    _LOGGER.info(line)
+    try:
+        from api import _push_log
+        _push_log(line, force=True)
+    except Exception:
+        pass
+    return line
 
 def _warmup_enhancer_session(
     sess: onnxruntime.InferenceSession,
@@ -271,6 +314,24 @@ def create_enhancer_session(
                 _warmup_enhancer_session(sess, label, explicit_shape, batch_size=batch_size)
 
         active = list(sess.get_providers())
+        # Negative Constraint: NO Silent CPU Fallbacks!
+        # If TRT/CUDA compilation dropped silently to CPU while CUDA is available:
+        if (
+            active
+            and active[0] == "CPUExecutionProvider"
+            and "CUDAExecutionProvider" in available
+            and requested_providers != ["CPUExecutionProvider"]
+        ):
+            print(f"\n[{label}] [Warning] Primary provider degraded silently to CPUExecutionProvider! Enforcing clean CUDA fallback...", flush=True)
+            try:
+                del sess
+            except Exception:
+                pass
+            clear_cuda_cache()
+            gc.collect()
+            raise RuntimeError("Primary provider silently dropped to CPUExecutionProvider; enforcing clean CUDA fallback.")
+
+        log_enhancer_telemetry(label, active, fp16=(effective_precision == "fp16"), cache_hit=cached)
         _LOGGER.info("[%s] Initialized with providers: %s (precision=%s)", label, active, effective_precision)
         return sess, active
     except Exception as exc_tier1:
@@ -301,6 +362,7 @@ def create_enhancer_session(
             active = list(sess.get_providers())
             print(f"[{label}] Clean fallback to CUDAExecutionProvider succeeded: {active}", flush=True)
             _LOGGER.info("[%s] Fallback to CUDA succeeded: %s", label, active)
+            log_enhancer_telemetry(label, active, fp16=(effective_precision == "fp16"), cache_hit=False)
             return sess, active
         except Exception as exc_tier2:
             print(f"[{label}] CUDA fallback failed: {exc_tier2}. Attempting CPU fallback...", flush=True)
@@ -317,12 +379,16 @@ def create_enhancer_session(
         active = list(sess.get_providers())
         print(f"[{label}] Warning: Running on CPUExecutionProvider as fallback: {active}", flush=True)
         _LOGGER.warning("[%s] Running on CPUExecutionProvider as fallback.", label)
+        log_enhancer_telemetry(label, active, fp16=False, cache_hit=False)
         return sess, active
     except Exception as exc_tier3:
         raise RuntimeError(
             f"[{label}] Fatal error: all execution provider tiers failed to build session for {model_path}! "
             f"Errors: Tier1={exc_tier1}, Tier3={exc_tier3}"
         ) from exc_tier3
+
+# Convenience alias for create_enhancer_session
+create_resilient_session = create_enhancer_session
 
 
 # ── 5-Point Landmark Face Alignment & Inverse Affine Transformation ─────────
@@ -834,7 +900,14 @@ class FaceEnhancer:
             raise
 
     def release(self) -> None:
-        """Free ONNX session resources."""
+        """Explicitly release and delete old InferenceSession objects and call gc.collect()."""
         with self._lock:
-            self.session = None
+            if self.session is not None:
+                try:
+                    del self.session
+                except Exception:
+                    pass
+                self.session = None
             self.active_providers = []
+            clear_cuda_cache()
+            gc.collect()

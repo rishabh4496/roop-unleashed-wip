@@ -18,6 +18,7 @@ from roop.face_enhancer import (
     get_tensorrt_provider_options,
     inverse_affine_warp_back,
     is_cuda_oom,
+    log_enhancer_telemetry,
     post_inference_blend,
     prepare_zero_copy_tensor,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "get_tensorrt_provider_options",
     "inverse_affine_warp_back",
     "is_cuda_oom",
+    "log_enhancer_telemetry",
     "post_inference_blend",
     "prepare_zero_copy_tensor",
 ]

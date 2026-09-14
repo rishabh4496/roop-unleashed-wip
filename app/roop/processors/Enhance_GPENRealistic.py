@@ -267,14 +267,24 @@ class Enhance_GPENRealistic:
 
     def Release(self) -> None:
         if self._pool is not None:
-            self._pool.release()
+            try:
+                self._pool.release()
+            except Exception:
+                pass
             self._pool = None
+        for s in self._sessions:
+            try:
+                del s
+            except Exception:
+                pass
         self._sessions.clear()
         self._bindings.clear()
         self._device_buffers.clear()
         self._slot_locks.clear()
         self._lut = None
         model_lifecycle_manager.set_unloaded('gpen_realistic')
+        from roop.face_enhancer import clear_cuda_cache
+        clear_cuda_cache()
         gc.collect()
 
     # ── inference ─────────────────────────────────────────────────────────────

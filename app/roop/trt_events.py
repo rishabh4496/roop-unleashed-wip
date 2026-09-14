@@ -18,13 +18,48 @@ from typing import Optional
 
 _LOGGER = logging.getLogger(__name__)
 
+# Active compilation event cache
+_CURRENT_COMPILATION_EVENT: Optional[dict] = None
+
+
+def get_compilation_event() -> Optional[dict]:
+    """Retrieve the current or most recent TensorRT compilation event."""
+    return _CURRENT_COMPILATION_EVENT
+
+
+def normalize_model_label(label: str) -> str:
+    """Normalize internal model names to canonical UI labels."""
+    l_lower = (label or "").lower()
+    if "gpen" in l_lower:
+        return "GPEN-Realistic"
+    if "ultra" in l_lower:
+        return "UltraMax"
+    if "codeformer" in l_lower:
+        return "CodeFormer"
+    if "restoreformer" in l_lower:
+        return "RestoreFormer++"
+    if "gfpgan" in l_lower:
+        return "GFPGAN"
+    return label or "Model"
+
 
 def _broadcast_log(message: str, force: bool = True) -> None:
     """Safely forward log message to terminal and React UI console."""
-    print(message, flush=True)
     try:
-        from api import _push_log
-        _push_log(message, force=force)
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        try:
+            # Fallback for Windows cp1252 consoles lacking emoji support
+            print(message.encode("ascii", "replace").decode("ascii"), flush=True)
+        except Exception:
+            pass
+    try:
+        import sys
+        for mod_name in ("api", "app.api"):
+            api_mod = sys.modules.get(mod_name)
+            if api_mod is not None and hasattr(api_mod, "_push_log"):
+                api_mod._push_log(message, force=force)
+                break
     except Exception:
         pass
 
@@ -32,9 +67,31 @@ def _broadcast_log(message: str, force: bool = True) -> None:
 def _broadcast_progress_desc(description: str) -> None:
     """Safely update live progress description polled by React frontend."""
     try:
-        from api import _progress
-        if isinstance(_progress, dict):
-            _progress["desc"] = description
+        import sys
+        for mod_name in ("api", "app.api"):
+            api_mod = sys.modules.get(mod_name)
+            if api_mod is not None and hasattr(api_mod, "_progress") and isinstance(api_mod._progress, dict):
+                api_mod._progress["desc"] = description
+                break
+    except Exception:
+        pass
+
+
+def broadcast_compilation_event(event: dict) -> None:
+    """Broadcast compilation event to REST polling state and WebSocket subscribers."""
+    global _CURRENT_COMPILATION_EVENT
+    _CURRENT_COMPILATION_EVENT = dict(event)
+    try:
+        import sys
+        for mod_name in ("api", "app.api"):
+            api_mod = sys.modules.get(mod_name)
+            if api_mod is not None:
+                if hasattr(api_mod, "_update_compilation_state"):
+                    api_mod._update_compilation_state(event)
+                elif hasattr(api_mod, "_progress") and isinstance(api_mod._progress, dict):
+                    api_mod._progress["compilation"] = event
+                    if event.get("status") == "compiling_engine":
+                        api_mod._progress["compiling_engine"] = True
     except Exception:
         pass
 
@@ -44,6 +101,7 @@ class TensorRTCompilationMonitor:
 
     def __init__(self, label: str, cache_dir: Optional[str] = None, interval_sec: float = 4.0):
         self.label = label
+        self.model_label = normalize_model_label(label)
         self.cache_dir = cache_dir or "models/trt_cache"
         self.interval_sec = interval_sec
         self.start_time = 0.0
@@ -53,21 +111,42 @@ class TensorRTCompilationMonitor:
     def _heartbeat_loop(self) -> None:
         while not self._stop_event.wait(self.interval_sec):
             elapsed = time.time() - self.start_time
-            msg = f"⏳ [TensorRT] Compiling {self.label} engine... ({int(elapsed)}s elapsed, please wait)"
-            _broadcast_progress_desc(f"[TensorRT] Compiling {self.label}... ({int(elapsed)}s)")
+            msg = f"⏳ [TensorRT] Compiling {self.model_label} engine... ({int(elapsed)}s elapsed, please wait)"
+            _broadcast_progress_desc(f"[TensorRT] Compiling {self.model_label}... ({int(elapsed)}s)")
+            
+            # Emit live compilation heartbeat event
+            event = {
+                "status": "compiling_engine",
+                "model": self.model_label,
+                "provider": "TensorRT",
+                "estimated_time": "2-4 minutes",
+                "elapsed_sec": int(elapsed),
+            }
+            broadcast_compilation_event(event)
+
             # Periodically log every ~16 seconds to console
             if int(elapsed) % 16 < int(self.interval_sec) + 1:
                 _broadcast_log(msg, force=False)
 
     def start(self) -> None:
         self.start_time = time.time()
+        # Stage 4 exact required compilation event structure
+        event = {
+            "status": "compiling_engine",
+            "model": self.model_label,
+            "provider": "TensorRT",
+            "estimated_time": "2-4 minutes",
+            "elapsed_sec": 0,
+        }
+        broadcast_compilation_event(event)
+
         _broadcast_log(
-            f"⚡ [TensorRT] Compiling engine for '{self.label}'... "
-            f"First-time compilation typically takes 2-5 minutes. "
+            f"⚡ [TensorRT] Compiling engine for '{self.model_label}'... "
+            f"First-time compilation typically takes 2-4 minutes. "
             f"Cache target: {self.cache_dir}",
             force=True,
         )
-        _broadcast_progress_desc(f"[TensorRT] Compiling {self.label} engine...")
+        _broadcast_progress_desc(f"[TensorRT] Compiling {self.model_label} engine...")
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name=f"trt_compile_{self.label}")
         self._thread.start()
@@ -79,18 +158,33 @@ class TensorRTCompilationMonitor:
         elapsed = time.time() - self.start_time
 
         if success:
+            event = {
+                "status": "engine_ready",
+                "model": self.model_label,
+                "provider": "TensorRT",
+                "elapsed_sec": round(elapsed, 1),
+            }
+            broadcast_compilation_event(event)
             _broadcast_log(
-                f"✓ [TensorRT] '{self.label}' engine compilation completed in {elapsed:.1f}s. Engine cached.",
+                f"✓ [TensorRT] '{self.model_label}' engine compilation completed in {elapsed:.1f}s. Engine cached.",
                 force=True,
             )
-            _broadcast_progress_desc(f"[TensorRT] {self.label} ready")
+            _broadcast_progress_desc(f"[TensorRT] {self.model_label} ready")
         else:
+            event = {
+                "status": "compilation_failed",
+                "model": self.model_label,
+                "provider": "TensorRT",
+                "elapsed_sec": round(elapsed, 1),
+                "error": error_msg or "",
+            }
+            broadcast_compilation_event(event)
             _broadcast_log(
-                f"⚠ [TensorRT] '{self.label}' engine build failed after {elapsed:.1f}s: {error_msg}. "
+                f"⚠ [TensorRT] '{self.model_label}' engine build failed after {elapsed:.1f}s: {error_msg}. "
                 f"Falling back to CUDAExecutionProvider without interrupting batch.",
                 force=True,
             )
-            _broadcast_progress_desc(f"[TensorRT] {self.label} failed -> CUDA fallback")
+            _broadcast_progress_desc(f"[TensorRT] {self.model_label} failed -> CUDA fallback")
         return elapsed
 
     def __enter__(self):

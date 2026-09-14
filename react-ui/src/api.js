@@ -147,3 +147,46 @@ export const postFile = (path, file, fields, opts) => {
 };
 
 export const fileUrl = (p) => `${API}/api/file?path=${encodeURIComponent(p)}`;
+
+export const connectEventSocket = (onMessage) => {
+  let ws = null;
+  let active = true;
+  let retryTimer = null;
+
+  const connect = () => {
+    if (!active) return;
+    try {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/api/ws/events`;
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (active && onMessage) onMessage(data);
+        } catch { /* ignore */ }
+      };
+      ws.onclose = () => {
+        if (active) {
+          retryTimer = setTimeout(connect, 5000);
+        }
+      };
+      ws.onerror = () => {
+        if (ws) {
+          try { ws.close(); } catch { /* ignore */ }
+        }
+      };
+    } catch {
+      // Fallback to REST polling
+    }
+  };
+
+  connect();
+
+  return () => {
+    active = false;
+    if (retryTimer) clearTimeout(retryTimer);
+    if (ws) {
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  };
+};
