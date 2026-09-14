@@ -91,6 +91,40 @@ export const BUILTIN_PROFILES = [
       video_swapping_method: 'In-Memory processing',
     },
   },
+  {
+    id: 'ultramax',
+    name: '🌟 UltraMax Neural (Composite Filter)',
+    badge: 'ULTRA FIDELITY',
+    variant: 'accent',
+    icon: Icon.brand,
+    description: 'Multi-pass composite enhancement filter combining dual-pass restoration with fine detail preservation.',
+    settingsPatch: {
+      selected_enhancer: 'UltraMax',
+      enhancer_type: 'ultramax',
+      enhancer_blend: 0.85,
+      subsample_upscale: '512px',
+      max_face_distance: 0.75,
+      num_swap_steps: 2,
+      mask_engine: 'DFL XSeg',
+    },
+  },
+  {
+    id: 'gpen_realistic',
+    name: '📸 GPEN Realistic (Photorealism)',
+    badge: 'PHOTOREAL',
+    variant: 'emerald',
+    icon: Icon.faces,
+    description: 'Photorealistic facial restoration using 512px neural alignment and natural texture preservation.',
+    settingsPatch: {
+      selected_enhancer: 'GPEN Realistic',
+      enhancer_type: 'gpen_realistic',
+      enhancer_blend: 0.85,
+      subsample_upscale: '512px',
+      max_face_distance: 0.75,
+      num_swap_steps: 1,
+      mask_engine: 'DFL XSeg',
+    },
+  },
 ];
 
 // What a profile costs and what it changes, both read off its settings patch.

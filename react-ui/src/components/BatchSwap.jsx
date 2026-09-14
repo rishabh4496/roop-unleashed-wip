@@ -22,13 +22,13 @@ const targetPreviewUrl = (idx) => `${API}/api/target/preview?index=${idx}&frame=
 // enhancement OFF — no error, no warning, just a worse output than the one
 // asked for. Deriving the list from meta is what stops that recurring.
 const ENHANCER_FALLBACK = [
-  'GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'Codeformer',
+  'GPEN Realistic', 'UltraMax', 'GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'Codeformer',
   'GFPGAN', 'GPEN', 'DMDNet', 'None',
 ];
 
 // The handful offered as one-click "set every file to this" shortcuts. Filtered
 // against what the backend actually supports before being shown.
-const BULK_ENHANCERS = ['GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'None'];
+const BULK_ENHANCERS = ['GPEN Realistic', 'UltraMax', 'GPEN Ultimate', 'Restore Ultra', 'Restoreformer++', 'None'];
 
 // Fixing the list above does not fix the Quick Slots and exported presets that
 // were saved WHILE it was wrong — those still carry the bad names, and would
@@ -112,6 +112,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
   const [mode1SwapMode, setMode1SwapMode] = useState('Selected face');
   const [mode1SelectedTargets, setMode1SelectedTargets] = useState([]); // indices
   const [mode1Enhancer, setMode1Enhancer] = useState('Restoreformer++');
+  const [mode1EnhancerBlend, setMode1EnhancerBlend] = useState(0.85);
   const [mode1FaceDistance, setMode1FaceDistance] = useState(0.75);
 
   // ── Strategy 2: Grouped Batch state ──
@@ -257,6 +258,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         mode1Mappings,
         mode1SwapMode,
         mode1Enhancer,
+        mode1EnhancerBlend,
         mode1FaceDistance,
         groups,
         matrixConfig,
@@ -282,6 +284,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
       if (Array.isArray(data.mode1Mappings)) setMode1Mappings(data.mode1Mappings);
       if (data.mode1SwapMode) setMode1SwapMode(data.mode1SwapMode);
       if (data.mode1Enhancer) setMode1Enhancer(data.mode1Enhancer);
+      if (data.mode1EnhancerBlend != null) setMode1EnhancerBlend(data.mode1EnhancerBlend);
       if (data.mode1FaceDistance != null) setMode1FaceDistance(data.mode1FaceDistance);
       if (Array.isArray(data.groups)) setGroups(data.groups);
       if (data.matrixConfig) setMatrixConfig(data.matrixConfig);
@@ -395,6 +398,8 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         payload: {
           ...base,
           enhancer: normalizeEnhancer(overrides.enhancer || base.selected_enhancer || 'Restoreformer++'),
+          enhancer_type: overrides.enhancer_type || normalizeEnhancer(overrides.enhancer || base.selected_enhancer || 'Restoreformer++'),
+          enhancer_blend: parseFloat(overrides.enhancer_blend ?? base.enhancer_blend ?? base.blend_ratio ?? 0.85),
           detection: swapMode || 'Selected face',
           output_method: base.output_method || 'Images & Video',
           video_method: base.video_swapping_method || 'In-Memory processing',
@@ -406,7 +411,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
           track_identities: !!base.track_identities,
           autorotate: !!base.autorotate_faces,
           face_distance: parseFloat(overrides.faceDistance ?? base.max_face_distance ?? 0.75),
-          blend_ratio: parseFloat(base.blend_ratio || 0.8),
+          blend_ratio: parseFloat(overrides.blend_ratio ?? base.blend_ratio ?? base.enhancer_blend ?? 0.85),
           num_swap_steps: parseInt(base.num_swap_steps || 1, 10),
           auto_fallback: autoFallbackEnabled,
           face_mapping: faceMapping,
@@ -430,6 +435,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         mode1SwapMode,
         mode1SelectedTargets,
         mode1Enhancer,
+        mode1EnhancerBlend,
         mode1FaceDistance,
         groups,
         matrixConfig,
@@ -467,6 +473,7 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
         if (p.mode1SwapMode) setMode1SwapMode(p.mode1SwapMode);
         if (Array.isArray(p.mode1SelectedTargets)) setMode1SelectedTargets(p.mode1SelectedTargets);
         if (p.mode1Enhancer) setMode1Enhancer(p.mode1Enhancer);
+        if (p.mode1EnhancerBlend != null) setMode1EnhancerBlend(p.mode1EnhancerBlend);
         if (p.mode1FaceDistance != null) setMode1FaceDistance(p.mode1FaceDistance);
         if (Array.isArray(p.groups)) setGroups(p.groups);
         if (p.matrixConfig) setMatrixConfig(p.matrixConfig);
@@ -663,6 +670,9 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
       const targetName = target?.name || `Target ${tIdx + 1}`;
       const { payload, primarySourceIdx, mappings } = createJobPayload(mode1Mappings, mode1SwapMode, {
         enhancer: mode1Enhancer,
+        enhancer_type: mode1Enhancer,
+        enhancer_blend: mode1EnhancerBlend,
+        blend_ratio: mode1EnhancerBlend,
         faceDistance: mode1FaceDistance,
       });
 
@@ -1644,6 +1654,22 @@ export default function BatchSwap({ meta, settings = {}, notify }) {
                     ))}
                   </select>
                 </div>
+                {mode1Enhancer && mode1Enhancer !== 'None' && mode1Enhancer !== 'none' && (
+                  <div>
+                    <label className="block text-nano font-medium text-white/60 mb-1">
+                      Enhancer Blend / Opacity ({Number(mode1EnhancerBlend ?? 0.85).toFixed(2)})
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={mode1EnhancerBlend ?? 0.85}
+                      onChange={(e) => setMode1EnhancerBlend(parseFloat(e.target.value))}
+                      className="w-full accent-[var(--accent)]"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="block text-nano font-medium text-white/60 mb-1">
                     Max Face Distance ({mode1FaceDistance})

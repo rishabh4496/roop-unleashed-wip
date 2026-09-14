@@ -80,6 +80,10 @@ def _select_providers(execution_providers):
     for p in (execution_providers or []):
         name = p[0] if isinstance(p, (tuple, list)) else str(p)
         if name in available:
+            if name == 'CUDAExecutionProvider':
+                cuda_opts = dict(p[1]) if isinstance(p, (tuple, list)) and len(p) > 1 and isinstance(p[1], dict) else {}
+                cuda_opts.setdefault('cudnn_conv_algo_search', 'DEFAULT')
+                p = ('CUDAExecutionProvider', cuda_opts)
             providers.append(p)
     return providers or ['CPUExecutionProvider']
 
@@ -140,6 +144,8 @@ class Enhance_UltraMax:
         self._bindings: list[onnxruntime.IOBinding] = []
         self._slot_locks: list[threading.Lock] = []
         self._in_name: str | None = None
+        self._has_w: bool = False
+        self._w_name: str | None = None
         self._in_dtype = np.float32
         self._lut: np.ndarray | None = None
         self._pool: session_pool.SessionPool | None = None
@@ -183,8 +189,11 @@ class Enhance_UltraMax:
         )
 
         primary_sess, primary_iob = _build_session(model_path, providers)
-        self._in_name = primary_sess.get_inputs()[0].name
-        in_type = primary_sess.get_inputs()[0].type
+        inputs = primary_sess.get_inputs()
+        self._in_name = inputs[0].name
+        self._has_w = len(inputs) > 1
+        self._w_name = inputs[1].name if self._has_w else None
+        in_type = inputs[0].type
         self._in_dtype = np.float16 if 'float16' in str(in_type) else np.float32
         self._sessions.append(primary_sess)
         self._bindings.append(primary_iob)
@@ -277,18 +286,38 @@ class Enhance_UltraMax:
         iob = self._bindings[slot_idx]
         lock = self._slot_locks[slot_idx]
         with lock:
-            iob.bind_cpu_input(self._in_name, x)
-            sess.run_with_iobinding(iob)
-            return iob.copy_outputs_to_cpu()
+            try:
+                iob.bind_cpu_input(self._in_name, x)
+                if getattr(self, '_has_w', False) and self._w_name:
+                    fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
+                    iob.bind_cpu_input(self._w_name, np.array([fidelity], dtype=np.float64))
+                sess.run_with_iobinding(iob)
+                return iob.copy_outputs_to_cpu()
+            except Exception as exc:
+                from roop.face_enhancer import is_cuda_oom, clear_cuda_cache, CudaOOMError
+                if is_cuda_oom(exc):
+                    clear_cuda_cache()
+                    raise CudaOOMError(f"CUDA Out of Memory in UltraMax slot {slot_idx}: {exc}") from exc
+                raise
 
     def _infer(self, x: np.ndarray) -> np.ndarray:
         if self._pool is not None:
             with self._pool.lease() as slot:
                 (sess, iob), slot_lock = slot
                 with slot_lock:
-                    iob.bind_cpu_input(self._in_name, x)
-                    sess.run_with_iobinding(iob)
-                    return iob.copy_outputs_to_cpu()
+                    try:
+                        iob.bind_cpu_input(self._in_name, x)
+                        if getattr(self, '_has_w', False) and self._w_name:
+                            fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
+                            iob.bind_cpu_input(self._w_name, np.array([fidelity], dtype=np.float64))
+                        sess.run_with_iobinding(iob)
+                        return iob.copy_outputs_to_cpu()
+                    except Exception as exc:
+                        from roop.face_enhancer import is_cuda_oom, clear_cuda_cache, CudaOOMError
+                        if is_cuda_oom(exc):
+                            clear_cuda_cache()
+                            raise CudaOOMError(f"CUDA Out of Memory in UltraMax pool lease: {exc}") from exc
+                        raise
         return self._run_slot(0, x)
 
     def _detail_stream(self, src512: np.ndarray) -> np.ndarray | None:
@@ -312,7 +341,11 @@ class Enhance_UltraMax:
                 raise ValueError('detail output collapsed')
             return detail
         except Exception as e:
-            if not Enhance_UltraMax._warned_dual:
+            from roop.face_enhancer import is_cuda_oom, clear_cuda_cache
+            if is_cuda_oom(e):
+                clear_cuda_cache()
+                print(f'[UltraMax] CUDA OOM in detail stream ({e}) — clearing cache and disabling dual stream', flush=True)
+            elif not Enhance_UltraMax._warned_dual:
                 Enhance_UltraMax._warned_dual = True
                 print(f'[UltraMax] detail stream error ({e}); '
                       f'falling back to single-stream', flush=True)
@@ -338,8 +371,16 @@ class Enhance_UltraMax:
         # LUT gather: uint8 BGR HWC -> model dtype RGB CHW in [-1, 1]
         x = self._lut[src.transpose(2, 0, 1)[::-1]][None]
 
-        with model_lifecycle_manager.execution_guard('ultramax', required_gb=0.5):
-            ort_outs = self._infer(x)
+        try:
+            with model_lifecycle_manager.execution_guard('ultramax', required_gb=0.5):
+                ort_outs = self._infer(x)
+        except Exception as exc:
+            from roop.face_enhancer import is_cuda_oom, clear_cuda_cache
+            if is_cuda_oom(exc):
+                print(f'[UltraMax] CUDA OOM encountered ({exc}) — clearing cache and using unenhanced frame')
+                clear_cuda_cache()
+                return sized(temp_frame, input_size)
+            raise
 
         hwc = np.ascontiguousarray(
             ort_outs[0][0][::-1].transpose(1, 2, 0), dtype=np.float32
@@ -386,16 +427,29 @@ class Enhance_UltraMax:
 
     def enhance_frame(self, frame: Frame, kps: np.ndarray, blend_ratio: float = 1.0) -> Frame:
         """Standalone 5-point landmark alignment -> inference -> inverse affine warp back."""
-        from roop.face_enhancer import align_face_5point, inverse_affine_warp_back
-        aligned_crop, M = align_face_5point(frame, kps, crop_size=512)
-        enhanced_crop, _ = self.Run(None, None, aligned_crop)
-        return inverse_affine_warp_back(
-            target_frame=frame,
-            enhanced_crop=enhanced_crop,
-            M=M,
-            original_crop=aligned_crop,
-            blend_ratio=blend_ratio,
+        from roop.face_enhancer import (
+            align_face_5point,
+            inverse_affine_warp_back,
+            is_cuda_oom,
+            clear_cuda_cache,
+            CudaOOMError,
         )
+        try:
+            aligned_crop, M = align_face_5point(frame, kps, crop_size=512)
+            enhanced_crop, _ = self.Run(None, None, aligned_crop)
+            return inverse_affine_warp_back(
+                target_frame=frame,
+                enhanced_crop=enhanced_crop,
+                M=M,
+                original_crop=aligned_crop,
+                blend_ratio=blend_ratio,
+            )
+        except Exception as exc:
+            if is_cuda_oom(exc):
+                clear_cuda_cache()
+                if not isinstance(exc, CudaOOMError):
+                    raise CudaOOMError(f"CUDA Out of Memory in UltraMax enhance_frame: {exc}") from exc
+            raise
 
     # ── compatibility: expose Prepare/Infer/Finish like Enhance_CodeFormer ───
     def Prepare(self, source_faceset, target_face, temp_frame):

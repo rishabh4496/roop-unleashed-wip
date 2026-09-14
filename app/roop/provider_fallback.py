@@ -48,6 +48,35 @@ def is_trt_error(exc: BaseException) -> bool:
     return any(k in msg for k in keywords)
 
 
+def normalize_provider(p: Any, device_id: int = 0) -> Any:
+    """Normalize a provider entry so that CUDAExecutionProvider always has safe conv search settings."""
+    try:
+        import roop.globals
+        device_id = int(getattr(roop.globals, "cuda_device_id", device_id) or 0)
+    except Exception:
+        pass
+
+    cuda_opts = {
+        "device_id": device_id,
+        "cudnn_conv_algo_search": os.environ.get("ROOP_CUDNN_CONV_ALGO", "DEFAULT"),
+        "do_copy_in_default_stream": True,
+        "arena_extend_strategy": os.environ.get(
+            "ROOP_CUDA_ARENA_STRATEGY", "kSameAsRequested"
+        ),
+    }
+
+    if p == "CUDAExecutionProvider":
+        return ("CUDAExecutionProvider", cuda_opts)
+    if isinstance(p, (tuple, list)) and len(p) == 2 and p[0] == "CUDAExecutionProvider":
+        merged = dict(cuda_opts)
+        if isinstance(p[1], dict):
+            merged.update(p[1])
+            if "cudnn_conv_algo_search" not in p[1]:
+                merged["cudnn_conv_algo_search"] = os.environ.get("ROOP_CUDNN_CONV_ALGO", "DEFAULT")
+        return (p[0], merged)
+    return p
+
+
 def build_cuda_fallback_providers(
     original_providers: Optional[Sequence[Any]] = None,
     device_id: int = 0,
@@ -61,7 +90,7 @@ def build_cuda_fallback_providers(
 
     cuda_opts = {
         "device_id": device_id,
-        "cudnn_conv_algo_search": "HEURISTIC",
+        "cudnn_conv_algo_search": os.environ.get("ROOP_CUDNN_CONV_ALGO", "DEFAULT"),
         "do_copy_in_default_stream": True,
         "arena_extend_strategy": os.environ.get(
             "ROOP_CUDA_ARENA_STRATEGY", "kSameAsRequested"
@@ -135,7 +164,7 @@ def create_fallback_session(
         FallbackSessionResult(session, downgraded_flag)
     """
     effective_label = session_name or label
-    requested_providers = list(providers or [])
+    requested_providers = [normalize_provider(p) for p in (providers or [])]
     has_trt = any(is_trt_provider(p) for p in requested_providers)
 
     ort_impl = ort

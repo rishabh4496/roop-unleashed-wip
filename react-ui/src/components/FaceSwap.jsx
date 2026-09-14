@@ -62,6 +62,24 @@ const AI_UPSCALE_MODELS = [
   { value: 'sinc_x4', label: 'Sinc ×4 · sharpest (no AI)' },
 ];
 
+const FALLBACK_ENHANCERS = [
+  'None',
+  'GPEN Realistic',
+  'UltraMax',
+  'Restoreformer++',
+  'Restore Ultra',
+  'GPEN Ultimate',
+  'GPEN',
+  'GPEN 256',
+  'GPEN 1024',
+  'GPEN 2048',
+  'Codeformer',
+  'Codeformer (fp16)',
+  'GFPGAN',
+  'DMDNet',
+  'KEEP (sidecar)',
+];
+
 export default function FaceSwap({
   meta, settings, setSettings, notify, registerFileListener,
   progress, setProgress, startTime, setStartTime, onOpenProcessing
@@ -398,13 +416,17 @@ export default function FaceSwap({
     const sp = withSliderBypass(params);
     return {
       ...sp,
-      enhancer: sp.selected_enhancer, detection: sp.face_detection_mode,
+      enhancer: sp.selected_enhancer,
+      enhancer_type: sp.enhancer_type || sp.selected_enhancer,
+      enhancer_blend: num(sp.enhancer_blend !== undefined ? sp.enhancer_blend : sp.blend_ratio, 0.85),
+      detection: sp.face_detection_mode,
       output_method: sp.output_method, video_method: sp.video_swapping_method,
       upscale: sp.subsample_upscale, mask_engine: sp.mask_engine,
       mask_engine_2: sp.mask_engine_2, clip_text: sp.mask_clip_text,
       sam2_model_size: sp.sam2_model_size, track_identities: sp.track_identities,
       autorotate: sp.autorotate_faces,
-      face_distance: num(sp.max_face_distance, 0.75), blend_ratio: num(sp.blend_ratio, 0.8),
+      face_distance: num(sp.max_face_distance, 0.75),
+      blend_ratio: num(sp.blend_ratio !== undefined ? sp.blend_ratio : sp.enhancer_blend, 0.85),
       num_swap_steps: num(sp.num_swap_steps, 1),
       face_mapping: getFaceMappingArray(),
       imagemask: maskJson,
@@ -607,9 +629,13 @@ export default function FaceSwap({
     const activeParams = withSliderBypass(params);
     return {
       index, frame: fr, fake_preview: fake,
-      enhancer: activeParams.selected_enhancer, codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
+      enhancer: activeParams.selected_enhancer,
+      enhancer_type: activeParams.enhancer_type || activeParams.selected_enhancer,
+      enhancer_blend: num(activeParams.enhancer_blend !== undefined ? activeParams.enhancer_blend : activeParams.blend_ratio, 0.85),
+      codeformer_fidelity: num(activeParams.codeformer_fidelity, 0.5),
       detection: activeParams.face_detection_mode,
-      face_distance: num(activeParams.max_face_distance, 0.75), blend_ratio: num(activeParams.blend_ratio, 0.8),
+      face_distance: num(activeParams.max_face_distance, 0.75),
+      blend_ratio: num(activeParams.blend_ratio !== undefined ? activeParams.blend_ratio : activeParams.enhancer_blend, 0.85),
       mask_engine: activeParams.mask_engine, mask_engine_2: activeParams.mask_engine_2,
       clip_text: activeParams.mask_clip_text,
       no_face_action: activeParams.no_face_action, vr_mode: activeParams.vr_mode, autorotate: activeParams.autorotate_faces,
@@ -692,6 +718,8 @@ export default function FaceSwap({
     Fast:     { default_det_size: false, face_detector_size: '320', face_detector_threshold: 0.50, subsample_upscale: '128px', selected_enhancer: 'None',            num_swap_steps: 1 },
     Balanced: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '256px', selected_enhancer: 'GPEN',            num_swap_steps: 1 },
     Quality:  { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '512px', selected_enhancer: 'Restoreformer++', num_swap_steps: 2 },
+    UltraMax: { default_det_size: true,  face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '512px', selected_enhancer: 'UltraMax',         enhancer_type: 'ultramax', enhancer_blend: 0.85, blend_ratio: 0.85, num_swap_steps: 2 },
+    Realistic: { default_det_size: true, face_detector_size: '640', face_detector_threshold: 0.50, subsample_upscale: '512px', selected_enhancer: 'GPEN Realistic', enhancer_type: 'gpen_realistic', enhancer_blend: 0.85, blend_ratio: 0.85, num_swap_steps: 1 },
   };
   const activePreset = Object.keys(PRESETS).find((name) =>
     Object.entries(PRESETS[name]).every(([k, v]) =>
@@ -2206,7 +2234,16 @@ export default function FaceSwap({
           <Slider label="🧩 Swap model's own face mask" info="Only hififace and hyperswap emit this — every other swapper ignores the setting, so it is safe to leave on. Those two nets output a face mask alongside the swapped image, saying where they actually synthesised a face, and the pipeline used to throw it away. That matters because the paste mask cannot know: it is an ellipse intersected with the convex hull of the 106 landmarks, whose forehead extension runs 60% above the eyebrows and therefore into the HAIR. Measured against hififace's own verdict, 15–27% of the paste mask is territory the model says is not face on a FRONTAL head, and 31% on a profile — and looking at where that excess lands, it is the band above the hairline frontally, and a wedge of hair plus background behind the head on a profile. That is very likely why eyes/nose/mouth read as distorted at angles: not the features themselves, but the invalid territory around them being composited. Not pose-gated, unlike the two angle controls above, because the net derives this from the actual image and its verdict is right at every angle. 100 = trust the model fully, 0 = off (previous behaviour), which is the default — this is new and has not been judged on real footage yet. It is the first thing to raise if a hififace or hyperswap paste reaches up into hair." min={0} max={100} step={5} value={num(p.swap_model_mask_strength, 0)} onChange={(v) => set('swap_model_mask_strength', v)} />
           <Toggle label="Rescue small faces" info="When a frame has no detected face, retries on a 2x upscale to catch tiny/distant faces — without raising the global detection resolution for every frame." checked={!!p.rescue_small_faces} onChange={(v) => set('rescue_small_faces', v)} />
           <Slider label="Swapping steps" info="more = more likeness" min={1} max={5} step={1} value={num(p.num_swap_steps, 1)} onChange={(v) => set('num_swap_steps', v)} />
-          <Select label="Post-processing enhancer" info="The single most expensive stage in a render, so this choice affects both quality and throughput. GPEN Ultimate uses the fast GPEN-256 network with pooled TensorRT contexts and an edge-limited detail finish. Restore Ultra uses the pooled RestoreFormer++ network with a sharper edge-limited detail finish. Both are optimized profiles over the original published weights, so they improve the runtime/output path rather than claiming a newly trained checkpoint. Benchmark your own footage when choosing between them." value={p.selected_enhancer} onChange={(v) => set('selected_enhancer', v)} options={meta.enhancers} />
+          <Select
+            label="Post-processing enhancer"
+            info="The single most expensive stage in a render, so this choice affects both quality and throughput. GPEN Realistic uses 512px photorealistic restoration with natural skin fidelity. UltraMax uses a multi-pass composite filter with normalized blend weighting. GPEN Ultimate uses the fast GPEN-256 network with pooled TensorRT contexts and an edge-limited detail finish. Restore Ultra uses the pooled RestoreFormer++ network with a sharper edge-limited detail finish."
+            value={p.selected_enhancer}
+            onChange={(v) => {
+              set('selected_enhancer', v);
+              set('enhancer_type', v);
+            }}
+            options={Array.isArray(meta?.enhancers) && meta.enhancers.length ? meta.enhancers : FALLBACK_ENHANCERS}
+          />
           <Slider label="Max face distance" info="How far from your captured target face a detected face may sit and still be swapped. This is a DISTANCE, not a similarity — 0 means identical and HIGHER IS MORE PERMISSIVE, so raising it makes look-alikes and bystanders start getting swapped. Scale is scipy cosine distance (0–2). Measured on a hard clip: the SAME person stays under ~0.66 even on bad frames, while DIFFERENT people sit at ~0.93–1.07. The 0.75 default sits mid-gap. Lower it toward 0.66 if the swap jumps to the wrong person mid-shot; raise it toward 0.85 if the swap blinks off on profiles and motion blur. Run with ROOP_DEBUG_MATCH=1 to print the real per-frame distances." min={0.01} max={1} step={0.01} value={num(p.max_face_distance, 0.75)} onChange={(v) => set('max_face_distance', v)} />
           <Select label="Subsample upscale" value={p.subsample_upscale} onChange={(v) => set('subsample_upscale', v)} options={meta.upscale} />
           <Toggle label="AI upscale (after swap)" info="Runs an AI upscaler as the final step of the swap pass — each frame is swapped & enhanced first, then upscaled, producing a single output file (no second pass). Full-frame upscaling is heavy: ×4 on video is slow and VRAM-hungry." checked={!!p.upscale_after_swap} onChange={(v) => set('upscale_after_swap', v)} />
@@ -2216,7 +2253,20 @@ export default function FaceSwap({
           <Select label="Frame interpolation (after swap)" info="Raises the output frame rate with motion-interpolated in-between frames as the final pass (after any upscale). RIFE = AI motion interpolation (recommended, fast); minterpolate = classical ffmpeg motion estimation (no model, much slower). Duration is unchanged — frame count and fps are multiplied together, audio untouched." value={p.interp_after_swap || 'off'} onChange={(v) => set('interp_after_swap', v)}
             options={[{ value: 'off', label: 'Off' }, { value: 'rife_2x', label: 'RIFE ×2 fps' }, { value: 'rife_4x', label: 'RIFE ×4 fps' }, { value: 'minterpolate_2x', label: 'ffmpeg minterpolate ×2' }]} />
           <Select label="Color/lighting match" info="Matches the swapped face's skin tone & lighting to the original scene. RCT = per-channel (fast, default). LCT = corrects hue casts. MKL = fullest match. IDT = matches the full non-Gaussian colour distribution, which the other three cannot: under mixed lighting (warm key, cool fill) skin is bimodal and no single linear map lands it. IDT is the quality ceiling here and also much the dearest: measured ~65 ms per 512² face against ~11 ms for RCT and ~17 ms for LCT/MKL, because it makes several passes over every pixel instead of one matrix multiply. Reach for it on hard lighting or stills, not by default. None = off." value={p.color_transfer_mode || 'rct'} onChange={(v) => set('color_transfer_mode', v)} options={meta.color_transfer_modes || ['none', 'rct', 'lct', 'mkl', 'idt']} />
-          <Slider label="Original/Enhanced blend" min={0} max={1} step={0.01} value={num(p.blend_ratio, 0.8)} onChange={(v) => set('blend_ratio', v)} />
+          {p.selected_enhancer && p.selected_enhancer !== 'None' && p.selected_enhancer !== 'none' && (
+            <Slider
+              label="Enhancer Blend / Opacity"
+              info="Blend ratio for post-processing enhancer strength. 1.0 = fully enhanced, 0.0 = original unenhanced face. Default: 0.85."
+              min={0}
+              max={1}
+              step={0.01}
+              value={num(p.enhancer_blend !== undefined ? p.enhancer_blend : p.blend_ratio, 0.85)}
+              onChange={(v) => {
+                set('blend_ratio', v);
+                set('enhancer_blend', v);
+              }}
+            />
+          )}
           <Slider label="Skin detail transfer" info="Adds the ORIGINAL footage's real high-frequency texture (pores, stubble, grain) onto the swapped face. The generator smooths skin and the enhancer fakes flickery pores; this uses genuine detail from the scene instead. 0 = off. Start ~0.3–0.5; too high reintroduces the target's skin identity." min={0} max={1} step={0.05} value={num(p.detail_transfer_strength, 0)} onChange={(v) => set('detail_transfer_strength', v)} />
           <Slider label="Expression restore" info="Puts the TARGET's own expression back onto the swapped face using LivePortrait. Swappers pull faces toward the average expression of their training data, so laughing, crying and grimacing come out flattened — this reads the expression off the original frame and re-applies it. 0 = off (bit-exact no-op). Try ~0.8–1.0; above 1 exaggerates past the original, which helps when the swap compressed an expression rather than removed it. Only the expression moves — head pose cannot drift by construction. Downloads ~537MB on first use and measured ~0.33s per face on TensorRT, so it roughly doubles a slow render; needs TensorRT, since onnxruntime's CUDA GridSample cannot run this model and the CPU fallback is ~1.9s per face." min={0} max={2} step={0.05} value={num(p.expression_restore_strength, 0)} onChange={(v) => set('expression_restore_strength', v)} />
           {num(p.expression_restore_strength, 0) > 0 && (

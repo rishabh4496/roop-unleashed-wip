@@ -215,7 +215,7 @@ def decode_execution_providers(execution_providers: List[str]) -> List[Execution
                     torch.cuda.set_device(device_id)
                 cuda_opts = {
                     'device_id': device_id,
-                    'cudnn_conv_algo_search': 'HEURISTIC',
+                    'cudnn_conv_algo_search': os.environ.get('ROOP_CUDNN_CONV_ALGO', 'DEFAULT'),
                     'do_copy_in_default_stream': True,
                     'arena_extend_strategy': os.environ.get('ROOP_CUDA_ARENA_STRATEGY', 'kSameAsRequested'),
                 }

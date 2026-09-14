@@ -14,7 +14,7 @@ errors or breaking fallback defaults.
 from __future__ import annotations
 
 import enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -230,6 +230,50 @@ class PreviewRequest(BaseModel):
             return fallback
 
 
+class EnhanceRequest(BaseModel):
+    """Direct face enhancement request schema."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    enhancer_type: Optional[str] = Field(
+        default="gpen_realistic",
+        description="Enhancer model type (e.g. gpen_realistic, ultramax, gfpgan, codeformer)",
+    )
+    enhancer_blend: Optional[float] = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Blend ratio for enhancement strength [0.0, 1.0]",
+    )
+    image: Optional[str] = Field(
+        default=None,
+        description="Base64 data URL of the input image frame",
+    )
+    frame_data: Optional[str] = Field(
+        default=None,
+        description="Alias for image (base64 data URL)",
+    )
+    kps: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Optional 5-point facial keypoints [[x, y], ...]",
+    )
+    simulate_oom: Optional[bool] = Field(
+        default=False,
+        description="Simulate a CUDA Out of Memory error for error handling verification",
+    )
+
+    def resolve_enhancer(self, fallback: str = "GPEN Realistic") -> str:
+        return normalize_enhancer_type(self.enhancer_type, default=fallback)
+
+    def resolve_blend(self, fallback: float = 0.85) -> float:
+        if self.enhancer_blend is None:
+            return fallback
+        try:
+            return max(0.0, min(1.0, float(self.enhancer_blend)))
+        except (TypeError, ValueError):
+            return fallback
+
+
 def parse_enhancer_from_payload(
     payload: Dict[str, Any],
     fallback_enhancer: str = "None",
@@ -263,3 +307,4 @@ def parse_enhancer_from_payload(
             blend_val = fallback_blend
 
     return enhancer_name, blend_val
+

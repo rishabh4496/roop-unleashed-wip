@@ -29,6 +29,8 @@ export const FACESWAP_DEFAULTS = {
   rescue_small_faces: true,
   num_swap_steps: 1,
   selected_enhancer: 'Restoreformer++',
+  enhancer_type: 'restoreformer++',
+  enhancer_blend: 0.85,
   codeformer_fidelity: 0.5,
   max_face_distance: 0.75,
   subsample_upscale: '128px',
@@ -36,7 +38,7 @@ export const FACESWAP_DEFAULTS = {
   upscale_model_after: 'esrganx2',
   interp_after_swap: 'off',
   color_transfer_mode: 'lct',
-  blend_ratio: 1,
+  blend_ratio: 0.85,
 
   // Masking parameters
   mask_engine: 'DFL XSeg',

@@ -58,6 +58,54 @@ WARP_TEMPLATES = {
 }
 
 
+# ── VRAM Safety & CUDA OOM Utilities ─────────────────────────────────────────
+
+class CudaOOMError(RuntimeError):
+    """Raised when GPU / CUDA runs out of memory during face enhancement."""
+    pass
+
+
+def clear_cuda_cache() -> None:
+    """Safely flush garbage collection and GPU memory caches."""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    """Detect whether an exception is caused by GPU / CUDA Out Of Memory."""
+    if isinstance(exc, CudaOOMError):
+        return True
+    try:
+        import torch
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+    except Exception:
+        pass
+
+    msg = str(exc).lower()
+    oom_patterns = (
+        "out of memory",
+        "cuda oom",
+        "cudamalloc failed",
+        "cuda failure 2",
+        "failed to allocate",
+        "device memory allocation",
+        "resource_exhausted",
+    )
+    return any(p in msg for p in oom_patterns)
+
+
 # ── ONNX Session Initialization with Multi-Tier EP Fallback ──────────────────
 
 def create_enhancer_session(
@@ -331,7 +379,10 @@ class FaceEnhancer:
                 requested_providers=providers,
                 label=f"{self.enhancer_type.upper()}-{self.model_size}",
             )
-            self._in_name = self.session.get_inputs()[0].name
+            inputs = self.session.get_inputs()
+            self._in_name = inputs[0].name
+            self._has_w = len(inputs) > 1
+            self._w_name = inputs[1].name if self._has_w else ""
             self._out_name = self.session.get_outputs()[0].name
 
     def enhance_crop(
@@ -353,8 +404,51 @@ class FaceEnhancer:
         tensor = cv2.cvtColor(input_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 127.5 - 1.0
         x = np.ascontiguousarray(tensor.transpose(2, 0, 1)[None, ...])
 
-        with self._lock:
-            ort_outs = self.session.run([self._out_name], {self._in_name: x})
+        feed = {self._in_name: x}
+        if getattr(self, "_has_w", False) and self._w_name:
+            fidelity = float(getattr(roop.globals, "codeformer_fidelity", 0.5) or 0.5)
+            feed[self._w_name] = np.array([fidelity], dtype=np.float64)
+
+        try:
+            with self._lock:
+                ort_outs = self.session.run([self._out_name], feed)
+        except Exception as exc:
+            if is_cuda_oom(exc):
+                _LOGGER.error("[%s] CUDA Out of Memory during inference: %s", self.enhancer_type, exc)
+                clear_cuda_cache()
+                # Attempt graceful fallback to CPUExecutionProvider
+                try:
+                    _LOGGER.warning("[%s] Attempting CPU fallback session...", self.enhancer_type)
+                    opts = onnxruntime.SessionOptions()
+                    opts.log_severity_level = 2
+                    opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+                    model_key = (
+                        "gpen_bfr_512"
+                        if (self.model_size == 512 and "gpen" in self.enhancer_type)
+                        else ("gpen_bfr_256" if "gpen" in self.enhancer_type else "codeformer_fp16")
+                    )
+                    model_path = ensure_model_downloaded(model_key)
+                    cpu_sess = onnxruntime.InferenceSession(model_path, opts, providers=["CPUExecutionProvider"])
+                    with self._lock:
+                        self.session = cpu_sess
+                        self.active_providers = ["CPUExecutionProvider"]
+                        cpu_inputs = self.session.get_inputs()
+                        self._in_name = cpu_inputs[0].name
+                        self._has_w = len(cpu_inputs) > 1
+                        self._w_name = cpu_inputs[1].name if self._has_w else ""
+                        self._out_name = self.session.get_outputs()[0].name
+                        cpu_feed = {self._in_name: x}
+                        if self._has_w and self._w_name:
+                            fidelity = float(getattr(roop.globals, "codeformer_fidelity", 0.5) or 0.5)
+                            cpu_feed[self._w_name] = np.array([fidelity], dtype=np.float64)
+                        ort_outs = self.session.run([self._out_name], cpu_feed)
+                except Exception as cpu_exc:
+                    clear_cuda_cache()
+                    raise CudaOOMError(
+                        f"CUDA Out of Memory in {self.enhancer_type} ({exc}); CPU fallback also failed: {cpu_exc}"
+                    ) from exc
+            else:
+                raise
 
         raw_out = ort_outs[0][0]
         if not np.isfinite(raw_out.sum()):
@@ -392,15 +486,22 @@ class FaceEnhancer:
         blend_ratio: float = 1.0,
     ) -> np.ndarray:
         """Full pipeline: 5-point alignment -> inference -> inverse affine warp back."""
-        aligned_crop, M = align_face_5point(frame, kps, crop_size=self.model_size)
-        enhanced_crop = self.enhance_crop(aligned_crop, blend_ratio=1.0)
-        return inverse_affine_warp_back(
-            target_frame=frame,
-            enhanced_crop=enhanced_crop,
-            M=M,
-            original_crop=aligned_crop,
-            blend_ratio=blend_ratio,
-        )
+        try:
+            aligned_crop, M = align_face_5point(frame, kps, crop_size=self.model_size)
+            enhanced_crop = self.enhance_crop(aligned_crop, blend_ratio=1.0)
+            return inverse_affine_warp_back(
+                target_frame=frame,
+                enhanced_crop=enhanced_crop,
+                M=M,
+                original_crop=aligned_crop,
+                blend_ratio=blend_ratio,
+            )
+        except Exception as exc:
+            if is_cuda_oom(exc):
+                clear_cuda_cache()
+                if not isinstance(exc, CudaOOMError):
+                    raise CudaOOMError(f"CUDA Out of Memory during enhance_frame: {exc}") from exc
+            raise
 
     def release(self) -> None:
         """Free ONNX session resources."""

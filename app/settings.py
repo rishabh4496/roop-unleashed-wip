@@ -188,6 +188,8 @@ class Settings:
         self.track_identities = self.default_get(data, 'track_identities', False)
         self.num_swap_steps = self.default_get(data, 'num_swap_steps', 1)
         self.selected_enhancer = self.default_get(data, 'selected_enhancer', 'GPEN')
+        self.enhancer_type = self.default_get(data, 'enhancer_type', 'gpen_realistic')
+        self.enhancer_blend = float(self.default_get(data, 'enhancer_blend', 0.85))
         self.codeformer_fidelity = float(self.default_get(data, 'codeformer_fidelity', 0.5))
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')
         self.upscale_after_swap = self.default_get(data, 'upscale_after_swap', True)
@@ -372,6 +374,8 @@ class Settings:
             'temporal_roi_hint': self.temporal_roi_hint,
             'num_swap_steps': self.num_swap_steps,
             'selected_enhancer': self.selected_enhancer,
+            'enhancer_type': self.enhancer_type,
+            'enhancer_blend': self.enhancer_blend,
             'codeformer_fidelity': self.codeformer_fidelity,
             'subsample_upscale': self.subsample_upscale,
             'upscale_after_swap': self.upscale_after_swap,
