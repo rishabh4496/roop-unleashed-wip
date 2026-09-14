@@ -16,6 +16,9 @@ Standalone executable validation script for roop-unleashed-wip:
 from __future__ import annotations
 
 import os
+# Suppress albumentations auto-update check before the package is imported.
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+
 import sys
 import time
 import math
