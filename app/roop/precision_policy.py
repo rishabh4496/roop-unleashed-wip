@@ -17,6 +17,12 @@ from typing import Any, Iterable, List, Optional, Tuple
 import roop.globals
 from roop.processors.enhance_common import fp32_trt_providers
 from roop.trt_shape_profile import apply_shape_profile
+from roop.model_loader import (
+    get_tensorrt_provider_options,
+    get_tensorrt_cache_dir,
+    calculate_dynamic_trt_workspace_size,
+    build_provider_priority_stack,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +49,7 @@ def providers_for(
     model_path: str = "",
     requested_precision: Optional[str] = None,
     explicit_shape: Optional[Tuple[int, ...]] = None,
+    batch_size: int = 1,
 ) -> Tuple[List[Any], str]:
     """Return configured ``(providers, effective_precision)`` for a model session.
 
@@ -82,29 +89,33 @@ def providers_for(
     # 3. Configure TensorRT options if present in execution providers
     has_trt = any(_is_trt_provider(p) for p in providers)
     if has_trt:
-        # Set up default cache paths if not already defined
-        base_cache = str(pathlib.Path(__file__).parent.parent / "models" / "trt_cache" / effective_precision)
+        from roop.model_loader import get_tensorrt_provider_options, get_tensorrt_cache_dir
+        base_cache = get_tensorrt_cache_dir(effective_precision)
         os.makedirs(base_cache, exist_ok=True)
 
         updated: List[Any] = []
         for p in providers:
             if _is_trt_provider(p):
                 name = p[0] if isinstance(p, (tuple, list)) else p
-                opts = dict(p[1]) if (isinstance(p, (tuple, list)) and len(p) == 2 and isinstance(p[1], dict)) else {}
+                existing_opts = dict(p[1]) if (isinstance(p, (tuple, list)) and len(p) == 2 and isinstance(p[1], dict)) else {}
 
-                opts.setdefault("device_id", int(getattr(roop.globals, "cuda_device_id", 0) or 0))
-                opts["trt_engine_cache_enable"] = True
-                opts.setdefault("trt_engine_cache_path", base_cache)
-                opts["trt_timing_cache_enable"] = True
-                opts.setdefault("trt_timing_cache_path", base_cache)
-                opts.setdefault("trt_context_memory_sharing_enable", True)
+                fp16 = effective_precision in ("fp16", "mixed")
+                opts = get_tensorrt_provider_options(
+                    device_id=existing_opts.get("device_id"),
+                    max_workspace_size=existing_opts.get("trt_max_workspace_size"),
+                    fp16_enable=fp16,
+                    engine_cache_enable=True,
+                    engine_cache_path=existing_opts.get("trt_engine_cache_path") or base_cache,
+                    timing_cache_enable=True,
+                    timing_cache_path=existing_opts.get("trt_timing_cache_path") or base_cache,
+                    **existing_opts,
+                )
 
                 # Set precision flags
                 if effective_precision == "fp32":
                     opts["trt_fp16_enable"] = False
                     opts["trt_layer_norm_fp32_fallback"] = True
-                    # Direct to fp32 cache path to avoid engine collision
-                    fp32_cache = base_cache + "_fp32"
+                    fp32_cache = opts["trt_engine_cache_path"] + "_fp32"
                     os.makedirs(fp32_cache, exist_ok=True)
                     opts["trt_engine_cache_path"] = fp32_cache
                     opts["trt_timing_cache_path"] = fp32_cache
@@ -126,6 +137,7 @@ def providers_for(
             model_key=tag_lower,
             model_path=model_path,
             explicit_shape=explicit_shape,
+            batch_size=batch_size,
         )
 
     return providers, effective_precision

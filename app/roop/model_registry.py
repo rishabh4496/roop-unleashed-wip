@@ -16,6 +16,13 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from roop.model_loader import (
+    get_tensorrt_provider_options,
+    get_tensorrt_cache_dir,
+    calculate_dynamic_trt_workspace_size,
+    build_provider_priority_stack,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 # Socket timeout for downloads in seconds

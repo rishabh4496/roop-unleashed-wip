@@ -165,62 +165,25 @@ def resolve_profile(
     model_key: Optional[str] = None,
     model_path: Optional[str] = None,
     explicit_shape: Optional[Tuple[int, ...]] = None,
+    batch_size: int = 1,
 ) -> Optional[ShapeProfile]:
     """Resolve min/opt/max shape profile options for an ONNX model.
 
-    For GPEN and UltraMax, creates static optimization profiles (1x3x512x512,
-    1x3x1024x1024, etc.) binding all axes to guarantee zero dynamic shape rejection
-    and highest inference throughput under TensorrtExecutionProvider.
+    Detects model input dimensions dynamically. For GPEN-512 with batch_size=1:
+        min_shapes: 'input:1x3x512x512'
+        opt_shapes: 'input:1x3x512x512'
+        max_shapes: 'input:1x3x512x512'
+    When batch enhancement (batch_size > 1) is enabled:
+        min_shapes: 'input:1x3x512x512'
+        opt_shapes: 'input:{batch_size}x3x512x512'
+        max_shapes: 'input:{batch_size}x3x512x512'
     """
     if not enabled():
         return None
 
     key_normalized = str(model_key or "").lower().replace(" ", "_")
     specs = graph_inputs(model_path)
-
-    # 1. Explicit shape provided by caller (e.g. (1, 3, 512, 512))
-    if explicit_shape is not None:
-        dim_str = "x".join(str(d) for d in explicit_shape)
-        # Determine main input name
-        in_name = "input"
-        if specs and len(specs) > 0:
-            in_name = specs[0].name
-        elif "codeformer" in key_normalized or "ultra" in key_normalized:
-            in_name = "x"
-
-        # Check for secondary scalar/vector inputs like CodeFormer's 'w'
-        parts = [f"{in_name}:{dim_str}"]
-        if specs and len(specs) > 1:
-            for s in specs[1:]:
-                sub_dim = "x".join(str(d) for d in s.dims if d is not None) or "1"
-                parts.append(f"{s.name}:{sub_dim}")
-
-        shape_str = ",".join(parts)
-        ns = f"_sp_{in_name}_{dim_str.replace('x', '_')}"
-        return ShapeProfile(min_shapes=shape_str, opt_shapes=shape_str, max_shapes=shape_str, namespace=ns)
-
-    # 2. Derive from model graph specs
-    if not specs:
-        # Fallback to default spatial geometry for known models
-        size = 512
-        if "1024" in key_normalized or (model_path and "1024" in model_path):
-            size = 1024
-        elif "256" in key_normalized or (model_path and "256" in model_path):
-            size = 256
-
-        in_name = "x" if ("codeformer" in key_normalized or "ultra" in key_normalized) else "input"
-        shape_str = f"{in_name}:1x3x{size}x{size}"
-        if in_name == "x":
-            shape_str += ",w:1"
-        ns = f"_sp_{in_name}_{size}"
-        return ShapeProfile(min_shapes=shape_str, opt_shapes=shape_str, max_shapes=shape_str, namespace=ns)
-
-    # Check if any input is dynamic or requires explicit profile binding
-    has_dynamic = any(spec.dynamic for spec in specs)
-    is_known_enhancer = any(k in key_normalized for k in ("gpen", "ultra", "codeformer", "restore", "gfpgan"))
-
-    if not has_dynamic and not is_known_enhancer:
-        return None
+    bs = max(1, int(batch_size or 1))
 
     # Determine default spatial size from spec, model_path or key
     size = 512
@@ -229,33 +192,98 @@ def resolve_profile(
     elif "256" in key_normalized or (model_path and "256" in model_path):
         size = 256
 
-    parts: List[str] = []
+    # 1. Explicit shape provided by caller (e.g. (1, 3, 512, 512))
+    if explicit_shape is not None:
+        explicit_b = explicit_shape[0] if (len(explicit_shape) > 0 and explicit_shape[0] is not None and explicit_shape[0] > 0) else 1
+        c = explicit_shape[1] if len(explicit_shape) > 1 else 3
+        h = explicit_shape[2] if len(explicit_shape) > 2 else size
+        w = explicit_shape[3] if len(explicit_shape) > 3 else size
+        if explicit_b > 1:
+            bs = explicit_b
+
+        # Determine main input name
+        in_name = "input"
+        if specs and len(specs) > 0:
+            in_name = specs[0].name
+        elif "codeformer" in key_normalized or "ultra" in key_normalized:
+            in_name = "x"
+
+        min_parts = [f"{in_name}:1x{c}x{h}x{w}"]
+        opt_parts = [f"{in_name}:{bs}x{c}x{h}x{w}"]
+        max_parts = [f"{in_name}:{bs}x{c}x{h}x{w}"]
+
+        # Check for secondary scalar/vector inputs like CodeFormer's 'w'
+        if specs and len(specs) > 1:
+            for s in specs[1:]:
+                sub_dim = "x".join(str(d) for d in s.dims if d is not None) or "1"
+                min_parts.append(f"{s.name}:{sub_dim}")
+                opt_parts.append(f"{s.name}:{sub_dim}")
+                max_parts.append(f"{s.name}:{sub_dim}")
+        elif "codeformer" in key_normalized or "ultra" in key_normalized:
+            min_parts.append("w:1")
+            opt_parts.append("w:1")
+            max_parts.append("w:1")
+
+        min_shapes = ",".join(min_parts)
+        opt_shapes = ",".join(opt_parts)
+        max_shapes = ",".join(max_parts)
+        ns = f"_sp_{in_name}_{bs}_{h}x{w}"
+        return ShapeProfile(min_shapes=min_shapes, opt_shapes=opt_shapes, max_shapes=max_shapes, namespace=ns)
+
+    # 2. Derive from model graph specs
+    if not specs:
+        in_name = "x" if ("codeformer" in key_normalized or "ultra" in key_normalized) else "input"
+        min_shapes = f"{in_name}:1x3x{size}x{size}"
+        opt_shapes = f"{in_name}:{bs}x3x{size}x{size}"
+        max_shapes = f"{in_name}:{bs}x3x{size}x{size}"
+        if in_name == "x":
+            min_shapes += ",w:1"
+            opt_shapes += ",w:1"
+            max_shapes += ",w:1"
+        ns = f"_sp_{in_name}_{bs}_{size}"
+        return ShapeProfile(min_shapes=min_shapes, opt_shapes=opt_shapes, max_shapes=max_shapes, namespace=ns)
+
+    # 3. Dynamic graph inspection from parsed model input specs
+    min_parts: List[str] = []
+    opt_parts: List[str] = []
+    max_parts: List[str] = []
+
     for spec in specs:
         if any(":" in spec.name for spec in specs):
             return None
         # Build 4D shape for image inputs, 1D/0D for weights
         if len(spec.dims) == 4:
-            b = spec.dims[0] if spec.dims[0] is not None else 1
             c = spec.dims[1] if spec.dims[1] is not None else 3
             h = spec.dims[2] if spec.dims[2] is not None else size
             w = spec.dims[3] if spec.dims[3] is not None else size
-            parts.append(f"{spec.name}:{b}x{c}x{h}x{w}")
+            min_parts.append(f"{spec.name}:1x{c}x{h}x{w}")
+            opt_parts.append(f"{spec.name}:{bs}x{c}x{h}x{w}")
+            max_parts.append(f"{spec.name}:{bs}x{c}x{h}x{w}")
         elif len(spec.dims) == 1:
             dim_val = spec.dims[0] if spec.dims[0] is not None else 1
-            parts.append(f"{spec.name}:{dim_val}")
+            min_parts.append(f"{spec.name}:{dim_val}")
+            opt_parts.append(f"{spec.name}:{dim_val}")
+            max_parts.append(f"{spec.name}:{dim_val}")
         elif len(spec.dims) == 0:
-            parts.append(f"{spec.name}:1")
+            min_parts.append(f"{spec.name}:1")
+            opt_parts.append(f"{spec.name}:1")
+            max_parts.append(f"{spec.name}:1")
         else:
             resolved_dims = [str(d if d is not None else 1) for d in spec.dims]
-            parts.append(f"{spec.name}:{'x'.join(resolved_dims)}")
+            dim_s = "x".join(resolved_dims)
+            min_parts.append(f"{spec.name}:{dim_s}")
+            opt_parts.append(f"{spec.name}:{dim_s}")
+            max_parts.append(f"{spec.name}:{dim_s}")
 
-    if not parts:
+    if not min_parts:
         return None
 
-    shape_str = ",".join(parts)
-    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", shape_str)[-20:]
+    min_shapes = ",".join(min_parts)
+    opt_shapes = ",".join(opt_parts)
+    max_shapes = ",".join(max_parts)
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", opt_shapes)[-20:]
     namespace = f"_sp{sanitized}"
-    return ShapeProfile(min_shapes=shape_str, opt_shapes=shape_str, max_shapes=shape_str, namespace=namespace)
+    return ShapeProfile(min_shapes=min_shapes, opt_shapes=opt_shapes, max_shapes=max_shapes, namespace=namespace)
 
 
 def apply_shape_profile(
@@ -263,14 +291,16 @@ def apply_shape_profile(
     model_key: Optional[str] = None,
     model_path: Optional[str] = None,
     explicit_shape: Optional[Tuple[int, ...]] = None,
+    batch_size: int = 1,
 ) -> List[Any]:
     """Return providers list with static TensorRT profile options attached.
 
     Ensures that any TensorrtExecutionProvider entry receives explicit static
     optimization profiles and an isolated persistent engine cache directory.
+    Supports multi-profile if batch enhancement (batch_size > 1) is enabled.
     """
     try:
-        profile = resolve_profile(model_key, model_path, explicit_shape)
+        profile = resolve_profile(model_key, model_path, explicit_shape, batch_size=batch_size)
     except Exception as exc:
         _LOGGER.debug("Failed to resolve shape profile: %s", exc)
         profile = None

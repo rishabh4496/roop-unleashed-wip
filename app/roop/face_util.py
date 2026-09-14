@@ -99,7 +99,8 @@ def _build_face_analyser():
                 os.path.join(buffalo_dir, filename),
                 f"InsightFace buffalo_l ({module})",
             )
-    if roop.globals.CFG.force_cpu:
+    force_cpu = bool(getattr(roop.globals.CFG, "force_cpu", False)) if roop.globals.CFG is not None else False
+    if force_cpu:
         providers = ["CPUExecutionProvider"]
     else:
         providers = roop.globals.execution_providers
@@ -188,7 +189,7 @@ def _ensure_face_analyser():
             _ANALYSER_ENGINE = cur_engine
             _ANALYSER_LM68_LAZY = cur_lm68_lazy
             _ANALYSER_FORCE_CPU = cur_force_cpu
-            if roop.globals.CFG.force_cpu:
+            if cur_force_cpu:
                 print("Forcing CPU for Face Analysis")
             # shared=True: this pool outlives the ProcessMgr that triggered the
             # build and is leased N-wide by the render and the face-manager
