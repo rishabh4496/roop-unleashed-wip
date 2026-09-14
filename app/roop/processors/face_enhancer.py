@@ -5,7 +5,11 @@ from roop.face_enhancer import (
     FaceEnhancer,
     WARP_TEMPLATES,
     align_face_5point,
+    apply_adaptive_sharpening,
+    apply_bilateral_edge_preservation,
     apply_ultramax_composite,
+    apply_ultramax_composite_filters,
+    apply_unsharp_mask,
     build_provider_priority_stack,
     calculate_dynamic_trt_workspace_size,
     clear_cuda_cache,
@@ -14,6 +18,8 @@ from roop.face_enhancer import (
     get_tensorrt_provider_options,
     inverse_affine_warp_back,
     is_cuda_oom,
+    post_inference_blend,
+    prepare_zero_copy_tensor,
 )
 
 __all__ = [
@@ -21,7 +27,11 @@ __all__ = [
     "FaceEnhancer",
     "WARP_TEMPLATES",
     "align_face_5point",
+    "apply_adaptive_sharpening",
+    "apply_bilateral_edge_preservation",
     "apply_ultramax_composite",
+    "apply_ultramax_composite_filters",
+    "apply_unsharp_mask",
     "build_provider_priority_stack",
     "calculate_dynamic_trt_workspace_size",
     "clear_cuda_cache",
@@ -30,4 +40,6 @@ __all__ = [
     "get_tensorrt_provider_options",
     "inverse_affine_warp_back",
     "is_cuda_oom",
+    "post_inference_blend",
+    "prepare_zero_copy_tensor",
 ]

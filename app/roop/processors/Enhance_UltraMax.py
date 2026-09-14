@@ -406,7 +406,7 @@ class Enhance_UltraMax:
         if self._detail_session is None:
             return None
         try:
-            x = self._detail_lut[src512.transpose(2, 0, 1)[::-1]][None]
+            x = np.ascontiguousarray(self._detail_lut[src512.transpose(2, 0, 1)[::-1]][None])
             with self._detail_lock:
                 self._detail_iob.bind_cpu_input(self._detail_in, x)
                 self._detail_session.run_with_iobinding(self._detail_iob)
@@ -449,8 +449,12 @@ class Enhance_UltraMax:
                if (temp_frame.shape[0] != S or temp_frame.shape[1] != S)
                else temp_frame)
 
-        # LUT gather: uint8 BGR HWC -> model dtype RGB CHW in [-1, 1]
-        x = self._lut[src.transpose(2, 0, 1)[::-1]][None]
+        # Zero-Copy Tensor Handling: ensure contiguous memory layout for TensorRT DMA
+        if self._lut is not None:
+            x = np.ascontiguousarray(self._lut[src.transpose(2, 0, 1)[::-1]][None])
+        else:
+            from roop.face_enhancer import prepare_zero_copy_tensor
+            x = prepare_zero_copy_tensor(src, target_size=S, normalization_mode="symmetric", dtype=self._in_dtype)
 
         try:
             with model_lifecycle_manager.execution_guard('ultramax', required_gb=0.5):
@@ -531,6 +535,26 @@ class Enhance_UltraMax:
                 if not isinstance(exc, CudaOOMError):
                     raise CudaOOMError(f"CUDA Out of Memory in UltraMax enhance_frame: {exc}") from exc
             raise
+
+    def apply_composite_filters(
+        self,
+        face_chip: np.ndarray,
+        reference_chip: Optional[np.ndarray] = None,
+        unsharp_amount: float = 0.25,
+        bilateral_strength: float = 0.35,
+        adaptive_sharpen_strength: float = 0.25,
+        blend_ratio: float = 1.0,
+    ) -> np.ndarray:
+        """Decoupled composite visual filters stage (unsharp, bilateral, adaptive sharpen)."""
+        from roop.face_enhancer import apply_ultramax_composite_filters
+        return apply_ultramax_composite_filters(
+            enhanced_chip=face_chip,
+            reference_chip=reference_chip,
+            unsharp_amount=unsharp_amount,
+            bilateral_strength=bilateral_strength,
+            adaptive_sharpen_strength=adaptive_sharpen_strength,
+            blend_ratio=blend_ratio,
+        )
 
     # ── compatibility: expose Prepare/Infer/Finish like Enhance_CodeFormer ───
     def Prepare(self, source_faceset, target_face, temp_frame):

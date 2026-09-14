@@ -440,6 +440,171 @@ def inverse_affine_warp_back(
     return np.clip(out_frame, 0, 255).astype(np.uint8)
 
 
+# ── Zero-Copy Tensor Handling & Memory Contiguity ────────────────────────────
+
+def prepare_zero_copy_tensor(
+    img: np.ndarray,
+    target_size: int = 512,
+    normalization_mode: str = "symmetric",
+    dtype: Any = np.float32,
+) -> np.ndarray:
+    """Prepare normalized NCHW tensor with guaranteed C-contiguous memory layout for zero-copy DMA.
+
+    Normalization modes:
+    - 'symmetric': ((img / 255.0 - 0.5) / 0.5) mapping [0, 255] -> [-1.0, 1.0]
+    - 'unit': (img / 255.0) mapping [0, 255] -> [0.0, 1.0]
+
+    Transposition (transpose(2, 0, 1)) is forced to be C-contiguous via np.ascontiguousarray,
+    eliminating strided host memory copies and maximizing TensorRT DMA transfer speeds.
+    """
+    if img.shape[0] != target_size or img.shape[1] != target_size:
+        resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_CUBIC)
+    else:
+        resized = img
+
+    # Convert BGR to RGB
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+    # Normalization: ((img / 255.0 - 0.5) / 0.5) or (img / 255.0)
+    target_dt = np.float16 if "float16" in str(dtype).lower() else np.float32
+    if normalization_mode == "unit":
+        norm = rgb.astype(target_dt) / 255.0
+    else:  # symmetric: maps [0, 255] -> [-1.0, 1.0]
+        norm = (rgb.astype(target_dt) / 255.0 - 0.5) / 0.5
+
+    # Transpose HWC -> CHW and add batch axis NCHW (1, 3, H, W)
+    # np.ascontiguousarray guarantees contiguous linear layout for zero-copy DMA to TensorRT
+    tensor = np.ascontiguousarray(norm.transpose(2, 0, 1)[None, ...], dtype=target_dt)
+    return tensor
+
+
+# ── Decoupled Composite Visual Filters & Post-Inference Blending ─────────────
+
+def apply_unsharp_mask(
+    img: np.ndarray,
+    amount: float = 0.35,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Vectorized unsharp masking in OpenCV to boost high-frequency clarity.
+
+    Formula:
+        blur = cv2.GaussianBlur(img, (0, 0), sigmaX=sigma)
+        unsharp = cv2.addWeighted(img, 1.0 + amount, blur, -amount, 0.0)
+    """
+    if amount <= 0.0 or img is None:
+        return img
+    sigma = max(0.5, float(sigma))
+    blur = cv2.GaussianBlur(img, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    return cv2.addWeighted(img, 1.0 + float(amount), blur, -float(amount), 0.0)
+
+
+def apply_bilateral_edge_preservation(
+    img: np.ndarray,
+    d: int = 5,
+    sigma_color: float = 25.0,
+    sigma_space: float = 25.0,
+    blend: float = 0.85,
+) -> np.ndarray:
+    """Bilateral filtering to preserve sharp edges and facial geometry while removing noise.
+
+    Uses vectorized cv2.addWeighted to combine edge-smoothed plate with original.
+    """
+    if blend <= 0.0 or img is None:
+        return img
+    bilateral = cv2.bilateralFilter(img, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
+    if blend >= 1.0:
+        return bilateral
+    return cv2.addWeighted(bilateral, float(blend), img, 1.0 - float(blend), 0.0)
+
+
+def apply_adaptive_sharpening(
+    img: np.ndarray,
+    strength: float = 0.30,
+    radius: int = 1,
+    limit: float = 2.5,
+) -> np.ndarray:
+    """Adaptive edge-aware sharpening with local min/max bounding to eliminate halos.
+
+    Operates on the Luminance (L) channel in LAB space using vectorized OpenCV operations.
+    Suppresses noise in flat facial areas while enhancing edges (eyes, lips, nostrils).
+    """
+    if strength <= 0.0 or img is None:
+        return img
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    L = lab[:, :, 0].astype(np.float32)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * radius + 1, 2 * radius + 1))
+    L_min = cv2.erode(L, kernel)
+    L_max = cv2.dilate(L, kernel)
+
+    blur = cv2.GaussianBlur(L, (0, 0), sigmaX=float(radius))
+    high = L - blur
+
+    mag = np.abs(high)
+    np.maximum(mag - 1.0, 0.0, out=mag)
+    high_clamped = np.copysign(mag, high)
+
+    sharpened = L + float(strength) * high_clamped
+    sharpened = np.clip(sharpened, np.maximum(0.0, L_min - limit), np.minimum(255.0, L_max + limit))
+
+    lab[:, :, 0] = np.clip(sharpened, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def post_inference_blend(
+    enhanced_crop: np.ndarray,
+    reference_crop: np.ndarray,
+    blend_ratio: float = 1.0,
+) -> np.ndarray:
+    """Vectorized in-place blending in OpenCV (cv2.addWeighted) to prevent CPU bottlenecks."""
+    ratio = float(np.clip(blend_ratio, 0.0, 1.0))
+    if ratio >= 1.0:
+        return enhanced_crop
+    if ratio <= 0.0:
+        return reference_crop
+    if reference_crop.shape[:2] != enhanced_crop.shape[:2]:
+        h, w = enhanced_crop.shape[:2]
+        reference_crop = cv2.resize(reference_crop, (w, h), interpolation=cv2.INTER_CUBIC)
+    return cv2.addWeighted(enhanced_crop, ratio, reference_crop, 1.0 - ratio, 0.0)
+
+
+def apply_ultramax_composite_filters(
+    enhanced_chip: np.ndarray,
+    reference_chip: Optional[np.ndarray] = None,
+    unsharp_amount: float = 0.25,
+    bilateral_strength: float = 0.35,
+    adaptive_sharpen_strength: float = 0.25,
+    blend_ratio: float = 1.0,
+) -> np.ndarray:
+    """Execute decoupled composite visual filters and post-inference blending.
+
+    Filters are applied sequentially:
+    1. Unsharp mask (high-frequency clarity boost)
+    2. Bilateral edge preservation (contour preservation & noise attenuation)
+    3. Adaptive sharpening (anti-halo edge enhancement)
+    4. Vectorized post-inference blending with reference chip via cv2.addWeighted
+    """
+    out = enhanced_chip
+
+    # 1. Unsharp mask
+    if unsharp_amount > 0.0:
+        out = apply_unsharp_mask(out, amount=unsharp_amount)
+
+    # 2. Bilateral edge preservation
+    if bilateral_strength > 0.0:
+        out = apply_bilateral_edge_preservation(out, blend=bilateral_strength)
+
+    # 3. Adaptive sharpening
+    if adaptive_sharpen_strength > 0.0:
+        out = apply_adaptive_sharpening(out, strength=adaptive_sharpen_strength)
+
+    # 4. Vectorized post-inference blending with reference crop
+    if reference_chip is not None and blend_ratio < 1.0:
+        out = post_inference_blend(out, reference_chip, blend_ratio=blend_ratio)
+
+    return out
+
+
 # ── UltraMax Multi-Pass Composite Filter & Blend Logic ───────────────────────
 
 def apply_ultramax_composite(
@@ -450,6 +615,9 @@ def apply_ultramax_composite(
     chroma_weight: float = 0.0,
     dual_stream: bool = False,
     gain: float = 1.25,
+    unsharp_amount: float = 0.0,
+    bilateral_strength: float = 0.0,
+    adaptive_sharpen_strength: float = 0.0,
 ) -> np.ndarray:
     """Multi-pass composite filter and blend for UltraMax.
 
@@ -457,7 +625,8 @@ def apply_ultramax_composite(
             (eliminates CodeFormer's characteristic pale skin drift).
     Pass 2: (Optional Dual-Stream) Injects edge-guided high-frequency detail from GPEN-512
             via guided frequency split.
-    Pass 3: Proportional blending (cv2.addWeighted) with reference crop driven by blend_ratio.
+    Pass 3: Decoupled composite visual filters (unsharp mask, bilateral edge preservation, adaptive sharpening).
+    Pass 4: Vectorized post-inference blending (cv2.addWeighted) with reference crop driven by blend_ratio.
     """
     ratio = float(np.clip(blend_ratio, 0.0, 1.0))
     chroma_w = float(np.clip(chroma_weight, 0.0, 1.0))
@@ -487,13 +656,25 @@ def apply_ultramax_composite(
     else:
         pass2 = pass1
 
-    # Pass 3: Blend with original reference crop
-    if ratio < 1.0:
-        final_output = cv2.addWeighted(pass2, ratio, reference_crop, 1.0 - ratio, 0.0)
-    else:
-        final_output = pass2
+    # Pass 3: Decoupled Composite Visual Filters
+    u_amt = unsharp_amount if unsharp_amount > 0.0 else float(os.environ.get("ROOP_ULTRAMAX_UNSHARP", "0.0") or 0.0)
+    b_str = bilateral_strength if bilateral_strength > 0.0 else float(os.environ.get("ROOP_ULTRAMAX_BILATERAL", "0.0") or 0.0)
+    s_str = adaptive_sharpen_strength if adaptive_sharpen_strength > 0.0 else float(os.environ.get("ROOP_ULTRAMAX_SHARPEN", "0.0") or 0.0)
 
-    return final_output
+    if u_amt > 0.0 or b_str > 0.0 or s_str > 0.0:
+        pass3 = apply_ultramax_composite_filters(
+            enhanced_chip=pass2,
+            reference_chip=None,
+            unsharp_amount=u_amt,
+            bilateral_strength=b_str,
+            adaptive_sharpen_strength=s_str,
+            blend_ratio=1.0,
+        )
+    else:
+        pass3 = pass2
+
+    # Pass 4: Vectorized post-inference blend with original reference crop
+    return post_inference_blend(pass3, reference_crop, blend_ratio=ratio)
 
 
 # ── Standalone FaceEnhancer Pipeline Engine ──────────────────────────────────
@@ -548,9 +729,13 @@ class FaceEnhancer:
         else:
             input_bgr = aligned_crop
 
-        # Preprocessing: BGR -> normalized float32 [-1, 1] RGB NCHW
-        tensor = cv2.cvtColor(input_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 127.5 - 1.0
-        x = np.ascontiguousarray(tensor.transpose(2, 0, 1)[None, ...])
+        # Preprocessing: Zero-copy contiguous memory normalization & RGB transposition
+        x = prepare_zero_copy_tensor(
+            input_bgr,
+            target_size=S,
+            normalization_mode="symmetric",
+            dtype=np.float32,
+        )
 
         feed = {self._in_name: x}
         if getattr(self, "_has_w", False) and self._w_name:
@@ -612,12 +797,9 @@ class FaceEnhancer:
             return aligned_crop
 
         if "gpen" in self.enhancer_type:
-            # GPEN Realistic: apply chroma-from-swapper recolouring and blend
+            # GPEN Realistic: apply chroma-from-swapper recolouring and vectorized blend
             fixed = luma_only_recolour(restored, input_bgr)
-            ratio = float(np.clip(blend_ratio, 0.0, 1.0))
-            if ratio < 1.0:
-                return cv2.addWeighted(fixed, ratio, input_bgr, 1.0 - ratio, 0.0)
-            return fixed
+            return post_inference_blend(fixed, input_bgr, blend_ratio=blend_ratio)
         else:
             # UltraMax composite logic
             return apply_ultramax_composite(

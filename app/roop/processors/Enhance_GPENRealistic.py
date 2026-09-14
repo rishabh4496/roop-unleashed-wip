@@ -345,8 +345,12 @@ class Enhance_GPENRealistic:
                if (temp_frame.shape[0] != S or temp_frame.shape[1] != S)
                else temp_frame)
 
-        # LUT gather: uint8 BGR HWC -> float32 RGB CHW in [-1, 1]
-        x = self._lut[src.transpose(2, 0, 1)[::-1]][None]
+        # Zero-Copy Tensor Handling: ensure contiguous memory layout for TensorRT DMA
+        if self._lut is not None:
+            x = np.ascontiguousarray(self._lut[src.transpose(2, 0, 1)[::-1]][None])
+        else:
+            from roop.face_enhancer import prepare_zero_copy_tensor
+            x = prepare_zero_copy_tensor(src, target_size=S, normalization_mode="symmetric", dtype=np.float32)
 
         try:
             with model_lifecycle_manager.execution_guard('gpen_realistic',
