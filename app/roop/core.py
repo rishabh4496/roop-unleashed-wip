@@ -572,6 +572,10 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
         processors.update({"gpen": {"size": 2048}})
     elif roop.globals.selected_enhancer == 'GPEN Ultimate':
         processors.update({"gpen_ultimate": {}})
+    elif roop.globals.selected_enhancer == 'GPEN Realistic':
+        processors.update({"gpen_realistic": {}})
+    elif roop.globals.selected_enhancer == 'UltraMax':
+        processors.update({"ultramax": {}})
     elif roop.globals.selected_enhancer == 'Restoreformer++':
         processors.update({"restoreformer++": {}})
     elif roop.globals.selected_enhancer == 'Restore Ultra':

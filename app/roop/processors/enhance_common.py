@@ -6,8 +6,11 @@ about that ending are traps, and both were found the expensive way in GPEN
 before being written down here.
 """
 
+import contextlib
+
 import cv2
 import numpy as np
+
 
 
 _CRISP_KERNEL = np.array(
@@ -446,3 +449,132 @@ def enhance_restore_ultra(enhanced, reference, target_face=None,
     out = apply_anti_halo_sharpen(out, amount=crispness, sigma=0.8, limit=2.0)
     return out
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers added for GPEN Realistic and UltraMax (ported from roop-ultimate)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def looks_collapsed(img):
+    """True when the restorer returned a flat/grey image instead of a face.
+
+    This catches the FP16 collapse failure (GFPGAN v1.4 in TRT FP16 returns a
+    finite image whose pixel std drops from ~65 to ~16 and looks like uniform
+    grey) that is_usable() cannot see because the values are finite.
+
+    Uses cv2.meanStdDev plus the parallel-axis theorem: ~0.33 ms against the
+    ~3.80 ms two float32 copies cost, verified identical on 100+ test pairs.
+    The threshold is per-channel, which catches a collapse that preserves one
+    channel (e.g., a magenta face still has high R and B std but low G std).
+    """
+    if img is None or not hasattr(img, 'shape') or img.ndim != 3:
+        return True
+    # meanStdDev returns (mean, std) each of shape (channels, 1)
+    _, std = cv2.meanStdDev(img)
+    return float(std.min()) < 8.0
+
+
+@contextlib.contextmanager
+def exclusive(lock):
+    """Serialise one concurrent GPU call per pool slot.
+
+    A pool slot's io_binding is a mutable object that must never be entered by
+    two threads simultaneously. This context manager acquires `lock` (which
+    each pool slot owns independently) for the duration of the bound call.
+    ProcessMgr's global GPU lock is then redundant for any processor that
+    declares `self_excluding = True`, and the enhance stage becomes lock-free
+    for those processors (one slot, one thread, one call at a time, no
+    serialisation against OTHER slots or OTHER workers).
+    """
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def luma_only_recolour(enhanced, reference):
+    """Keep network luminance; restore swapper chrominance.
+
+    Neural restorers push chroma: GPEN-512 shows a measured chroma drift of
+    2.72 (LAB a/b mean abs) against the crop it was handed. This swaps the
+    chrominance channels back to the swapper's own output (chrominance = 0.36
+    residual vs 2.72 from the raw network), leaving luminance and all detail
+    untouched. Cost: ~0.27 ms per 512×512 face.
+    """
+    if enhanced is None or reference is None:
+        return enhanced
+    if enhanced.shape != reference.shape:
+        reference = cv2.resize(reference, (enhanced.shape[1], enhanced.shape[0]),
+                               interpolation=cv2.INTER_LINEAR)
+    enh_lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+    ref_lab = cv2.cvtColor(reference, cv2.COLOR_BGR2LAB)
+    # L from the network; a/b from the swapper crop
+    enh_lab[:, :, 1] = ref_lab[:, :, 1]
+    enh_lab[:, :, 2] = ref_lab[:, :, 2]
+    return cv2.cvtColor(enh_lab, cv2.COLOR_LAB2BGR)
+
+
+def luma_only_recolour_tensor(enhanced_f32, reference_bgr):
+    """luma_only_recolour operating on a float32 CHW tensor before the cast.
+
+    `enhanced_f32` is the raw network output in [-1, 1] with shape (3, H, W)
+    (BGR channel order). `reference_bgr` is the uint8 HWC swapper crop. The
+    returned array has the same shape, dtype and range as `enhanced_f32`.
+    """
+    if enhanced_f32 is None or reference_bgr is None:
+        return enhanced_f32
+
+    # Convert network output to [0, 255] uint8 for LAB conversion
+    clipped = np.clip(enhanced_f32, -1.0, 1.0)
+    as_hwc = ((clipped + 1.0) * 127.5).transpose(1, 2, 0).astype(np.uint8)
+    as_hwc = cv2.cvtColor(as_hwc, cv2.COLOR_RGB2BGR)  # network is RGB
+
+    recoloured = luma_only_recolour(as_hwc, reference_bgr)
+    recoloured = cv2.cvtColor(recoloured, cv2.COLOR_BGR2RGB)
+    out = recoloured.astype(np.float32) / 127.5 - 1.0
+    return out.transpose(2, 0, 1)
+
+
+def ort_cuda_output_to_torch(ort_value, torch_dtype):
+    """Copy an ORT-owned CUDA output into a Torch tensor device-to-device.
+
+    Returns None when PyTorch is unavailable or the copy fails, which is the
+    supported fallback: the caller must then use ort_value.numpy() (a host
+    copy) and move the array back if needed.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        arr = ort_value.numpy()  # host copy as fallback
+        return torch.from_numpy(arr.copy()).to(dtype=torch_dtype,
+                                               device='cuda')
+    except Exception:
+        return None
+
+
+def fp32_trt_providers(providers, tag):
+    """`providers` with TensorRT forced to FP32, with its own engine cache.
+
+    Some restorers overflow in TensorRT FP16. `tag` keeps each model's FP32
+    engine in its own cache directory so it cannot collide with FP16 engines
+    built for other stages. ROOP_<TAG>_FP16=1 opts back in for remeasuring.
+    """
+    import os
+    if os.environ.get(f'ROOP_{tag.upper()}_FP16', '0') == '1':
+        return providers
+    patched = []
+    for p in providers:
+        if (isinstance(p, (tuple, list)) and len(p) == 2
+                and 'tensorrt' in str(p[0]).lower()):
+            name, opts = p[0], dict(p[1])
+            opts['trt_fp16_enable'] = False
+            cache = opts.get('trt_engine_cache_path')
+            if cache:
+                fp32_cache = f'{cache}_{tag}_fp32'
+                os.makedirs(fp32_cache, exist_ok=True)
+                opts['trt_engine_cache_path'] = fp32_cache
+            patched.append((name, opts))
+        else:
+            patched.append(p)
+    return patched
