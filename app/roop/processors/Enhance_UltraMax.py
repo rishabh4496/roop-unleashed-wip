@@ -88,15 +88,66 @@ def _select_providers(execution_providers):
     return providers or ['CPUExecutionProvider']
 
 
-def _build_session(model_path, providers):
+def _build_session(model_path, providers, devicename='cpu'):
     from roop.face_enhancer import create_enhancer_session
     opts = onnxruntime.SessionOptions()
     opts.log_severity_level = 2
     opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-    sess, _ = create_enhancer_session(model_path, requested_providers=providers, session_options=opts, label="UltraMax")
+    sess, active_providers = create_enhancer_session(
+        model_path,
+        requested_providers=providers,
+        session_options=opts,
+        label="UltraMax",
+        explicit_shape=(1, 3, 512, 512),
+    )
     iob = sess.io_binding()
-    iob.bind_output(sess.get_outputs()[0].name, 'cpu')
-    return sess, iob
+    inputs = sess.get_inputs()
+    outputs = sess.get_outputs()
+    in_name = inputs[0].name
+    out_name = outputs[0].name
+    has_w = len(inputs) > 1
+    w_name = inputs[1].name if has_w else None
+    in_type = inputs[0].type
+    in_dtype = np.float16 if 'float16' in str(in_type) else np.float32
+    out_type = outputs[0].type
+    out_dtype = np.float16 if 'float16' in str(out_type) else np.float32
+
+    dev_buf = None
+    ort_value_cls = getattr(onnxruntime, "OrtValue", None)
+    device_id = 0
+    for p in (active_providers or providers):
+        if isinstance(p, (tuple, list)) and len(p) > 1 and isinstance(p[1], dict):
+            if "device_id" in p[1]:
+                device_id = int(p[1]["device_id"])
+                break
+
+    can_reuse = (
+        devicename == "cuda"
+        and ort_value_cls is not None
+        and hasattr(ort_value_cls, "ortvalue_from_shape_and_type")
+        and hasattr(iob, "bind_ortvalue_input")
+        and hasattr(iob, "bind_ortvalue_output")
+    )
+    if can_reuse:
+        try:
+            in_val = ort_value_cls.ortvalue_from_shape_and_type((1, 3, 512, 512), in_dtype, "cuda", device_id)
+            w_val = (
+                ort_value_cls.ortvalue_from_shape_and_type((1,), np.float64, "cuda", device_id)
+                if has_w else None
+            )
+            out_val = ort_value_cls.ortvalue_from_shape_and_type((1, 3, 512, 512), out_dtype, "cuda", device_id)
+            iob.bind_ortvalue_input(in_name, in_val)
+            if has_w and w_name and w_val is not None:
+                iob.bind_ortvalue_input(w_name, w_val)
+            iob.bind_ortvalue_output(out_name, out_val)
+            dev_buf = (in_val, w_val, out_val)
+        except Exception:
+            iob.bind_output(out_name, devicename)
+            dev_buf = None
+    else:
+        iob.bind_output(out_name, devicename)
+
+    return sess, iob, dev_buf
 
 
 def _pool_size(requested: int) -> int:
@@ -142,6 +193,7 @@ class Enhance_UltraMax:
         self.devicename: str | None = None
         self._sessions: list[onnxruntime.InferenceSession] = []
         self._bindings: list[onnxruntime.IOBinding] = []
+        self._device_buffers: list[tuple[Any, Any, Any] | None] = []
         self._slot_locks: list[threading.Lock] = []
         self._in_name: str | None = None
         self._has_w: bool = False
@@ -157,6 +209,10 @@ class Enhance_UltraMax:
         self._detail_in: str | None = None
         self._detail_lut: np.ndarray | None = None
         self._detail_lock = threading.Lock()
+
+    @property
+    def reuses_device_buffers(self) -> bool:
+        return any(buf is not None for buf in getattr(self, "_device_buffers", []))
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     @classmethod
@@ -188,7 +244,7 @@ class Enhance_UltraMax:
             for p in providers
         )
 
-        primary_sess, primary_iob = _build_session(model_path, providers)
+        primary_sess, primary_iob, primary_buf = _build_session(model_path, providers, self.devicename)
         inputs = primary_sess.get_inputs()
         self._in_name = inputs[0].name
         self._has_w = len(inputs) > 1
@@ -197,6 +253,7 @@ class Enhance_UltraMax:
         self._in_dtype = np.float16 if 'float16' in str(in_type) else np.float32
         self._sessions.append(primary_sess)
         self._bindings.append(primary_iob)
+        self._device_buffers.append(primary_buf)
         self._slot_locks.append(threading.Lock())
 
         # LUT: uint8 -> model dtype in [-1, 1]
@@ -219,22 +276,23 @@ class Enhance_UltraMax:
             n = _pool_size(session_pool.pool_size())
             for _ in range(n - 1):
                 try:
-                    s, b = _build_session(model_path, providers)
+                    s, b, buf = _build_session(model_path, providers, self.devicename)
                     self._sessions.append(s)
                     self._bindings.append(b)
+                    self._device_buffers.append(buf)
                     self._slot_locks.append(threading.Lock())
                 except Exception as e:
                     print(f'[UltraMax] pool slot failed: {e}')
                     break
 
             if len(self._sessions) > 1:
-                pairs = list(zip(self._sessions, self._bindings))
+                triplets = list(zip(self._sessions, self._bindings, self._device_buffers))
                 locks = self._slot_locks
 
-                def _factory(i, _p=pairs, _l=locks):
+                def _factory(i, _p=triplets, _l=locks):
                     return (_p[i], _l[i])
 
-                self._pool = session_pool.SessionPool(_factory, len(pairs))
+                self._pool = session_pool.SessionPool(_factory, len(triplets))
                 print(f'[UltraMax] pool ready: {len(self._sessions)} contexts')
 
         # Optional dual-stream detail network (GPEN-512)
@@ -260,8 +318,9 @@ class Enhance_UltraMax:
         from roop.model_registry import ensure_model_downloaded
         model_path = ensure_model_downloaded('gpen_bfr_512')
 
-        self._detail_session, self._detail_iob = _build_session(model_path,
-                                                                 providers)
+        self._detail_session, self._detail_iob, _ = _build_session(model_path,
+                                                                   providers,
+                                                                   self.devicename)
         self._detail_in = self._detail_session.get_inputs()[0].name
         self._detail_lut = (np.arange(256, dtype=np.float32) / 127.5) - 1.0
         print('[UltraMax] dual-stream GPEN-512 detail network ready', flush=True)
@@ -272,6 +331,7 @@ class Enhance_UltraMax:
             self._pool = None
         self._sessions.clear()
         self._bindings.clear()
+        self._device_buffers.clear()
         self._slot_locks.clear()
         self._lut = None
         self._detail_session = None
@@ -285,11 +345,22 @@ class Enhance_UltraMax:
         sess = self._sessions[slot_idx]
         iob = self._bindings[slot_idx]
         lock = self._slot_locks[slot_idx]
+        dev_buf = self._device_buffers[slot_idx] if slot_idx < len(self._device_buffers) else None
+        fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
         with lock:
             try:
+                if dev_buf is not None and hasattr(dev_buf[0], "update_inplace"):
+                    in_val, w_val, out_val = dev_buf
+                    in_val.update_inplace(x)
+                    if self._has_w and w_val is not None:
+                        w_val.update_inplace(np.array([fidelity], dtype=np.float64))
+                    sess.run_with_iobinding(iob)
+                    sync = getattr(iob, "synchronize_outputs", None)
+                    if callable(sync):
+                        sync()
+                    return [out_val.numpy()]
                 iob.bind_cpu_input(self._in_name, x)
                 if getattr(self, '_has_w', False) and self._w_name:
-                    fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
                     iob.bind_cpu_input(self._w_name, np.array([fidelity], dtype=np.float64))
                 sess.run_with_iobinding(iob)
                 return iob.copy_outputs_to_cpu()
@@ -303,12 +374,22 @@ class Enhance_UltraMax:
     def _infer(self, x: np.ndarray) -> np.ndarray:
         if self._pool is not None:
             with self._pool.lease() as slot:
-                (sess, iob), slot_lock = slot
+                (sess, iob, dev_buf), slot_lock = slot
+                fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
                 with slot_lock:
                     try:
+                        if dev_buf is not None and hasattr(dev_buf[0], "update_inplace"):
+                            in_val, w_val, out_val = dev_buf
+                            in_val.update_inplace(x)
+                            if self._has_w and w_val is not None:
+                                w_val.update_inplace(np.array([fidelity], dtype=np.float64))
+                            sess.run_with_iobinding(iob)
+                            sync = getattr(iob, "synchronize_outputs", None)
+                            if callable(sync):
+                                sync()
+                            return [out_val.numpy()]
                         iob.bind_cpu_input(self._in_name, x)
                         if getattr(self, '_has_w', False) and self._w_name:
-                            fidelity = float(getattr(roop.globals, 'codeformer_fidelity', 0.5) or 0.5)
                             iob.bind_cpu_input(self._w_name, np.array([fidelity], dtype=np.float64))
                         sess.run_with_iobinding(iob)
                         return iob.copy_outputs_to_cpu()

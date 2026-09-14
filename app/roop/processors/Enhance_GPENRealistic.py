@@ -65,6 +65,10 @@ _SIZES = {
         'GPEN-BFR-512.onnx',
         'https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx',
     ),
+    1024: (
+        'gpen_bfr_1024.onnx',
+        'https://huggingface.co/facefusion/models-3.0.0/resolve/main/gpen_bfr_1024.onnx',
+    ),
 }
 
 
@@ -102,6 +106,7 @@ class Enhance_GPENRealistic:
         self._size: int = self._SIZE_DEFAULT
         self._sessions: list[onnxruntime.InferenceSession] = []
         self._bindings: list[onnxruntime.IOBinding] = []
+        self._device_buffers: list[tuple[Any, Any] | None] = []
         self._slot_locks: list[threading.Lock] = []
         self._in_name: str | None = None
         self._out_name: str | None = None
@@ -109,6 +114,10 @@ class Enhance_GPENRealistic:
         self._faces = 0
         self._pool: session_pool.SessionPool | None = None
         self._global_lock = threading.Lock()
+
+    @property
+    def reuses_device_buffers(self) -> bool:
+        return any(buf is not None for buf in getattr(self, "_device_buffers", []))
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def Initialize(self, plugin_options: dict) -> None:
@@ -130,7 +139,7 @@ class Enhance_GPENRealistic:
 
         from roop.model_registry import ensure_model_downloaded
         from roop.face_enhancer import create_enhancer_session, align_face_5point, inverse_affine_warp_back
-        model_key = 'gpen_bfr_512' if self._size == 512 else 'gpen_bfr_256'
+        model_key = 'gpen_bfr_1024' if self._size == 1024 else ('gpen_bfr_512' if self._size == 512 else 'gpen_bfr_256')
         model_path = ensure_model_downloaded(model_key)
 
         providers = _select_providers(roop.globals.execution_providers)
@@ -138,21 +147,59 @@ class Enhance_GPENRealistic:
         def _build_slot():
             opts = onnxruntime.SessionOptions()
             opts.log_severity_level = 2
-            sess, _ = create_enhancer_session(
+            sess, active_providers = create_enhancer_session(
                 model_path,
                 requested_providers=providers,
                 session_options=opts,
                 label=f"GPENRealistic-{self._size}",
+                explicit_shape=(1, 3, self._size, self._size),
             )
             iob = sess.io_binding()
-            iob.bind_output(sess.get_outputs()[0].name, self.devicename)
-            return sess, iob
+            in_info = sess.get_inputs()[0]
+            out_info = sess.get_outputs()[0]
+            in_name = in_info.name
+            out_name = out_info.name
 
-        primary_sess, primary_iob = _build_slot()
+            dev_buf = None
+            ort_value_cls = getattr(onnxruntime, "OrtValue", None)
+            device_id = 0
+            for p in (active_providers or providers):
+                if isinstance(p, (tuple, list)) and len(p) > 1 and isinstance(p[1], dict):
+                    if "device_id" in p[1]:
+                        device_id = int(p[1]["device_id"])
+                        break
+
+            can_reuse = (
+                self.devicename == "cuda"
+                and ort_value_cls is not None
+                and hasattr(ort_value_cls, "ortvalue_from_shape_and_type")
+                and hasattr(iob, "bind_ortvalue_input")
+                and hasattr(iob, "bind_ortvalue_output")
+            )
+            if can_reuse:
+                try:
+                    in_dtype = np.float16 if "float16" in str(in_info.type).lower() else np.float32
+                    out_dtype = np.float16 if "float16" in str(out_info.type).lower() else np.float32
+                    in_shape = (1, 3, self._size, self._size)
+                    out_shape = (1, 3, self._size, self._size)
+                    in_val = ort_value_cls.ortvalue_from_shape_and_type(in_shape, in_dtype, "cuda", device_id)
+                    out_val = ort_value_cls.ortvalue_from_shape_and_type(out_shape, out_dtype, "cuda", device_id)
+                    iob.bind_ortvalue_input(in_name, in_val)
+                    iob.bind_ortvalue_output(out_name, out_val)
+                    dev_buf = (in_val, out_val)
+                except Exception:
+                    iob.bind_output(out_name, self.devicename)
+                    dev_buf = None
+            else:
+                iob.bind_output(out_name, self.devicename)
+            return sess, iob, dev_buf
+
+        primary_sess, primary_iob, primary_buf = _build_slot()
         self._in_name = primary_sess.get_inputs()[0].name
         self._out_name = primary_sess.get_outputs()[0].name
         self._sessions.append(primary_sess)
         self._bindings.append(primary_iob)
+        self._device_buffers.append(primary_buf)
         self._slot_locks.append(threading.Lock())
 
         # uint8 -> float32 in [-1, 1] pre-normalisation LUT
@@ -193,23 +240,24 @@ class Enhance_GPENRealistic:
                 pass
             for _ in range(n - 1):
                 try:
-                    s, b = _build_slot()
+                    s, b, buf = _build_slot()
                     self._sessions.append(s)
                     self._bindings.append(b)
+                    self._device_buffers.append(buf)
                     self._slot_locks.append(threading.Lock())
                 except Exception as e:
                     print(f'[GPEN Realistic] pool slot failed: {e}')
                     break
 
             if len(self._sessions) > 1:
-                pairs = list(zip(self._sessions, self._bindings))
+                triplets = list(zip(self._sessions, self._bindings, self._device_buffers))
                 locks = self._slot_locks
 
-                def _factory(i, _p=pairs, _l=locks):
+                def _factory(i, _p=triplets, _l=locks):
                     return (_p[i], _l[i])
 
-                self._pool = session_pool.SessionPool(_factory, len(pairs))
-                print(f'[GPEN Realistic] pool ready: {len(pairs)} contexts')
+                self._pool = session_pool.SessionPool(_factory, len(triplets))
+                print(f'[GPEN Realistic] pool ready: {len(triplets)} contexts')
 
         model_lifecycle_manager.register_model(
             name='gpen_realistic',
@@ -223,6 +271,7 @@ class Enhance_GPENRealistic:
             self._pool = None
         self._sessions.clear()
         self._bindings.clear()
+        self._device_buffers.clear()
         self._slot_locks.clear()
         self._lut = None
         model_lifecycle_manager.set_unloaded('gpen_realistic')
@@ -233,8 +282,17 @@ class Enhance_GPENRealistic:
         sess = self._sessions[slot_idx]
         iob = self._bindings[slot_idx]
         lock = self._slot_locks[slot_idx]
+        dev_buf = self._device_buffers[slot_idx] if slot_idx < len(self._device_buffers) else None
         with lock:
             try:
+                if dev_buf is not None and hasattr(dev_buf[0], "update_inplace"):
+                    in_val, out_val = dev_buf
+                    in_val.update_inplace(x)
+                    sess.run_with_iobinding(iob)
+                    sync = getattr(iob, "synchronize_outputs", None)
+                    if callable(sync):
+                        sync()
+                    return [out_val.numpy()]
                 iob.bind_cpu_input(self._in_name, x)
                 sess.run_with_iobinding(iob)
                 return iob.copy_outputs_to_cpu()
@@ -248,11 +306,26 @@ class Enhance_GPENRealistic:
     def _infer(self, x: np.ndarray) -> np.ndarray:
         if self._pool is not None:
             with self._pool.lease() as slot:
-                (sess, iob), slot_lock = slot
+                (sess, iob, dev_buf), slot_lock = slot
                 with slot_lock:
-                    iob.bind_cpu_input(self._in_name, x)
-                    sess.run_with_iobinding(iob)
-                    return iob.copy_outputs_to_cpu()
+                    try:
+                        if dev_buf is not None and hasattr(dev_buf[0], "update_inplace"):
+                            in_val, out_val = dev_buf
+                            in_val.update_inplace(x)
+                            sess.run_with_iobinding(iob)
+                            sync = getattr(iob, "synchronize_outputs", None)
+                            if callable(sync):
+                                sync()
+                            return [out_val.numpy()]
+                        iob.bind_cpu_input(self._in_name, x)
+                        sess.run_with_iobinding(iob)
+                        return iob.copy_outputs_to_cpu()
+                    except Exception as exc:
+                        from roop.face_enhancer import is_cuda_oom, clear_cuda_cache, CudaOOMError
+                        if is_cuda_oom(exc):
+                            clear_cuda_cache()
+                            raise CudaOOMError(f"CUDA Out of Memory in GPENRealistic pool lease: {exc}") from exc
+                        raise
         return self._run_slot(0, x)
 
     # ── ProcessMgr entry point ────────────────────────────────────────────────

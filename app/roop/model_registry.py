@@ -53,6 +53,15 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         template="ffhq_512",
         description="GPEN-BFR-256 ONNX model for fast/soft tier",
     ),
+    "gpen_bfr_1024": ModelSpec(
+        key="gpen_bfr_1024",
+        filename="gpen_bfr_1024.onnx",
+        url="https://huggingface.co/facefusion/models-3.0.0/resolve/main/gpen_bfr_1024.onnx",
+        sha256="",
+        size_bytes=285582766,
+        template="ffhq_512",
+        description="GPEN-BFR-1024 ONNX model for ultra-high detail enhancement",
+    ),
     "codeformer_fp16": ModelSpec(
         key="codeformer_fp16",
         filename="CodeFormer/codeformer.fp16.onnx",
@@ -94,6 +103,8 @@ def verify_file_integrity(file_path: str, expected_sha256: str) -> bool:
         return False
     if os.path.getsize(file_path) == 0:
         return False
+    if not expected_sha256:
+        return True
     actual_hash = compute_file_sha256(file_path)
     return actual_hash.lower() == expected_sha256.lower().strip()
 

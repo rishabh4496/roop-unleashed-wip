@@ -108,38 +108,120 @@ def is_cuda_oom(exc: BaseException) -> bool:
 
 # ── ONNX Session Initialization with Multi-Tier EP Fallback ──────────────────
 
+def _warmup_enhancer_session(
+    sess: onnxruntime.InferenceSession,
+    label: str,
+    explicit_shape: Optional[Tuple[int, ...]] = None,
+) -> bool:
+    """Run a single dummy zeros pass to complete TensorRT engine allocation during startup."""
+    try:
+        inputs = sess.get_inputs()
+        feed = {}
+        for inp in inputs:
+            name = inp.name
+            shape = list(inp.shape) if inp.shape else []
+            if explicit_shape is not None and name in ("input", "x"):
+                res_shape = list(explicit_shape)
+            else:
+                sz = 1024 if "1024" in label else 512
+                if len(shape) == 4:
+                    res_shape = [
+                        1 if (d is None or isinstance(d, str) or d <= 0) else int(d)
+                        for d in shape
+                    ]
+                    if res_shape[2] is None or res_shape[2] <= 0:
+                        res_shape[2] = sz
+                    if res_shape[3] is None or res_shape[3] <= 0:
+                        res_shape[3] = sz
+                elif len(shape) == 1:
+                    res_shape = [1]
+                elif len(shape) == 0:
+                    res_shape = []
+                else:
+                    res_shape = [1] * len(shape)
+            dtype = np.float16 if "float16" in inp.type else (np.float64 if "double" in inp.type else np.float32)
+            feed[name] = np.zeros(res_shape, dtype=dtype)
+        sess.run(None, feed)
+        return True
+    except Exception as exc:
+        _LOGGER.debug("[%s] Warmup run completed or bypassed: %s", label, exc)
+        raise
+
+
 def create_enhancer_session(
     model_path: str,
     requested_providers: Optional[Sequence[Any]] = None,
     session_options: Optional[onnxruntime.SessionOptions] = None,
     label: str = "FaceEnhancer",
+    warmup: bool = True,
+    explicit_shape: Optional[Tuple[int, ...]] = None,
+    precision: Optional[str] = None,
 ) -> Tuple[onnxruntime.InferenceSession, list[str]]:
-    """Initialize an ONNX Runtime InferenceSession with graceful fallback.
+    """Initialize an ONNX Runtime InferenceSession with graceful TensorRT fallback.
 
     Fallback chain:
-        1. Requested Providers (e.g. TensorRT + CUDA + CPU)
+        1. Requested Providers (TensorRT with static optimization profiles + CUDA + CPU)
         2. CUDAExecutionProvider + CPUExecutionProvider
         3. CPUExecutionProvider
     """
     opts = session_options or onnxruntime.SessionOptions()
     opts.log_severity_level = 2
 
-    providers_to_try = list(requested_providers or roop.globals.execution_providers or [])
+    raw_providers = list(requested_providers or roop.globals.execution_providers or [])
+    from roop.precision_policy import providers_for
+    from roop.trt_shape_profile import is_engine_cached
+    from roop.trt_events import TensorRTCompilationMonitor
+
+    # Specialize providers with precision policy and static optimization profiles
+    specialized_providers, effective_precision = providers_for(
+        model_tag=label,
+        execution_providers=raw_providers,
+        model_path=model_path,
+        requested_precision=precision,
+        explicit_shape=explicit_shape,
+    )
+
     available_fn = getattr(onnxruntime, "get_available_providers", None)
     available = set(list(available_fn()) if callable(available_fn) else ["CPUExecutionProvider"])
 
     # Tier 1: User-requested providers filtered by what is installed
     tier1 = [
-        p for p in providers_to_try
+        p for p in specialized_providers
         if (p[0] if isinstance(p, (tuple, list)) else str(p)) in available
     ]
     if not tier1:
         tier1 = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"]
 
+    has_trt = any(
+        "tensorrt" in (p[0] if isinstance(p, (tuple, list)) else str(p)).lower()
+        for p in tier1
+    )
+
+    # Check cache status for TensorRT to avoid freezing and display progress
+    cache_path = None
+    if has_trt:
+        for p in tier1:
+            if isinstance(p, (tuple, list)) and len(p) == 2 and "tensorrt" in str(p[0]).lower():
+                cache_path = p[1].get("trt_engine_cache_path")
+                break
+
+    cached = is_engine_cached(cache_path) if (has_trt and cache_path) else False
+
     try:
-        sess = onnxruntime.InferenceSession(model_path, opts, providers=tier1)
+        if has_trt and not cached and warmup:
+            with TensorRTCompilationMonitor(label=label, cache_dir=cache_path):
+                sess = onnxruntime.InferenceSession(model_path, opts, providers=tier1)
+                _warmup_enhancer_session(sess, label, explicit_shape)
+        else:
+            sess = onnxruntime.InferenceSession(model_path, opts, providers=tier1)
+            if has_trt and warmup:
+                try:
+                    _warmup_enhancer_session(sess, label, explicit_shape)
+                except Exception:
+                    pass
+
         active = list(sess.get_providers())
-        _LOGGER.info("[%s] Initialized with providers: %s", label, active)
+        _LOGGER.info("[%s] Initialized with providers: %s (precision=%s)", label, active, effective_precision)
         return sess, active
     except Exception as exc_tier1:
         _LOGGER.warning(
