@@ -85,20 +85,11 @@ def _select_providers(execution_providers):
 
 
 def _build_session(model_path, providers):
+    from roop.face_enhancer import create_enhancer_session
     opts = onnxruntime.SessionOptions()
     opts.log_severity_level = 2
-    # Use EXTENDED to avoid ORT_ENABLE_ALL's SimplifiedLayerNormFusion crash
-    # on the CodeFormer FP16 export with the CPU provider.
     opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-    try:
-        sess = onnxruntime.InferenceSession(model_path, opts, providers=providers)
-    except Exception as exc:
-        cuda_providers = build_cuda_fallback_providers()
-        try:
-            sess = onnxruntime.InferenceSession(model_path, opts,
-                                                providers=cuda_providers)
-        except Exception:
-            raise exc
+    sess, _ = create_enhancer_session(model_path, requested_providers=providers, session_options=opts, label="UltraMax")
     iob = sess.io_binding()
     iob.bind_output(sess.get_outputs()[0].name, 'cpu')
     return sess, iob
@@ -180,10 +171,8 @@ class Enhance_UltraMax:
         if self._sessions:
             return
 
-        model_dir = resolve_relative_path('../models/CodeFormer')
-        os.makedirs(model_dir, exist_ok=True)
-        model_path = os.path.join(model_dir, 'codeformer.fp16.onnx')
-        conditional_download(model_dir, [_CODEFORMER_URL])
+        from roop.model_registry import ensure_model_downloaded
+        model_path = ensure_model_downloaded('codeformer_fp16')
 
         providers = _select_providers(roop.globals.execution_providers)
         gpu_providers = frozenset({'TensorrtExecutionProvider',
@@ -259,9 +248,8 @@ class Enhance_UltraMax:
 
     def _init_detail_stream(self, providers):
         """Build the GPEN-512 detail network for the dual-stream engine."""
-        model_dir = resolve_relative_path('../models')
-        conditional_download(model_dir, [_GPEN512_URL])
-        model_path = os.path.join(model_dir, 'GPEN-BFR-512.onnx')
+        from roop.model_registry import ensure_model_downloaded
+        model_path = ensure_model_downloaded('gpen_bfr_512')
 
         self._detail_session, self._detail_iob = _build_session(model_path,
                                                                  providers)
@@ -374,52 +362,40 @@ class Enhance_UltraMax:
             chroma = float(os.environ.get('ROOP_ULTRAMAX_CHROMA', '') or 0.0)
         except ValueError:
             chroma = 0.0
+        from roop.face_enhancer import apply_ultramax_composite
+        blend_ratio = getattr(roop.globals, 'blend_ratio', 1.0)
+        if blend_ratio is None:
+            blend_ratio = 1.0
 
-        if chroma < 1.0:
-            fixed = luma_only_recolour(restored, src)
-            if chroma > 0.0:
-                fixed = cv2.addWeighted(fixed, 1.0 - chroma, restored, chroma, 0)
-            out = fixed
-        else:
-            out = restored
+        detail = self._detail_stream(src) if (self._dual_enabled() and _FREQ_SPLIT_AVAILABLE) else None
 
-        # Optional dual-stream frequency split
-        if self._dual_enabled() and _FREQ_SPLIT_AVAILABLE:
-            detail = self._detail_stream(src)
-            if detail is not None:
-                mode = self._DUAL_MODE
-                try:
-                    if mode == 'luma':
-                        out = frequency_split_luma(
-                            out, detail,
-                            radius=self._DUAL_RADIUS,
-                            eps=self._DUAL_EPS,
-                            gain=self._DUAL_GAIN,
-                            clamp=self._DUAL_CLAMP,
-                        )
-                    else:
-                        merged = frequency_split(
-                            out, detail,
-                            radius=self._DUAL_RADIUS,
-                            eps=self._DUAL_EPS,
-                            gain=self._DUAL_GAIN,
-                            clamp=self._DUAL_CLAMP,
-                        )
-                        if self._DUAL_L_WEIGHT > 0:
-                            out = reinhard_lab(merged, src,
-                                               l_weight=self._DUAL_L_WEIGHT)
-                        else:
-                            out = merged
-                except Exception as e:
-                    if not Enhance_UltraMax._warned_dual:
-                        Enhance_UltraMax._warned_dual = True
-                        print(f'[UltraMax] frequency split error ({e}); '
-                              f'using single-stream output', flush=True)
+        out = apply_ultramax_composite(
+            structure_crop=restored,
+            detail_crop=detail,
+            reference_crop=src,
+            blend_ratio=blend_ratio,
+            chroma_weight=chroma,
+            dual_stream=(detail is not None),
+            gain=self._DUAL_GAIN,
+        )
 
         with self._global_lock:
             self._faces += 1
 
         return sized(out, input_size)
+
+    def enhance_frame(self, frame: Frame, kps: np.ndarray, blend_ratio: float = 1.0) -> Frame:
+        """Standalone 5-point landmark alignment -> inference -> inverse affine warp back."""
+        from roop.face_enhancer import align_face_5point, inverse_affine_warp_back
+        aligned_crop, M = align_face_5point(frame, kps, crop_size=512)
+        enhanced_crop, _ = self.Run(None, None, aligned_crop)
+        return inverse_affine_warp_back(
+            target_frame=frame,
+            enhanced_crop=enhanced_crop,
+            M=M,
+            original_crop=aligned_crop,
+            blend_ratio=blend_ratio,
+        )
 
     # ── compatibility: expose Prepare/Infer/Finish like Enhance_CodeFormer ───
     def Prepare(self, source_faceset, target_face, temp_frame):

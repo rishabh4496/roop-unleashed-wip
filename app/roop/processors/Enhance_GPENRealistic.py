@@ -128,27 +128,22 @@ class Enhance_GPENRealistic:
             want = self._SIZE_DEFAULT
         self._size = want if want in _SIZES else self._SIZE_DEFAULT
 
-        fname, url = _SIZES[self._size]
-        model_dir = resolve_relative_path('../models')
-        conditional_download(model_dir, [url])
-        model_path = os.path.join(model_dir, fname)
+        from roop.model_registry import ensure_model_downloaded
+        from roop.face_enhancer import create_enhancer_session, align_face_5point, inverse_affine_warp_back
+        model_key = 'gpen_bfr_512' if self._size == 512 else 'gpen_bfr_256'
+        model_path = ensure_model_downloaded(model_key)
 
         providers = _select_providers(roop.globals.execution_providers)
 
         def _build_slot():
             opts = onnxruntime.SessionOptions()
             opts.log_severity_level = 2
-            try:
-                sess = onnxruntime.InferenceSession(model_path, opts,
-                                                    providers=providers)
-            except Exception as exc:
-                # TRT engine failure: try CUDA-only
-                cuda_providers = build_cuda_fallback_providers()
-                try:
-                    sess = onnxruntime.InferenceSession(model_path, opts,
-                                                        providers=cuda_providers)
-                except Exception:
-                    raise exc
+            sess, _ = create_enhancer_session(
+                model_path,
+                requested_providers=providers,
+                session_options=opts,
+                label=f"GPENRealistic-{self._size}",
+            )
             iob = sess.io_binding()
             iob.bind_output(sess.get_outputs()[0].name, self.devicename)
             return sess, iob
@@ -313,6 +308,19 @@ class Enhance_GPENRealistic:
             self._faces += 1
 
         return sized(out, input_size)
+
+    def enhance_frame(self, frame: Frame, kps: np.ndarray, blend_ratio: float = 1.0) -> Frame:
+        """Standalone 5-point landmark alignment -> inference -> inverse affine warp back."""
+        from roop.face_enhancer import align_face_5point, inverse_affine_warp_back
+        aligned_crop, M = align_face_5point(frame, kps, crop_size=self._size)
+        enhanced_crop, _ = self.Run(None, None, aligned_crop)
+        return inverse_affine_warp_back(
+            target_frame=frame,
+            enhanced_crop=enhanced_crop,
+            M=M,
+            original_crop=aligned_crop,
+            blend_ratio=blend_ratio,
+        )
 
     # ── compatibility: expose Prepare/Infer/Finish like Enhance_GPEN ─────────
     def Prepare(self, source_faceset, target_face, temp_frame):

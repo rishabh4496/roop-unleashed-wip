@@ -569,6 +569,14 @@ def save_settings(settings: dict = Body(...)):
             payload['output_video_format'] = output_format
             payload['output_video_codec'] = output_codec
 
+        if 'enhancer_type' in payload:
+            from api_schemas import normalize_enhancer_type
+            payload['selected_enhancer'] = normalize_enhancer_type(payload['enhancer_type'])
+        if 'enhancer_blend' in payload:
+            try:
+                payload['blend_ratio'] = max(0.0, min(1.0, float(payload['enhancer_blend'])))
+            except (TypeError, ValueError):
+                pass
         _update_mask_offsets_from_payload(payload)
         allowed = set(roop_globals.CFG.public_dict())
         for k, v in payload.items():
@@ -818,6 +826,11 @@ def get_meta():
                        "GPEN Ultimate", "GPEN Realistic", "UltraMax",
                        "Restoreformer++", "Restore Ultra",
                        "KEEP (sidecar)"],
+        "enhancer_types": ["none", "codeformer", "codeformer_fp16", "dmdnet",
+                           "gfpgan", "gpen_256", "gpen", "gpen_1024", "gpen_2048",
+                           "gpen_ultimate", "gpen_realistic", "ultramax",
+                           "restoreformer++", "restore_ultra", "keep"],
+        "default_enhancer_blend": 0.85,
         "swap_models": ["inswapper", "reswapper", "hyperswap", "hyperswap_1b",
                          "hyperswap_1c", "ghost_1", "ghost_2", "ghost_3",
                          "simswap", "simswap_512", "hififace", "blendswap", "uniface"],
@@ -2406,6 +2419,17 @@ def _apply_enhancer_settings(payload):
                          ("color_match_after_enhance", False)):
         fallback = getattr(roop_globals.CFG, key, default)
         setattr(roop_globals, key, bool(payload.get(key, fallback)))
+    if any(k in payload for k in ("enhancer_type", "enhancer_blend")):
+        from api_schemas import parse_enhancer_from_payload
+        enh_name, blend_val = parse_enhancer_from_payload(
+            payload,
+            fallback_enhancer=getattr(roop_globals, "selected_enhancer", "None"),
+            fallback_blend=getattr(roop_globals, "blend_ratio", 0.85),
+        )
+        if "enhancer_type" in payload:
+            roop_globals.selected_enhancer = enh_name
+        if "enhancer_blend" in payload:
+            roop_globals.blend_ratio = blend_val
 
 
 def _apply_lipsync_settings(payload):
@@ -2584,11 +2608,14 @@ def _preview_locked(payload: dict):
         from roop.core import live_swap, get_processing_plugins
         from roop.ProcessOptions import ProcessOptions
 
+        from api_schemas import parse_enhancer_from_payload
+
         roop_globals.face_swap_mode = translate_swap_mode(payload.get("detection", "All faces"))
-        roop_globals.selected_enhancer = payload.get("enhancer", "None")
+        enh_name, blend_val = parse_enhancer_from_payload(payload, fallback_enhancer="None", fallback_blend=float(payload.get("blend_ratio", 0.8)))
+        roop_globals.selected_enhancer = enh_name
+        roop_globals.blend_ratio = blend_val
         roop_globals.codeformer_fidelity = float(payload.get("codeformer_fidelity", 0.5))
         roop_globals.distance_threshold = float(payload.get("face_distance", roop_globals.CFG.max_face_distance))
-        roop_globals.blend_ratio = float(payload.get("blend_ratio", 0.8))
         roop_globals.no_face_action = index_of_no_face_action(payload.get("no_face_action", "Retry rotated"))
         roop_globals.vr_mode = bool(payload.get("vr_mode", False))
         roop_globals.autorotate_faces = bool(payload.get("autorotate", True))
@@ -2762,7 +2789,14 @@ def _run_swap(payload, job_state=None):
             shutil.rmtree(roop_globals.output_path, ignore_errors=True)
             os.makedirs(roop_globals.output_path, exist_ok=True)
 
-        enhancer = payload.get("enhancer", roop_globals.CFG.selected_enhancer)
+        from api_schemas import parse_enhancer_from_payload
+
+        enh_name, blend_val = parse_enhancer_from_payload(
+            payload,
+            fallback_enhancer=roop_globals.CFG.selected_enhancer,
+            fallback_blend=float(getattr(roop_globals.CFG, "blend_ratio", 0.85)),
+        )
+        enhancer = enh_name
         detection = payload.get("detection", roop_globals.CFG.face_detection_mode)
         output_method = payload.get("output_method", roop_globals.CFG.output_method)
         processing_method = payload.get("video_method", roop_globals.CFG.video_swapping_method)
@@ -2776,7 +2810,7 @@ def _run_swap(payload, job_state=None):
         roop_globals.codeformer_fidelity = float(payload.get("codeformer_fidelity", getattr(roop_globals.CFG, "codeformer_fidelity", 0.5)))
         roop_globals.target_path = None
         roop_globals.distance_threshold = float(payload.get("face_distance", roop_globals.CFG.max_face_distance))
-        roop_globals.blend_ratio = float(payload.get("blend_ratio", roop_globals.CFG.blend_ratio))
+        roop_globals.blend_ratio = blend_val
         roop_globals.keep_frames = bool(payload.get("keep_frames", roop_globals.CFG.keep_frames))
         roop_globals.wait_after_extraction = bool(payload.get("wait_after_extraction", roop_globals.CFG.wait_after_extraction))
         roop_globals.skip_audio = bool(payload.get("skip_audio", roop_globals.CFG.skip_audio))
